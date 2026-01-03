@@ -1,0 +1,184 @@
+// Firestore rules
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /* Helpers */
+    function isSignedIn() { return request.auth != null; }
+    function userDoc() { return get(/databases/$(database)/documents/users/$(request.auth.uid)); }
+    function userRole() { return isSignedIn() ? userDoc().data.role : null; }
+    function isSuperAdmin() { return isSignedIn() && userRole() == 'superAdmin'; }
+    function isAdmin() { return isSignedIn() && (userRole() == 'admin' || userRole() == 'superAdmin'); }
+    function isDirector() { return isSignedIn() && userRole() == 'director'; }
+    function isAdminOrDirector() { return isSignedIn() && (isAdmin() || isDirector()); }
+    function isApproved() { return isSignedIn() && userDoc().data.approved == true; }
+    function isSelf(userId) { return isSignedIn() && request.auth.uid == userId; }
+    
+    /* users */
+    match /users/{userId} {
+      allow read: if isSelf(userId) || isAdmin() || (isSignedIn() && resource.data.role == 'student');
+      allow create: if false;
+      allow update, delete: if isAdmin();
+
+      // Subcolección para progreso visto por alumno
+      match /seenClasses/{classId} {
+        allow read: if isSelf(userId) || isAdmin();
+        allow write: if isSelf(userId) || isAdmin();
+      }
+    }
+
+    /* items */
+    match /items/{itemId} {
+      allow read: if isApproved() || isAdmin();
+      allow create: if isApproved();
+      allow update, delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    /* analyses */
+    match /analyses/{analysisId} {
+      allow read, write: if isApproved();
+    }
+
+    /* alumnos (directorio) */
+    match /alumnos/{alumnoId} {
+      allow read, create, update, delete: if isSignedIn();
+    }
+
+    /* solicitudesCertificado */
+    match /solicitudesCertificado/{solicitudId} {
+      allow create: if isSignedIn();
+      allow read: if isAdminOrDirector() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow update, delete: if isAdmin();
+
+      match /comentarios/{comentarioId} {
+        allow read: if isAdminOrDirector() || (
+          isSignedIn() &&
+          exists(/databases/$(database)/documents/solicitudesCertificado/$(solicitudId)) &&
+          get(/databases/$(database)/documents/solicitudesCertificado/$(solicitudId)).data.userId == request.auth.uid
+        );
+        allow create: if isAdminOrDirector() || (
+          isSignedIn() &&
+          exists(/databases/$(database)/documents/solicitudesCertificado/$(solicitudId)) &&
+          get(/databases/$(database)/documents/solicitudesCertificado/$(solicitudId)).data.userId == request.auth.uid
+        );
+        allow update, delete: if false;
+      }
+    }
+
+    /* config */
+    match /config/{configId} {
+      allow read: if isSignedIn();
+      allow write: if isSuperAdmin();
+    }
+
+    /* planteles */
+    match /planteles/{plantelId} {
+      allow read: if isSignedIn();
+      allow write: if isSuperAdmin();
+    }
+
+    /* courses y subcolecciones */
+    match /courses/{courseId} {
+      // Permitir lectura a cualquier usuario autenticado (necesario para alumnos)
+      allow read: if isAdmin() || isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.teacherId == request.auth.uid;
+      allow update, delete: if isAdmin() || (isSignedIn() && resource.data.teacherId == request.auth.uid);
+
+      match /lessons/{lessonId} {
+        allow read: if isAdmin() || isSignedIn();
+        allow create, update, delete: if isAdmin() || (
+          isSignedIn() &&
+          exists(/databases/$(database)/documents/courses/$(courseId)) &&
+          get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
+        );
+
+        match /classes/{classId} {
+          allow read: if isAdmin() || isSignedIn();
+          allow create, update, delete: if isAdmin() || (
+            isSignedIn() &&
+            exists(/databases/$(database)/documents/courses/$(courseId)) &&
+            get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
+          );
+
+          match /questions/{questionId} {
+            allow read: if isAdmin() || isSignedIn();
+            allow create, update, delete: if isAdmin() || (
+              isSignedIn() &&
+              exists(/databases/$(database)/documents/courses/$(courseId)) &&
+              get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
+            );
+          }
+        }
+      }
+    }
+
+    /* groups */
+    match /groups/{groupId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.teacherId == request.auth.uid;
+      allow update, delete: if isAdmin() || (isSignedIn() && resource.data.teacherId == request.auth.uid);
+
+      match /students/{studentId} {
+        allow read: if isAdmin() ||
+          (isSignedIn() &&
+            (
+              get(/databases/$(database)/documents/groups/$(groupId)).data.teacherId == request.auth.uid ||
+              studentId == request.auth.uid
+            )
+          );
+        allow create, update, delete: if isAdmin() || (
+          isSignedIn() &&
+          exists(/databases/$(database)/documents/groups/$(groupId)) &&
+          get(/databases/$(database)/documents/groups/$(groupId)).data.teacherId == request.auth.uid
+        );
+      }
+
+      match /submissions/{submissionId} {
+        allow read: if isAdmin() || (
+          isSignedIn() &&
+          exists(/databases/$(database)/documents/groups/$(groupId))
+        );
+        allow create: if isAdmin() || (
+          isSignedIn() &&
+          exists(/databases/$(database)/documents/groups/$(groupId)) &&
+          (
+            get(/databases/$(database)/documents/groups/$(groupId)).data.teacherId == request.auth.uid ||
+            request.resource.data.studentId == request.auth.uid
+          )
+        );
+        allow update, delete: if isAdmin() || (
+          isSignedIn() &&
+          exists(/databases/$(database)/documents/groups/$(groupId)) &&
+          get(/databases/$(database)/documents/groups/$(groupId)).data.teacherId == request.auth.uid
+        );
+      }
+
+      match /grades/{studentId} {
+        allow read, create, update, delete: if isAdmin() || (
+          isSignedIn() &&
+          exists(/databases/$(database)/documents/groups/$(groupId)) &&
+          get(/databases/$(database)/documents/groups/$(groupId)).data.teacherId == request.auth.uid
+        );
+      }
+    }
+
+    /* studentEnrollments */
+    match /studentEnrollments/{enrollmentId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin() || isSignedIn();
+
+      // Progreso por clase (para alumnos y admins)
+      match /classProgress/{classId} {
+        allow read, write: if isSignedIn() && (
+          get(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)).data.studentId == request.auth.uid
+          || isAdmin()
+        );
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
