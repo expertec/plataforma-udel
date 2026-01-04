@@ -7,14 +7,14 @@ import { auth } from "@/lib/firebase/client";
 import { resolveUserRole, UserRole } from "@/lib/firebase/roles";
 
 type RoleGateProps = {
-  allowedRole: UserRole;
+  allowedRole: UserRole | UserRole[];
   children: ReactNode;
 };
 
 export function RoleGate({ allowedRole, children }: RoleGateProps) {
   const router = useRouter();
-
   useEffect(() => {
+    const allowed = Array.isArray(allowedRole) ? allowedRole : [allowedRole];
     // Render de inmediato; solo redirigimos si falla auth/rol para evitar pantallas en blanco.
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (!user) {
@@ -29,9 +29,8 @@ export function RoleGate({ allowedRole, children }: RoleGateProps) {
         return;
       }
 
-      if (role !== allowedRole) {
-        const destination =
-          role === "teacher" ? "/creator" : "/feed";
+      if (!allowed.includes(role)) {
+        const destination = role === "student" ? "/feed" : "/creator";
         router.replace(destination);
         return;
       }

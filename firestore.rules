@@ -9,11 +9,41 @@ service cloud.firestore {
     function userRole() { return isSignedIn() ? userDoc().data.role : null; }
     function isSuperAdmin() { return isSignedIn() && userRole() == 'superAdmin'; }
     function isAdmin() { return isSignedIn() && (userRole() == 'admin' || userRole() == 'superAdmin'); }
+    function isAdminTeacher() { return isSignedIn() && userRole() == 'adminTeacher'; }
+    function isTeacher() { return isSignedIn() && userRole() == 'teacher'; }
+    function isTeacherLike() { return isSignedIn() && (userRole() == 'teacher' || userRole() == 'adminTeacher'); }
     function isDirector() { return isSignedIn() && userRole() == 'director'; }
     function isAdminOrDirector() { return isSignedIn() && (isAdmin() || isDirector()); }
     function isApproved() { return isSignedIn() && userDoc().data.approved == true; }
     function isSelf(userId) { return isSignedIn() && request.auth.uid == userId; }
     function absVal(x) { return x >= 0 ? x : -x; }
+    function listSize(x) { return x is list ? x.size() : 0; }
+    function isAssistantInGroup(g) {
+      return g.assistantTeacherIds is list && g.assistantTeacherIds.hasAny([request.auth.uid]);
+    }
+    function isTeacherAssignedToGroup(groupPath) {
+      return isSignedIn() &&
+        (
+          get(groupPath).data.teacherId == request.auth.uid ||
+          isAssistantInGroup(get(groupPath).data)
+        );
+    }
+    function isGroupStudent(groupPath) {
+      return exists(groupPath) &&
+        exists(concat(groupPath, "/students/", request.auth.uid));
+    }
+    function isEnrolledInGroup(groupId) {
+      return exists(/databases/$(database)/documents/studentEnrollments/$(groupId + "_" + request.auth.uid));
+    }
+    // Permite que profesores agreguen su materia a un grupo existente sin modificar otros campos.
+    function canTeacherLinkCourseToGroup() {
+      return isTeacher() &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['courses', 'courseIds', 'updatedAt']) &&
+        request.resource.data.courses is list &&
+        request.resource.data.courseIds is list &&
+        listSize(request.resource.data.courses) >= listSize(resource.data.courses) &&
+        listSize(request.resource.data.courseIds) >= listSize(resource.data.courseIds);
+    }
     function canUpdateLikesCountOnly() {
       return isSignedIn() &&
         request.resource.data.diff(resource.data).changedKeys().hasOnly(['likesCount']) &&
@@ -23,14 +53,15 @@ service cloud.firestore {
     
     /* users */
     match /users/{userId} {
-      allow read: if isSelf(userId) || isAdmin() || (isSignedIn() && resource.data.role == 'student');
-      allow create: if false;
-      allow update, delete: if isAdmin();
+      allow read: if isSelf(userId) || isAdmin() || isAdminTeacher() || (isSignedIn() && resource.data.role == 'student');
+      allow create: if isAdmin() || isAdminTeacher();
+      allow update: if isAdmin() || isAdminTeacher();
+      allow delete: if isAdmin();
 
       // Subcolección para progreso visto por alumno
       match /seenClasses/{classId} {
-        allow read: if isSelf(userId) || isAdmin();
-        allow write: if isSelf(userId) || isAdmin();
+        allow read: if isSelf(userId) || isAdmin() || isAdminTeacher();
+        allow write: if isSelf(userId) || isAdmin() || isAdminTeacher();
       }
     }
 
@@ -88,13 +119,13 @@ service cloud.firestore {
     match /courses/{courseId} {
       // Permitir lectura a cualquier usuario autenticado (necesario para alumnos)
       allow read: if isAdmin() || isSignedIn();
-      allow create: if isSignedIn() && request.resource.data.teacherId == request.auth.uid;
-      allow update, delete: if isAdmin() || (isSignedIn() && resource.data.teacherId == request.auth.uid);
+      allow create: if isTeacherLike() && request.resource.data.teacherId == request.auth.uid;
+      allow update, delete: if isAdmin() || (isTeacherLike() && resource.data.teacherId == request.auth.uid);
 
       match /lessons/{lessonId} {
         allow read: if isAdmin() || isSignedIn();
         allow create, update, delete: if isAdmin() || (
-          isSignedIn() &&
+          isTeacherLike() &&
           exists(/databases/$(database)/documents/courses/$(courseId)) &&
           get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
         );
@@ -104,12 +135,12 @@ service cloud.firestore {
           // Para likesCount permitimos a cualquier usuario autenticado actualizar solo ese campo.
           allow update: if canUpdateLikesCountOnly();
           allow create, delete: if isAdmin() || (
-            isSignedIn() &&
+            isTeacherLike() &&
             exists(/databases/$(database)/documents/courses/$(courseId)) &&
             get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
           );
           allow update: if isAdmin() || (
-            isSignedIn() &&
+            isTeacherLike() &&
             exists(/databases/$(database)/documents/courses/$(courseId)) &&
             get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
           ) || canUpdateLikesCountOnly();
@@ -117,7 +148,7 @@ service cloud.firestore {
           match /questions/{questionId} {
             allow read: if isAdmin() || isSignedIn();
             allow create, update, delete: if isAdmin() || (
-              isSignedIn() &&
+              isTeacherLike() &&
               exists(/databases/$(database)/documents/courses/$(courseId)) &&
               get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
             );
@@ -143,21 +174,22 @@ service cloud.firestore {
     /* groups */
     match /groups/{groupId} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && request.resource.data.teacherId == request.auth.uid;
-      allow update, delete: if isAdmin() || (isSignedIn() && resource.data.teacherId == request.auth.uid);
+      allow create: if isAdmin() || isAdminTeacher();
+      allow update: if isAdmin() || isAdminTeacher() || canTeacherLinkCourseToGroup();
+      allow delete: if isAdmin() || isAdminTeacher();
 
       match /students/{studentId} {
         allow read: if isAdmin() ||
           (isSignedIn() &&
             (
-              get(/databases/$(database)/documents/groups/$(groupId)).data.teacherId == request.auth.uid ||
+              isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId)) ||
               studentId == request.auth.uid
             )
           );
         allow create, update, delete: if isAdmin() || (
-          isSignedIn() &&
+          isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
-          get(/databases/$(database)/documents/groups/$(groupId)).data.teacherId == request.auth.uid
+          isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId))
         );
       }
 
@@ -167,25 +199,32 @@ service cloud.firestore {
           exists(/databases/$(database)/documents/groups/$(groupId))
         );
         allow create: if isAdmin() || (
-          isSignedIn() &&
+          isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
           (
-            get(/databases/$(database)/documents/groups/$(groupId)).data.teacherId == request.auth.uid ||
+            isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId)) ||
             request.resource.data.studentId == request.auth.uid
+          )
+        ) || (
+          isSignedIn() &&
+          request.resource.data.studentId == request.auth.uid &&
+          (
+            isGroupStudent(/databases/$(database)/documents/groups/$(groupId)) ||
+            isEnrolledInGroup(groupId)
           )
         );
         allow update, delete: if isAdmin() || (
-          isSignedIn() &&
+          isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
-          get(/databases/$(database)/documents/groups/$(groupId)).data.teacherId == request.auth.uid
+          isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId))
         );
       }
 
       match /grades/{studentId} {
         allow read, create, update, delete: if isAdmin() || (
-          isSignedIn() &&
+          isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
-          get(/databases/$(database)/documents/groups/$(groupId)).data.teacherId == request.auth.uid
+          isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId))
         );
       }
     }

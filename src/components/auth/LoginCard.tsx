@@ -36,7 +36,7 @@ export function LoginCard({
           toast.error("No se encontró un rol asignado.");
           return;
         }
-        const destination = role === "teacher" ? "/creator" : "/feed";
+        const destination = role === "student" ? "/feed" : "/creator";
         toast.success("Inicio de sesión correcto");
         if (remember) {
           // noop placeholder; add persistence here si se requiere.

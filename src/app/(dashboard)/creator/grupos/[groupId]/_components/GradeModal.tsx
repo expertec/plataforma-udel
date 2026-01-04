@@ -15,6 +15,9 @@ export function GradeModal({ submission, readonly, onClose, onSave }: GradeModal
   const [grade, setGrade] = useState<number | undefined>(submission.grade ?? undefined);
   const [feedback, setFeedback] = useState(submission.feedback ?? "");
   const [saving, setSaving] = useState(false);
+  const isContentUrl =
+    typeof submission.content === "string" &&
+    /^https?:\/\//i.test(submission.content.trim());
 
   useEffect(() => {
     setGrade(submission.grade ?? undefined);
@@ -62,9 +65,20 @@ export function GradeModal({ submission, readonly, onClose, onSave }: GradeModal
           {submission.content ? (
             <div className="space-y-1">
               <p className="text-xs text-slate-500">Contenido</p>
-              <p className="whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-2">
-                {submission.content}
-              </p>
+              {isContentUrl ? (
+                <a
+                  href={submission.content}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex w-fit items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-500"
+                >
+                  Descargar contenido
+                </a>
+              ) : (
+                <p className="whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-2">
+                  {submission.content}
+                </p>
+              )}
             </div>
           ) : null}
 

@@ -1,0 +1,250 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import toast from "react-hot-toast";
+import { User, onAuthStateChanged } from "firebase/auth";
+import { useRouter } from "next/navigation";
+import { auth } from "@/lib/firebase/client";
+import { resolveUserRole } from "@/lib/firebase/roles";
+import { createTeacherAccount, getTeacherUsers, TeacherUser } from "@/lib/firebase/teachers-service";
+
+export default function ProfesoresPage() {
+  const [teachers, setTeachers] = useState<TeacherUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
+  const [newTeacher, setNewTeacher] = useState({
+    name: "",
+    email: "",
+    password: "",
+    admin: false,
+    phone: "",
+  });
+  const [roleReady, setRoleReady] = useState(false);
+  const [isAdminTeacher, setIsAdminTeacher] = useState(false);
+  const router = useRouter();
+
+  const loadTeachers = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await getTeacherUsers(200);
+      setTeachers(data);
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudieron cargar los profesores.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+      if (!user) {
+        router.replace("/");
+        setRoleReady(true);
+        setIsAdminTeacher(false);
+        return;
+      }
+      try {
+        const role = await resolveUserRole(user);
+        setRoleReady(true);
+        if (!role) {
+          router.replace("/");
+          setIsAdminTeacher(false);
+          return;
+        }
+        if (role !== "adminTeacher") {
+          router.replace("/creator");
+          setIsAdminTeacher(false);
+          return;
+        }
+        setIsAdminTeacher(true);
+      } catch {
+        setRoleReady(true);
+        setIsAdminTeacher(false);
+        router.replace("/");
+      }
+    });
+    return () => unsub();
+  }, [router]);
+
+  useEffect(() => {
+    if (!isAdminTeacher) return;
+    loadTeachers();
+  }, [isAdminTeacher, loadTeachers]);
+
+  const handleCreateTeacher = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!newTeacher.email || !newTeacher.password) {
+      toast.error("Completa correo y contraseña.");
+      return;
+    }
+    setCreating(true);
+    try {
+      await createTeacherAccount({
+        name: newTeacher.name || "Profesor",
+        email: newTeacher.email.trim().toLowerCase(),
+        password: newTeacher.password.trim(),
+        asAdminTeacher: newTeacher.admin,
+        phone: newTeacher.phone.trim(),
+        createdBy: currentUser?.uid ?? null,
+      });
+      toast.success(
+        newTeacher.admin
+          ? "AdminTeacher creado con acceso por correo/contraseña"
+          : "Profesor creado con acceso por correo/contraseña",
+      );
+      setNewTeacher({ name: "", email: "", password: "", admin: false, phone: "" });
+      await loadTeachers();
+    } catch (err: unknown) {
+      console.error(err);
+      const code = (err as { code?: string })?.code ?? "";
+      const message =
+        code === "auth/email-already-in-use"
+          ? "Ese correo ya está registrado."
+          : "No se pudo crear el profesor.";
+      toast.error(message);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {!roleReady ? (
+        <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700 shadow-sm">
+          Verificando permisos...
+        </div>
+      ) : null}
+      <div>
+        <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Profesores</p>
+        <h1 className="text-2xl font-semibold text-slate-900">Administrar profesores</h1>
+        <p className="text-sm text-slate-600">
+          Crea cuentas de profesores y AdminTeacher con acceso por correo y contraseña.
+        </p>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+        <form
+          onSubmit={handleCreateTeacher}
+          className="grid gap-3 md:grid-cols-2 md:items-end"
+        >
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-slate-700">Nombre</label>
+            <input
+              type="text"
+              value={newTeacher.name}
+              onChange={(e) => setNewTeacher((prev) => ({ ...prev, name: e.target.value }))}
+              placeholder="Nombre del profesor"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-slate-700">Teléfono / WhatsApp</label>
+            <input
+              type="text"
+              value={newTeacher.phone}
+              onChange={(e) => setNewTeacher((prev) => ({ ...prev, phone: e.target.value }))}
+              placeholder="+52..."
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-slate-700">Correo</label>
+            <input
+              type="email"
+              required
+              value={newTeacher.email}
+              onChange={(e) => setNewTeacher((prev) => ({ ...prev, email: e.target.value }))}
+              placeholder="correo@ejemplo.com"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-slate-700">Contraseña</label>
+            <input
+              type="password"
+              required
+              minLength={6}
+              value={newTeacher.password}
+              onChange={(e) => setNewTeacher((prev) => ({ ...prev, password: e.target.value }))}
+              placeholder="Mínimo 6 caracteres"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+            />
+          </div>
+          <div className="flex flex-col gap-3">
+            <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={newTeacher.admin}
+                onChange={(e) => setNewTeacher((prev) => ({ ...prev, admin: e.target.checked }))}
+                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+              />
+              Crear como AdminTeacher (acceso ampliado)
+            </label>
+            <button
+              type="submit"
+              disabled={creating}
+              className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {creating ? "Creando..." : "Registrar profesor"}
+            </button>
+          </div>
+        </form>
+        <p className="mt-2 text-xs text-slate-600">
+          Esta acción crea el usuario en Firebase Auth y su documento en <code>users</code> con
+          rol docente.
+        </p>
+      </div>
+
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-slate-600">Listado de profesores y AdminTeacher.</p>
+        <button
+          type="button"
+          onClick={loadTeachers}
+          disabled={loading}
+          className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed"
+        >
+          {loading ? "Actualizando..." : "Refrescar"}
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
+          Cargando profesores...
+        </div>
+      ) : teachers.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
+          No se encontraron profesores registrados.
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div className="grid grid-cols-5 gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
+            <span>Nombre</span>
+            <span>Email</span>
+            <span>Teléfono</span>
+            <span>Rol</span>
+            <span>Estado</span>
+          </div>
+          <div className="divide-y divide-slate-200">
+            {teachers.map((teacher) => (
+              <div
+                key={teacher.id}
+                className="grid grid-cols-5 gap-3 px-4 py-2 text-sm text-slate-800"
+              >
+                <span>{teacher.name}</span>
+                <span className="text-slate-600">{teacher.email}</span>
+                <span className="text-slate-600">{teacher.phone || "—"}</span>
+                <span className="font-medium capitalize text-blue-700">
+                  {teacher.role === "adminTeacher" ? "AdminTeacher" : "Profesor"}
+                </span>
+                <span className="font-medium text-green-600">Activo</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

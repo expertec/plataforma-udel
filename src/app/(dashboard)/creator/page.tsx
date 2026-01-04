@@ -6,9 +6,11 @@ import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import { Course, getCourses } from "@/lib/firebase/courses-service";
 import { Group, getGroups } from "@/lib/firebase/groups-service";
+import { resolveUserRole, UserRole } from "@/lib/firebase/roles";
 
 export default function CreatorPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
+  const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [courses, setCourses] = useState<Course[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
@@ -19,11 +21,14 @@ export default function CreatorPage() {
       if (!user) {
         setCourses([]);
         setGroups([]);
+        setUserRole(null);
         setLoading(false);
         return;
       }
       setLoading(true);
       try {
+        const role = await resolveUserRole(user);
+        setUserRole(role);
         const [coursesData, groupsData] = await Promise.all([
           getCourses(user.uid),
           getGroups(user.uid),
@@ -103,12 +108,14 @@ export default function CreatorPage() {
               Resumen de tu actividad docente, alumnos inscritos y rendimiento de tus cohortes.
             </p>
           </div>
-          <Link
-            href="/creator/grupos"
-            className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-800 shadow-sm transition hover:border-blue-500 hover:text-blue-700"
-          >
-            + Crear nuevo grupo
-          </Link>
+          {userRole === "adminTeacher" ? (
+            <Link
+              href="/creator/grupos"
+              className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-800 shadow-sm transition hover:border-blue-500 hover:text-blue-700"
+            >
+              + Crear nuevo grupo
+            </Link>
+          ) : null}
         </div>
       </header>
 

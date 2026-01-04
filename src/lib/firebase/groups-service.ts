@@ -1,4 +1,5 @@
 import {
+  DocumentData,
   addDoc,
   collection,
   doc,
@@ -13,6 +14,8 @@ import {
   getDoc,
   writeBatch,
   updateDoc,
+  QuerySnapshot,
+  QueryDocumentSnapshot,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { doc as firestoreDoc } from "firebase/firestore";
@@ -26,6 +29,8 @@ export type Group = {
   groupName: string;
   teacherId: string;
   teacherName: string;
+  assistantTeacherIds?: string[];
+  assistantTeachers?: Array<{ id: string; name: string; email?: string }>;
   semester: string;
   startDate?: Date | null;
   endDate?: Date | null;
@@ -103,6 +108,8 @@ export async function getGroups(teacherId: string): Promise<Group[]> {
       groupName: d.groupName ?? "",
       teacherId: d.teacherId ?? "",
       teacherName: d.teacherName ?? "",
+      assistantTeacherIds: Array.isArray(d.assistantTeacherIds) ? d.assistantTeacherIds : [],
+      assistantTeachers: Array.isArray(d.assistantTeachers) ? d.assistantTeachers : [],
       semester: d.semester ?? "",
       startDate: d.startDate?.toDate?.() ?? null,
       endDate: d.endDate?.toDate?.() ?? null,
@@ -137,6 +144,8 @@ export async function getGroup(groupId: string): Promise<Group | null> {
     groupName: d.groupName ?? "",
     teacherId: d.teacherId ?? "",
     teacherName: d.teacherName ?? "",
+    assistantTeacherIds: Array.isArray(d.assistantTeacherIds) ? d.assistantTeacherIds : [],
+    assistantTeachers: Array.isArray(d.assistantTeachers) ? d.assistantTeachers : [],
     semester: d.semester ?? "",
     startDate: d.startDate?.toDate?.() ?? null,
     endDate: d.endDate?.toDate?.() ?? null,
@@ -164,8 +173,8 @@ export async function getGroupsByCourse(courseId: string, teacherId?: string): P
     getDocs(query(ref, ...constraintsByArray)),
   ]);
   const map = new Map<string, Group>();
-  const consume = (snap: any) => {
-    snap.docs.forEach((docSnap: any) => {
+  const consume = (snap: QuerySnapshot<DocumentData>) => {
+    snap.docs.forEach((docSnap: QueryDocumentSnapshot<DocumentData>) => {
       const d = docSnap.data();
       map.set(docSnap.id, {
         id: docSnap.id,
@@ -184,6 +193,8 @@ export async function getGroupsByCourse(courseId: string, teacherId?: string): P
         groupName: d.groupName ?? "",
         teacherId: d.teacherId ?? "",
         teacherName: d.teacherName ?? "",
+        assistantTeacherIds: Array.isArray(d.assistantTeacherIds) ? d.assistantTeacherIds : [],
+        assistantTeachers: Array.isArray(d.assistantTeachers) ? d.assistantTeachers : [],
         semester: d.semester ?? "",
         startDate: d.startDate?.toDate?.() ?? null,
         endDate: d.endDate?.toDate?.() ?? null,
@@ -198,6 +209,48 @@ export async function getGroupsByCourse(courseId: string, teacherId?: string): P
   consume(snapCourseId);
   consume(snapArray);
   return Array.from(map.values());
+}
+
+export async function getActiveGroups(teacherId?: string): Promise<Group[]> {
+  const ref = collection(db, "groups");
+  const constraints: QueryConstraint[] = [orderBy("createdAt", "desc")];
+  if (teacherId) {
+    constraints.push(where("teacherId", "==", teacherId));
+  }
+  const snap = await getDocs(query(ref, ...constraints));
+  return snap.docs
+    .map((docSnap) => {
+      const d = docSnap.data();
+      return {
+        id: docSnap.id,
+        courseId: d.courseId ?? "",
+        courseName: d.courseName ?? "",
+        courses: Array.isArray(d.courses)
+          ? d.courses
+          : d.courseId
+            ? [{ courseId: d.courseId ?? "", courseName: d.courseName ?? "" }]
+            : [],
+        courseIds: Array.isArray(d.courseIds) && d.courseIds.length > 0
+          ? d.courseIds
+          : d.courseId
+            ? [d.courseId]
+            : [],
+        groupName: d.groupName ?? "",
+        teacherId: d.teacherId ?? "",
+        teacherName: d.teacherName ?? "",
+        assistantTeacherIds: Array.isArray(d.assistantTeacherIds) ? d.assistantTeacherIds : [],
+        assistantTeachers: Array.isArray(d.assistantTeachers) ? d.assistantTeachers : [],
+        semester: d.semester ?? "",
+        startDate: d.startDate?.toDate?.() ?? null,
+        endDate: d.endDate?.toDate?.() ?? null,
+        status: d.status ?? "active",
+        studentsCount: d.studentsCount ?? 0,
+        maxStudents: d.maxStudents ?? 0,
+        createdAt: d.createdAt?.toDate?.(),
+        updatedAt: d.updatedAt?.toDate?.(),
+      };
+    })
+    .filter((g) => g.status === "active");
 }
 
 type AddStudentsInput = {
@@ -320,6 +373,16 @@ export async function linkCourseToGroup(params: {
   await updateDoc(ref, {
     courses: nextCourses,
     courseIds: nextCourseIds,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function setAssistantTeachers(groupId: string, teachers: Array<{ id: string; name: string; email?: string }>) {
+  if (!groupId) return;
+  const ref = doc(db, "groups", groupId);
+  await updateDoc(ref, {
+    assistantTeacherIds: teachers.map((t) => t.id),
+    assistantTeachers: teachers,
     updatedAt: serverTimestamp(),
   });
 }

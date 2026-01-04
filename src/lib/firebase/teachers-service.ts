@@ -1,44 +1,52 @@
-import { collection, getDocs, query, where, orderBy, limit as fbLimit } from "firebase/firestore";
+import { collection, getDocs, orderBy, query, where, limit as fbLimit } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { createAccountWithRole } from "./user-management";
 
-export type StudentUser = {
+export type TeacherUser = {
   id: string;
   name: string;
   email: string;
-  estado?: string;
+  role: string;
   phone?: string | null;
 };
 
-export async function getStudentUsers(max = 100): Promise<StudentUser[]> {
+export async function getTeacherUsers(max = 100): Promise<TeacherUser[]> {
   const usersRef = collection(db, "users");
-  const q = query(usersRef, where("role", "==", "student"), orderBy("createdAt", "desc"), fbLimit(max));
+  const q = query(
+    usersRef,
+    where("role", "in", ["teacher", "adminTeacher"]),
+    orderBy("createdAt", "desc"),
+    fbLimit(max),
+  );
   const snap = await getDocs(q);
   return snap.docs.map((docSnap) => {
     const d = docSnap.data();
     return {
       id: docSnap.id,
-      name: d.displayName ?? d.name ?? "Alumno",
+      name: d.displayName ?? d.name ?? "Profesor",
       email: d.email ?? "",
-      estado: d.estado ?? d.status,
+      role: d.role ?? "teacher",
       phone: d.phone ?? null,
     };
   });
 }
 
-export async function createStudentAccount(params: {
+export async function createTeacherAccount(params: {
   name: string;
   email: string;
   password: string;
-  createdBy?: string | null;
+  role?: "teacher" | "adminTeacher";
+  asAdminTeacher?: boolean;
   phone?: string;
+  createdBy?: string | null;
 }): Promise<string> {
-  const trimmedName = params.name.trim() || "Alumno";
+  const trimmedName = params.name.trim() || "Profesor";
+  const role = params.asAdminTeacher ? "adminTeacher" : params.role ?? "teacher";
   const { uid } = await createAccountWithRole({
     email: params.email,
     password: params.password,
     displayName: trimmedName,
-    role: "student",
+    role,
     createdBy: params.createdBy,
     phone: params.phone,
   });

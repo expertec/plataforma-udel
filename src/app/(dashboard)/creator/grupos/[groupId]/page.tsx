@@ -9,13 +9,18 @@ import {
   Group,
   GroupStudent,
   removeStudentFromGroup,
+  setAssistantTeachers,
 } from "@/lib/firebase/groups-service";
 import { getStudentUsers, StudentUser } from "@/lib/firebase/students-service";
+import { getTeacherUsers, TeacherUser } from "@/lib/firebase/teachers-service";
 import toast from "react-hot-toast";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Link from "next/link";
 import { EntregasTab } from "./_components/EntregasTab";
 import { Course } from "@/lib/firebase/courses-service";
+import { onAuthStateChanged, User } from "firebase/auth";
+import { auth } from "@/lib/firebase/client";
+import { resolveUserRole, UserRole } from "@/lib/firebase/roles";
 
 export default function GroupDetailPage() {
   const params = useParams<{ groupId: string }>();
@@ -25,6 +30,13 @@ export default function GroupDetailPage() {
   const [groupStudents, setGroupStudents] = useState<GroupStudent[]>([]);
   const [loadingStudents, setLoadingStudents] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
+  const [assignTeachersOpen, setAssignTeachersOpen] = useState(false);
+  const [teacherOptions, setTeacherOptions] = useState<TeacherUser[]>([]);
+  const [teacherSearch, setTeacherSearch] = useState("");
+  const [selectedTeachers, setSelectedTeachers] = useState<Set<string>>(new Set());
+  const [savingTeachers, setSavingTeachers] = useState(false);
+  const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
+  const [userRole, setUserRole] = useState<UserRole | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -49,6 +61,42 @@ export default function GroupDetailPage() {
     };
     load();
   }, [params?.groupId]);
+
+  useEffect(() => {
+    if (!assignTeachersOpen) return;
+    const loadTeachers = async () => {
+      try {
+        const teachers = await getTeacherUsers(200);
+        setTeacherOptions(teachers);
+        if (group?.assistantTeacherIds && group.assistantTeacherIds.length > 0) {
+          setSelectedTeachers(new Set(group.assistantTeacherIds));
+        } else {
+          setSelectedTeachers(new Set());
+        }
+      } catch (err) {
+        console.error(err);
+        toast.error("No se pudieron cargar los profesores");
+      }
+    };
+    loadTeachers();
+  }, [assignTeachersOpen, group?.assistantTeacherIds]);
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      setCurrentUser(u);
+      if (!u) {
+        setUserRole(null);
+        return;
+      }
+      try {
+        const role = await resolveUserRole(u);
+        setUserRole(role);
+      } catch {
+        setUserRole(null);
+      }
+    });
+    return () => unsub();
+  }, []);
 
   const headerInfo = useMemo(() => {
     if (!group) return "";
@@ -75,6 +123,40 @@ export default function GroupDetailPage() {
       toast.error("No se pudo eliminar al alumno");
     } finally {
       setRemovingId(null);
+    }
+  };
+
+  const toggleTeacher = (id: string) => {
+    setSelectedTeachers((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleSaveTeachers = async () => {
+    if (!group) return;
+    setSavingTeachers(true);
+    try {
+      const selected = teacherOptions.filter((t) => selectedTeachers.has(t.id));
+      await setAssistantTeachers(group.id, selected.map((t) => ({ id: t.id, name: t.name, email: t.email })));
+      setGroup((prev) =>
+        prev
+          ? {
+              ...prev,
+              assistantTeacherIds: selected.map((t) => t.id),
+              assistantTeachers: selected.map((t) => ({ id: t.id, name: t.name, email: t.email })),
+            }
+          : prev,
+      );
+      toast.success("Profesores asignados al grupo");
+      setAssignTeachersOpen(false);
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudieron asignar los profesores");
+    } finally {
+      setSavingTeachers(false);
     }
   };
 
@@ -171,8 +253,42 @@ export default function GroupDetailPage() {
             </TabsContent>
 
             <TabsContent value="config">
-              <div className="rounded-lg bg-white p-6 shadow-sm">
-                <p className="text-gray-500">Próximamente</p>
+              <div className="rounded-lg bg-white p-6 shadow-sm space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Profesores</p>
+                    <h3 className="text-lg font-semibold text-slate-900">Asignar profesores al grupo</h3>
+                    <p className="text-sm text-slate-600">
+                      El profesor principal es {group.teacherName || "—"}. Puedes añadir profesores asistentes.
+                    </p>
+                  </div>
+                  {userRole === "adminTeacher" ? (
+                    <button
+                      type="button"
+                      className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"
+                      onClick={() => setAssignTeachersOpen(true)}
+                    >
+                      Asignar profesores
+                    </button>
+                  ) : null}
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-sm font-semibold text-slate-800">Profesor principal</p>
+                  <p className="text-sm text-slate-700">{group.teacherName || "Sin asignar"}</p>
+                  <p className="mt-3 text-sm font-semibold text-slate-800">Profesores asistentes</p>
+                  {group.assistantTeachers && group.assistantTeachers.length > 0 ? (
+                    <ul className="mt-2 space-y-2 text-sm text-slate-700">
+                      {group.assistantTeachers.map((t) => (
+                        <li key={t.id} className="flex items-center justify-between">
+                          <span>{t.name}</span>
+                          <span className="text-xs text-slate-500">{t.email}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-1 text-sm text-slate-600">No hay profesores asistentes.</p>
+                  )}
+                </div>
               </div>
             </TabsContent>
           </Tabs>
@@ -198,6 +314,88 @@ export default function GroupDetailPage() {
             setGroup((prev) => (prev ? { ...prev, studentsCount: prev.studentsCount + count } : prev))
           }
         />
+      ) : null}
+
+      {assignTeachersOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-3xl rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+                  Profesores
+                </p>
+                <h4 className="text-lg font-semibold text-slate-900">Asignar profesores asistentes</h4>
+                <p className="text-sm text-slate-600">
+                  Selecciona los profesores que tendrán acceso a este grupo.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                onClick={() => setAssignTeachersOpen(false)}
+              >
+                Cerrar
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <input
+                type="text"
+                placeholder="Buscar por nombre o email"
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                value={teacherSearch}
+                onChange={(e) => setTeacherSearch(e.target.value)}
+              />
+              {(() => {
+                const term = teacherSearch.toLowerCase();
+                const filtered = teacherOptions.filter(
+                  (t) => t.name.toLowerCase().includes(term) || t.email.toLowerCase().includes(term),
+                );
+                return (
+                  <div className="max-h-64 overflow-auto rounded-lg border border-slate-200">
+                    {filtered.length === 0 ? (
+                      <p className="p-3 text-sm text-slate-600">No hay profesores registrados.</p>
+                    ) : (
+                      <ul className="divide-y divide-slate-200">
+                        {filtered.map((t) => (
+                          <li
+                            key={t.id}
+                            className={`flex cursor-pointer items-center justify-between px-3 py-2 text-sm transition hover:bg-slate-50 ${
+                              selectedTeachers.has(t.id) ? "bg-blue-50" : ""
+                            }`}
+                            onClick={() => toggleTeacher(t.id)}
+                          >
+                            <div>
+                              <p className="font-semibold text-slate-800">{t.name}</p>
+                              <p className="text-xs text-slate-500">{t.email}</p>
+                            </div>
+                            {selectedTeachers.has(t.id) ? (
+                              <span className="text-xs font-semibold text-blue-600">Seleccionado</span>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })()}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleSaveTeachers}
+                  disabled={savingTeachers}
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {savingTeachers ? "Guardando..." : "Guardar asignación"}
+                </button>
+                <p className="text-xs text-slate-500">
+                  Los profesores seleccionados tendrán acceso a alumnos y entregas de este grupo.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   );

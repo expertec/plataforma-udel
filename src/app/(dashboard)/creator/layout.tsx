@@ -4,32 +4,41 @@ import { RoleGate } from "@/components/auth/RoleGate";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import Image from "next/image";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { User, onAuthStateChanged, signOut } from "firebase/auth";
 import { Menu, ChevronDown } from "lucide-react";
 import { auth } from "@/lib/firebase/client";
-
-const navItems = [
-  { href: "/creator", label: "Dashboard" },
-  { href: "/creator/cursos", label: "Cursos" },
-  { href: "/creator/grupos", label: "Grupos" },
-  { href: "/creator/alumnos", label: "Alumnos" },
-];
+import { resolveUserRole, UserRole } from "@/lib/firebase/roles";
 
 export default function CreatorLayout({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
+  const [userRole, setUserRole] = useState<UserRole | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
   const pathname = usePathname();
   const router = useRouter();
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
+    let cancelled = false;
+    const unsub = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
+      if (!user) {
+        setUserRole(null);
+        return;
+      }
+      try {
+        const role = await resolveUserRole(user);
+        if (!cancelled) setUserRole(role);
+      } catch {
+        if (!cancelled) setUserRole(null);
+      }
     });
-    return () => unsub();
+    return () => {
+      cancelled = true;
+      unsub();
+    };
   }, []);
 
   useEffect(() => {
@@ -54,14 +63,30 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
 
   const displayName = currentUser?.displayName || "Profesor";
   const avatarLetter = displayName.charAt(0).toUpperCase();
+  const roleLabel = userRole === "adminTeacher" ? "AdminTeacher" : "Profesor";
 
   const isActive = (href: string) => {
     if (href === "/creator") return pathname === "/creator" || pathname === "/creator/";
     return pathname.startsWith(href);
   };
 
+  const navItems = useMemo(() => {
+    const items = [
+      { href: "/creator", label: "Dashboard" },
+      { href: "/creator/cursos", label: "Cursos" },
+      { href: "/creator/alumnos", label: "Alumnos" },
+    ];
+    if (userRole === "adminTeacher") {
+      items.splice(2, 0, { href: "/creator/grupos", label: "Grupos" });
+    }
+    if (userRole === "adminTeacher") {
+      items.push({ href: "/creator/profesores", label: "Profesores" });
+    }
+    return items;
+  }, [userRole]);
+
   return (
-    <RoleGate allowedRole="teacher">
+    <RoleGate allowedRole={["teacher", "adminTeacher"]}>
       <div className="flex min-h-screen w-full bg-slate-100 text-slate-900">
         {/* Sidebar */}
         <aside
@@ -71,13 +96,13 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
         >
           <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-200 text-lg font-bold text-slate-800">
-              M
+              {avatarLetter || "M"}
             </div>
             <div>
               <p className="text-xs uppercase tracking-[0.3em] text-slate-500">
                 Panel
               </p>
-              <p className="text-sm text-slate-700">Profesor</p>
+              <p className="text-sm text-slate-700">{roleLabel}</p>
             </div>
           </div>
           <nav className="mt-6 space-y-1">
