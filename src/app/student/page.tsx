@@ -117,12 +117,7 @@ export default function StudentFeedPage() {
   const [assignmentAck, setAssignmentAck] = useState<Record<string, boolean>>({});
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [commentsClassId, setCommentsClassId] = useState<string | null>(null);
-  const [commentsMap, setCommentsMap] = useState<
-    Record<
-      string,
-      Array<{ id: string; author: string; text: string; createdAt: number; parentId?: string | null; authorId?: string; role?: string }>
-    >
-  >({});
+  const [commentsMap, setCommentsMap] = useState<Record<string, CommentsPanelComment[]>>({});
   const [commentsCountMap, setCommentsCountMap] = useState<Record<string, number>>({});
   const [descriptionExpanded, setDescriptionExpanded] = useState<Record<string, boolean>>({});
   const [assignmentPanel, setAssignmentPanel] = useState<{ open: boolean; classId?: string | null }>({ open: false });
