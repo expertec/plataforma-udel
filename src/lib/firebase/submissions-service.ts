@@ -125,6 +125,9 @@ export async function getStudentSubmissions(
 
 type SubmissionData = {
   classId?: string;
+  classDocId?: string;
+  courseId?: string;
+  courseTitle?: string;
   className?: string;
   classType?: string;
   studentId?: string;
