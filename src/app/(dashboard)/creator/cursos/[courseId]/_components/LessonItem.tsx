@@ -14,6 +14,7 @@ type LessonItemProps = {
   onDeleteClass: (lessonId: string, classId: string) => void;
   onDeleteLesson: (lessonId: string) => void;
   onEditClass: (lesson: Lesson, classItem: ClassData) => void;
+  onOpenComments: (lesson: Lesson, classItem: ClassData) => void;
 };
 
 export function LessonItem({
@@ -26,6 +27,7 @@ export function LessonItem({
   onDeleteClass,
   onDeleteLesson,
   onEditClass,
+  onOpenComments,
 }: LessonItemProps) {
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -104,6 +106,7 @@ export function LessonItem({
                 item={cls}
                 onDelete={(classId) => onDeleteClass(lesson.id, classId)}
                 onEditClass={(classItem) => onEditClass(lesson, classItem)}
+                onOpenComments={(classItem) => onOpenComments(lesson, classItem)}
               />
             ))
           )}

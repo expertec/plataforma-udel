@@ -112,6 +112,8 @@ export function AddClassModal({
   const [hasAssignment, setHasAssignment] = useState(false);
   const [templateUrl, setTemplateUrl] = useState("");
   const [templateUploading, setTemplateUploading] = useState(false);
+  const [videoDescription, setVideoDescription] = useState("");
+  const [showVideoPreview, setShowVideoPreview] = useState(false);
   const makeEmptyQuestion = () => ({
     id: uuidv4(),
     prompt: "",
@@ -138,7 +140,11 @@ export function AddClassModal({
       setTitle(initialData.title);
       setDuration(initialData.duration ?? undefined);
       setUrl(initialData.videoUrl ?? initialData.audioUrl ?? "");
+      setShowVideoPreview(false);
       setContent(initialData.content ?? "");
+      if (initialData.type === "video") {
+        setVideoDescription(initialData.content ?? "");
+      }
       setImageUrls(initialData.imageUrls ?? []);
       setHasAssignment(initialData.hasAssignment ?? false);
       setTemplateUrl(initialData.assignmentTemplateUrl ?? "");
@@ -185,6 +191,8 @@ export function AddClassModal({
       setQuestions([makeEmptyQuestion()]);
       setHasAssignment(false);
       setTemplateUrl("");
+      setShowVideoPreview(false);
+      setVideoDescription("");
     }
   }, [mode, initialData, open, courseId, lessonId, classId]);
 
@@ -230,7 +238,12 @@ export function AddClassModal({
           duration: type === "text" ? null : duration ?? null,
           videoUrl: type === "video" ? url : "",
           audioUrl: type === "audio" ? url : "",
-          content: type === "text" || type === "image" || type === "quiz" ? content : "",
+          content:
+            type === "video"
+              ? videoDescription
+              : type === "text" || type === "image" || type === "quiz"
+              ? content
+              : "",
           imageUrls: type === "image" ? imageUrls : [],
           hasAssignment,
           assignmentTemplateUrl: hasAssignment ? templateUrl : "",
@@ -245,7 +258,12 @@ export function AddClassModal({
           duration: type === "text" ? undefined : duration,
           videoUrl: type === "video" ? url : "",
           audioUrl: type === "audio" ? url : "",
-          content: type === "text" || type === "image" || type === "quiz" ? content : "",
+          content:
+            type === "video"
+              ? videoDescription
+              : type === "text" || type === "image" || type === "quiz"
+              ? content
+              : "",
           imageUrls: type === "image" ? imageUrls : [],
           hasAssignment,
           assignmentTemplateUrl: hasAssignment ? templateUrl : "",
@@ -502,6 +520,21 @@ export function AddClassModal({
             />
           </div>
 
+          {type === "video" ? (
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-800">
+                Descripción del video
+              </label>
+              <textarea
+                value={videoDescription}
+                onChange={(e) => setVideoDescription(e.target.value)}
+                rows={3}
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                placeholder="Escribe una breve descripción del video"
+              />
+            </div>
+          ) : null}
+
           {/* Asignación */}
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-3">
             <div className="flex items-center justify-between">
@@ -584,10 +617,16 @@ export function AddClassModal({
                       }}
                     />
                   </label>
+                  {templateUploading ? (
+                    <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-200">
+                      <div className="h-full w-3/4 animate-pulse rounded-full bg-blue-500/70" />
+                    </div>
+                  ) : null}
                   {templateUrl ? (
-                    <p className="mt-2 text-xs text-green-600 break-all">
-                      Plantilla cargada: {templateUrl}
-                    </p>
+                    <div className="mt-3 flex w-full items-center justify-between rounded-md bg-green-50 px-3 py-2 text-xs text-green-700">
+                      <span className="font-semibold">Plantilla cargada</span>
+                      <span className="truncate text-[11px] text-green-600/80">Archivo listo</span>
+                    </div>
                   ) : null}
                 </div>
               </div>
@@ -789,15 +828,37 @@ export function AddClassModal({
                     </div>
                   );
                 })()}
-                <input
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://..."
-                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-                <p className="text-xs text-slate-500">
-                  También puedes pegar una URL directa.
-                </p>
+                {uploading ? (
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+                    <div className="h-full w-3/4 animate-pulse rounded-full bg-blue-500/70" />
+                  </div>
+                ) : null}
+                {!uploading && url && type === "video" ? (
+                  <div className="mt-3 space-y-2 rounded-lg bg-green-50 px-3 py-2 text-sm text-green-800">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <p className="font-semibold">Video subido</p>
+                        <p className="text-xs text-green-700">Listo para previsualizar.</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowVideoPreview((prev) => !prev)}
+                        className="rounded-full bg-green-600 px-3 py-1 text-xs font-semibold text-white hover:bg-green-500"
+                      >
+                        {showVideoPreview ? "Ocultar" : "Ver video"}
+                      </button>
+                    </div>
+                    {showVideoPreview ? (
+                      <div className="overflow-hidden rounded-md border border-green-100 bg-white shadow-inner">
+                        <video
+                          src={url}
+                          controls
+                          className="aspect-video w-full bg-black"
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             </div>
           ) : (

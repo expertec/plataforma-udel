@@ -8,6 +8,7 @@ import { signInWithEmailAndPassword } from "firebase/auth";
 import toast from "react-hot-toast";
 import { auth } from "@/lib/firebase/client";
 import { resolveUserRole } from "@/lib/firebase/roles";
+import Image from "next/image";
 
 type LoginCardProps = {
   title?: string;
@@ -54,9 +55,21 @@ export function LoginCard({
 
   return (
     <div className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-8 text-slate-900 shadow-2xl shadow-slate-900/5 sm:p-10">
-      <div className="space-y-1">
-        <h2 className="text-3xl font-bold text-[#6e2d2d]">{title}</h2>
-        <p className="text-sm text-slate-600">{subtitle}</p>
+      <div className="flex items-center gap-3">
+        <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50 shadow-sm">
+          <Image
+            src="/university-logo.jpg"
+            alt="Logo Udel Universidad"
+            width={48}
+            height={48}
+            className="object-cover"
+            priority
+          />
+        </div>
+        <div className="space-y-1">
+          <h2 className="text-3xl font-bold text-[#6e2d2d]">{title}</h2>
+          <p className="text-sm text-slate-600">{subtitle}</p>
+        </div>
       </div>
 
       <form onSubmit={handleSubmit} className="mt-6 space-y-5">

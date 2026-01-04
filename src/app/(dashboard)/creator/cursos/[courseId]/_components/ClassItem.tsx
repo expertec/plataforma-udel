@@ -6,6 +6,7 @@ type ClassItemProps = {
   item: ClassData;
   onDelete: (id: string) => void;
   onEditClass?: (item: ClassData) => void;
+  onOpenComments?: (item: ClassData) => void;
 };
 
 const Icon = ({ path }: { path: string }) => (
@@ -31,7 +32,7 @@ const iconMap: Record<ClassData["type"], string> = {
   image: "M4 7.5A1.5 1.5 0 015.5 6h13A1.5 1.5 0 0120 7.5v9a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 16.5v-9zm0 8l4-4 3 3 4-4 5 5",
 };
 
-export function ClassItem({ item, onDelete, onEditClass }: ClassItemProps) {
+export function ClassItem({ item, onDelete, onEditClass, onOpenComments }: ClassItemProps) {
   return (
     <div className="flex items-center justify-between rounded-md px-3 py-2 pl-8 text-sm text-slate-700 hover:bg-slate-50">
       <div className="flex items-center gap-3">
@@ -51,6 +52,13 @@ export function ClassItem({ item, onDelete, onEditClass }: ClassItemProps) {
         </div>
       </div>
       <div className="flex items-center gap-2 text-sm text-slate-500">
+        <button
+          type="button"
+          onClick={() => onOpenComments?.(item)}
+          className="rounded-md px-2 py-1 text-xs font-semibold text-blue-600 hover:bg-slate-100"
+        >
+          Comentarios
+        </button>
         <button
           type="button"
           onClick={() => onEditClass?.(item)}

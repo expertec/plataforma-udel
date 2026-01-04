@@ -15,6 +15,7 @@ import { deleteClass, deleteLesson } from "@/lib/firebase/courses-service";
 import { LessonItem } from "./_components/LessonItem";
 import { AddLessonModal } from "./_components/AddLessonModal";
 import { AddClassModal } from "./_components/AddClassModal";
+import { CommentsModal } from "./_components/CommentsModal";
 import toast from "react-hot-toast";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { auth } from "@/lib/firebase/client";
@@ -72,6 +73,11 @@ export default function CourseBuilderPage() {
   const [editingClass, setEditingClass] = useState<{ lesson: Lesson; classItem: ClassData } | null>(
     null,
   );
+  const [commentsTarget, setCommentsTarget] = useState<{
+    open: boolean;
+    lesson: Lesson | null;
+    classItem: ClassData | null;
+  }>({ open: false, lesson: null, classItem: null });
   const classListeners = useRef<Record<string, Unsubscribe>>({});
   const [confirmState, setConfirmState] = useState<ConfirmState>({ open: false });
   const [activeTab, setActiveTab] = useState<"info" | "lessons" | "groups">("info");
@@ -651,8 +657,13 @@ export default function CourseBuilderPage() {
                         }}
                       />
                     </label>
+                    {uploadingThumb ? (
+                      <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-200">
+                        <div className="h-full w-3/4 animate-pulse rounded-full bg-blue-500/70" />
+                      </div>
+                    ) : null}
                     {courseInfo.thumbnail ? (
-                      <div className="mt-2 flex items-center gap-3">
+                      <div className="mt-2 flex items-center gap-3 rounded-md bg-blue-50 px-3 py-2">
                         <Image
                           src={courseInfo.thumbnail}
                           alt="thumbnail preview"
@@ -660,23 +671,18 @@ export default function CourseBuilderPage() {
                           height={56}
                           className="h-14 w-24 rounded object-cover border border-slate-200"
                         />
-                        <p className="text-xs text-slate-600 break-all">
-                          {courseInfo.thumbnail}
-                        </p>
+                        <span className="text-xs font-semibold text-blue-700">
+                          Imagen subida
+                        </span>
                       </div>
                     ) : null}
                   </div>
-                  <input
-                    value={courseInfo.thumbnail ?? ""}
-                    onChange={(e) =>
-                      setCourseInfo((prev) => ({ ...prev, thumbnail: e.target.value }))
-                    }
-                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                  />
+                  {uploadingThumb ? (
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+                      <div className="h-full w-3/4 animate-pulse rounded-full bg-blue-500/70" />
+                    </div>
+                  ) : null}
                 </div>
-                {uploadingThumb ? (
-                  <p className="text-xs text-slate-500">Subiendo imagen optimizada...</p>
-                ) : null}
               </div>
               <div className="sm:col-span-2 flex justify-end gap-3">
                 <button
@@ -725,16 +731,19 @@ export default function CourseBuilderPage() {
                     lesson={lesson}
                     expanded={expanded.has(lesson.id)}
                     onToggle={toggleLesson}
-                classes={classesMap[lesson.id] || []}
-                loadingClasses={loadingClasses[lesson.id]}
-                onAddClass={handleOpenAddClass}
-                onDeleteClass={handleDeleteClass}
-                onDeleteLesson={handleDeleteLesson}
-                onEditClass={handleEditClass}
-              />
-            ))}
-        </div>
-      )}
+                    classes={classesMap[lesson.id] || []}
+                    loadingClasses={loadingClasses[lesson.id]}
+                    onAddClass={handleOpenAddClass}
+                    onDeleteClass={handleDeleteClass}
+                    onDeleteLesson={handleDeleteLesson}
+                    onEditClass={handleEditClass}
+                    onOpenComments={(lessonItem, classItem) =>
+                      setCommentsTarget({ open: true, lesson: lessonItem, classItem })
+                    }
+                  />
+                ))}
+            </div>
+          )}
         </>
       ) : null}
 
@@ -984,6 +993,17 @@ export default function CourseBuilderPage() {
             </div>
           </div>
         </div>
+      ) : null}
+
+      {commentsTarget.open && commentsTarget.lesson && commentsTarget.classItem ? (
+        <CommentsModal
+          isOpen={commentsTarget.open}
+          onClose={() => setCommentsTarget({ open: false, lesson: null, classItem: null })}
+          courseId={courseId}
+          lessonId={commentsTarget.lesson.id}
+          classId={commentsTarget.classItem.id}
+          className={commentsTarget.classItem.title}
+        />
       ) : null}
     </div>
   );

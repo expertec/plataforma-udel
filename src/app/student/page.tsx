@@ -120,15 +120,17 @@ export default function StudentFeedPage() {
   const [commentsMap, setCommentsMap] = useState<
     Record<
       string,
-      Array<{ id: string; author: string; text: string; createdAt: number; parentId?: string | null; authorId?: string }>
+      Array<{ id: string; author: string; text: string; createdAt: number; parentId?: string | null; authorId?: string; role?: string }>
     >
   >({});
   const [commentsCountMap, setCommentsCountMap] = useState<Record<string, number>>({});
+  const [descriptionExpanded, setDescriptionExpanded] = useState<Record<string, boolean>>({});
   const [assignmentPanel, setAssignmentPanel] = useState<{ open: boolean; classId?: string | null }>({ open: false });
   const [assignmentNoteMap, setAssignmentNoteMap] = useState<Record<string, string>>({});
   const [assignmentFileMap, setAssignmentFileMap] = useState<Record<string, File | null>>({});
   const [assignmentUploadingMap, setAssignmentUploadingMap] = useState<Record<string, boolean>>({});
   const [assignmentStatusMap, setAssignmentStatusMap] = useState<Record<string, "submitted">>({});
+  const authorNameCacheRef = useRef<Record<string, string>>({});
   const lastActiveRef = useRef<number>(0);
   const activeIdRef = useRef<string | null>(null);
   const progressRef = useRef<Record<string, number>>({});
@@ -537,17 +539,60 @@ export default function StudentFeedPage() {
         );
         const data = snap.docs.map((d) => {
           const c = d.data();
+          const role = (c.role ?? c.authorRole ?? null) as string | null;
+          const rawAuthor = normalizeAuthor(c.authorName, c.authorId ?? "");
           return {
             id: d.id,
-            author: normalizeAuthor(c.authorName, c.authorId ?? ""),
+            author: rawAuthor,
             authorId: c.authorId ?? "",
             text: c.text ?? "",
             createdAt: (c.createdAt?.toMillis?.() ?? c.createdAt ?? Date.now()) as number,
             parentId: c.parentId ?? null,
+            role: role === "professor" ? "professor" : role === "student" ? "student" : undefined,
           };
         });
-        setCommentsMap((prev) => ({ ...prev, [classId]: data }));
-        setCommentsCountMap((prev) => ({ ...prev, [classId]: data.length }));
+        // Enriquecer nombres faltantes desde users/{uid}
+        const missingIds = Array.from(
+          new Set(
+            data
+              .filter(
+                (d) =>
+                  d.authorId &&
+                  (
+                    !d.author ||
+                    /^profesor$/i.test(d.author) ||
+                    /^estudiante$/i.test(d.author) ||
+                    (d.role === "professor" && !authorNameCacheRef.current[d.authorId])
+                  ),
+              )
+              .map((d) => d.authorId),
+          ),
+        ).filter((id) => !authorNameCacheRef.current[id]);
+
+        if (missingIds.length) {
+          await Promise.all(
+            missingIds.map(async (uid) => {
+              try {
+                const snapUser = await getDoc(doc(db, "users", uid));
+                const name = (snapUser.data()?.name ?? snapUser.data()?.displayName ?? "") as string;
+                if (name) {
+                  authorNameCacheRef.current[uid] = name;
+                }
+              } catch {
+                // ignoramos fallos silenciosamente
+              }
+            }),
+          );
+        }
+
+        const withNames = data.map((d) => {
+          const cached = authorNameCacheRef.current[d.authorId ?? ""];
+          if (cached) return { ...d, author: cached };
+          if (d.role === "professor" && !/^profesor$/i.test(d.author ?? "")) return d;
+          return d;
+        });
+        setCommentsMap((prev) => ({ ...prev, [classId]: withNames }));
+        setCommentsCountMap((prev) => ({ ...prev, [classId]: withNames.length }));
       } catch (err) {
         console.error("No se pudieron cargar comentarios:", err);
         toast.error("No se pudieron cargar los comentarios");
@@ -555,7 +600,7 @@ export default function StudentFeedPage() {
         setLoadingCommentsMap((prev) => ({ ...prev, [classId]: false }));
       }
     },
-    [findClassById],
+    [findClassById, currentUser, studentName],
   );
 
   useEffect(() => {
@@ -1120,21 +1165,54 @@ export default function StudentFeedPage() {
   const renderContent = (cls: FeedClass, idx: number) => {
     if (cls.type === "video" && cls.videoUrl) {
       return (
-        <VideoPlayer
-          key={cls.id}
-          id={cls.id}
-          src={cls.videoUrl}
-          isActive={activeId === cls.id}
-          muted={unmutedId !== cls.id}
-          onToggleMute={() => setUnmutedId((prev) => (prev === cls.id ? null : cls.id))}
-          initialProgress={Math.max(progressMap[cls.id] ?? 0, (completedMap[cls.id] || seenMap[cls.id]) ? 100 : 0)}
-          registerRef={(el) => {
-            videosRef.current[cls.id] = el;
-          }}
-          onProgress={(pct) => handleProgress(cls.id, pct, cls.type, cls.hasAssignment || false, cls.assignmentTemplateUrl)}
-          hasAssignment={cls.hasAssignment || false}
-          assignmentTemplateUrl={cls.assignmentTemplateUrl}
-        />
+        <div className="relative w-full h-full flex items-center justify-center">
+          <VideoPlayer
+            key={cls.id}
+            id={cls.id}
+            src={cls.videoUrl}
+            isActive={activeId === cls.id}
+            muted={unmutedId !== cls.id}
+            onToggleMute={() => setUnmutedId((prev) => (prev === cls.id ? null : cls.id))}
+            initialProgress={Math.max(
+              progressMap[cls.id] ?? 0,
+              (completedMap[cls.id] || seenMap[cls.id]) ? 100 : 0,
+            )}
+            registerRef={(el) => {
+              videosRef.current[cls.id] = el;
+            }}
+            onProgress={(pct) =>
+              handleProgress(cls.id, pct, cls.type, cls.hasAssignment || false, cls.assignmentTemplateUrl)
+            }
+            hasAssignment={cls.hasAssignment || false}
+            assignmentTemplateUrl={cls.assignmentTemplateUrl}
+          />
+          {(cls.title || cls.content) ? (
+            <div className="pointer-events-auto absolute left-3 right-3 bottom-16 max-w-[90%] rounded-2xl bg-black/45 px-3 py-2 text-white shadow-lg backdrop-blur-sm lg:bottom-14">
+              <div className="text-sm font-semibold leading-tight">{cls.title}</div>
+              {cls.content ? (
+                <div className="mt-1 text-xs leading-relaxed text-white/90">
+                  <p
+                    className={`whitespace-pre-wrap ${descriptionExpanded[cls.id] ? "" : "line-clamp-2"}`}
+                  >
+                    {cls.content}
+                  </p>
+                  {cls.content.length > 120 ? (
+                    <button
+                      type="button"
+                      className="mt-1 text-[11px] font-semibold text-blue-200 hover:text-blue-100"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDescriptionExpanded((prev) => ({ ...prev, [cls.id]: !prev[cls.id] }));
+                      }}
+                    >
+                      {descriptionExpanded[cls.id] ? "menos" : "más"}
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       );
     }
 
@@ -1221,14 +1299,6 @@ export default function StudentFeedPage() {
           isActive={activeId === cls.id}
           onProgress={(pct) => handleProgress(cls.id, pct, cls.type, cls.hasAssignment || false, cls.assignmentTemplateUrl)}
         />
-      );
-    }
-
-    if (cls.hasAssignment) {
-      return (
-        <div className="flex w-full h-full items-center justify-center bg-neutral-950 text-neutral-200">
-          Clase con tarea. Revisa la sección de entregas para subir tu trabajo.
-        </div>
       );
     }
 
@@ -1426,22 +1496,15 @@ export default function StudentFeedPage() {
                     {/* Overlay inferior con avance y estado */}
                     <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4">
                       <div className="mb-2 flex items-center gap-2 text-xs text-neutral-200">
-                        <span
-                          className={`inline-flex items-center rounded-full px-3 py-1 ${
-                            ENFORCE_VIDEO_GATE &&
-                            ["video", "audio", "image"].includes(cls.type) &&
-                            Math.max(progressMap[cls.id] ?? 0, (completedMap[cls.id] || seenMap[cls.id]) ? 100 : 0) < getRequiredPct(cls.type)
-                              ? "bg-amber-500/30 text-amber-200"
-                              : "bg-green-500/20 text-green-200"
-                          }`}
-                        >
-                          {!ENFORCE_VIDEO_GATE
-                            ? "Avance libre"
-                            : ["video", "audio", "image"].includes(cls.type) &&
-                              Math.max(progressMap[cls.id] ?? 0, (completedMap[cls.id] || seenMap[cls.id]) ? 100 : 0) < getRequiredPct(cls.type)
-                              ? `Necesitas ${getRequiredPct(cls.type)}% para avanzar`
-                              : "Listo para avanzar"}
+                        {/* Solo mostramos el estado listo; no mostramos avisos de % faltante */}
+                        <span className="inline-flex items-center rounded-full bg-green-500/20 px-3 py-1 text-green-200">
+                          {ENFORCE_VIDEO_GATE ? "Listo para avanzar" : "Avance libre"}
                         </span>
+                        {cls.hasAssignment ? (
+                          <span className="inline-flex items-center rounded-full bg-blue-500/20 px-3 py-1 text-[11px] font-semibold text-blue-100">
+                            Tarea activa
+                          </span>
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -1510,6 +1573,7 @@ export default function StudentFeedPage() {
                   id: `local-${Date.now()}`,
                   author: (currentUser.displayName ?? studentName ?? "").trim() || currentUser.uid || "Estudiante",
                   authorId: currentUser.uid,
+                  role: "student" as const,
                   text,
                   createdAt: Date.now(),
                   parentId: parentId ?? null,
@@ -1539,6 +1603,7 @@ export default function StudentFeedPage() {
                   authorName: currentUser.displayName ?? studentName ?? "Estudiante",
                   parentId: parentId ?? null,
                   createdAt: serverTimestamp(),
+                  role: "student",
                 })
                   .then(() => loadCommentsForClass(commentsClassId))
                   .catch((err) => {
@@ -1574,12 +1639,12 @@ export default function StudentFeedPage() {
                       href={assignmentModal.templateUrl}
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex items-center justify-center rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500"
-                    >
-                      Descargar plantilla
-                    </a>
-                  ) : (
-                    <p className="text-sm text-neutral-400">No hay plantilla adjunta.</p>
+                    className="inline-flex items-center justify-center rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500"
+                  >
+                    Descargar plantilla
+                  </a>
+                ) : (
+                  <p className="text-sm text-neutral-400">No hay plantilla adjunta.</p>
                   )}
                   <div className="flex justify-end gap-2">
                     <button
@@ -2697,9 +2762,19 @@ function TextContent({
   );
 }
 
+type CommentsPanelComment = {
+  id: string;
+  author: string;
+  authorId?: string;
+  role?: "professor" | "student";
+  text: string;
+  createdAt: number;
+  parentId?: string | null;
+};
+
 type CommentsPanelProps = {
   classId: string;
-  comments: Array<{ id: string; author: string; text: string; createdAt: number; parentId?: string | null }>;
+  comments: Array<CommentsPanelComment>;
   loading?: boolean;
   onAdd: (text: string, parentId?: string | null) => void;
   onClose: () => void;
@@ -2720,6 +2795,7 @@ function CommentsPanel({ classId, comments, onAdd, onClose, loading = false }: C
     const bubble = palette[depth % palette.length];
     const indent = Math.min(depth, 4) * 14; // px
     const initials = (c.author || "U").slice(0, 2).toUpperCase();
+    const isProfessor = c.role === "professor";
 
     return (
       <div key={c.id} className="relative">
@@ -2733,7 +2809,14 @@ function CommentsPanel({ classId, comments, onAdd, onClose, loading = false }: C
             className={`flex-1 rounded-2xl ${bubble} px-3 py-2 shadow`}
             style={{ marginLeft: indent ? `${indent}px` : undefined }}
           >
-            <p className="text-xs font-semibold text-white">{c.author}</p>
+            <div className="flex items-center gap-2">
+              <p className="text-xs font-semibold text-white">{c.author}</p>
+              {isProfessor ? (
+                <span className="rounded-full bg-amber-500/30 px-2 py-[1px] text-[10px] font-semibold uppercase tracking-wide text-amber-100">
+                  Profesor
+                </span>
+              ) : null}
+            </div>
             <p className="text-sm text-white/90 whitespace-pre-wrap">{c.text}</p>
             <div className="mt-1 flex items-center gap-3 text-[11px] text-white/60">
               <span>{new Date(c.createdAt).toLocaleString()}</span>
