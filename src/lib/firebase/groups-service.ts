@@ -12,6 +12,7 @@ import {
   where,
   getDoc,
   writeBatch,
+  updateDoc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { doc as firestoreDoc } from "firebase/firestore";
@@ -20,6 +21,8 @@ export type Group = {
   id: string;
   courseId: string;
   courseName: string;
+  courses?: Array<{ courseId: string; courseName: string }>;
+  courseIds?: string[];
   groupName: string;
   teacherId: string;
   teacherName: string;
@@ -36,6 +39,8 @@ export type Group = {
 type CreateGroupData = {
   courseId: string;
   courseName: string;
+  courses?: Array<{ courseId: string; courseName: string }>;
+  courseIds?: string[];
   groupName: string;
   teacherId: string;
   teacherName: string;
@@ -47,9 +52,19 @@ type CreateGroupData = {
 
 export async function createGroup(data: CreateGroupData): Promise<string> {
   const ref = collection(db, "groups");
+  const coursesList =
+    data.courses && data.courses.length > 0
+      ? data.courses
+      : [{ courseId: data.courseId, courseName: data.courseName }];
+  const courseIdsList =
+    data.courseIds && data.courseIds.length > 0
+      ? Array.from(new Set(data.courseIds))
+      : Array.from(new Set(coursesList.map((c) => c.courseId).filter(Boolean)));
   const docRef = await addDoc(ref, {
     courseId: data.courseId,
     courseName: data.courseName,
+    courses: coursesList,
+    courseIds: courseIdsList,
     groupName: data.groupName,
     teacherId: data.teacherId,
     teacherName: data.teacherName,
@@ -75,6 +90,16 @@ export async function getGroups(teacherId: string): Promise<Group[]> {
       id: docSnap.id,
       courseId: d.courseId ?? "",
       courseName: d.courseName ?? "",
+      courses: Array.isArray(d.courses)
+        ? d.courses
+        : d.courseId
+          ? [{ courseId: d.courseId ?? "", courseName: d.courseName ?? "" }]
+          : [],
+      courseIds: Array.isArray(d.courseIds) && d.courseIds.length > 0
+        ? d.courseIds
+        : d.courseId
+          ? [d.courseId]
+          : [],
       groupName: d.groupName ?? "",
       teacherId: d.teacherId ?? "",
       teacherName: d.teacherName ?? "",
@@ -99,6 +124,16 @@ export async function getGroup(groupId: string): Promise<Group | null> {
     id: snap.id,
     courseId: d.courseId ?? "",
     courseName: d.courseName ?? "",
+    courses: Array.isArray(d.courses)
+      ? d.courses
+      : d.courseId
+        ? [{ courseId: d.courseId ?? "", courseName: d.courseName ?? "" }]
+        : [],
+    courseIds: Array.isArray(d.courseIds) && d.courseIds.length > 0
+      ? d.courseIds
+      : d.courseId
+        ? [d.courseId]
+        : [],
     groupName: d.groupName ?? "",
     teacherId: d.teacherId ?? "",
     teacherName: d.teacherName ?? "",
@@ -115,32 +150,54 @@ export async function getGroup(groupId: string): Promise<Group | null> {
 
 export async function getGroupsByCourse(courseId: string, teacherId?: string): Promise<Group[]> {
   const ref = collection(db, "groups");
-  const constraints: QueryConstraint[] = [
-    where("courseId", "==", courseId),
-    orderBy("createdAt", "desc"),
-  ];
-  if (teacherId) constraints.push(where("teacherId", "==", teacherId));
-  const q = query(ref, ...constraints);
-  const snap = await getDocs(q);
-  return snap.docs.map((docSnap) => {
-    const d = docSnap.data();
-    return {
-      id: docSnap.id,
-      courseId: d.courseId ?? "",
-      courseName: d.courseName ?? "",
-      groupName: d.groupName ?? "",
-      teacherId: d.teacherId ?? "",
-      teacherName: d.teacherName ?? "",
-      semester: d.semester ?? "",
-      startDate: d.startDate?.toDate?.() ?? null,
-      endDate: d.endDate?.toDate?.() ?? null,
-      status: d.status ?? "active",
-      studentsCount: d.studentsCount ?? 0,
-      maxStudents: d.maxStudents ?? 0,
-      createdAt: d.createdAt?.toDate?.(),
-      updatedAt: d.updatedAt?.toDate?.(),
-    };
-  });
+  const constraintsBase: QueryConstraint[] = [orderBy("createdAt", "desc")];
+  const constraintsByCourseId: QueryConstraint[] = [where("courseId", "==", courseId), ...constraintsBase];
+  const constraintsByArray: QueryConstraint[] = [where("courseIds", "array-contains", courseId), ...constraintsBase];
+  if (teacherId) {
+    constraintsByCourseId.push(where("teacherId", "==", teacherId));
+    constraintsByArray.push(where("teacherId", "==", teacherId));
+  }
+
+  // Ejecutar ambas consultas para cubrir documentos antiguos (courseId) y nuevos (courseIds)
+  const [snapCourseId, snapArray] = await Promise.all([
+    getDocs(query(ref, ...constraintsByCourseId)),
+    getDocs(query(ref, ...constraintsByArray)),
+  ]);
+  const map = new Map<string, Group>();
+  const consume = (snap: any) => {
+    snap.docs.forEach((docSnap: any) => {
+      const d = docSnap.data();
+      map.set(docSnap.id, {
+        id: docSnap.id,
+        courseId: d.courseId ?? "",
+        courseName: d.courseName ?? "",
+        courses: Array.isArray(d.courses)
+          ? d.courses
+          : d.courseId
+            ? [{ courseId: d.courseId ?? "", courseName: d.courseName ?? "" }]
+            : [],
+        courseIds: Array.isArray(d.courseIds) && d.courseIds.length > 0
+          ? d.courseIds
+          : d.courseId
+            ? [d.courseId]
+            : [],
+        groupName: d.groupName ?? "",
+        teacherId: d.teacherId ?? "",
+        teacherName: d.teacherName ?? "",
+        semester: d.semester ?? "",
+        startDate: d.startDate?.toDate?.() ?? null,
+        endDate: d.endDate?.toDate?.() ?? null,
+        status: d.status ?? "active",
+        studentsCount: d.studentsCount ?? 0,
+        maxStudents: d.maxStudents ?? 0,
+        createdAt: d.createdAt?.toDate?.(),
+        updatedAt: d.updatedAt?.toDate?.(),
+      });
+    });
+  };
+  consume(snapCourseId);
+  consume(snapArray);
+  return Array.from(map.values());
 }
 
 type AddStudentsInput = {
@@ -237,4 +294,32 @@ export async function removeStudentFromGroup(groupId: string, studentId: string)
   const enrollmentRef = doc(db, "studentEnrollments", `${groupId}_${studentId}`);
   batch.delete(enrollmentRef);
   await batch.commit();
+}
+
+export async function linkCourseToGroup(params: {
+  groupId: string;
+  courseId: string;
+  courseName: string;
+}): Promise<void> {
+  const { groupId, courseId, courseName } = params;
+  const ref = doc(db, "groups", groupId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error("Grupo no encontrado");
+  const data = snap.data();
+  const courses: Array<{ courseId: string; courseName: string }> = Array.isArray(data.courses)
+    ? data.courses
+    : data.courseId
+      ? [{ courseId: data.courseId, courseName: data.courseName ?? "" }]
+      : [];
+  const courseIds: string[] = Array.isArray(data.courseIds) ? data.courseIds : [];
+
+  const hasCourse = courses.some((c) => c.courseId === courseId);
+  const nextCourses = hasCourse ? courses : [...courses, { courseId, courseName }];
+  const nextCourseIds = Array.from(new Set([...(courseIds || []), courseId]));
+
+  await updateDoc(ref, {
+    courses: nextCourses,
+    courseIds: nextCourseIds,
+    updatedAt: serverTimestamp(),
+  });
 }

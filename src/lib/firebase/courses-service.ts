@@ -20,6 +20,7 @@ export type Course = {
   title: string;
   description?: string;
   thumbnail?: string;
+  isArchived?: boolean;
   isPublished: boolean;
   lessonsCount: number;
   studentsCount: number;
@@ -44,6 +45,7 @@ export async function getCourses(teacherId: string): Promise<Course[]> {
       title: data.title ?? "Curso sin título",
       description: data.description ?? "",
       thumbnail: data.thumbnail ?? "",
+      isArchived: data.isArchived ?? false,
       isPublished: Boolean(data.isPublished),
       lessonsCount: data.lessonsCount ?? 0,
       studentsCount: data.studentsCount ?? 0,
@@ -72,6 +74,7 @@ export async function createCourse(input: CreateCourseInput): Promise<string> {
     category: input.category ?? "",
     teacherId: input.teacherId,
     teacherName: input.teacherName ?? "",
+    isArchived: false,
     isPublished: false,
     createdAt: serverTimestamp(),
     lessonsCount: 0,
@@ -84,11 +87,12 @@ export async function createCourse(input: CreateCourseInput): Promise<string> {
 type UpdateCourseInput = {
   title?: string;
   description?: string;
-  introVideoUrl?: string;
-  category?: string;
-  thumbnail?: string;
-  isPublished?: boolean;
-};
+    introVideoUrl?: string;
+    category?: string;
+    thumbnail?: string;
+  isArchived?: boolean;
+    isPublished?: boolean;
+  };
 
 export async function updateCourse(courseId: string, data: UpdateCourseInput): Promise<void> {
   const courseRef = doc(db, "courses", courseId);
@@ -287,6 +291,11 @@ export async function deleteClass(
 export async function publishCourse(courseId: string, isPublished: boolean): Promise<void> {
   const courseRef = doc(db, "courses", courseId);
   await updateDoc(courseRef, { isPublished });
+}
+
+export async function deleteCourse(courseId: string): Promise<void> {
+  const courseRef = doc(db, "courses", courseId);
+  await deleteDoc(courseRef);
 }
 
 /* ===== Quiz Questions ===== */

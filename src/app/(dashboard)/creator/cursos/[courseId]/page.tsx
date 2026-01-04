@@ -18,7 +18,14 @@ import { AddClassModal } from "./_components/AddClassModal";
 import toast from "react-hot-toast";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { auth } from "@/lib/firebase/client";
-import { getGroupsByCourse, addStudentsToGroup } from "@/lib/firebase/groups-service";
+import {
+  getGroupsByCourse,
+  addStudentsToGroup,
+  createGroup,
+  getGroups,
+  linkCourseToGroup,
+  Group,
+} from "@/lib/firebase/groups-service";
 import { getAlumnos } from "@/lib/firebase/alumnos-service";
 
 type ConfirmState =
@@ -83,6 +90,15 @@ export default function CourseBuilderPage() {
     }>
   >([]);
   const [loadingGroups, setLoadingGroups] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
+  const [newGroupSemester, setNewGroupSemester] = useState("2025-Q1");
+  const [newGroupMax, setNewGroupMax] = useState(30);
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [allGroups, setAllGroups] = useState<Group[]>([]);
+  const [linkingGroup, setLinkingGroup] = useState(false);
+  const [selectedGroupId, setSelectedGroupId] = useState("");
+  const [groupSearch, setGroupSearch] = useState("");
+  const [currentUser, setCurrentUser] = useState(auth.currentUser);
 
   const lessonsDeduped = useMemo(() => {
     const map = new Map<string, Lesson>();
@@ -114,6 +130,7 @@ export default function CourseBuilderPage() {
 
   useEffect(() => {
     if (!courseId) return;
+    const unsubAuth = auth.onAuthStateChanged((u) => setCurrentUser(u));
     const courseRef = doc(db, "courses", courseId);
     const unsubCourse = onSnapshot(courseRef, (snap) => {
       const d = snap.data();
@@ -160,9 +177,12 @@ export default function CourseBuilderPage() {
     (async () => {
       setLoadingGroups(true);
       try {
-        const groups = await getGroupsByCourse(courseId);
+        const [groupsForCourse, teacherGroups] = await Promise.all([
+          getGroupsByCourse(courseId),
+          currentUser?.uid ? getGroups(currentUser.uid) : Promise.resolve([]),
+        ]);
         setCourseGroups(
-          groups.map((g) => ({
+          groupsForCourse.map((g) => ({
             id: g.id,
             groupName: g.groupName,
             semester: g.semester,
@@ -171,6 +191,7 @@ export default function CourseBuilderPage() {
             maxStudents: g.maxStudents,
           })),
         );
+        setAllGroups(teacherGroups);
       } finally {
         setLoadingGroups(false);
       }
@@ -180,6 +201,7 @@ export default function CourseBuilderPage() {
       Object.values(classListeners.current).forEach((u) => u());
       classListeners.current = {};
       unsubCourse();
+      unsubAuth();
     };
   }, [courseId]);
 
@@ -225,6 +247,128 @@ export default function CourseBuilderPage() {
     });
     ensureClassListener(lessonId);
   };
+
+  const refreshGroups = async () => {
+    if (!courseId || !currentUser?.uid) return;
+    setLoadingGroups(true);
+    try {
+      const [groups, teacherGroups] = await Promise.all([
+        getGroupsByCourse(courseId),
+        getGroups(currentUser.uid),
+      ]);
+      setCourseGroups(
+        groups.map((g) => ({
+          id: g.id,
+          groupName: g.groupName,
+          semester: g.semester,
+          status: g.status,
+          studentsCount: g.studentsCount,
+          maxStudents: g.maxStudents,
+        })),
+      );
+      setAllGroups(teacherGroups);
+    } finally {
+      setLoadingGroups(false);
+    }
+  };
+
+  useEffect(() => {
+    if (currentUser?.uid) {
+      refreshGroups();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.uid]);
+
+  const handleCreateGroupFromCourse = async () => {
+    if (!courseId) return;
+    const user = auth.currentUser;
+    if (!user) {
+      toast.error("Debes iniciar sesión para crear un grupo");
+      return;
+    }
+    if (!newGroupName.trim()) {
+      toast.error("Asigna un nombre al grupo");
+      return;
+    }
+    if (newGroupMax <= 0) {
+      toast.error("El cupo debe ser mayor a 0");
+      return;
+    }
+    setCreatingGroup(true);
+    try {
+      const courseTitle = courseInfo?.title ?? "Curso";
+      const groupId = await createGroup({
+        courseId,
+        courseName: courseTitle,
+        courses: [{ courseId, courseName: courseTitle }],
+        groupName: newGroupName.trim(),
+        teacherId: user.uid,
+        teacherName: user.displayName ?? "Profesor",
+        semester: newGroupSemester,
+        maxStudents: newGroupMax,
+      });
+      setCourseGroups((prev) => [
+        {
+          id: groupId,
+          groupName: newGroupName.trim(),
+          semester: newGroupSemester,
+          status: "active",
+          studentsCount: 0,
+          maxStudents: newGroupMax,
+        },
+        ...prev,
+      ]);
+      setNewGroupName("");
+      setNewGroupMax(30);
+      toast.success("Grupo creado y asociado a este curso");
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo crear el grupo");
+    } finally {
+      setCreatingGroup(false);
+    }
+  };
+
+  const handleLinkExistingGroup = async () => {
+    if (!courseId) return;
+    if (!selectedGroupId) {
+      toast.error("Selecciona un grupo");
+      return;
+    }
+    const selectedGroup = allGroups.find((g) => g.id === selectedGroupId);
+    if (!selectedGroup) {
+      toast.error("Grupo inválido");
+      return;
+    }
+    setLinkingGroup(true);
+    try {
+      await linkCourseToGroup({
+        groupId: selectedGroupId,
+        courseId,
+        courseName: courseInfo?.title ?? "Curso",
+      });
+      toast.success("Grupo vinculado a esta materia");
+      await refreshGroups();
+      setSelectedGroupId("");
+      setGroupSearch("");
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo vincular el grupo");
+    } finally {
+      setLinkingGroup(false);
+    }
+  };
+
+  const filteredGroups = useMemo(() => {
+    const term = groupSearch.toLowerCase().trim();
+    if (!term) return allGroups;
+    return allGroups.filter(
+      (g) =>
+        g.groupName.toLowerCase().includes(term) ||
+        g.semester.toLowerCase().includes(term) ||
+        g.courseName?.toLowerCase?.()?.includes(term),
+    );
+  }, [allGroups, groupSearch]);
 
   const handleLessonCreated = (
     lessonId: string,
@@ -600,28 +744,116 @@ export default function CourseBuilderPage() {
             <h2 className="text-lg font-semibold text-slate-900">Grupos de este curso</h2>
             <button
               type="button"
-              onClick={async () => {
-                setLoadingGroups(true);
-                try {
-                  const groups = await getGroupsByCourse(courseId);
-                  setCourseGroups(
-                    groups.map((g) => ({
-                      id: g.id,
-                      groupName: g.groupName,
-                      semester: g.semester,
-                      status: g.status,
-                      studentsCount: g.studentsCount,
-                      maxStudents: g.maxStudents,
-                    })),
-                  );
-                } finally {
-                  setLoadingGroups(false);
-                }
-              }}
+              onClick={refreshGroups}
               className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
             >
               Refrescar
             </button>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:gap-4">
+              <div className="flex-1">
+                <label className="text-sm font-semibold text-slate-800">
+                  Crear grupo para esta materia
+                </label>
+                <input
+                  value={newGroupName}
+                  onChange={(e) => setNewGroupName(e.target.value)}
+                  placeholder="Nombre del grupo (ej. Grupo A - Sem 1)"
+                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-semibold text-slate-800">Semestre</label>
+                <input
+                  value={newGroupSemester}
+                  onChange={(e) => setNewGroupSemester(e.target.value)}
+                  className="mt-1 w-32 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-semibold text-slate-800">Cupo</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={newGroupMax}
+                  onChange={(e) => setNewGroupMax(Number(e.target.value))}
+                  className="mt-1 w-24 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={handleCreateGroupFromCourse}
+                disabled={creatingGroup}
+                className="h-[42px] rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {creatingGroup ? "Creando..." : "Crear grupo"}
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-slate-500">
+              El grupo se asociará automáticamente a esta materia y se podrá ver también en la sección de grupos.
+            </p>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <h3 className="text-sm font-semibold text-slate-800">Asociar grupo existente</h3>
+            <p className="text-xs text-slate-500">
+              Selecciona uno de tus grupos actuales para asociarlo a esta materia.
+            </p>
+            <div className="mt-3 space-y-3">
+              <div className="flex flex-col gap-2">
+                <input
+                  value={groupSearch}
+                  onChange={(e) => {
+                    setGroupSearch(e.target.value);
+                    setSelectedGroupId("");
+                  }}
+                  placeholder="Busca por nombre, semestre o materia"
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <div className="max-h-52 overflow-auto rounded-lg border border-slate-200 bg-slate-50">
+                  {filteredGroups.length === 0 ? (
+                    <p className="p-3 text-xs text-slate-500">Sin resultados</p>
+                  ) : (
+                    <ul className="divide-y divide-slate-200">
+                      {filteredGroups.map((g) => (
+                        <li
+                          key={g.id}
+                          className={`flex cursor-pointer items-center justify-between px-3 py-2 text-sm transition hover:bg-white ${
+                            selectedGroupId === g.id ? "bg-white" : ""
+                          }`}
+                          onClick={() => setSelectedGroupId(g.id)}
+                        >
+                          <div>
+                            <p className="font-semibold text-slate-800">{g.groupName}</p>
+                            <p className="text-xs text-slate-500">
+                              {g.semester} • {g.courseName || "—"}
+                            </p>
+                          </div>
+                          {selectedGroupId === g.id ? (
+                            <span className="text-xs font-semibold text-blue-600">Seleccionado</span>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleLinkExistingGroup}
+                  disabled={linkingGroup || !selectedGroupId}
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {linkingGroup ? "Vinculando..." : "Vincular grupo"}
+                </button>
+                <p className="text-xs text-slate-500">
+                  Si el grupo ya está asociado no se duplicará.
+                </p>
+              </div>
+            </div>
           </div>
 
           {loadingGroups ? (

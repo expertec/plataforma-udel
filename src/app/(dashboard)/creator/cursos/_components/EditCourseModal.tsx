@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { updateCourse, Course } from "@/lib/firebase/courses-service";
+import {
+  updateCourse,
+  Course,
+  publishCourse,
+  deleteCourse,
+} from "@/lib/firebase/courses-service";
 import toast from "react-hot-toast";
 
 type EditCourseModalProps = {
@@ -9,15 +14,25 @@ type EditCourseModalProps = {
   onClose: () => void;
   course: Course | null;
   onUpdated: (courseId: string, data: Partial<Course>) => void;
+  onDeleted: (courseId: string) => void;
 };
 
-export function EditCourseModal({ open, onClose, course, onUpdated }: EditCourseModalProps) {
+export function EditCourseModal({
+  open,
+  onClose,
+  course,
+  onUpdated,
+  onDeleted,
+}: EditCourseModalProps) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [introVideoUrl, setIntroVideoUrl] = useState("");
   const [category, setCategory] = useState("");
   const [thumbnail, setThumbnail] = useState("");
   const [loading, setLoading] = useState(false);
+  const [publishLoading, setPublishLoading] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [confirmName, setConfirmName] = useState("");
 
   useEffect(() => {
     if (course) {
@@ -26,6 +41,7 @@ export function EditCourseModal({ open, onClose, course, onUpdated }: EditCourse
       setIntroVideoUrl(course.introVideoUrl || "");
       setCategory(course.category || "");
       setThumbnail(course.thumbnail || "");
+      setConfirmName("");
     }
   }, [course]);
 
@@ -59,18 +75,75 @@ export function EditCourseModal({ open, onClose, course, onUpdated }: EditCourse
     }
   };
 
+  const handleTogglePublish = async () => {
+    if (!course) return;
+    setPublishLoading(true);
+    const next = !course.isPublished;
+    try {
+      await publishCourse(course.id, next);
+      onUpdated(course.id, { isPublished: next });
+      toast.success(next ? "Curso publicado" : "Curso en borrador");
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo actualizar el estado de publicación");
+    } finally {
+      setPublishLoading(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!course) return;
+    if (confirmName.trim() !== course.title.trim()) {
+      toast.error("Escribe exactamente el nombre del curso para confirmar");
+      return;
+    }
+    setDeleteLoading(true);
+    try {
+      await deleteCourse(course.id);
+      onDeleted(course.id);
+      toast.success("Curso eliminado");
+      onClose();
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo eliminar el curso");
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4">
       <div className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-slate-900">Editar curso</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-sm text-slate-500 hover:text-slate-800"
-          >
-            ✕
-          </button>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">Editar curso</h2>
+            <p className="text-sm text-slate-600">Configura la información del curso.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleTogglePublish}
+              disabled={publishLoading}
+              className={`rounded-lg px-4 py-2 text-sm font-semibold shadow-sm transition ${
+                course.isPublished
+                  ? "border border-slate-200 bg-white text-slate-800 hover:border-blue-200"
+                  : "bg-blue-600 text-white hover:bg-blue-500"
+              } disabled:cursor-not-allowed disabled:opacity-70`}
+            >
+              {publishLoading
+                ? "Actualizando..."
+                : course.isPublished
+                  ? "Mover a borrador"
+                  : "Publicar"}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Cerrar
+            </button>
+          </div>
         </div>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
@@ -142,6 +215,29 @@ export function EditCourseModal({ open, onClose, course, onUpdated }: EditCourse
             </button>
           </div>
         </form>
+
+        <div className="mt-6 rounded-xl border border-red-100 bg-red-50 p-4">
+          <h3 className="text-sm font-semibold text-red-700">Eliminar curso</h3>
+          <p className="mt-1 text-sm text-red-600">
+            Esta acción es irreversible. Escribe <strong>{course.title}</strong> para confirmar.
+          </p>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+            <input
+              value={confirmName}
+              onChange={(e) => setConfirmName(e.target.value)}
+              placeholder={course.title}
+              className="w-full rounded-lg border border-red-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-red-400 focus:outline-none focus:ring-1 focus:ring-red-300"
+            />
+            <button
+              type="button"
+              onClick={handleDelete}
+              disabled={deleteLoading}
+              className="whitespace-nowrap rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {deleteLoading ? "Eliminando..." : "Eliminar curso"}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

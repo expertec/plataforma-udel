@@ -18,6 +18,9 @@ export type SubmissionStatus = "pending" | "graded" | "late";
 export type Submission = {
   id: string;
   classId: string;
+  classDocId?: string;
+  courseId?: string;
+  courseTitle?: string;
   className: string;
   classType: string;
   studentId: string;
@@ -33,6 +36,9 @@ export type Submission = {
 
 type CreateSubmissionInput = {
   classId: string;
+  classDocId?: string;
+  courseId?: string;
+  courseTitle?: string;
   className: string;
   classType: string;
   studentId: string;
@@ -60,6 +66,9 @@ export async function createSubmission(
   const ref = collection(db, "groups", groupId, "submissions");
   const docRef = await addDoc(ref, {
     classId: data.classId,
+    ...(data.classDocId ? { classDocId: data.classDocId } : {}),
+    ...(data.courseId ? { courseId: data.courseId } : {}),
+    ...(data.courseTitle ? { courseTitle: data.courseTitle } : {}),
     className: data.className,
     classType: data.classType,
     studentId: data.studentId,
@@ -136,6 +145,9 @@ function toSubmission(id: string, data: SubmissionData): Submission {
   return {
     id,
     classId: data.classId ?? "",
+    classDocId: data.classDocId,
+    courseId: data.courseId,
+    courseTitle: data.courseTitle,
     className: data.className ?? "",
     classType: data.classType ?? "",
     studentId: data.studentId ?? "",

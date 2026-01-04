@@ -3,12 +3,12 @@
 import { useCallback, useEffect, useState } from "react";
 import Image from "next/image";
 import { onAuthStateChanged, User } from "firebase/auth";
+import { Settings2 } from "lucide-react";
 import { auth } from "@/lib/firebase/client";
-import { Course, getCourses, publishCourse } from "@/lib/firebase/courses-service";
+import { Course, getCourses } from "@/lib/firebase/courses-service";
 import { EditCourseModal } from "./_components/EditCourseModal";
 import { CreateCourseModal } from "./_components/CreateCourseModal";
 import { BulkUploadCoursesModal } from "./_components/BulkUploadCoursesModal";
-import toast from "react-hot-toast";
 
 export default function CoursesPage() {
   const [courses, setCourses] = useState<Course[]>([]);
@@ -135,29 +135,10 @@ export default function CoursesPage() {
                         setEditingCourse(course);
                         setEditModalOpen(true);
                       }}
-                      className="text-xs font-medium text-slate-700 hover:underline"
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 text-slate-700 shadow-sm transition hover:border-blue-300 hover:text-blue-700"
+                      aria-label="Configurar curso"
                     >
-                      Editar
-                    </button>
-                    <button
-                      onClick={async (e) => {
-                        e.preventDefault();
-                        const next = !course.isPublished;
-                        setCourses((prev) =>
-                          prev.map((c) =>
-                            c.id === course.id ? { ...c, isPublished: next } : c,
-                          ),
-                        );
-                        try {
-                          await publishCourse(course.id, next);
-                          toast.success(next ? "Curso publicado" : "Curso en borrador");
-                        } catch {
-                          toast.error("No se pudo actualizar estado");
-                        }
-                      }}
-                      className="text-xs font-medium text-blue-600 hover:underline"
-                    >
-                      {course.isPublished ? "Pasar a borrador" : "Publicar"}
+                      <Settings2 size={16} />
                     </button>
                   </div>
                 </div>
@@ -171,7 +152,7 @@ export default function CoursesPage() {
                     href={`/creator/cursos/${course.id}`}
                     className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-800 transition hover:border-blue-500 hover:text-blue-600"
                   >
-                    Editar
+                    Abrir curso
                   </a>
                   <div className="flex items-center gap-2 text-sm text-slate-500">
                     ⋮
@@ -186,12 +167,18 @@ export default function CoursesPage() {
       <CreateCourseModal open={modalOpen} onClose={() => setModalOpen(false)} />
       <EditCourseModal
         open={editModalOpen}
-        onClose={() => setEditModalOpen(false)}
+        onClose={() => {
+          setEditModalOpen(false);
+          setEditingCourse(null);
+        }}
         course={editingCourse}
         onUpdated={(id, data) => {
           setCourses((prev) =>
             prev.map((c) => (c.id === id ? { ...c, ...data } : c)),
           );
+        }}
+        onDeleted={(id) => {
+          setCourses((prev) => prev.filter((c) => c.id !== id));
         }}
       />
       <BulkUploadCoursesModal

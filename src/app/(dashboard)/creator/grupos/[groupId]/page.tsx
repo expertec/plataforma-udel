@@ -15,6 +15,7 @@ import toast from "react-hot-toast";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Link from "next/link";
 import { EntregasTab } from "./_components/EntregasTab";
+import { Course } from "@/lib/firebase/courses-service";
 
 export default function GroupDetailPage() {
   const params = useParams<{ groupId: string }>();
@@ -108,8 +109,18 @@ export default function GroupDetailPage() {
               </span>
             </div>
             <p className="mt-1 text-sm text-slate-600">
-              Curso: <span className="font-medium">{group.courseName}</span>
+              Curso base: <span className="font-medium">{group.courseName}</span>
             </p>
+            {group.courses && group.courses.length > 1 ? (
+              <div className="mt-2 text-sm text-slate-600">
+                <p className="font-semibold text-slate-800">Materias asignadas</p>
+                <ul className="mt-1 list-disc space-y-1 pl-5">
+                  {group.courses.map((c) => (
+                    <li key={c.courseId}>{c.courseName}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             <p className="text-sm text-slate-600">{headerInfo}</p>
           </div>
 
@@ -144,7 +155,11 @@ export default function GroupDetailPage() {
             <TabsContent value="entregas">
               <EntregasTab
                 groupId={group.id}
-                courseId={group.courseId}
+                courseIds={
+                  group.courseIds && group.courseIds.length > 0
+                    ? group.courseIds
+                    : group.courses?.map((c) => c.courseId).filter(Boolean) ?? [group.courseId]
+                }
                 studentsCount={group.studentsCount}
               />
             </TabsContent>

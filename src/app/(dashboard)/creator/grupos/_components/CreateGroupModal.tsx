@@ -19,6 +19,7 @@ const semesterOptions = ["2025-Q1", "2025-Q2", "2025-Q3", "2025-Q4", "2026-Q1", 
 
 export function CreateGroupModal({ open, onClose, courses, teacherId, teacherName, onCreated }: Props) {
   const [courseId, setCourseId] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [groupName, setGroupName] = useState("");
   const [semester, setSemester] = useState(semesterOptions[1] ?? "2025-1");
   const [maxStudents, setMaxStudents] = useState(30);
@@ -28,8 +29,9 @@ export function CreateGroupModal({ open, onClose, courses, teacherId, teacherNam
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!courseId) {
-      toast.error("Selecciona un curso base");
+    const uniqueIds = Array.from(new Set([courseId, ...selectedIds].filter(Boolean)));
+    if (uniqueIds.length === 0) {
+      toast.error("Selecciona al menos una materia/curso");
       return;
     }
     if (!groupName.trim()) {
@@ -41,17 +43,25 @@ export function CreateGroupModal({ open, onClose, courses, teacherId, teacherNam
       return;
     }
 
-    const selectedCourse = courses.find((c) => c.id === courseId);
+    const selectedCourse = courses.find((c) => c.id === courseId || c.id === uniqueIds[0]);
     if (!selectedCourse) {
       toast.error("Curso inválido");
       return;
     }
+    const coursesPayload =
+      uniqueIds
+        .map((id) => {
+          const found = courses.find((c) => c.id === id);
+          return found ? { courseId: found.id, courseName: found.title } : null;
+        })
+        .filter(Boolean) as Array<{ courseId: string; courseName: string }>;
 
     setSaving(true);
     try {
       const groupId = await createGroup({
         courseId,
         courseName: selectedCourse.title,
+        courses: coursesPayload,
         groupName: groupName.trim(),
         teacherId,
         teacherName,
@@ -63,6 +73,7 @@ export function CreateGroupModal({ open, onClose, courses, teacherId, teacherNam
         id: groupId,
         courseId,
         courseName: selectedCourse.title,
+        courses: coursesPayload,
         groupName: groupName.trim(),
         teacherId,
         teacherName,
@@ -77,6 +88,7 @@ export function CreateGroupModal({ open, onClose, courses, teacherId, teacherNam
       onClose();
       setGroupName("");
       setMaxStudents(30);
+      setSelectedIds([]);
     } catch (err) {
       console.error(err);
       toast.error("No se pudo crear el grupo");
@@ -114,6 +126,49 @@ export function CreateGroupModal({ open, onClose, courses, teacherId, teacherNam
                 </option>
               ))}
             </select>
+            <p className="mt-1 text-xs text-slate-500">
+              Curso base para el feed principal de los estudiantes.
+            </p>
+          </div>
+
+          <div>
+            <label className="text-sm font-medium text-slate-800">
+              Asignar más materias (opcional)
+            </label>
+            <div className="mt-2 grid max-h-40 grid-cols-1 gap-2 overflow-auto rounded-lg border border-slate-200 p-3">
+              {courses.map((c) => {
+                const checked = selectedIds.includes(c.id);
+                return (
+                  <label key={c.id} className="flex items-center gap-2 text-sm text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={checked || c.id === courseId}
+                      disabled={c.id === courseId}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedIds((prev) => Array.from(new Set([...prev, c.id])));
+                        } else {
+                          setSelectedIds((prev) => prev.filter((id) => id !== c.id));
+                        }
+                      }}
+                      className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed"
+                    />
+                    <span className={c.id === courseId ? "font-semibold" : ""}>{c.title}</span>
+                    {c.id === courseId ? (
+                      <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
+                        Base
+                      </span>
+                    ) : null}
+                  </label>
+                );
+              })}
+              {courses.length === 0 ? (
+                <p className="text-xs text-slate-500">Crea cursos para asignarlos al grupo.</p>
+              ) : null}
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              Los alumnos verán las materias asignadas en su feed por curso.
+            </p>
           </div>
 
           <div>

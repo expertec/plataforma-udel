@@ -13,6 +13,13 @@ service cloud.firestore {
     function isAdminOrDirector() { return isSignedIn() && (isAdmin() || isDirector()); }
     function isApproved() { return isSignedIn() && userDoc().data.approved == true; }
     function isSelf(userId) { return isSignedIn() && request.auth.uid == userId; }
+    function absVal(x) { return x >= 0 ? x : -x; }
+    function canUpdateLikesCountOnly() {
+      return isSignedIn() &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['likesCount']) &&
+        request.resource.data.likesCount is int &&
+        request.resource.data.likesCount >= 0;
+    }
     
     /* users */
     match /users/{userId} {
@@ -94,11 +101,18 @@ service cloud.firestore {
 
         match /classes/{classId} {
           allow read: if isAdmin() || isSignedIn();
-          allow create, update, delete: if isAdmin() || (
+          // Para likesCount permitimos a cualquier usuario autenticado actualizar solo ese campo.
+          allow update: if canUpdateLikesCountOnly();
+          allow create, delete: if isAdmin() || (
             isSignedIn() &&
             exists(/databases/$(database)/documents/courses/$(courseId)) &&
             get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
           );
+          allow update: if isAdmin() || (
+            isSignedIn() &&
+            exists(/databases/$(database)/documents/courses/$(courseId)) &&
+            get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
+          ) || canUpdateLikesCountOnly();
 
           match /questions/{questionId} {
             allow read: if isAdmin() || isSignedIn();
@@ -107,6 +121,20 @@ service cloud.firestore {
               exists(/databases/$(database)/documents/courses/$(courseId)) &&
               get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
             );
+          }
+
+          // Likes por usuario
+          match /likes/{userId} {
+            allow read: if isSignedIn();
+            allow create, update, delete: if isSelf(userId) || isAdmin();
+          }
+
+          // Comentarios por clase
+          match /comments/{commentId} {
+            // Lectura abierta para simplificar acceso a hilos en el feed.
+            allow read: if true;
+            allow create: if isSignedIn();
+            allow update, delete: if isAdmin() || (isSignedIn() && resource.data.authorId == request.auth.uid);
           }
         }
       }

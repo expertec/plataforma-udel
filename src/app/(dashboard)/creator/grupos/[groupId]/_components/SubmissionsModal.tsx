@@ -11,6 +11,7 @@ import { GradeModal } from "./GradeModal";
 type Props = {
   groupId: string;
   classId: string;
+  courseId?: string;
   className: string;
   isOpen: boolean;
   onClose: () => void;
@@ -26,7 +27,7 @@ type Row = {
   submission?: Submission;
 };
 
-export function SubmissionsModal({ groupId, classId, className, isOpen, onClose }: Props) {
+export function SubmissionsModal({ groupId, classId, className, courseId, isOpen, onClose }: Props) {
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [gradeModal, setGradeModal] = useState<{
@@ -49,7 +50,9 @@ export function SubmissionsModal({ groupId, classId, className, isOpen, onClose 
           };
         });
 
-        const submissions = await getSubmissionsByClass(groupId, classId);
+        const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
+          (s) => !courseId || !s.courseId || s.courseId === courseId,
+        );
         const rows: Row[] = students.map((s) => ({
           student: s,
           submission: submissions.find((sub) => sub.studentId === s.id),
@@ -62,7 +65,7 @@ export function SubmissionsModal({ groupId, classId, className, isOpen, onClose 
       }
     };
     load();
-  }, [isOpen, groupId, classId]);
+  }, [isOpen, groupId, classId, courseId]);
 
   const formatDate = (date?: Date | null) => {
     if (!date) return "-";
@@ -144,7 +147,9 @@ export function SubmissionsModal({ groupId, classId, className, isOpen, onClose 
           readonly={gradeModal.readonly}
           onClose={async () => {
             setGradeModal({ open: false });
-            const submissions = await getSubmissionsByClass(groupId, classId);
+            const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
+              (s) => !courseId || !s.courseId || s.courseId === courseId,
+            );
             setRows((prev) =>
               prev.map((r) => ({
                 ...r,
@@ -154,7 +159,9 @@ export function SubmissionsModal({ groupId, classId, className, isOpen, onClose 
           }}
           onSave={async (grade, feedback) => {
             await gradeSubmission(groupId, gradeModal.submission!.id, grade, feedback);
-            const submissions = await getSubmissionsByClass(groupId, classId);
+            const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
+              (s) => !courseId || !s.courseId || s.courseId === courseId,
+            );
             setRows((prev) =>
               prev.map((r) => ({
                 ...r,

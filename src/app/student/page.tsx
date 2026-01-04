@@ -5,15 +5,18 @@ import Player from "@vimeo/player";
 import { auth } from "@/lib/firebase/client";
 import { onAuthStateChanged, User } from "firebase/auth";
 import toast from "react-hot-toast";
+import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import {
   collection,
   collectionGroup,
   doc,
   getDoc,
   getDocs,
+  addDoc,
   limit,
   orderBy,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   where,
@@ -24,9 +27,11 @@ import { createSubmission } from "@/lib/firebase/submissions-service";
 
 type FeedClass = {
   id: string;
+  classDocId?: string;
   title: string;
   type: string;
   courseId?: string;
+  courseTitle?: string;
   lessonId?: string;
   enrollmentId?: string;
   groupId?: string;
@@ -38,12 +43,26 @@ type FeedClass = {
   hasAssignment?: boolean;
   assignmentTemplateUrl?: string;
   lessonTitle?: string;
+  lessonName?: string;
+  likesCount?: number;
 };
 
 const VIDEO_COMPLETION_THRESHOLD = 80;
 const ENFORCE_VIDEO_GATE = true;
 const getRequiredPct = (type?: string) => (type === "image" ? 100 : VIDEO_COMPLETION_THRESHOLD);
 const localProgressKey = (uid: string) => `classProgress:${uid}`;
+const UNIVERSITY_LOGO_SRC = "/university-logo.jpg";
+
+// Normaliza los tipos de clase para evitar variantes como "texto" o "imagen"
+const normalizeClassType = (rawType: unknown) => {
+  const value = (rawType ?? "").toString().trim().toLowerCase();
+  if (!value) return "video";
+  if (["text", "texto", "article", "document", "doc"].includes(value)) return "text";
+  if (["image", "imagen", "photo", "foto", "picture", "gallery"].includes(value)) return "image";
+  if (["audio", "podcast", "sonido"].includes(value)) return "audio";
+  if (["quiz", "test", "assessment", "examen"].includes(value)) return "quiz";
+  return value;
+};
 
 const loadLocalProgress = (uid: string) => {
   if (typeof window === "undefined") return { progress: {}, completed: {}, seen: {} };
@@ -101,9 +120,15 @@ export default function StudentFeedPage() {
   const [commentsMap, setCommentsMap] = useState<
     Record<
       string,
-      Array<{ id: string; author: string; text: string; createdAt: number }>
+      Array<{ id: string; author: string; text: string; createdAt: number; parentId?: string | null; authorId?: string }>
     >
   >({});
+  const [commentsCountMap, setCommentsCountMap] = useState<Record<string, number>>({});
+  const [assignmentPanel, setAssignmentPanel] = useState<{ open: boolean; classId?: string | null }>({ open: false });
+  const [assignmentNoteMap, setAssignmentNoteMap] = useState<Record<string, string>>({});
+  const [assignmentFileMap, setAssignmentFileMap] = useState<Record<string, File | null>>({});
+  const [assignmentUploadingMap, setAssignmentUploadingMap] = useState<Record<string, boolean>>({});
+  const [assignmentStatusMap, setAssignmentStatusMap] = useState<Record<string, "submitted">>({});
   const lastActiveRef = useRef<number>(0);
   const activeIdRef = useRef<string | null>(null);
   const progressRef = useRef<Record<string, number>>({});
@@ -126,12 +151,33 @@ export default function StudentFeedPage() {
   const wheelAccumRef = useRef(0);
   const wheelTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const gateToastRef = useRef<{ classId: string | null; ts: number }>({ classId: null, ts: 0 });
+  const [courseTitleMap, setCourseTitleMap] = useState<Record<string, string>>({});
+  const [likesMap, setLikesMap] = useState<Record<string, number>>({});
+  const [likedMap, setLikedMap] = useState<Record<string, boolean>>({});
+  const [likePendingMap, setLikePendingMap] = useState<Record<string, boolean>>({});
+  const [loadingCommentsMap, setLoadingCommentsMap] = useState<Record<string, boolean>>({});
+
+  const getPrevSameCourse = useCallback(
+    (targetIdx: number) => {
+      const target = classes[targetIdx];
+      if (!target || !target.courseId) return null;
+      for (let i = targetIdx - 1; i >= 0; i -= 1) {
+        if (classes[i]?.courseId === target.courseId) return classes[i];
+      }
+      return null;
+    },
+    [classes],
+  );
 
   const activeClass = classes[activeIndex];
   const activeImagesCount =
     activeClass?.type === "image" && activeClass.images ? activeClass.images.length : 0;
   const activeImageIdx = activeClass?.id ? imageIndexMap[activeClass.id] ?? 0 : 0;
   const hasPendingImages = activeImagesCount > 0 && activeImageIdx < activeImagesCount - 1;
+  const findClassById = useCallback(
+    (id: string | null | undefined) => classes.find((c) => c.id === id) ?? null,
+    [classes],
+  );
 
   useEffect(() => {
     if (activeClass?.type === "image" && activeClass.id && imageIndexMap[activeClass.id] === undefined) {
@@ -140,21 +186,47 @@ export default function StudentFeedPage() {
     }
   }, [activeClass?.id, activeClass?.type, imageIndexMap]);
 
-  const lessonThreads = useMemo(() => {
-    const map = new Map<string, { title: string; items: Array<{ id: string; title: string; index: number; type: string }> }>();
-    classes.forEach((cls, idx) => {
-      const key = cls.lessonTitle || "Lección";
-      if (!map.has(key)) {
-        map.set(key, { title: key, items: [] });
+  const courseThreads = useMemo(() => {
+    const courseMap = new Map<
+      string,
+      {
+        courseId: string;
+        courseTitle: string;
+        lessons: Map<
+          string,
+          { lessonId: string; lessonTitle: string; items: Array<{ id: string; title: string; index: number; type: string }> }
+        >;
       }
-      map.get(key)?.items.push({ id: cls.id, title: cls.title, index: idx, type: cls.type });
+    >();
+    classes.forEach((cls, idx) => {
+      const cId = cls.courseId ?? "sin-curso";
+      const cTitle = courseTitleMap[cls.courseId ?? ""] || cls.courseTitle || courseName || "Curso";
+      if (!courseMap.has(cId)) {
+        courseMap.set(cId, { courseId: cId, courseTitle: cTitle, lessons: new Map() });
+      }
+      const courseEntry = courseMap.get(cId)!;
+      const lId = `${cId}-${cls.lessonId ?? cls.lessonTitle ?? "leccion"}`;
+      const lTitle = cls.lessonName ?? cls.lessonTitle ?? "Lección";
+      if (!courseEntry.lessons.has(lId)) {
+        courseEntry.lessons.set(lId, { lessonId: lId, lessonTitle: lTitle, items: [] });
+      }
+      courseEntry.lessons.get(lId)?.items.push({
+        id: cls.id,
+        title: cls.title,
+        index: idx,
+        type: cls.type,
+      });
     });
-    return Array.from(map.values());
-  }, [classes]);
+    return Array.from(courseMap.values()).map((c) => ({
+      ...c,
+      lessons: Array.from(c.lessons.values()),
+    }));
+  }, [classes, courseTitleMap]);
 
   // Colapsar lecciones por defecto y mantener abierta la lección activa
   useEffect(() => {
-    if (!lessonThreads.length) return;
+    const lessonsFlat = courseThreads.flatMap((c) => c.lessons);
+    if (!lessonsFlat.length) return;
 
     const classComplete = (item: { id: string; type: string }) => {
       const pct = Math.max(
@@ -164,7 +236,11 @@ export default function StudentFeedPage() {
       return pct >= getRequiredPct(item.type);
     };
 
-    const activeLesson = classes.find((c) => c.id === activeId)?.lessonTitle || lessonThreads[0]?.title;
+    const activeLesson = classes.find((c) => c.id === activeId);
+    const activeLessonKey =
+      activeLesson?.courseId && activeLesson?.lessonId
+        ? `${activeLesson.courseId}-${activeLesson.lessonId}`
+        : lessonsFlat[0]?.lessonId;
     const firstPending = classes.find((c) => {
       const pct = Math.max(
         progressMap[c.id] ?? 0,
@@ -172,18 +248,22 @@ export default function StudentFeedPage() {
       );
       return pct < getRequiredPct(c.type);
     });
-    const pendingLesson = firstPending?.lessonTitle ?? activeLesson;
+    const pendingLessonKey =
+      firstPending && firstPending.courseId
+        ? `${firstPending.courseId}-${firstPending.lessonId ?? firstPending.lessonTitle}`
+        : activeLessonKey;
 
     const nextCollapsed: Record<string, boolean> = {};
-    lessonThreads.forEach((lesson) => {
+    lessonsFlat.forEach((lesson) => {
       const allDone = lesson.items.every((it) => classComplete(it));
-      const shouldOpen = lesson.title === activeLesson || lesson.title === pendingLesson;
-      nextCollapsed[lesson.title] = shouldOpen ? false : allDone ? true : true;
+      const shouldOpen =
+        lesson.lessonId === activeLessonKey || lesson.lessonId === pendingLessonKey;
+      nextCollapsed[lesson.lessonId] = shouldOpen ? false : allDone ? true : true;
     });
 
     setCollapsedLessons(nextCollapsed);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, classes.length, lessonThreads.length, progressMap, completedMap, seenMap]);
+  }, [activeId, classes.length, courseThreads.length, progressMap, completedMap, seenMap]);
 
   const saveSeenForUser = useCallback(
     async (classId: string, progress: number, completed: boolean) => {
@@ -325,6 +405,86 @@ export default function StudentFeedPage() {
     }
   };
 
+  const handleToggleLike = useCallback(
+    async (cls: FeedClass) => {
+      if (!currentUser?.uid) {
+        toast.error("Inicia sesión para dar like.");
+        return;
+      }
+      if (!cls.courseId || !cls.lessonId || !cls.classDocId) {
+        toast.error("No se pudo identificar la clase.");
+        return;
+      }
+      const classId = cls.id;
+      if (likePendingMap[classId]) return;
+      const wasLiked = likedMap[classId] ?? false;
+      const delta = wasLiked ? -1 : 1;
+
+      setLikePendingMap((prev) => ({ ...prev, [classId]: true }));
+      setLikedMap((prev) => ({ ...prev, [classId]: !wasLiked }));
+      setLikesMap((prev) => ({
+        ...prev,
+        [classId]: Math.max(0, (prev[classId] ?? 0) + delta),
+      }));
+
+      try {
+        const result = await runTransaction(db, async (tx) => {
+          const classRef = doc(
+            db,
+            "courses",
+            cls.courseId!,
+            "lessons",
+            cls.lessonId!,
+            "classes",
+            cls.classDocId!,
+          );
+          const likeRef = doc(
+            db,
+            "courses",
+            cls.courseId!,
+            "lessons",
+            cls.lessonId!,
+            "classes",
+            cls.classDocId!,
+            "likes",
+            currentUser.uid,
+          );
+          const likeSnap = await tx.get(likeRef);
+          const classSnap = await tx.get(classRef);
+          const alreadyLiked = likeSnap.exists();
+          const currentCount = (classSnap.data()?.likesCount ?? 0) as number;
+          const nextCount = Math.max(0, currentCount + (alreadyLiked ? -1 : 1));
+
+          tx.set(classRef, { likesCount: nextCount }, { merge: true });
+          if (alreadyLiked) {
+            tx.delete(likeRef);
+          } else {
+            tx.set(
+              likeRef,
+              { likedAt: serverTimestamp(), userId: currentUser.uid },
+              { merge: true },
+            );
+          }
+          return { nextLiked: !alreadyLiked, nextCount };
+        });
+
+        setLikedMap((prev) => ({ ...prev, [classId]: result.nextLiked }));
+        setLikesMap((prev) => ({ ...prev, [classId]: result.nextCount }));
+      } catch (err) {
+        console.error("No se pudo actualizar el like:", err);
+        setLikedMap((prev) => ({ ...prev, [classId]: wasLiked }));
+        setLikesMap((prev) => ({
+          ...prev,
+          [classId]: Math.max(0, (prev[classId] ?? 0) - delta),
+        }));
+        toast.error("No se pudo actualizar el like");
+      } finally {
+        setLikePendingMap((prev) => ({ ...prev, [classId]: false }));
+      }
+    },
+    [currentUser?.uid, likePendingMap, likedMap],
+  );
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setCurrentUser(u);
@@ -344,8 +504,101 @@ export default function StudentFeedPage() {
     return () => window.removeEventListener("open-comments", handleOpenComments);
   }, [activeIndex, classes]);
 
+  const loadCommentsForClass = useCallback(
+    async (classId: string) => {
+      const meta = findClassById(classId);
+      if (!meta?.courseId || !meta?.lessonId || !meta?.classDocId) return;
+      setLoadingCommentsMap((prev) => ({ ...prev, [classId]: true }));
+      const normalizeAuthor = (name: unknown, authorId: string) => {
+        const raw = (name ?? "").toString().trim();
+        if (!raw || /^alumno$/i.test(raw)) {
+          if (currentUser?.uid && authorId === currentUser.uid) {
+            return (currentUser.displayName ?? studentName ?? "").trim() || "Estudiante";
+          }
+          return "Estudiante";
+        }
+        return raw;
+      };
+      try {
+        const snap = await getDocs(
+          query(
+            collection(
+              db,
+              "courses",
+              meta.courseId,
+              "lessons",
+              meta.lessonId,
+              "classes",
+              meta.classDocId,
+              "comments",
+            ),
+            orderBy("createdAt", "desc"),
+          ),
+        );
+        const data = snap.docs.map((d) => {
+          const c = d.data();
+          return {
+            id: d.id,
+            author: normalizeAuthor(c.authorName, c.authorId ?? ""),
+            authorId: c.authorId ?? "",
+            text: c.text ?? "",
+            createdAt: (c.createdAt?.toMillis?.() ?? c.createdAt ?? Date.now()) as number,
+            parentId: c.parentId ?? null,
+          };
+        });
+        setCommentsMap((prev) => ({ ...prev, [classId]: data }));
+        setCommentsCountMap((prev) => ({ ...prev, [classId]: data.length }));
+      } catch (err) {
+        console.error("No se pudieron cargar comentarios:", err);
+        toast.error("No se pudieron cargar los comentarios");
+      } finally {
+        setLoadingCommentsMap((prev) => ({ ...prev, [classId]: false }));
+      }
+    },
+    [findClassById],
+  );
+
+  useEffect(() => {
+    if (commentsOpen && commentsClassId) {
+      loadCommentsForClass(commentsClassId);
+    }
+  }, [commentsOpen, commentsClassId, loadCommentsForClass]);
+
+  // Cargar estado de tarea enviada cuando se abre el panel de tarea
+  useEffect(() => {
+    const loadAssignmentStatus = async () => {
+      if (!assignmentPanel.open || !assignmentPanel.classId) return;
+      if (!currentUser?.uid) return;
+      const cls = findClassById(assignmentPanel.classId);
+      if (!cls?.groupId) return;
+      const baseClassId = cls.classDocId ?? cls.id;
+      try {
+        const subRef = collection(db, "groups", cls.groupId, "submissions");
+        const existing = await getDocs(
+          query(
+            subRef,
+            where("classId", "==", baseClassId),
+            where("studentId", "==", currentUser.uid),
+            limit(1),
+          ),
+        );
+        if (!existing.empty) {
+          setAssignmentStatusMap((prev) => ({ ...prev, [cls.id]: "submitted" }));
+          assignmentAckRef.current = { ...assignmentAckRef.current, [cls.id]: true };
+          setAssignmentAck((prev) => ({ ...prev, [cls.id]: true }));
+        }
+      } catch (err) {
+        console.warn("No se pudo leer el estado de la tarea:", err);
+      }
+    };
+    loadAssignmentStatus();
+  }, [assignmentPanel.open, assignmentPanel.classId, currentUser?.uid, findClassById]);
+
   useEffect(() => {
     const load = async () => {
+      setClasses([]);
+      setActiveId(null);
+      setActiveIndex(0);
       if (!currentUser?.uid) {
         setError("No hay usuario autenticado");
         setLoading(false);
@@ -441,58 +694,107 @@ export default function StudentFeedPage() {
       const groupData = groupDoc.data();
       setGroupName(groupData.groupName ?? "");
       setGroupId(groupId);
-      const courseId = groupData.courseId;
-      setStudentName(enrollment.studentName ?? currentUser.displayName ?? "Alumno");
+      const coursesArray: Array<{ courseId: string; courseName: string }> =
+        Array.isArray(groupData.courses) && groupData.courses.length > 0
+          ? groupData.courses
+          : groupData.courseId
+            ? [{ courseId: groupData.courseId, courseName: groupData.courseName ?? "" }]
+            : [];
+      const primaryCourseId = coursesArray[0]?.courseId ?? groupData.courseId;
+      const primaryCourseName = coursesArray[0]?.courseName ?? groupData.courseName ?? "";
+      setStudentName(enrollment.studentName ?? currentUser.displayName ?? "Estudiante");
 
-      const courseDoc = await getDoc(doc(db, "courses", courseId));
-      setCourseName(courseDoc.data()?.title ?? "");
+      const feed: FeedClass[] = [];
+      for (const courseEntry of coursesArray) {
+        const courseDoc = await getDoc(doc(db, "courses", courseEntry.courseId));
+        const courseData = courseDoc.exists() ? courseDoc.data() : null;
+        if (!courseData) {
+          // Curso eliminado: saltar y no mostrar clases
+          continue;
+        }
+        const courseTitle = courseData?.title ?? courseEntry.courseName ?? "Curso";
+        if (courseData?.isArchived) {
+          // Saltar cursos archivados en el feed
+          continue;
+        }
 
-        // 3) Lecciones y clases
+        // 3) Lecciones y clases por curso
         const lessonsSnap = await getDocs(
-          query(collection(db, "courses", courseId, "lessons"), orderBy("order", "asc")),
+          query(collection(db, "courses", courseEntry.courseId, "lessons"), orderBy("order", "asc")),
         );
-        const feed: FeedClass[] = [];
         for (const lesson of lessonsSnap.docs) {
           const ldata = lesson.data();
           const lessonTitle = ldata.title ?? "Lección";
-          const classesSnap = await getDocs(
-            query(
-              collection(db, "courses", courseId, "lessons", lesson.id, "classes"),
-              orderBy("order", "asc"),
-            ),
-          );
-          classesSnap.forEach((cls) => {
-            const c = cls.data();
-            const normType = (c.type ?? "video").toString().toLowerCase();
-            const imageArray =
-              c.images ??
-              c.imageUrls ??
-              (c.imageUrl ? [c.imageUrl] : []);
+            const classesSnap = await getDocs(
+              query(
+                collection(db, "courses", courseEntry.courseId, "lessons", lesson.id, "classes"),
+                orderBy("order", "asc"),
+              ),
+            );
+            classesSnap.forEach((cls) => {
+              const c = cls.data();
+              const normType = normalizeClassType(c.type);
+              const imageArray =
+                c.images ??
+                c.imageUrls ??
+                (c.imageUrl ? [c.imageUrl] : []);
 
-              feed.push({
-                id: cls.id,
-                title: c.title ?? "Clase sin título",
-                type: normType,
-                courseId,
-                lessonId: lesson.id,
-                enrollmentId: currentEnrollmentId,
-                groupId,
-                classTitle: c.title ?? "Clase sin título",
-                videoUrl: (c.videoUrl ?? "").trim(),
-                audioUrl: (c.audioUrl ?? "").trim(),
-                content: c.content ?? "",
-                images: Array.isArray(imageArray)
-                  ? imageArray.filter(Boolean).map((u: string) => u.trim())
-                  : [],
-                hasAssignment: c.hasAssignment ?? false,
-                assignmentTemplateUrl: c.assignmentTemplateUrl ?? "",
-                lessonTitle,
-              });
+            feed.push({
+              id: `${courseEntry.courseId}_${cls.id}`,
+              classDocId: cls.id,
+              title: c.title ?? "Clase sin título",
+              type: normType,
+              courseId: courseEntry.courseId,
+              lessonId: lesson.id,
+              enrollmentId: currentEnrollmentId,
+              groupId,
+              classTitle: c.title ?? "Clase sin título",
+              videoUrl: (c.videoUrl ?? "").trim(),
+              audioUrl: (c.audioUrl ?? "").trim(),
+              content: c.content ?? "",
+              images: Array.isArray(imageArray)
+                ? imageArray.filter(Boolean).map((u: string) => u.trim())
+                : [],
+              hasAssignment: c.hasAssignment ?? false,
+              assignmentTemplateUrl: c.assignmentTemplateUrl ?? "",
+              lessonTitle,
+              lessonName: lessonTitle,
+              courseTitle,
+              likesCount: c.likesCount ?? 0,
+            });
           });
         }
-        setClasses(feed);
+        setCourseTitleMap((prev) => ({
+          ...prev,
+          [courseEntry.courseId]: courseTitle,
+        }));
+      }
+
+      if (feed.length === 0) {
+        setError(
+          "Las materias asignadas a tu grupo están archivadas o sin contenido disponible.",
+        );
+        setClasses([]);
+        setActiveId(null);
         setActiveIndex(0);
-        setActiveId(feed[0]?.id ?? null);
+        setLoading(false);
+        return;
+      }
+
+      // Actualizar nombre mostrado (curso base)
+      setCourseName(primaryCourseName);
+
+      const initialLikes: Record<string, number> = {};
+      feed.forEach((item) => {
+        initialLikes[item.id] = item.likesCount ?? 0;
+      });
+
+      setClasses(feed);
+      setLikesMap(initialLikes);
+      setLikedMap({});
+      setLikePendingMap({});
+      setActiveIndex(0);
+      setActiveId(feed[0]?.id ?? null);
       } catch (err) {
         console.error(err);
         setError("No se pudieron cargar tus clases");
@@ -504,6 +806,52 @@ export default function StudentFeedPage() {
       load();
     }
   }, [authLoading, currentUser?.uid]);
+
+  // Cargar likes propios por clase
+  useEffect(() => {
+    let cancelled = false;
+    const loadLikes = async () => {
+      if (!currentUser?.uid) return;
+      if (!classes.length) return;
+      try {
+        const pairs = await Promise.all(
+          classes.map(async (cls) => {
+            if (!cls.courseId || !cls.lessonId || !cls.classDocId) return [cls.id, false] as const;
+            try {
+              const likeRef = doc(
+                db,
+                "courses",
+                cls.courseId,
+                "lessons",
+                cls.lessonId,
+                "classes",
+                cls.classDocId,
+                "likes",
+                currentUser.uid,
+              );
+              const likeSnap = await getDoc(likeRef);
+              return [cls.id, likeSnap.exists()] as const;
+            } catch (err) {
+              console.warn("No se pudo leer el like de una clase:", err);
+              return [cls.id, false] as const;
+            }
+          }),
+        );
+        if (cancelled) return;
+        const nextLiked: Record<string, boolean> = {};
+        pairs.forEach(([id, liked]) => {
+          nextLiked[id] = liked;
+        });
+        setLikedMap((prev) => ({ ...prev, ...nextLiked }));
+      } catch (err) {
+        console.warn("No se pudieron cargar los likes del alumno:", err);
+      }
+    };
+    loadLikes();
+    return () => {
+      cancelled = true;
+    };
+  }, [classes, currentUser?.uid]);
 
   // Snap & reproducción: usamos IntersectionObserver para determinar la tarjeta activa
   useEffect(() => {
@@ -517,62 +865,6 @@ export default function StudentFeedPage() {
             const idx = entry.target.getAttribute("data-index");
             const nextIdx = idx ? Number(idx) : null;
             const prevIdx = lastActiveRef.current;
-            if (nextIdx !== null && nextIdx > prevIdx) {
-              const prevClass = classes[prevIdx];
-              const prevComplete = prevClass ? isClassComplete(prevClass) : true;
-              if (!prevComplete && prevClass) {
-                const watched = Math.max(
-                  progressRef.current[prevClass.id] ?? 0,
-                  completedRef.current[prevClass.id] ? 100 : 0,
-                );
-                const alreadySeen = seenRef.current[prevClass.id] === true;
-                if (prevClass.type === "image" && prevClass.images && prevClass.images.length > 1) {
-                  const currentIdx = imageIndexRef.current[prevClass.id] ?? 0;
-                  if (currentIdx < prevClass.images.length - 1) {
-                    const nextImage = currentIdx + 1;
-                    imageIndexRef.current[prevClass.id] = nextImage;
-                    setImageIndexMap((prev) => ({ ...prev, [prevClass.id]: nextImage }));
-                    scrollToIndex(prevIdx);
-                    return;
-                  }
-                }
-                const requiredPct = getRequiredPct(prevClass.type);
-                const shouldEnforce =
-                  ENFORCE_VIDEO_GATE &&
-                  ["video", "audio", "image"].includes(prevClass.type) &&
-                  !alreadySeen &&
-                  watched < requiredPct;
-                if (shouldEnforce) {
-                  scrollToIndex(prevIdx);
-                  const now = Date.now();
-                  const alreadyWarnedRecently =
-                    gateToastRef.current.classId === prevClass.id && now - gateToastRef.current.ts < 1200;
-                  if (!alreadyWarnedRecently) {
-                    const friendlyType =
-                      prevClass.type === "audio"
-                        ? `el ${VIDEO_COMPLETION_THRESHOLD}% del audio`
-                        : prevClass.type === "image"
-                          ? "la última imagen"
-                          : `el ${VIDEO_COMPLETION_THRESHOLD}% del video`;
-                    toast.error(
-                      `Debes completar ${friendlyType} para continuar (actual: ${Math.round(watched)}%)`,
-                    );
-                    gateToastRef.current = { classId: prevClass.id, ts: now };
-                  }
-                  return;
-                }
-                if (prevClass.hasAssignment && !assignmentAckRef.current[prevClass.id]) {
-                  setAssignmentModal({
-                    open: true,
-                    classId: prevClass.id,
-                    templateUrl: prevClass.assignmentTemplateUrl,
-                    nextIndex: nextIdx,
-                  });
-                  scrollToIndex(prevIdx);
-                  return;
-                }
-              }
-            }
             if (id) {
               setActiveId(id);
               activeIdRef.current = id;
@@ -622,6 +914,7 @@ export default function StudentFeedPage() {
     const clampedIdx = Math.max(0, Math.min(classes.length - 1, idx));
     const target = classes[clampedIdx];
     if (!target) return;
+
     const node = sectionRefs.current[target.id];
     const container = containerRef.current;
     if (!node || !container) return;
@@ -681,10 +974,29 @@ export default function StudentFeedPage() {
     // dejamos intencionalmente sin autoReposition para evitar saltos dobles al terminar una clase
   }, [progressReady, classes, progressMap, completedMap, seenMap, activeIndex, loading, autoReposition]);
 
-  const jumpToIndex = useCallback((idx: number) => {
-    setAutoReposition(false);
-    scrollToIndex(idx);
-  }, [scrollToIndex]);
+  const jumpToIndex = useCallback(
+    (idx: number) => {
+      setAutoReposition(false);
+      const prevSameCourse = getPrevSameCourse(idx);
+      if (prevSameCourse && !isClassComplete(prevSameCourse)) {
+        toast.error("Completa la clase anterior de esta materia antes de continuar.");
+        return;
+      }
+      scrollToIndex(idx, true);
+    },
+    [getPrevSameCourse, isClassComplete, scrollToIndex],
+  );
+
+  const handleTextReachEnd = useCallback(
+    (idx: number) => {
+      const nextIdx = idx + 1;
+      if (nextIdx >= classes.length) return;
+      const prevSameCourse = getPrevSameCourse(nextIdx);
+      if (prevSameCourse && !isClassComplete(prevSameCourse)) return;
+      scrollToIndex(nextIdx, true);
+    },
+    [classes.length, getPrevSameCourse, isClassComplete],
+  );
 
   // Bloquear scroll múltiple: solo una clase por gesto de wheel/touchpad
   useEffect(() => {
@@ -692,6 +1004,12 @@ export default function StudentFeedPage() {
     if (!container) return;
 
     const handleWheel = (e: WheelEvent) => {
+      // Permitir scroll natural dentro de contenedores de texto u otros scrollables
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('[data-scrollable="true"]')) {
+        return;
+      }
+
       if (e.ctrlKey || e.metaKey) return; // no interferir con zoom
       e.preventDefault();
       const now = Date.now();
@@ -706,6 +1024,13 @@ export default function StudentFeedPage() {
         wheelLockRef.current = true;
         const direction = wheelAccumRef.current > 0 ? 1 : -1;
         const nextIdx = (activeIndex ?? 0) + direction;
+        // Gate solo si es mismo curso
+        const prevSameCourse = getPrevSameCourse(nextIdx);
+        if (prevSameCourse && !isClassComplete(prevSameCourse)) {
+          wheelLockRef.current = false;
+          wheelAccumRef.current = 0;
+          return;
+        }
         scrollToIndex(nextIdx, false);
 
         // pequeño cooldown para no encadenar saltos
@@ -733,7 +1058,7 @@ export default function StudentFeedPage() {
   const handleProgress = useCallback(
     (classId: string, pct: number, classType: string, hasAssignment: boolean, assignmentTemplateUrl?: string) => {
       const previousCompleted = completedRef.current[classId] ?? false;
-      const previousProgress = previousCompleted ? 100 : (progressRef.current[classId] ?? 0);
+      const previousProgress = progressRef.current[classId] ?? 0;
       const maxProgress = Math.max(pct, previousProgress);
       const requiredPct = getRequiredPct(classType);
 
@@ -815,8 +1140,8 @@ export default function StudentFeedPage() {
 
     if (cls.type === "audio" && cls.audioUrl) {
       return (
-        <div className="relative h-[70vh] bg-gradient-to-b from-neutral-900 to-black">
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-8">
+        <div className="flex h-full w-full items-center justify-center px-4 lg:px-10 lg:pr-[140px]">
+          <div className="flex w-full max-w-3xl flex-col items-center justify-center gap-4 px-4 lg:px-6">
             <div className="flex items-center gap-3">
               <span className="rounded-full bg-white/10 p-3">
                 <ControlIcon name="audio" />
@@ -826,7 +1151,7 @@ export default function StudentFeedPage() {
             <audio
               controls
               src={cls.audioUrl}
-              className="w-full max-w-xl rounded-full bg-white/5 px-2 py-1 text-white accent-red-500"
+              className="w-full rounded-full bg-white/5 px-2 py-1 text-white accent-red-500"
               onTimeUpdate={(e) => {
                 if (activeId !== cls.id) return;
                 const duration = e.currentTarget.duration || 0;
@@ -871,9 +1196,11 @@ export default function StudentFeedPage() {
     if (cls.type === "text" && cls.content) {
       return (
         <TextContent
+          title={cls.title}
           content={cls.content}
           isActive={activeId === cls.id}
           onProgress={(pct) => handleProgress(cls.id, pct, cls.type, cls.hasAssignment || false, cls.assignmentTemplateUrl)}
+          onReachEnd={() => handleTextReachEnd(idx)}
         />
       );
     }
@@ -882,12 +1209,13 @@ export default function StudentFeedPage() {
       return (
         <QuizContent
           classId={cls.id}
+          classDocId={cls.classDocId ?? cls.id}
           courseId={cls.courseId}
           lessonId={cls.lessonId}
           enrollmentId={enrollmentId ?? undefined}
           groupId={cls.groupId}
           classTitle={cls.classTitle ?? cls.title}
-          studentName={studentName || currentUser?.displayName || "Alumno"}
+          studentName={studentName || currentUser?.displayName || "Estudiante"}
           studentId={currentUser?.uid}
           isActive={activeId === cls.id}
           onProgress={(pct) => handleProgress(cls.id, pct, cls.type, cls.hasAssignment || false, cls.assignmentTemplateUrl)}
@@ -897,7 +1225,7 @@ export default function StudentFeedPage() {
 
     if (cls.hasAssignment) {
       return (
-        <div className="flex h-[80vh] items-center justify-center bg-neutral-950 text-neutral-200">
+        <div className="flex w-full h-full items-center justify-center bg-neutral-950 text-neutral-200">
           Clase con tarea. Revisa la sección de entregas para subir tu trabajo.
         </div>
       );
@@ -905,14 +1233,14 @@ export default function StudentFeedPage() {
 
     if (cls.type === "text" && !cls.content) {
       return (
-        <div className="flex h-[80vh] items-center justify-center bg-neutral-950 text-neutral-200">
+        <div className="flex w-full h-full items-center justify-center bg-neutral-950 text-neutral-200">
           No hay contenido de texto cargado.
         </div>
       );
     }
 
     return (
-      <div className="flex h-[80vh] items-center justify-center bg-neutral-950 text-neutral-400">
+      <div className="flex w-full h-full items-center justify-center bg-neutral-950 text-neutral-400">
         Contenido no soportado
       </div>
     );
@@ -939,79 +1267,103 @@ export default function StudentFeedPage() {
       <header className="fixed left-0 top-0 z-20 hidden h-full w-64 flex-col border-r border-white/10 bg-neutral-900/80 p-4 lg:flex">
         <div className="space-y-1">
           <h1 className="text-xl font-bold">Mis clases</h1>
-          <p className="text-sm text-neutral-300">{courseName}</p>
           <p className="text-xs text-neutral-500">{groupName}</p>
         </div>
         <div className="mt-4 flex-1 space-y-4 overflow-y-auto pr-1">
-          {lessonThreads.map((lesson, idx) => {
-            const totalItems = lesson.items.length;
-            const completedItems = lesson.items.filter((it) => Math.max(progressMap[it.id] ?? 0, (completedMap[it.id] || seenMap[it.id]) ? 100 : 0) >= getRequiredPct(it.type)).length;
-            const allDone = completedItems === totalItems && totalItems > 0;
-            const collapsed = collapsedLessons[lesson.title] ?? false;
+          {courseThreads.map((course) => {
+            const totalCourseItems = course.lessons.reduce((acc, l) => acc + l.items.length, 0);
+            const completedCourseItems = course.lessons.reduce(
+              (acc, l) =>
+                acc +
+                l.items.filter(
+                  (it) =>
+                    Math.max(
+                      progressMap[it.id] ?? 0,
+                      completedMap[it.id] || seenMap[it.id] ? 100 : 0,
+                    ) >= getRequiredPct(it.type),
+                ).length,
+              0,
+            );
             return (
-              <div key={lesson.title} className="rounded-xl border border-white/5 bg-neutral-900/60 p-3 shadow-inner">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setCollapsedLessons((prev) => ({
-                      ...prev,
-                      [lesson.title]: !collapsed,
-                    }))
-                  }
-                  className="flex w-full items-center gap-2 text-sm font-semibold text-neutral-100 hover:text-white"
-                >
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/10 text-xs">{idx + 1}</span>
-                  <span className="line-clamp-1 flex-1 text-left">{lesson.title}</span>
-                  <span className="text-[11px] text-neutral-300">{completedItems}/{totalItems}</span>
-                  <span
-                    className={`inline-flex h-5 w-5 items-center justify-center rounded-full border border-white/20 text-[10px] transition ${
-                      collapsed ? "rotate-180" : ""
-                    }`}
-                    aria-hidden
-                  >
-                    ˅
+              <div key={course.courseId} className="rounded-xl border border-white/5 bg-neutral-900/60 p-3 shadow-inner">
+                <div className="mb-3 flex items-center justify-between gap-3 rounded-lg bg-white/5 px-3 py-2">
+                  <span className="text-sm font-semibold text-neutral-100">{course.courseTitle}</span>
+                  <span className="text-[11px] text-neutral-300">
+                    {completedCourseItems}/{totalCourseItems}
                   </span>
-                </button>
-
-                {!collapsed ? (
-                  <div className="mt-3 space-y-3 pl-4">
-                    {lesson.items.map((item, itemIdx) => {
-                      const pct = Math.round(Math.max(progressMap[item.id] ?? 0, (completedMap[item.id] || seenMap[item.id]) ? 100 : 0));
-                      const isActive = activeId === item.id;
-                      const isLast = itemIdx === lesson.items.length - 1;
-                      const requiredPct = getRequiredPct(item.type);
-                      const isCompleted = pct >= requiredPct;
-                      return (
-                        <div key={item.id} className="relative pl-6">
+                </div>
+                <div className="space-y-3">
+                  {course.lessons.map((lesson) => {
+                    const totalItems = lesson.items.length;
+                    const completedItems = lesson.items.filter((it) => Math.max(progressMap[it.id] ?? 0, (completedMap[it.id] || seenMap[it.id]) ? 100 : 0) >= getRequiredPct(it.type)).length;
+                    const collapsed = collapsedLessons[lesson.lessonId] ?? false;
+                    return (
+                      <div key={lesson.lessonId} className="rounded-lg border border-white/5 bg-neutral-900/70 p-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCollapsedLessons((prev) => ({
+                              ...prev,
+                              [lesson.lessonId]: !collapsed,
+                            }))
+                          }
+                          className="flex w-full items-center gap-2 text-xs font-semibold text-neutral-100 hover:text-white"
+                        >
+                          <span className="line-clamp-1 flex-1 text-left">{lesson.lessonTitle}</span>
+                          <span className="text-[10px] text-neutral-300">{completedItems}/{totalItems}</span>
                           <span
-                            className={`absolute left-2 top-0 h-full w-px ${isLast ? "h-3" : ""} bg-white/10`}
-                            aria-hidden
-                          />
-                          <span className="absolute left-[2px] top-[9px]">
-                            {isCompleted ? (
-                              <span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 text-white shadow">
-                                <ControlIcon name="check" />
-                              </span>
-                            ) : (
-                              <span className="block h-2 w-2 rounded-full border border-white/40 bg-amber-400" />
-                            )}
-                          </span>
-                          <button
-                            onClick={() => jumpToIndex(item.index)}
-                            className={`group flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-xs transition ${
-                              isActive ? "bg-white/10 text-white" : "text-neutral-300 hover:bg-white/5"
+                            className={`inline-flex h-4 w-4 items-center justify-center rounded-full border border-white/20 text-[9px] transition ${
+                              collapsed ? "rotate-180" : ""
                             }`}
+                            aria-hidden
                           >
-                            <span className="flex-1 truncate">{item.title}</span>
-                            <span className="rounded-full bg-white/10 px-2 py-[2px] text-[10px] text-neutral-200 group-hover:bg-white/20">
-                              {pct}%
-                            </span>
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : null}
+                            ˅
+                          </span>
+                        </button>
+
+                        {!collapsed ? (
+                          <div className="mt-2 space-y-2 pl-3">
+                            {lesson.items.map((item, itemIdx) => {
+                              const pct = Math.round(Math.max(progressMap[item.id] ?? 0, (completedMap[item.id] || seenMap[item.id]) ? 100 : 0));
+                              const isActive = activeId === item.id;
+                              const isLast = itemIdx === lesson.items.length - 1;
+                              const requiredPct = getRequiredPct(item.type);
+                              const isCompleted = pct >= requiredPct;
+                              return (
+                                <div key={item.id} className="relative pl-5">
+                                  <span
+                                    className={`absolute left-1 top-0 h-full w-px ${isLast ? "h-3" : ""} bg-white/10`}
+                                    aria-hidden
+                                  />
+                                  <span className="absolute left-0 top-[9px]">
+                                    {isCompleted ? (
+                                      <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 text-white shadow">
+                                        <ControlIcon name="check" />
+                                      </span>
+                                    ) : (
+                                      <span className="block h-2 w-2 rounded-full border border-white/40 bg-amber-400" />
+                                    )}
+                                  </span>
+                                  <button
+                                    onClick={() => jumpToIndex(item.index)}
+                                    className={`group flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-[11px] transition ${
+                                      isActive ? "bg-white/10 text-white" : "text-neutral-300 hover:bg-white/5"
+                                    }`}
+                                  >
+                                    <span className="flex-1 truncate">{item.title}</span>
+                                    <span className="rounded-full bg-white/10 px-2 py-[1px] text-[9px] text-neutral-200 group-hover:bg-white/20">
+                                      {pct}%
+                                    </span>
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             );
           })}
@@ -1030,117 +1382,91 @@ export default function StudentFeedPage() {
           ref={containerRef}
           className="relative flex h-screen snap-y snap-mandatory flex-col overflow-y-scroll scroll-smooth no-scrollbar overscroll-contain"
         >
-          {classes.map((cls, idx) => (
-            <section
-              key={cls.id}
-              id={cls.id}
-              data-id={cls.id}
-              data-index={idx}
-              ref={(el) => {
-                sectionRefs.current[cls.id] = el;
-              }}
-              className="feed-card relative flex h-screen min-h-screen w-full snap-start snap-always items-center justify-center bg-black"
-            >
-              <div className="relative flex h-full w-full max-w-[1400px] items-center justify-center gap-6 lg:gap-10 px-2 lg:px-8 py-5 mx-auto overflow-visible">
-                <div className="relative h-full w-[min(820px,72vw)] max-w-[820px] overflow-hidden lg:overflow-visible rounded-none lg:rounded-2xl border border-white/10 bg-neutral-900/60 shadow-2xl">
-                  {renderContent(cls, idx)}
+          {classes.map((cls, idx) => {
+            const safeDescription =
+              cls.type === "text"
+                ? ""
+                : typeof cls.content === "string"
+                  ? cls.content.replace(/<[^>]+>/g, "").trim()
+                  : "";
+            const showMobileMeta = Boolean(cls.title && safeDescription);
+            const contentBoxSizeClass = "lg:w-[min(90vh,90vw,820px)] lg:h-[min(90vh,90vw,820px)]";
 
-                  {/* Stack móvil (estilo TikTok) */}
-                  <ActionStack
-                    avatarUrl={cls.images?.[0]}
-                    likes={Math.max(12, idx * 3 + 20)}
-                    comments={(commentsMap[cls.id]?.length ?? 0)}
-                    saves={Math.max(5, idx + 6)}
-                    shares={Math.max(1, idx + 1)}
-                    positionClass="absolute right-2 top-1/4 -translate-y-1/4 lg:hidden"
-                  />
+            return (
+              <section
+                key={cls.id}
+                id={cls.id}
+                data-id={cls.id}
+                data-index={idx}
+                ref={(el) => {
+                  sectionRefs.current[cls.id] = el;
+                }}
+                className="feed-card relative flex h-screen min-h-screen w-full snap-start snap-always items-center justify-center bg-black"
+              >
+                <div className="relative flex h-full w-full items-center justify-center lg:px-8 lg:py-5 mx-auto overflow-visible">
+                  <div className="relative flex items-center justify-center gap-6 lg:gap-10 w-full h-full lg:w-auto lg:h-auto pt-16 lg:pt-0">
+                  <div className={`relative w-full h-full ${contentBoxSizeClass} overflow-hidden rounded-none lg:rounded-2xl border-0 lg:border border-white/10 lg:bg-neutral-900/60 lg:shadow-2xl flex items-center justify-center`}>
+                      {renderContent(cls, idx)}
 
-                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4">
-                    <div className="mb-2 flex items-center gap-2 text-xs text-neutral-200">
-                      {cls.type === "video" ? (
-                        <span className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1">
-                          <span className="h-1 w-16 overflow-hidden rounded-full bg-white/10">
-                            <span
-                              className="block h-1 rounded-full bg-red-500"
-                              style={{
-                                width: `${Math.min(
-                                  Math.max(progressMap[cls.id] ?? 0, (completedMap[cls.id] || seenMap[cls.id]) ? 100 : 0),
-                                  100,
-                                )}%`,
-                              }}
-                            />
-                          </span>
-                          {Math.round(Math.max(progressMap[cls.id] ?? 0, (completedMap[cls.id] || seenMap[cls.id]) ? 100 : 0))}% visto
-                        </span>
+                      {/* Stack móvil (estilo TikTok) */}
+                      {cls.type !== "quiz" ? (
+                        <ActionStack
+                          likes={likesMap[cls.id] ?? cls.likesCount ?? 0}
+                          comments={(commentsCountMap[cls.id] ?? commentsMap[cls.id]?.length ?? 0)}
+                          isLiked={likedMap[cls.id] ?? false}
+                          onLike={() => handleToggleLike(cls)}
+                          likeDisabled={likePendingMap[cls.id] ?? false}
+                          hasAssignment={cls.hasAssignment || false}
+                          onAssignment={() => setAssignmentPanel({ open: true, classId: cls.id })}
+                          positionClass="absolute right-2 top-1/4 -translate-y-1/4 lg:hidden"
+                        />
                       ) : null}
-                      {(cls.type === "audio" || cls.type === "image") ? (
-                        <span className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1">
-                          <span className="h-1 w-16 overflow-hidden rounded-full bg-white/10">
-                            <span
-                              className="block h-1 rounded-full bg-blue-500"
-                              style={{
-                                width: `${Math.min(
-                                  Math.max(progressMap[cls.id] ?? 0, (completedMap[cls.id] || seenMap[cls.id]) ? 100 : 0),
-                                  100,
-                                )}%`,
-                              }}
-                            />
-                          </span>
-                          {Math.round(Math.max(progressMap[cls.id] ?? 0, (completedMap[cls.id] || seenMap[cls.id]) ? 100 : 0))}%
-                        </span>
-                      ) : null}
-                      <span
-                        className={`inline-flex items-center rounded-full px-3 py-1 ${
-                          ENFORCE_VIDEO_GATE &&
-                          ["video", "audio", "image"].includes(cls.type) &&
-                          Math.max(progressMap[cls.id] ?? 0, (completedMap[cls.id] || seenMap[cls.id]) ? 100 : 0) < getRequiredPct(cls.type)
-                            ? "bg-amber-500/30 text-amber-200"
-                            : "bg-green-500/20 text-green-200"
-                        }`}
-                      >
-                        {!ENFORCE_VIDEO_GATE
-                          ? "Avance libre"
-                          : ["video", "audio", "image"].includes(cls.type) &&
+
+                    {/* Overlay inferior con avance y estado */}
+                    <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4">
+                      <div className="mb-2 flex items-center gap-2 text-xs text-neutral-200">
+                        <span
+                          className={`inline-flex items-center rounded-full px-3 py-1 ${
+                            ENFORCE_VIDEO_GATE &&
+                            ["video", "audio", "image"].includes(cls.type) &&
                             Math.max(progressMap[cls.id] ?? 0, (completedMap[cls.id] || seenMap[cls.id]) ? 100 : 0) < getRequiredPct(cls.type)
-                            ? cls.type === "image"
-                              ? "Revisa todas las imágenes para avanzar"
-                              : `Necesitas ${getRequiredPct(cls.type)}% para avanzar`
-                            : "Listo para avanzar"}
-                      </span>
-                    </div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-400">
-                      {cls.lessonTitle || "Lección"} · Clase {idx + 1} de {classes.length}
-                    </p>
-                    <h3 className="text-xl font-semibold">{cls.title}</h3>
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      {cls.hasAssignment ? (
-                        <span className="rounded-full bg-amber-500/20 px-3 py-1 text-xs font-semibold text-amber-300">
-                          Tarea disponible
+                              ? "bg-amber-500/30 text-amber-200"
+                              : "bg-green-500/20 text-green-200"
+                          }`}
+                        >
+                          {!ENFORCE_VIDEO_GATE
+                            ? "Avance libre"
+                            : ["video", "audio", "image"].includes(cls.type) &&
+                              Math.max(progressMap[cls.id] ?? 0, (completedMap[cls.id] || seenMap[cls.id]) ? 100 : 0) < getRequiredPct(cls.type)
+                              ? `Necesitas ${getRequiredPct(cls.type)}% para avanzar`
+                              : "Listo para avanzar"}
                         </span>
-                      ) : null}
+                      </div>
                     </div>
-                    {cls.hasAssignment ? (
-                      <button
-                        type="button"
-                        className="mt-3 inline-flex items-center gap-2 rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-blue-500"
-                      >
-                        Entregar tarea
-                      </button>
-                    ) : null}
                   </div>
+
+                  {/* Stack desktop al costado del contenido */}
+                  {cls.type !== "quiz" ? (
+                    <ActionStack
+                      likes={likesMap[cls.id] ?? cls.likesCount ?? 0}
+                      comments={(commentsCountMap[cls.id] ?? commentsMap[cls.id]?.length ?? 0)}
+                      isLiked={likedMap[cls.id] ?? false}
+                      onLike={() => handleToggleLike(cls)}
+                      likeDisabled={likePendingMap[cls.id] ?? false}
+                      hasAssignment={cls.hasAssignment || false}
+                      onAssignment={() => setAssignmentPanel({ open: true, classId: cls.id })}
+                      positionClass="hidden lg:flex flex-col items-center gap-4"
+                    />
+                  ) : null}
+
+                  {showMobileMeta ? (
+                    <MobileSafeMeta title={cls.title} description={safeDescription} />
+                  ) : null}
                 </div>
-                {/* Stack desktop al costado del contenido */}
-                <ActionStack
-                  avatarUrl={cls.images?.[0]}
-                  likes={Math.max(12, idx * 3 + 20)}
-                  comments={(commentsMap[cls.id]?.length ?? 0)}
-                  saves={Math.max(5, idx + 6)}
-                  shares={Math.max(1, idx + 1)}
-                  positionClass="hidden lg:flex flex-col items-center gap-4 self-center"
-                />
-              </div>
-            </section>
-          ))}
+                </div>
+              </section>
+            );
+          })}
 
           <div className="pointer-events-auto fixed right-3 bottom-16 z-40 flex flex-col gap-3 lg:right-6 lg:top-1/2 lg:-translate-y-1/2 lg:bottom-auto">
             <button
@@ -1166,24 +1492,69 @@ export default function StudentFeedPage() {
             <CommentsPanel
               classId={commentsClassId}
               comments={commentsMap[commentsClassId] ?? []}
+              loading={loadingCommentsMap[commentsClassId] ?? false}
               onClose={() => setCommentsOpen(false)}
-              onAdd={(text) => {
+              onAdd={(text, parentId) => {
                 if (!currentUser) {
                   toast.error("Inicia sesión para comentar");
                   return;
                 }
+                const targetMeta = findClassById(commentsClassId);
+                if (!targetMeta?.courseId || !targetMeta?.lessonId || !targetMeta?.classDocId) {
+                  toast.error("No se pudo identificar la clase para comentar");
+                  return;
+                }
+
+                const optimistic = {
+                  id: `local-${Date.now()}`,
+                  author: (currentUser.displayName ?? studentName ?? "").trim() || currentUser.uid || "Estudiante",
+                  authorId: currentUser.uid,
+                  text,
+                  createdAt: Date.now(),
+                  parentId: parentId ?? null,
+                };
                 setCommentsMap((prev) => ({
                   ...prev,
-                  [commentsClassId]: [
-                    ...(prev[commentsClassId] ?? []),
-                    {
-                      id: `${Date.now()}`,
-                      author: currentUser.displayName ?? "Alumno",
-                      text,
-                      createdAt: Date.now(),
-                    },
-                  ],
+                  [commentsClassId]: [...(prev[commentsClassId] ?? []), optimistic],
                 }));
+                setCommentsCountMap((prev) => ({
+                  ...prev,
+                  [commentsClassId]: (prev[commentsClassId] ?? (commentsMap[commentsClassId]?.length ?? 0)) + 1,
+                }));
+
+                const path = collection(
+                  db,
+                  "courses",
+                  targetMeta.courseId,
+                  "lessons",
+                  targetMeta.lessonId,
+                  "classes",
+                  targetMeta.classDocId,
+                  "comments",
+                );
+                addDoc(path, {
+                  text,
+                  authorId: currentUser.uid,
+                  authorName: currentUser.displayName ?? studentName ?? "Estudiante",
+                  parentId: parentId ?? null,
+                  createdAt: serverTimestamp(),
+                })
+                  .then(() => loadCommentsForClass(commentsClassId))
+                  .catch((err) => {
+                    console.error("No se pudo guardar el comentario:", err);
+                    toast.error("No se pudo guardar el comentario");
+                    setCommentsMap((prev) => ({
+                      ...prev,
+                      [commentsClassId]: (prev[commentsClassId] ?? []).filter((c) => c.id !== optimistic.id),
+                    }));
+                    setCommentsCountMap((prev) => ({
+                      ...prev,
+                      [commentsClassId]: Math.max(
+                        0,
+                        (prev[commentsClassId] ?? (commentsMap[commentsClassId]?.length ?? 1)) - 1,
+                      ),
+                    }));
+                  });
               }}
             />
           ) : null}
@@ -1241,6 +1612,100 @@ export default function StudentFeedPage() {
               </div>
             </div>
           ) : null}
+
+          {/* Panel de tarea lateral */}
+          {assignmentPanel.open && assignmentPanel.classId ? (() => {
+            const cls = findClassById(assignmentPanel.classId);
+            if (!cls) return null;
+            return (
+              <AssignmentPanel
+                classId={cls.id}
+                classTitle={cls.title}
+                templateUrl={cls.assignmentTemplateUrl}
+                note={assignmentNoteMap[cls.id] ?? ""}
+                onChangeNote={(val) => setAssignmentNoteMap((prev) => ({ ...prev, [cls.id]: val }))}
+                selectedFile={assignmentFileMap[cls.id] ?? null}
+                uploading={assignmentUploadingMap[cls.id] ?? false}
+                onFileChange={(file) => setAssignmentFileMap((prev) => ({ ...prev, [cls.id]: file }))}
+                submitted={assignmentStatusMap[cls.id] === "submitted" || assignmentAckRef.current[cls.id]}
+                onClose={() => setAssignmentPanel({ open: false })}
+                onSubmit={async () => {
+                  if (!currentUser?.uid || !enrollmentId || !cls.groupId) {
+                    toast.error("Faltan datos para enviar la tarea");
+                    return;
+                  }
+                  const baseClassId = cls.classDocId ?? cls.id;
+                  // Evitar envíos duplicados
+                  const subRef = collection(db, "groups", cls.groupId, "submissions");
+                  const existing = await getDocs(
+                    query(
+                      subRef,
+                      where("classId", "==", baseClassId),
+                      where("studentId", "==", currentUser.uid),
+                      limit(1),
+                    ),
+                  );
+                  if (!existing.empty) {
+                    setAssignmentStatusMap((prev) => ({ ...prev, [cls.id]: "submitted" }));
+                    assignmentAckRef.current = { ...assignmentAckRef.current, [cls.id]: true };
+                    setAssignmentAck((prev) => ({ ...prev, [cls.id]: true }));
+                    toast.success("Ya habías enviado esta tarea.");
+                    return;
+                  }
+                  const file = assignmentFileMap[cls.id] ?? null;
+                  let attachmentUrl = "";
+                  if (file) {
+                    try {
+                      setAssignmentUploadingMap((prev) => ({ ...prev, [cls.id]: true }));
+                      const storage = getStorage();
+                      const storageRef = ref(storage, `assignments/${currentUser.uid}/${cls.id}/${Date.now()}-${file.name}`);
+                      await uploadBytes(storageRef, file, { contentType: file.type || "application/octet-stream" });
+                      attachmentUrl = await getDownloadURL(storageRef);
+                    } catch (err) {
+                      console.error("No se pudo subir el archivo:", err);
+                      toast.error("No se pudo subir el archivo");
+                      setAssignmentUploadingMap((prev) => ({ ...prev, [cls.id]: false }));
+                      return;
+                    } finally {
+                      setAssignmentUploadingMap((prev) => ({ ...prev, [cls.id]: false }));
+                    }
+                  }
+                  const content = attachmentUrl || assignmentNoteMap[cls.id] || "";
+                const payload = {
+                  classId: baseClassId,
+                  classDocId: baseClassId,
+                  className: cls.title ?? "Tarea",
+                  courseId: cls.courseId ?? "",
+                  courseTitle: cls.courseTitle ?? "",
+                  classType: cls.type,
+                  studentId: currentUser.uid,
+                  studentName: studentName ?? currentUser.displayName ?? "Estudiante",
+                    submittedAt: new Date(),
+                    content,
+                    attachmentUrl,
+                    enrollmentId,
+                    groupId: cls.groupId,
+                    status: "submitted",
+                  };
+                  try {
+                    await createSubmission(cls.groupId, payload);
+                    setAssignmentAck((prev) => {
+                      const next = { ...prev, [cls.id]: true };
+                      assignmentAckRef.current = next;
+                      return next;
+                    });
+                    setAssignmentStatusMap((prev) => ({ ...prev, [cls.id]: "submitted" }));
+                    toast.success("Tarea enviada");
+                    setAssignmentFileMap((prev) => ({ ...prev, [cls.id]: null }));
+                    setAssignmentPanel({ open: false, classId: null });
+                  } catch (err) {
+                    console.error("No se pudo enviar la tarea:", err);
+                    toast.error("No se pudo enviar la tarea");
+                  }
+                }}
+              />
+            );
+          })() : null}
         </div>
         <style jsx global>{`
           .no-scrollbar {
@@ -1289,6 +1754,25 @@ const VideoPlayer = React.memo(function VideoPlayer({
   const [progress, setProgress] = useState(initialProgress);
   const onProgressRef = useRef(onProgress);
 
+  const handleVimeoToggle = useCallback(() => {
+    if (!isVimeo || !vimeoPlayerRef.current || !playerInitializedRef.current) return;
+    vimeoPlayerRef.current
+      .getPaused()
+      .then((paused) => {
+        if (paused) {
+          return vimeoPlayerRef.current
+            ?.play()
+            .then(() => setIsPlaying(true))
+            .catch(() => {});
+        }
+        return vimeoPlayerRef.current
+          ?.pause()
+          .then(() => setIsPlaying(false))
+          .catch(() => {});
+      })
+      .catch(() => {});
+  }, [isVimeo]);
+
   // Mantener onProgress actualizado sin causar re-inicialización
   useEffect(() => {
     onProgressRef.current = onProgress;
@@ -1323,14 +1807,20 @@ const VideoPlayer = React.memo(function VideoPlayer({
 
         // Configurar eventos
         player.on('play', () => setIsPlaying(true));
+        player.on('playing', () => setIsPlaying(true));
         player.on('pause', () => setIsPlaying(false));
+        player.on('ended', () => setIsPlaying(false));
         player.on('timeupdate', (data) => {
           const pct = (data.seconds / data.duration) * 100;
           setProgress(pct);
+          if (data.seconds > 0) setIsPlaying(true);
           if (onProgressRef.current) {
             onProgressRef.current(pct);
           }
         });
+
+        // Forzar mute inicial según prop antes de reproducir
+        await player.setMuted(muted);
 
         // Si hay progreso guardado, mover el video a esa posición
         if (initialProgress > 0) {
@@ -1338,6 +1828,16 @@ const VideoPlayer = React.memo(function VideoPlayer({
           const targetTime = (initialProgress / 100) * duration;
           await player.setCurrentTime(targetTime);
           console.log(`⏩ Video posicionado en ${Math.round(initialProgress)}% - ID: ${id}`);
+        }
+
+        // Intentar reproducir si está activo
+        if (isActive) {
+          try {
+            await player.play();
+            setIsPlaying(true);
+          } catch (err) {
+            console.warn("Autoplay bloqueado; se requiere interacción del usuario", err);
+          }
         }
 
         console.log(`✅ Vimeo Player inicializado - ID: ${id}`);
@@ -1359,26 +1859,90 @@ const VideoPlayer = React.memo(function VideoPlayer({
     };
   }, [isVimeo, id]); // SOLO isVimeo e id - NO muted!
 
-  // Hook SEPARADO para manejar cambios en muted (sin destruir el player)
+  // Mantener mute y play/pause sincronizados con el estado del componente
   useEffect(() => {
     if (!vimeoPlayerRef.current || !playerInitializedRef.current) return;
     vimeoPlayerRef.current.setMuted(muted).catch(() => {});
-  }, [muted]);
+    if (isActive) {
+      vimeoPlayerRef.current
+        .play()
+        .then(() => setIsPlaying(true))
+        .catch(() => {});
+    } else {
+      vimeoPlayerRef.current
+        .pause()
+        .then(() => setIsPlaying(false))
+        .catch(() => {});
+    }
+  }, [muted, isActive]);
 
   // Vimeo con controles nativos pero estilizados
   if (isVimeo) {
-    const embedUrl = toEmbedUrl(src);
+    const rawEmbedUrl = toEmbedUrl(src);
+    let embedUrl = rawEmbedUrl;
+    try {
+      const parsed = new URL(rawEmbedUrl);
+      parsed.searchParams.set("autoplay", "0"); // controlamos play vía API
+      parsed.searchParams.set("controls", "0");
+      parsed.searchParams.set("title", "0");
+      parsed.searchParams.set("byline", "0");
+      parsed.searchParams.set("portrait", "0");
+      parsed.searchParams.set("pip", "0");
+      parsed.searchParams.set("dnt", "1");
+      parsed.searchParams.set("playsinline", "1");
+      parsed.searchParams.set("autopause", "0");
+      parsed.searchParams.set("transparent", "0");
+      parsed.searchParams.set("muted", muted ? "1" : "0");
+      embedUrl = parsed.toString();
+    } catch {
+      embedUrl = rawEmbedUrl;
+    }
 
     return (
-      <div className="relative h-[80vh] w-full bg-black vimeo-player-wrapper">
+      <div className="relative h-full w-full bg-black vimeo-player-wrapper flex items-center justify-center">
         <iframe
           ref={iframeRef}
           title={`video-${id}`}
           src={embedUrl}
-          className="h-full w-full object-cover"
+          className="w-full h-full pointer-events-none select-none"
           allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
           allowFullScreen
         />
+
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleMute();
+          }}
+          className="absolute left-4 top-4 z-40 rounded-full bg-black/70 p-3 text-white shadow"
+          aria-label={muted ? "Activar sonido" : "Silenciar video"}
+        >
+          <ControlIcon name={muted ? "muted" : "sound"} />
+        </button>
+
+        <div
+          className="absolute inset-0 z-20 cursor-pointer"
+          role="button"
+          tabIndex={0}
+          aria-label={isPlaying ? "Pausar video" : "Reproducir video"}
+          onClick={handleVimeoToggle}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+              e.preventDefault();
+              handleVimeoToggle();
+            }
+          }}
+          onContextMenu={(e) => e.preventDefault()}
+        />
+
+        {!isPlaying ? (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-black/60 text-white">
+              <ControlIcon name="play" />
+            </div>
+          </div>
+        ) : null}
 
         {/* Barra de progreso personalizada estilo TikTok */}
         <div className="absolute bottom-0 left-0 right-0 px-4 pb-3 pointer-events-none z-30">
@@ -1395,14 +1959,15 @@ const VideoPlayer = React.memo(function VideoPlayer({
             position: relative;
           }
 
-          /* Ocultar controles de Vimeo excepto la barra de progreso cuando está en hover */
-          .vimeo-player-wrapper :global(.vp-controls) {
+          /* Desactivar por completo los controles nativos de Vimeo */
+          .vimeo-player-wrapper :global(.vp-controls),
+          .vimeo-player-wrapper :global(.vp-title),
+          .vimeo-player-wrapper :global(.vp-share),
+          .vimeo-player-wrapper :global(.vp-settings),
+          .vimeo-player-wrapper :global(.vp-big-play-button) {
+            display: none !important;
             opacity: 0 !important;
-            transition: opacity 0.3s ease !important;
-          }
-
-          .vimeo-player-wrapper:hover :global(.vp-controls) {
-            opacity: 1 !important;
+            pointer-events: none !important;
           }
         `}</style>
       </div>
@@ -1413,12 +1978,12 @@ const VideoPlayer = React.memo(function VideoPlayer({
   if (isYouTube) {
     const embedSrc = toEmbedUrl(src);
     return (
-      <div className="relative h-[80vh] w-full bg-black">
+      <div className="relative h-full w-full bg-black flex items-center justify-center">
         <iframe
           ref={iframeRef}
           title={`video-${id}`}
           src={embedSrc}
-          className="h-full w-full rounded-none object-cover"
+          className="w-full h-full rounded-none"
           allow="autoplay; encrypted-media; picture-in-picture"
           allowFullScreen
         />
@@ -1467,11 +2032,11 @@ const VideoPlayer = React.memo(function VideoPlayer({
   };
 
   return (
-    <div className="relative h-[80vh] w-full bg-black">
+    <div className="relative w-full h-full bg-black flex items-center justify-center">
       <video
         ref={videoRef}
         src={src}
-        className="h-full w-full cursor-pointer object-cover"
+        className="max-h-full max-w-full w-auto h-auto cursor-pointer object-contain"
         playsInline
         muted={muted}
         onTimeUpdate={handleTimeUpdate}
@@ -1528,53 +2093,90 @@ const VideoPlayer = React.memo(function VideoPlayer({
   );
 });
 
-type ActionStackProps = {
-  avatarUrl?: string;
-  likes?: number;
-  comments?: number;
-  saves?: number;
-  shares?: number;
-  positionClass?: string;
+type MobileSafeMetaProps = {
+  title: string;
+  description: string;
 };
 
-function ActionStack({ avatarUrl, likes = 0, comments = 0, saves = 0, shares = 0, positionClass }: ActionStackProps) {
+function MobileSafeMeta({ title, description }: MobileSafeMetaProps) {
+  const topSafePadding = "calc(env(safe-area-inset-top) + 64px)";
   return (
-    <div className={`pointer-events-auto flex flex-col items-center gap-4 text-white ${positionClass ?? ""}`}>
-      <div className="flex flex-col items-center gap-2">
-        <div className="h-12 w-12 overflow-hidden rounded-full border-2 border-white/50 bg-white/10">
-          {avatarUrl ? (
-            <img src={avatarUrl} alt="avatar" className="h-full w-full object-cover" />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-neutral-600 to-neutral-900 text-xs font-semibold uppercase tracking-wide">
-              Alum
-            </div>
-          )}
+    <div
+      className="pointer-events-none absolute inset-0 z-10 flex flex-col justify-between p-4 lg:hidden"
+      style={{ paddingTop: topSafePadding }}
+    >
+      <div className="flex-1">
+        <div className="flex h-full w-full flex-col justify-end rounded-2xl border-2 border-dashed border-white/15 bg-gradient-to-b from-white/5 via-transparent to-black/40 px-4 py-3">
+          <div className="max-w-[82%] space-y-1 drop-shadow">
+            <h2 className="text-lg font-bold leading-tight text-white line-clamp-2">
+              {title}
+            </h2>
+            <p className="text-sm text-white/80 leading-snug line-clamp-3">
+              {description}
+            </p>
+          </div>
         </div>
-        <button
-          type="button"
-          className="flex h-8 w-8 items-center justify-center rounded-full bg-pink-600 text-white shadow"
-        >
-          <ControlIcon name="plus" />
-        </button>
       </div>
-
-      <ActionButton icon="heart" label={likes.toLocaleString("es-MX")} />
-      <ActionButton icon="comment" label={comments.toLocaleString("es-MX")} onClick={() => {
-        const evt = new CustomEvent("open-comments", { detail: null });
-        window.dispatchEvent(evt);
-      }} />
-      <ActionButton icon="save" label={saves.toLocaleString("es-MX")} />
-      <ActionButton icon="share" label={shares.toLocaleString("es-MX")} />
+      <div className="mt-3 inline-flex w-fit items-center gap-2 rounded-full border border-white/15 bg-black/60 px-3 py-2 text-[11px] font-semibold text-white/80 backdrop-blur">
+        <span className="h-2 w-2 rounded-full bg-emerald-400" aria-hidden />
+        Espacio libre de overlays
+      </div>
     </div>
   );
 }
 
-function ActionButton({ icon, label, onClick }: { icon: ControlIconName; label: string; onClick?: () => void }) {
+type ActionStackProps = {
+  logoSrc?: string;
+  likes?: number;
+  comments?: number;
+  positionClass?: string;
+  isLiked?: boolean;
+  onLike?: () => void;
+  likeDisabled?: boolean;
+  hasAssignment?: boolean;
+  onAssignment?: () => void;
+};
+
+function ActionStack({ logoSrc = UNIVERSITY_LOGO_SRC, likes = 0, comments = 0, positionClass, isLiked = false, onLike, likeDisabled = false, hasAssignment = false, onAssignment }: ActionStackProps) {
+  return (
+    <div className={`pointer-events-auto z-30 flex flex-col items-center gap-4 text-white ${positionClass ?? ""}`}>
+      <div className="flex flex-col items-center gap-2">
+        <div className="h-12 w-12 overflow-hidden rounded-full border-2 border-white/50 bg-white/10">
+          <img
+            src={logoSrc || UNIVERSITY_LOGO_SRC}
+            alt="Logotipo de la universidad"
+            className="h-full w-full object-cover"
+          />
+        </div>
+      </div>
+
+      <ActionButton
+        icon="heart"
+        label={likes.toLocaleString("es-MX")}
+        onClick={onLike}
+        isActive={isLiked}
+        disabled={likeDisabled}
+      />
+      {hasAssignment ? (
+        <ActionButton icon="assignment" label="Tarea" onClick={onAssignment} />
+      ) : null}
+      <ActionButton icon="comment" label={comments.toLocaleString("es-MX")} onClick={() => {
+        const evt = new CustomEvent("open-comments", { detail: null });
+        window.dispatchEvent(evt);
+      }} />
+    </div>
+  );
+}
+
+function ActionButton({ icon, label, onClick, isActive = false, disabled = false }: { icon: ControlIconName; label: string; onClick?: () => void; isActive?: boolean; disabled?: boolean }) {
   return (
     <div className="flex flex-col items-center gap-1 text-xs text-white/90">
       <button
         type="button"
-        className="flex h-12 w-12 items-center justify-center rounded-full bg-black/60 backdrop-blur transition hover:scale-105"
+        disabled={disabled}
+        className={`flex h-12 w-12 items-center justify-center rounded-full backdrop-blur transition ${
+          isActive ? "bg-pink-600 text-white shadow-lg" : "bg-black/60"
+        } ${disabled ? "cursor-not-allowed opacity-50" : "hover:scale-105"}`}
         onClick={onClick}
       >
         <ControlIcon name={icon} />
@@ -1590,9 +2192,8 @@ type ControlIconName =
   | "play"
   | "heart"
   | "comment"
-  | "save"
-  | "share"
   | "plus"
+  | "assignment"
   | "audio"
   | "arrowUp"
   | "arrowDown"
@@ -1632,16 +2233,12 @@ function ControlIcon({ name }: { name: ControlIconName }) {
           <path d="M4 5h16v10H7l-3 4V5z" />
         </svg>
       );
-    case "save":
+    case "assignment":
       return (
         <svg viewBox="0 0 24 24" className={common}>
-          <path d="M6 4h12v16l-6-4-6 4V4z" />
-        </svg>
-      );
-    case "share":
-      return (
-        <svg viewBox="0 0 24 24" className={common}>
-          <path d="M18 8a3 3 0 10-3-3m3 3L9 12m9 0a3 3 0 11-3 3m3-3L9 12m0 0a3 3 0 100 6" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M7 4h10a2 2 0 012 2v12a2 2 0 01-2 2H7a2 2 0 01-2-2V6a2 2 0 012-2z" />
+          <path d="M9 4V3a1 1 0 011-1h4a1 1 0 011 1v1" />
+          <path d="M9 10h6M9 14h6M9 18h3" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round" />
         </svg>
       );
     case "plus":
@@ -1681,6 +2278,7 @@ function ControlIcon({ name }: { name: ControlIconName }) {
 
 type QuizContentProps = {
   classId: string;
+  classDocId?: string;
   courseId?: string;
   lessonId?: string;
   enrollmentId?: string;
@@ -1692,7 +2290,7 @@ type QuizContentProps = {
   onProgress?: (pct: number) => void;
 };
 
-function QuizContent({ classId, courseId, lessonId, enrollmentId, groupId, classTitle, studentName, studentId, isActive = true, onProgress }: QuizContentProps) {
+function QuizContent({ classId, classDocId, courseId, lessonId, enrollmentId, groupId, classTitle, studentName, studentId, isActive = true, onProgress }: QuizContentProps) {
   const [questions, setQuestions] = useState<
     Array<{
       id: string;
@@ -1723,16 +2321,23 @@ function QuizContent({ classId, courseId, lessonId, enrollmentId, groupId, class
     setSubmitted(false);
     savedRef.current = false;
     const loadQuestions = async () => {
-      if (!courseId || !lessonId || !classId) return;
+      const targetClassId = classDocId ?? classId;
+      if (!courseId || !lessonId || !targetClassId) {
+        console.log('Missing IDs:', { courseId, lessonId, classId: targetClassId });
+        return;
+      }
       try {
+        console.log('Loading questions for:', { courseId, lessonId, classId: targetClassId });
         const qSnap = await getDocs(
           query(
-            collection(db, "courses", courseId, "lessons", lessonId, "classes", classId, "questions"),
+            collection(db, "courses", courseId, "lessons", lessonId, "classes", targetClassId, "questions"),
             orderBy("order", "asc"),
           ),
         );
+        console.log('Questions snapshot size:', qSnap.size);
         const data = qSnap.docs.map((d) => {
           const qd = d.data();
+          console.log('Question data:', { id: d.id, data: qd });
           return {
             id: d.id,
             text: qd.text ?? qd.question ?? "",
@@ -1740,13 +2345,14 @@ function QuizContent({ classId, courseId, lessonId, enrollmentId, groupId, class
             options: Array.isArray(qd.options) ? qd.options : [],
           };
         });
+        console.log('Processed questions:', data);
         setQuestions(data);
       } catch (err) {
         console.error("No se pudieron cargar las preguntas del quiz:", err);
       }
     };
     loadQuestions();
-  }, [classId, courseId, lessonId]);
+  }, [classDocId, classId, courseId, lessonId]);
 
   const answeredCount = useMemo(
     () => questions.filter((q) => answers[q.id]).length,
@@ -1774,6 +2380,16 @@ function QuizContent({ classId, courseId, lessonId, enrollmentId, groupId, class
 
   const currentQuestion = questions[currentIdx];
   const allAnswered = answeredCount === questions.length && questions.length > 0;
+
+  // Debug log
+  useEffect(() => {
+    console.log('Quiz Debug:', {
+      questionsLength: questions.length,
+      currentIdx,
+      currentQuestion,
+      hasCurrentQuestion: !!currentQuestion
+    });
+  }, [questions, currentIdx, currentQuestion]);
 
   const handleSubmit = useCallback(async () => {
     if (
@@ -1829,20 +2445,24 @@ function QuizContent({ classId, courseId, lessonId, enrollmentId, groupId, class
       );
 
       const subRef = collection(db, "groups", groupId, "submissions");
+      const baseClassId = classDocId ?? classId;
       const existingSnap = await getDocs(
         query(
           subRef,
-          where("classId", "==", classId),
+          where("classId", "==", baseClassId),
           where("studentId", "==", studentId),
           limit(1),
         ),
       );
       const submissionData = {
-        classId,
+        classId: baseClassId,
+        classDocId: baseClassId,
         className: classTitle ?? "Quiz",
+        courseId: courseId ?? "",
+        courseTitle: courseTitleMap[courseId ?? ""] ?? "",
         classType: "quiz",
         studentId,
-        studentName: studentName ?? "Alumno",
+        studentName: studentName ?? "Estudiante",
         submittedAt: new Date(),
         content: friendlyContent,
         answers: answerPayload,
@@ -1870,149 +2490,270 @@ function QuizContent({ classId, courseId, lessonId, enrollmentId, groupId, class
   }, [allAnswered, enrollmentId, studentId, groupId, submitting, questions, answers, classId, classTitle, studentName]);
 
   return (
-    <div ref={containerRef} className="h-[80vh] overflow-auto bg-gradient-to-b from-neutral-900 to-black p-6 space-y-4">
-      <div className="flex items-center justify-between text-xs text-neutral-300">
-        <span>
-          Pregunta {currentIdx + 1} de {Math.max(questions.length, 1)}
-        </span>
-        <span>{answeredCount}/{questions.length} respondidas</span>
-      </div>
+    <div className="flex h-full w-full items-center justify-center px-4 lg:px-10 lg:pr-[140px]">
+      <div
+        ref={containerRef}
+        className="w-full max-w-3xl max-h-[88vh] overflow-auto px-1 sm:px-2 py-8 space-y-4"
+      >
+        <div className="flex items-center justify-between text-xs text-neutral-300">
+          <span>
+            Pregunta {currentIdx + 1} de {Math.max(questions.length, 1)}
+          </span>
+          <span>{answeredCount}/{questions.length} respondidas</span>
+        </div>
 
-      {questions.length === 0 ? (
-        <p className="text-sm text-neutral-300">No hay preguntas cargadas para este quiz.</p>
-      ) : currentQuestion ? (
-        <div className="space-y-3 rounded-lg border border-white/10 bg-white/5 p-4">
-          <div className="flex items-start gap-2 text-neutral-100">
-            <span className="mt-[2px] inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/10 text-xs font-semibold">{currentIdx + 1}</span>
-            <p className="text-sm font-semibold leading-snug">{currentQuestion.text || `Pregunta ${currentIdx + 1}`}</p>
-          </div>
-          <div className="space-y-2 pl-8">
-            {(currentQuestion.options ?? []).length > 0 ? (
-              (currentQuestion.options ?? []).map((opt) => {
-                const selected = answers[currentQuestion.id] === opt.id;
-                return (
-                  <label
-                    key={opt.id ?? opt.text}
-                    className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
-                      selected ? "border-blue-500 bg-blue-500/20 text-white" : "border-white/10 bg-white/5 text-neutral-100"
-                    }`}
-                    onClick={() => handleSelect(currentQuestion.id, opt.id ?? String(opt.text ?? ""))}
-                  >
-                    <span
-                      className={`inline-flex h-4 w-4 items-center justify-center rounded-full border ${
-                        selected ? "border-blue-400 bg-blue-500" : "border-white/40 bg-transparent"
+        {questions.length === 0 ? (
+          <p className="text-sm text-neutral-300">No hay preguntas cargadas para este quiz.</p>
+        ) : questions.length > 0 && currentQuestion ? (
+          <div className="space-y-3 rounded-lg border border-white/10 bg-white/5 p-4">
+            <div className="flex items-start gap-2 text-neutral-100">
+              <span className="mt-[2px] inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/10 text-xs font-semibold">{currentIdx + 1}</span>
+              <p className="text-sm font-semibold leading-snug">{currentQuestion.text || `Pregunta ${currentIdx + 1}`}</p>
+            </div>
+            <div className="space-y-2 pl-8">
+              {(currentQuestion.options ?? []).length > 0 ? (
+                (currentQuestion.options ?? []).map((opt) => {
+                  const selected = answers[currentQuestion.id] === opt.id;
+                  return (
+                    <label
+                      key={opt.id ?? opt.text}
+                      className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+                        selected ? "border-blue-500 bg-blue-500/20 text-white" : "border-white/10 bg-white/5 text-neutral-100"
                       }`}
-                    />
-                    <span className="flex-1">{opt.text ?? "Opción"}</span>
-                  </label>
-                );
-              })
-            ) : (
-              <div className="space-y-2">
-                <textarea
-                  value={textInputs[currentQuestion.id] ?? answers[currentQuestion.id] ?? ""}
-                  onChange={(e) =>
-                    setTextInputs((prev) => ({ ...prev, [currentQuestion.id]: e.target.value }))
-                  }
-                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-400 focus:border-blue-500 focus:outline-none"
-                  placeholder="Escribe tu respuesta..."
-                  rows={3}
-                />
-                <div className="flex justify-end">
-                  <button
-                    type="button"
-                    disabled={!(textInputs[currentQuestion.id] ?? answers[currentQuestion.id])?.trim()}
-                    onClick={() => {
-                      const val = (textInputs[currentQuestion.id] ?? answers[currentQuestion.id] ?? "").trim();
-                      if (!val) return;
-                      handleSelect(currentQuestion.id, val);
-                    }}
-                    className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow disabled:opacity-50"
-                  >
-                    Guardar y seguir
-                  </button>
+                      onClick={() => handleSelect(currentQuestion.id, opt.id ?? String(opt.text ?? ""))}
+                    >
+                      <span
+                        className={`inline-flex h-4 w-4 items-center justify-center rounded-full border ${
+                          selected ? "border-blue-400 bg-blue-500" : "border-white/40 bg-transparent"
+                        }`}
+                      />
+                      <span className="flex-1">{opt.text ?? "Opción"}</span>
+                    </label>
+                  );
+                })
+              ) : (
+                <div className="space-y-2">
+                  <textarea
+                    value={textInputs[currentQuestion.id] ?? answers[currentQuestion.id] ?? ""}
+                    onChange={(e) =>
+                      setTextInputs((prev) => ({ ...prev, [currentQuestion.id]: e.target.value }))
+                    }
+                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-400 focus:border-blue-500 focus:outline-none"
+                    placeholder="Escribe tu respuesta..."
+                    rows={3}
+                  />
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      disabled={!(textInputs[currentQuestion.id] ?? answers[currentQuestion.id])?.trim()}
+                      onClick={() => {
+                        const val = (textInputs[currentQuestion.id] ?? answers[currentQuestion.id] ?? "").trim();
+                        if (!val) return;
+                        handleSelect(currentQuestion.id, val);
+                      }}
+                      className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow disabled:opacity-50"
+                    >
+                      Guardar y seguir
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
+            </div>
+          </div>
+        ) : questions.length > 0 ? (
+          <p className="text-sm text-neutral-300">Error: No se pudo cargar la pregunta actual. Index: {currentIdx}, Total: {questions.length}</p>
+        ) : null}
+
+        {questions.length > 0 ? (
+          <div className="flex items-center justify-end gap-2 pt-2">
+            {!submitted ? (
+              <button
+                type="button"
+                disabled={!allAnswered || submitting}
+                onClick={handleSubmit}
+                className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow disabled:opacity-50"
+              >
+                {submitting ? "Enviando..." : allAnswered ? "Enviar quiz" : "Contesta todas las preguntas"}
+              </button>
+            ) : (
+              <span className="rounded-full bg-green-600/20 px-4 py-2 text-sm font-semibold text-green-200">
+                Quiz enviado
+              </span>
             )}
           </div>
-        </div>
-      ) : null}
-
-      {questions.length > 0 ? (
-        <div className="flex items-center justify-end gap-2 pt-2">
-          {!submitted ? (
-            <button
-              type="button"
-              disabled={!allAnswered || submitting}
-              onClick={handleSubmit}
-              className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow disabled:opacity-50"
-            >
-              {submitting ? "Enviando..." : allAnswered ? "Enviar quiz" : "Contesta todas las preguntas"}
-            </button>
-          ) : (
-            <span className="rounded-full bg-green-600/20 px-4 py-2 text-sm font-semibold text-green-200">
-              Quiz enviado
-            </span>
-          )}
-        </div>
-      ) : null}
+        ) : null}
+      </div>
     </div>
   );
 }
 
 type TextContentProps = {
+  title?: string;
   content: string;
   onProgress?: (pct: number) => void;
   isActive?: boolean;
+  onReachEnd?: () => void;
 };
 
 function TextContent({
+  title,
   content,
   onProgress,
   isActive = true,
+  onReachEnd,
 }: TextContentProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const onProgressRef = useRef(onProgress);
+  const onReachEndRef = useRef(onReachEnd);
+  const endNotifiedRef = useRef(false);
+  const hasInteractedRef = useRef(false);
+  const reachedEndRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
 
   useEffect(() => {
     onProgressRef.current = onProgress;
   }, [onProgress]);
 
   useEffect(() => {
+    onReachEndRef.current = onReachEnd;
+  }, [onReachEnd]);
+
+  useEffect(() => {
+    endNotifiedRef.current = false;
+    hasInteractedRef.current = false;
+    reachedEndRef.current = false;
+  }, [content, isActive]);
+
+  useEffect(() => {
     const el = containerRef.current;
     if (!el || !onProgressRef.current || !isActive) return;
 
-    const report = () => {
+    lastScrollTopRef.current = el.scrollTop;
+
+    const report = (allowReachEnd: boolean) => {
       const cb = onProgressRef.current;
       if (!el || !cb) return;
       const scrollable = el.scrollHeight - el.clientHeight;
       const pct = scrollable > 0 ? (el.scrollTop / scrollable) * 100 : 100;
       cb(Math.min(100, Math.max(0, pct)));
+      if (pct < 95) {
+        reachedEndRef.current = false;
+      }
+
+      if (
+        allowReachEnd &&
+        pct >= 99 &&
+        hasInteractedRef.current &&
+        el.scrollTop >= lastScrollTopRef.current
+      ) {
+        if (reachedEndRef.current && !endNotifiedRef.current) {
+          endNotifiedRef.current = true;
+          onReachEndRef.current?.();
+        } else if (!reachedEndRef.current) {
+          reachedEndRef.current = true;
+        }
+      }
     };
 
-    report();
-    el.addEventListener("scroll", report);
-    return () => el.removeEventListener("scroll", report);
+    // Primer reporte: solo progreso, sin disparar avance
+    report(false);
+
+    const handleScroll = () => {
+      if (!el) return;
+      hasInteractedRef.current = true;
+      const nextTop = el.scrollTop;
+      const isScrollingDown = nextTop >= lastScrollTopRef.current;
+      lastScrollTopRef.current = nextTop;
+      report(isScrollingDown);
+    };
+
+    el.addEventListener("scroll", handleScroll);
+    return () => el.removeEventListener("scroll", handleScroll);
   }, [content, isActive]);
 
   return (
-    <div ref={containerRef} className="h-[80vh] overflow-auto bg-gradient-to-b from-neutral-900 to-black p-6">
-      <p className="whitespace-pre-wrap text-lg leading-relaxed text-neutral-50">
+    <div className="flex h-full w-full items-stretch justify-center px-4 lg:px-10 lg:pr-[140px]">
+      <div
+        ref={containerRef}
+        className="w-[80%] lg:w-[80%] max-w-4xl h-full max-h-[88vh] overflow-y-auto overscroll-contain px-2 sm:px-4 lg:px-4 py-8 pb-[calc(env(safe-area-inset-bottom)+120px)] rounded-2xl lg:rounded-none border-0 bg-transparent shadow-none backdrop-blur-none"
+        style={{
+          WebkitOverflowScrolling: "touch",
+          paddingTop: "calc(env(safe-area-inset-top) + 16px)",
+        }}
+      data-scrollable="true"
+    >
+      {title ? (
+        <h2 className="mb-4 text-xl font-semibold text-white">
+          {title}
+        </h2>
+      ) : null}
+      <p className="whitespace-pre-wrap text-base lg:text-lg leading-relaxed text-neutral-50">
         {content || "Contenido no disponible"}
       </p>
+      </div>
     </div>
   );
 }
 
 type CommentsPanelProps = {
   classId: string;
-  comments: Array<{ id: string; author: string; text: string; createdAt: number }>;
-  onAdd: (text: string) => void;
+  comments: Array<{ id: string; author: string; text: string; createdAt: number; parentId?: string | null }>;
+  loading?: boolean;
+  onAdd: (text: string, parentId?: string | null) => void;
   onClose: () => void;
 };
 
-function CommentsPanel({ classId, comments, onAdd, onClose }: CommentsPanelProps) {
+function CommentsPanel({ classId, comments, onAdd, onClose, loading = false }: CommentsPanelProps) {
   const [text, setText] = useState("");
+  const [replyTo, setReplyTo] = useState<{ id: string; author: string } | null>(null);
+  const commentsByParent = comments.reduce<Record<string, Array<typeof comments[number]>>>((acc, c) => {
+    const key = c.parentId ?? "__root__";
+    acc[key] = acc[key] ? [...acc[key], c] : [c];
+    return acc;
+  }, {});
+
+  const renderComment = (c: CommentsPanelProps["comments"][number], depth = 0) => {
+    const children = (commentsByParent[c.id] ?? []).sort((a, b) => a.createdAt - b.createdAt);
+    const palette = ["bg-sky-900/40", "bg-blue-900/30", "bg-indigo-900/30"];
+    const bubble = palette[depth % palette.length];
+    const indent = Math.min(depth, 4) * 14; // px
+    const initials = (c.author || "U").slice(0, 2).toUpperCase();
+
+    return (
+      <div key={c.id} className="relative">
+        <div className="flex gap-2">
+          <div className="flex-shrink-0">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-white/15 text-xs font-bold text-white">
+              {initials}
+            </div>
+          </div>
+          <div
+            className={`flex-1 rounded-2xl ${bubble} px-3 py-2 shadow`}
+            style={{ marginLeft: indent ? `${indent}px` : undefined }}
+          >
+            <p className="text-xs font-semibold text-white">{c.author}</p>
+            <p className="text-sm text-white/90 whitespace-pre-wrap">{c.text}</p>
+            <div className="mt-1 flex items-center gap-3 text-[11px] text-white/60">
+              <span>{new Date(c.createdAt).toLocaleString()}</span>
+              <button
+                type="button"
+                onClick={() => setReplyTo({ id: c.id, author: c.author })}
+                className="font-semibold text-blue-300 hover:text-blue-200"
+              >
+                Responder
+              </button>
+            </div>
+          </div>
+        </div>
+        {children.length ? (
+          <div className="mt-2 space-y-3 border-l border-white/10 pl-4 ml-4">
+            {children.map((child) => renderComment(child, depth + 1))}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   return (
     <div className="fixed inset-y-0 right-0 z-40 w-full max-w-md bg-neutral-900/95 backdrop-blur-lg text-white shadow-2xl lg:top-0 lg:right-0">
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
@@ -2030,20 +2771,14 @@ function CommentsPanel({ classId, comments, onAdd, onClose }: CommentsPanelProps
       </div>
 
       <div className="flex h-[70vh] flex-col gap-3 overflow-y-auto px-4 py-3">
-        {comments.length === 0 ? (
+        {loading ? (
+          <p className="text-sm text-white/60">Cargando comentarios...</p>
+        ) : comments.length === 0 ? (
           <p className="text-sm text-white/60">Sé el primero en comentar.</p>
         ) : (
-          comments
+          (commentsByParent["__root__"] ?? [])
             .sort((a, b) => b.createdAt - a.createdAt)
-            .map((c) => (
-              <div key={c.id} className="rounded-lg bg-white/5 p-3">
-                <p className="text-xs font-semibold text-white">{c.author}</p>
-                <p className="text-sm text-white/90">{c.text}</p>
-                <p className="text-[11px] text-white/50">
-                  {new Date(c.createdAt).toLocaleString()}
-                </p>
-              </div>
-            ))
+            .map((c) => renderComment(c, 0))
         )}
       </div>
 
@@ -2052,17 +2787,29 @@ function CommentsPanel({ classId, comments, onAdd, onClose }: CommentsPanelProps
           onSubmit={(e) => {
             e.preventDefault();
             if (!text.trim()) return;
-            onAdd(text.trim());
+            onAdd(text.trim(), replyTo?.id ?? null);
             setText("");
+            setReplyTo(null);
           }}
           className="flex items-center gap-2"
         >
           <input
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="Escribe un comentario..."
+            placeholder={
+              replyTo ? `Responder a ${replyTo.author}` : "Escribe un comentario..."
+            }
             className="w-full rounded-full border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none"
           />
+          {replyTo ? (
+            <button
+              type="button"
+              onClick={() => setReplyTo(null)}
+              className="rounded-full bg-white/10 px-3 py-2 text-xs text-white hover:bg-white/20"
+            >
+              Cancelar
+            </button>
+          ) : null}
           <button
             type="submit"
             className="rounded-full bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-500"
@@ -2070,6 +2817,131 @@ function CommentsPanel({ classId, comments, onAdd, onClose }: CommentsPanelProps
             Enviar
           </button>
         </form>
+      </div>
+    </div>
+  );
+}
+
+type AssignmentPanelProps = {
+  classId: string;
+  classTitle?: string;
+  templateUrl?: string;
+  note: string;
+  onChangeNote: (val: string) => void;
+  onSubmit: () => void | Promise<void>;
+  onClose: () => void;
+  selectedFile: File | null;
+  onFileChange: (file: File | null) => void;
+  uploading: boolean;
+  submitted: boolean;
+};
+
+function AssignmentPanel({ classId, classTitle, templateUrl, note, onChangeNote, onSubmit, onClose, selectedFile, onFileChange, uploading, submitted }: AssignmentPanelProps) {
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) onFileChange(file);
+  };
+
+  return (
+    <div className="fixed inset-y-0 right-0 z-40 w-full max-w-md bg-neutral-900/95 backdrop-blur-lg text-white shadow-2xl lg:top-0 lg:right-0">
+      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+        <div>
+          <p className="text-sm font-semibold">Tarea</p>
+          <p className="text-xs text-white/60">Clase {classTitle ?? classId.slice(0, 6)}</p>
+        </div>
+        {submitted ? (
+          <span className="rounded-full bg-green-600/20 px-3 py-1 text-xs font-semibold text-green-200">
+            Tarea enviada
+          </span>
+        ) : null}
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-full bg-white/10 px-3 py-1 text-xs hover:bg-white/20"
+        >
+          Cerrar
+        </button>
+      </div>
+
+      <div className="flex h-[70vh] flex-col gap-4 overflow-y-auto px-4 py-4">
+        <div className="rounded-2xl bg-white/5 p-3 text-sm text-white/90">
+          {templateUrl ? (
+            <a
+              href={templateUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 rounded-full bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-500"
+            >
+              <ControlIcon name="assignment" />
+              Descargar plantilla
+            </a>
+          ) : (
+            <p className="text-white/60">No hay plantilla adjunta.</p>
+          )}
+        </div>
+
+        {submitted ? (
+          <div className="flex flex-col items-center justify-center gap-3 rounded-2xl bg-white/5 p-4 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-500/20 text-green-200">
+              <ControlIcon name="check" />
+            </div>
+            <p className="text-sm font-semibold text-white">Tarea enviada</p>
+            <p className="text-xs text-white/60">Ya registramos tu entrega para esta clase.</p>
+          </div>
+        ) : (
+          <div className="rounded-2xl bg-white/5 p-3">
+            <p className="mb-2 text-sm font-semibold text-white">Enlace o notas de la tarea</p>
+            <textarea
+              value={note}
+              onChange={(e) => onChangeNote(e.target.value)}
+              placeholder="Pega aquí el enlace de tu entrega o notas para el profesor"
+              className="h-32 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none"
+            />
+            <div className="mt-3 space-y-2 text-sm text-white/90">
+              <p className="font-semibold text-white">Adjuntar archivo (PDF o DOC)</p>
+              <div
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={handleDrop}
+                className={`relative flex min-h-[120px] cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed ${
+                  dragOver ? "border-blue-400 bg-blue-500/10" : "border-white/20 bg-white/5"
+                } px-4 py-3 text-center transition`}
+                onClick={() => document.getElementById(`assignment-file-${classId}`)?.click()}
+              >
+                <input
+                  id={`assignment-file-${classId}`}
+                  type="file"
+                  accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  className="hidden"
+                  onChange={(e) => onFileChange(e.target.files?.[0] ?? null)}
+                />
+                <ControlIcon name="assignment" />
+                <p className="mt-2 text-sm font-semibold text-white">Arrastra aquí o haz clic para subir</p>
+                <p className="text-xs text-white/60">Formatos: PDF, DOC, DOCX</p>
+                {selectedFile ? (
+                  <p className="mt-2 text-xs text-white/80">Seleccionado: {selectedFile.name}</p>
+                ) : (
+                  <p className="mt-2 text-xs text-white/50">Máx. 1 archivo</p>
+                )}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onSubmit}
+              disabled={uploading}
+              className={`mt-3 inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold text-white ${
+                uploading ? "bg-green-600/60 cursor-wait" : "bg-green-600 hover:bg-green-500"
+              }`}
+            >
+              {uploading ? "Enviando..." : "Enviar tarea"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2204,7 +3076,7 @@ function ImageCarousel({
   };
 
   return (
-    <div className="relative h-[80vh] w-full bg-black overflow-hidden">
+    <div className="relative w-full h-full bg-black overflow-hidden flex items-center justify-center">
       {/* Contenedor con scroll horizontal */}
       <div
         ref={containerRef}
@@ -2228,7 +3100,7 @@ function ImageCarousel({
             <img
               src={src}
               alt={`${title} - ${idx + 1}/${images.length}`}
-              className="max-w-full max-h-full object-contain select-none"
+              className="max-w-full max-h-full w-auto h-auto object-contain select-none"
               draggable={false}
             />
           </div>
