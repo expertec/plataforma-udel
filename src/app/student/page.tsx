@@ -1211,6 +1211,7 @@ export default function StudentFeedPage() {
           classId={cls.id}
           classDocId={cls.classDocId ?? cls.id}
           courseId={cls.courseId}
+          courseTitle={courseTitleMap[cls.courseId ?? ""] || cls.courseTitle || courseName || "Curso"}
           lessonId={cls.lessonId}
           enrollmentId={enrollmentId ?? undefined}
           groupId={cls.groupId}
@@ -2280,6 +2281,7 @@ type QuizContentProps = {
   classId: string;
   classDocId?: string;
   courseId?: string;
+  courseTitle?: string;
   lessonId?: string;
   enrollmentId?: string;
   groupId?: string;
@@ -2290,7 +2292,7 @@ type QuizContentProps = {
   onProgress?: (pct: number) => void;
 };
 
-function QuizContent({ classId, classDocId, courseId, lessonId, enrollmentId, groupId, classTitle, studentName, studentId, isActive = true, onProgress }: QuizContentProps) {
+function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enrollmentId, groupId, classTitle, studentName, studentId, isActive = true, onProgress }: QuizContentProps) {
   const [questions, setQuestions] = useState<
     Array<{
       id: string;
@@ -2459,7 +2461,7 @@ function QuizContent({ classId, classDocId, courseId, lessonId, enrollmentId, gr
         classDocId: baseClassId,
         className: classTitle ?? "Quiz",
         courseId: courseId ?? "",
-        courseTitle: courseTitleMap[courseId ?? ""] ?? "",
+        courseTitle: courseTitle ?? "",
         classType: "quiz",
         studentId,
         studentName: studentName ?? "Estudiante",
@@ -2487,7 +2489,7 @@ function QuizContent({ classId, classDocId, courseId, lessonId, enrollmentId, gr
     } finally {
       setSubmitting(false);
     }
-  }, [allAnswered, enrollmentId, studentId, groupId, submitting, questions, answers, classId, classTitle, studentName]);
+  }, [allAnswered, enrollmentId, studentId, groupId, submitting, questions, answers, classId, classTitle, studentName, courseId, classDocId, courseTitle]);
 
   return (
     <div className="flex h-full w-full items-center justify-center px-4 lg:px-10 lg:pr-[140px]">
