@@ -532,7 +532,7 @@ export default function StudentFeedPage() {
             orderBy("createdAt", "desc"),
           ),
         );
-        const data = snap.docs.map((d) => {
+        const data: CommentsPanelComment[] = snap.docs.map((d): CommentsPanelComment => {
           const c = d.data();
           const role = (c.role ?? c.authorRole ?? null) as string | null;
           const rawAuthor = normalizeAuthor(c.authorName, c.authorId ?? "");
@@ -560,9 +560,9 @@ export default function StudentFeedPage() {
                     (d.role === "professor" && !authorNameCacheRef.current[d.authorId])
                   ),
               )
-              .map((d) => d.authorId),
+              .map((d) => d.authorId || ""),
           ),
-        ).filter((id) => !authorNameCacheRef.current[id]);
+        ).filter((id): id is string => !!id && !authorNameCacheRef.current[id]);
 
         if (missingIds.length) {
           await Promise.all(
@@ -580,7 +580,7 @@ export default function StudentFeedPage() {
           );
         }
 
-        const withNames = data.map((d) => {
+        const withNames: CommentsPanelComment[] = data.map((d) => {
           const cached = authorNameCacheRef.current[d.authorId ?? ""];
           if (cached) return { ...d, author: cached };
           if (d.role === "professor" && !/^profesor$/i.test(d.author ?? "")) return d;
