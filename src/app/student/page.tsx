@@ -2403,6 +2403,8 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
   const [textInputs, setTextInputs] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [submissionStatus, setSubmissionStatus] = useState<string | null>(null);
+  const [submissionGrade, setSubmissionGrade] = useState<number | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const onProgressRef = useRef(onProgress);
   const savedRef = useRef(false);
@@ -2418,6 +2420,8 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
     setTextInputs({});
     setSubmitting(false);
     setSubmitted(false);
+    setSubmissionStatus(null);
+    setSubmissionGrade(null);
     savedRef.current = false;
     const loadQuestions = async () => {
       const targetClassId = classDocId ?? classId;
@@ -2461,7 +2465,9 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
   useEffect(() => {
     if (!onProgressRef.current) return;
     const total = Math.max(questions.length, 1);
-    const pct = submitted ? 100 : (answeredCount / total) * 100;
+    const rawPct = (answeredCount / total) * 100;
+    // Solo se considera 100% cuando el quiz ha sido enviado; antes se limita a <100.
+    const pct = submitted ? 100 : Math.min(99, rawPct);
     onProgressRef.current(Math.min(100, Math.max(0, pct)));
   }, [answeredCount, questions.length, submitted]);
 
@@ -2470,6 +2476,7 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
   }, [questions.length]);
 
   const handleSelect = (questionId: string, optionId: string) => {
+    if (submitted) return;
     setAnswers((prev) => ({ ...prev, [questionId]: optionId }));
     const idx = questions.findIndex((q) => q.id === questionId);
     if (idx !== -1 && idx < questions.length - 1) {
@@ -2489,6 +2496,48 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
       hasCurrentQuestion: !!currentQuestion
     });
   }, [questions, currentIdx, currentQuestion]);
+
+  useEffect(() => {
+    const checkExistingSubmission = async () => {
+      const baseClassId = classDocId ?? classId;
+      if (!groupId || !studentId || !baseClassId) return;
+      try {
+        const subRef = collection(db, "groups", groupId, "submissions");
+        const snap = await getDocs(
+          query(
+            subRef,
+            where("classId", "==", baseClassId),
+            where("studentId", "==", studentId),
+            limit(1),
+          ),
+        );
+        if (snap.empty) return;
+        const docData = snap.docs[0].data() as any;
+        const answersArray = Array.isArray(docData.answers) ? docData.answers : [];
+        const mapped = answersArray.reduce((acc: Record<string, string>, item: any) => {
+          if (item?.questionId) {
+            acc[item.questionId] = item.selectedOptionId ?? item.selectedOptionText ?? "";
+          }
+          return acc;
+        }, {});
+        setAnswers(mapped);
+        setSubmitted(true);
+        savedRef.current = true;
+        setSubmissionStatus(
+          docData.status === "graded"
+            ? "Calificado"
+            : docData.status === "late"
+              ? "Fuera de tiempo"
+              : "En revisión",
+        );
+        setSubmissionGrade(typeof docData.grade === "number" ? docData.grade : null);
+        onProgressRef.current?.(100);
+      } catch (err) {
+        console.warn("No se pudo validar el estado del quiz:", err);
+      }
+    };
+    checkExistingSubmission();
+  }, [groupId, studentId, classId, classDocId]);
 
   const handleSubmit = useCallback(async () => {
     if (
@@ -2664,21 +2713,32 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
         ) : null}
 
         {questions.length > 0 ? (
-          <div className="flex items-center justify-end gap-2 pt-2">
-            {!submitted ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+            {submitted ? (
+              <div className="inline-flex items-center gap-2 rounded-full bg-green-600/20 px-4 py-2 text-sm font-semibold text-green-200">
+                <span>Quiz enviado</span>
+                {submissionStatus ? (
+                  <span className="rounded-full bg-white/10 px-2 py-[2px] text-[11px] text-white/90">
+                    {submissionStatus}
+                  </span>
+                ) : null}
+                {typeof submissionGrade === "number" ? (
+                  <span className="rounded-full bg-white/10 px-2 py-[2px] text-[11px] text-white/90">
+                    Calificación: {submissionGrade}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+            <div className="flex items-center gap-2">
               <button
                 type="button"
-                disabled={!allAnswered || submitting}
+                disabled={!allAnswered || submitting || submitted}
                 onClick={handleSubmit}
                 className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow disabled:opacity-50"
               >
-                {submitting ? "Enviando..." : allAnswered ? "Enviar quiz" : "Contesta todas las preguntas"}
+                {submitted ? "Ya enviado" : submitting ? "Enviando..." : allAnswered ? "Enviar quiz" : "Contesta todas las preguntas"}
               </button>
-            ) : (
-              <span className="rounded-full bg-green-600/20 px-4 py-2 text-sm font-semibold text-green-200">
-                Quiz enviado
-              </span>
-            )}
+            </div>
           </div>
         ) : null}
       </div>
@@ -3201,7 +3261,8 @@ function ImageCarousel({
         style={{
           scrollbarWidth: 'none',
           msOverflowStyle: 'none',
-          WebkitOverflowScrolling: 'touch'
+          WebkitOverflowScrolling: 'touch',
+          touchAction: 'pan-x', // permitir swipe horizontal aunque el contenedor padre use pan-y
         }}
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
