@@ -59,7 +59,7 @@ export function LoginCard({
         <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50 shadow-sm">
           <Image
             src="/university-logo.jpg"
-            alt="Logo Udel Universidad"
+            alt="Logo UDEL Universidad"
             width={48}
             height={48}
             className="object-cover"

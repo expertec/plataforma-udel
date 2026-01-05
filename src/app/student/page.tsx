@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import Link from "next/link";
 import Player from "@vimeo/player";
 import { auth } from "@/lib/firebase/client";
 import { onAuthStateChanged, User } from "firebase/auth";
@@ -153,6 +154,7 @@ export default function StudentFeedPage() {
   const [likedMap, setLikedMap] = useState<Record<string, boolean>>({});
   const [likePendingMap, setLikePendingMap] = useState<Record<string, boolean>>({});
   const [loadingCommentsMap, setLoadingCommentsMap] = useState<Record<string, boolean>>({});
+  const [mobileClassesOpen, setMobileClassesOpen] = useState(false);
 
   const getPrevSameCourse = useCallback(
     (targetIdx: number) => {
@@ -1328,6 +1330,113 @@ export default function StudentFeedPage() {
     );
   }
 
+  const renderCourseTree = () =>
+    courseThreads.map((course) => {
+      const totalCourseItems = course.lessons.reduce((acc, l) => acc + l.items.length, 0);
+      const completedCourseItems = course.lessons.reduce(
+        (acc, l) =>
+          acc +
+          l.items.filter(
+            (it) =>
+              Math.max(progressMap[it.id] ?? 0, completedMap[it.id] || seenMap[it.id] ? 100 : 0) >= getRequiredPct(it.type),
+          ).length,
+        0,
+      );
+      return (
+        <div key={course.courseId} className="rounded-xl border border-white/5 bg-neutral-900/60 p-3 shadow-inner">
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-lg bg-white/5 px-3 py-2">
+            <span className="text-sm font-semibold text-neutral-100">{course.courseTitle}</span>
+            <span className="text-[11px] text-neutral-300">
+              {completedCourseItems}/{totalCourseItems}
+            </span>
+          </div>
+          <div className="space-y-3">
+            {course.lessons.map((lesson) => {
+              const totalItems = lesson.items.length;
+              const completedItems = lesson.items.filter(
+                (it) =>
+                  Math.max(progressMap[it.id] ?? 0, (completedMap[it.id] || seenMap[it.id]) ? 100 : 0) >=
+                  getRequiredPct(it.type),
+              ).length;
+              const collapsed = collapsedLessons[lesson.lessonId] ?? false;
+              return (
+                <div key={lesson.lessonId} className="rounded-lg border border-white/5 bg-neutral-900/70 p-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCollapsedLessons((prev) => ({
+                        ...prev,
+                        [lesson.lessonId]: !collapsed,
+                      }))
+                    }
+                    className="flex w-full items-center gap-2 text-xs font-semibold text-neutral-100 hover:text-white"
+                  >
+                    <span className="line-clamp-1 flex-1 text-left">{lesson.lessonTitle}</span>
+                    <span className="text-[10px] text-neutral-300">
+                      {completedItems}/{totalItems}
+                    </span>
+                    <span
+                      className={`inline-flex h-4 w-4 items-center justify-center rounded-full border border-white/20 text-[9px] transition ${
+                        collapsed ? "rotate-180" : ""
+                      }`}
+                      aria-hidden
+                    >
+                      ˅
+                    </span>
+                  </button>
+
+                  {!collapsed ? (
+                    <div className="mt-2 space-y-2 pl-3">
+                      {lesson.items.map((item, itemIdx) => {
+                        const pct = Math.round(
+                          Math.max(progressMap[item.id] ?? 0, (completedMap[item.id] || seenMap[item.id]) ? 100 : 0),
+                        );
+                        const isActive = activeId === item.id;
+                        const isLast = itemIdx === lesson.items.length - 1;
+                        const requiredPct = getRequiredPct(item.type);
+                        const isCompleted = pct >= requiredPct;
+                        return (
+                          <div key={item.id} className="relative pl-5">
+                            <span
+                              className={`absolute left-1 top-0 h-full w-px ${isLast ? "h-3" : ""} bg-white/10`}
+                              aria-hidden
+                            />
+                            <span className="absolute left-0 top-[9px]">
+                              {isCompleted ? (
+                                <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 text-white shadow">
+                                  <ControlIcon name="check" />
+                                </span>
+                              ) : (
+                                <span className="block h-2 w-2 rounded-full border border-white/40 bg-amber-400" />
+                              )}
+                            </span>
+                            <button
+                              onClick={() => {
+                                jumpToIndex(item.index);
+                                setMobileClassesOpen(false);
+                              }}
+                              className={`group flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-[11px] transition ${
+                                isActive ? "bg-white/10 text-white" : "text-neutral-300 hover:bg-white/5"
+                              }`}
+                            >
+                              <span className="flex-1 truncate">{item.title}</span>
+                              <span className="rounded-full bg-white/10 px-2 py-[1px] text-[9px] text-neutral-200 group-hover:bg-white/20">
+                                {pct}%
+                              </span>
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    });
+
   return (
     <div className="min-h-screen bg-black text-white" style={{ touchAction: "pan-y" }}>
       <header className="fixed left-0 top-0 z-20 hidden h-full w-64 flex-col border-r border-white/10 bg-neutral-900/80 p-4 lg:flex">
@@ -1336,118 +1445,66 @@ export default function StudentFeedPage() {
           <p className="text-xs text-neutral-500">{groupName}</p>
         </div>
         <div className="mt-4 flex-1 space-y-4 overflow-y-auto pr-1">
-          {courseThreads.map((course) => {
-            const totalCourseItems = course.lessons.reduce((acc, l) => acc + l.items.length, 0);
-            const completedCourseItems = course.lessons.reduce(
-              (acc, l) =>
-                acc +
-                l.items.filter(
-                  (it) =>
-                    Math.max(
-                      progressMap[it.id] ?? 0,
-                      completedMap[it.id] || seenMap[it.id] ? 100 : 0,
-                    ) >= getRequiredPct(it.type),
-                ).length,
-              0,
-            );
-            return (
-              <div key={course.courseId} className="rounded-xl border border-white/5 bg-neutral-900/60 p-3 shadow-inner">
-                <div className="mb-3 flex items-center justify-between gap-3 rounded-lg bg-white/5 px-3 py-2">
-                  <span className="text-sm font-semibold text-neutral-100">{course.courseTitle}</span>
-                  <span className="text-[11px] text-neutral-300">
-                    {completedCourseItems}/{totalCourseItems}
-                  </span>
-                </div>
-                <div className="space-y-3">
-                  {course.lessons.map((lesson) => {
-                    const totalItems = lesson.items.length;
-                    const completedItems = lesson.items.filter((it) => Math.max(progressMap[it.id] ?? 0, (completedMap[it.id] || seenMap[it.id]) ? 100 : 0) >= getRequiredPct(it.type)).length;
-                    const collapsed = collapsedLessons[lesson.lessonId] ?? false;
-                    return (
-                      <div key={lesson.lessonId} className="rounded-lg border border-white/5 bg-neutral-900/70 p-2">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setCollapsedLessons((prev) => ({
-                              ...prev,
-                              [lesson.lessonId]: !collapsed,
-                            }))
-                          }
-                          className="flex w-full items-center gap-2 text-xs font-semibold text-neutral-100 hover:text-white"
-                        >
-                          <span className="line-clamp-1 flex-1 text-left">{lesson.lessonTitle}</span>
-                          <span className="text-[10px] text-neutral-300">{completedItems}/{totalItems}</span>
-                          <span
-                            className={`inline-flex h-4 w-4 items-center justify-center rounded-full border border-white/20 text-[9px] transition ${
-                              collapsed ? "rotate-180" : ""
-                            }`}
-                            aria-hidden
-                          >
-                            ˅
-                          </span>
-                        </button>
-
-                        {!collapsed ? (
-                          <div className="mt-2 space-y-2 pl-3">
-                            {lesson.items.map((item, itemIdx) => {
-                              const pct = Math.round(Math.max(progressMap[item.id] ?? 0, (completedMap[item.id] || seenMap[item.id]) ? 100 : 0));
-                              const isActive = activeId === item.id;
-                              const isLast = itemIdx === lesson.items.length - 1;
-                              const requiredPct = getRequiredPct(item.type);
-                              const isCompleted = pct >= requiredPct;
-                              return (
-                                <div key={item.id} className="relative pl-5">
-                                  <span
-                                    className={`absolute left-1 top-0 h-full w-px ${isLast ? "h-3" : ""} bg-white/10`}
-                                    aria-hidden
-                                  />
-                                  <span className="absolute left-0 top-[9px]">
-                                    {isCompleted ? (
-                                      <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 text-white shadow">
-                                        <ControlIcon name="check" />
-                                      </span>
-                                    ) : (
-                                      <span className="block h-2 w-2 rounded-full border border-white/40 bg-amber-400" />
-                                    )}
-                                  </span>
-                                  <button
-                                    onClick={() => jumpToIndex(item.index)}
-                                    className={`group flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-[11px] transition ${
-                                      isActive ? "bg-white/10 text-white" : "text-neutral-300 hover:bg-white/5"
-                                    }`}
-                                  >
-                                    <span className="flex-1 truncate">{item.title}</span>
-                                    <span className="rounded-full bg-white/10 px-2 py-[1px] text-[9px] text-neutral-200 group-hover:bg-white/20">
-                                      {pct}%
-                                    </span>
-                                  </button>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
+          {renderCourseTree()}
         </div>
       </header>
 
       <main className="ml-0 lg:ml-64">
+        <button
+          type="button"
+          onClick={() => setMobileClassesOpen(true)}
+          className="pointer-events-auto fixed left-3 top-3 z-40 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white shadow-lg backdrop-blur lg:hidden"
+          aria-label="Abrir mis clases"
+        >
+          <ControlIcon name="menu" />
+          Mis clases
+        </button>
+        <Link
+          href="/student/profile"
+          className="pointer-events-auto fixed right-3 top-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white shadow-lg backdrop-blur transition hover:bg-white/20"
+          aria-label="Perfil de alumno"
+        >
+          <ControlIcon name="user" />
+        </Link>
         {/* Header overlay móvil */}
-        <div className="pointer-events-none absolute left-4 top-4 z-30 flex flex-col gap-1 text-xs text-white/80 lg:hidden">
-          <span className="rounded-full bg-black/50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.12em]">
-            {courseName || "Curso"}
+        <div className="pointer-events-none absolute inset-x-0 top-4 z-30 flex items-center justify-center text-xs text-white/80 lg:hidden">
+          <span className="rounded-full bg-black/50 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.12em]">
+            {courseTitleMap[activeClass?.courseId ?? ""] || activeClass?.courseTitle || courseName || "Curso"}
           </span>
-          <span className="rounded-full bg-black/30 px-3 py-1">{groupName || "Grupo"}</span>
         </div>
         <div
           ref={containerRef}
           className="relative flex h-screen snap-y snap-mandatory flex-col overflow-y-scroll scroll-smooth no-scrollbar overscroll-contain"
         >
+          {mobileClassesOpen ? (
+            <div
+              className="fixed inset-0 z-40 bg-black/60 lg:hidden"
+              onClick={() => setMobileClassesOpen(false)}
+              aria-hidden
+            />
+          ) : null}
+          <aside
+            className={`fixed inset-y-0 left-0 z-50 w-[85vw] max-w-sm bg-neutral-900/95 text-white shadow-2xl backdrop-blur transition-transform duration-300 lg:hidden ${
+              mobileClassesOpen ? "translate-x-0" : "-translate-x-full"
+            }`}
+          >
+            <div className="flex items-center justify-between p-4">
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-neutral-400">{groupName || "Grupo"}</p>
+                <h2 className="text-lg font-semibold leading-tight">Mis clases</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMobileClassesOpen(false)}
+                className="rounded-full bg-white/10 px-2.5 py-1 text-sm font-semibold text-white hover:bg-white/20"
+              >
+                ×
+              </button>
+            </div>
+            <div className="h-[calc(100vh-80px)] overflow-y-auto px-3 pb-6">
+              {renderCourseTree()}
+            </div>
+          </aside>
           {classes.map((cls, idx) => {
             const safeDescription =
               cls.type === "text"
@@ -1455,8 +1512,8 @@ export default function StudentFeedPage() {
                 : typeof cls.content === "string"
                   ? cls.content.replace(/<[^>]+>/g, "").trim()
                   : "";
-            const showMobileMeta = Boolean(cls.title && safeDescription);
-            const contentBoxSizeClass = "lg:w-[min(90vh,90vw,820px)] lg:h-[min(90vh,90vw,820px)]";
+            const contentBoxSizeClass =
+              "h-[calc(100vh-120px)] max-h-full lg:w-[min(90vh,90vw,820px)] lg:h-[min(90vh,90vw,820px)]";
 
             return (
               <section
@@ -1469,8 +1526,8 @@ export default function StudentFeedPage() {
                 }}
                 className="feed-card relative flex h-screen min-h-screen w-full snap-start snap-always items-center justify-center bg-black"
               >
-                <div className="relative flex h-full w-full items-center justify-center lg:px-8 lg:py-5 mx-auto overflow-visible">
-                  <div className="relative flex items-center justify-center gap-6 lg:gap-10 w-full h-full lg:w-auto lg:h-auto pt-16 lg:pt-0">
+                <div className="relative flex h-full w-full min-h-0 items-center justify-center lg:px-8 lg:py-5 mx-auto overflow-visible">
+                  <div className="relative box-border flex min-h-0 items-center justify-center gap-6 lg:gap-10 w-full h-full lg:w-auto lg:h-auto pt-6 pb-14 lg:pt-0 lg:pb-0">
                   <div className={`relative w-full h-full ${contentBoxSizeClass} overflow-hidden rounded-none lg:rounded-2xl border-0 lg:border border-white/10 lg:bg-neutral-900/60 lg:shadow-2xl flex items-center justify-center`}>
                       {renderContent(cls, idx)}
 
@@ -1518,9 +1575,6 @@ export default function StudentFeedPage() {
                     />
                   ) : null}
 
-                  {showMobileMeta ? (
-                    <MobileSafeMeta title={cls.title} description={safeDescription} />
-                  ) : null}
                 </div>
                 </div>
               </section>
@@ -2154,38 +2208,6 @@ const VideoPlayer = React.memo(function VideoPlayer({
   );
 });
 
-type MobileSafeMetaProps = {
-  title: string;
-  description: string;
-};
-
-function MobileSafeMeta({ title, description }: MobileSafeMetaProps) {
-  const topSafePadding = "calc(env(safe-area-inset-top) + 64px)";
-  return (
-    <div
-      className="pointer-events-none absolute inset-0 z-10 flex flex-col justify-between p-4 lg:hidden"
-      style={{ paddingTop: topSafePadding }}
-    >
-      <div className="flex-1">
-        <div className="flex h-full w-full flex-col justify-end rounded-2xl border-2 border-dashed border-white/15 bg-gradient-to-b from-white/5 via-transparent to-black/40 px-4 py-3">
-          <div className="max-w-[82%] space-y-1 drop-shadow">
-            <h2 className="text-lg font-bold leading-tight text-white line-clamp-2">
-              {title}
-            </h2>
-            <p className="text-sm text-white/80 leading-snug line-clamp-3">
-              {description}
-            </p>
-          </div>
-        </div>
-      </div>
-      <div className="mt-3 inline-flex w-fit items-center gap-2 rounded-full border border-white/15 bg-black/60 px-3 py-2 text-[11px] font-semibold text-white/80 backdrop-blur">
-        <span className="h-2 w-2 rounded-full bg-emerald-400" aria-hidden />
-        Espacio libre de overlays
-      </div>
-    </div>
-  );
-}
-
 type ActionStackProps = {
   logoSrc?: string;
   likes?: number;
@@ -2258,7 +2280,9 @@ type ControlIconName =
   | "audio"
   | "arrowUp"
   | "arrowDown"
-  | "check";
+  | "check"
+  | "menu"
+  | "user";
 
 function ControlIcon({ name }: { name: ControlIconName }) {
   const common = "h-5 w-5 fill-current";
@@ -2330,6 +2354,19 @@ function ControlIcon({ name }: { name: ControlIconName }) {
       return (
         <svg viewBox="0 0 24 24" className={common}>
           <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case "menu":
+      return (
+        <svg viewBox="0 0 24 24" className={common}>
+          <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case "user":
+      return (
+        <svg viewBox="0 0 24 24" className={common}>
+          <path d="M12 12a4 4 0 100-8 4 4 0 000 8z" />
+          <path d="M5 19a7 7 0 1114 0" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       );
     default:

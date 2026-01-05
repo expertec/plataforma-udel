@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Udel Universidad",
-  description: "Plataforma académica de Udel Universidad",
+  title: "UDEL Universidad",
+  description: "Plataforma académica de UDEL Universidad",
   icons: {
     icon: "/icon.png",
     apple: "/icon.png",
