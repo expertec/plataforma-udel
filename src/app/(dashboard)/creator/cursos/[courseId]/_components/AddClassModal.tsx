@@ -1547,7 +1547,7 @@ function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTex
 
   useEffect(() => {
     if (editor && editor.getHTML() !== value) {
-      editor.commands.setContent(value || "<p></p>", false);
+      editor.commands.setContent(value || "<p></p>", { emitUpdate: false });
     }
   }, [editor, value]);
 
