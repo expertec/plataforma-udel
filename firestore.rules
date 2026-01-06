@@ -35,6 +35,16 @@ service cloud.firestore {
     function isEnrolledInGroup(groupId) {
       return exists(/databases/$(database)/documents/studentEnrollments/$(groupId + "_" + request.auth.uid));
     }
+    function isOptionalString(x) {
+      return x is string || x == null;
+    }
+    function canSelfUpsertProfile(userId) {
+      return isSelf(userId) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['displayName', 'name', 'photoURL', 'updatedAt']) &&
+        (!("displayName" in request.resource.data) || isOptionalString(request.resource.data.displayName)) &&
+        (!("name" in request.resource.data) || isOptionalString(request.resource.data.name)) &&
+        (!("photoURL" in request.resource.data) || isOptionalString(request.resource.data.photoURL));
+    }
     // Permite que profesores agreguen su materia a un grupo existente sin modificar otros campos.
     function canTeacherLinkCourseToGroup() {
       return isTeacher() &&
@@ -44,18 +54,34 @@ service cloud.firestore {
         listSize(request.resource.data.courses) >= listSize(resource.data.courses) &&
         listSize(request.resource.data.courseIds) >= listSize(resource.data.courseIds);
     }
+    // Permite a un profesor quitar su curso de un grupo, incluyendo actualizar courseId/courseName cuando corresponde.
+    function canTeacherUnlinkCourseFromGroup(groupPath) {
+      return isTeacherAssignedToGroup(groupPath) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['courses', 'courseIds', 'updatedAt', 'courseId', 'courseName']) &&
+        request.resource.data.courses is list &&
+        request.resource.data.courseIds is list &&
+        listSize(request.resource.data.courses) <= listSize(resource.data.courses) &&
+        listSize(request.resource.data.courseIds) <= listSize(resource.data.courseIds);
+    }
     function canUpdateLikesCountOnly() {
       return isSignedIn() &&
         request.resource.data.diff(resource.data).changedKeys().hasOnly(['likesCount']) &&
         request.resource.data.likesCount is int &&
         request.resource.data.likesCount >= 0;
     }
+    function canManageCourse(courseId) {
+      return isAdmin() || (
+        isTeacherLike() &&
+        exists(/databases/$(database)/documents/courses/$(courseId)) &&
+        get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
+      );
+    }
     
     /* users */
     match /users/{userId} {
       allow read: if isSelf(userId) || isAdmin() || isAdminTeacher() || (isSignedIn() && resource.data.role == 'student');
-      allow create: if isAdmin() || isAdminTeacher();
-      allow update: if isAdmin() || isAdminTeacher();
+      allow create: if isAdmin() || isAdminTeacher() || canSelfUpsertProfile(userId);
+      allow update: if isAdmin() || isAdminTeacher() || canSelfUpsertProfile(userId);
       allow delete: if isAdmin();
 
       // Subcolección para progreso visto por alumno
@@ -124,40 +150,24 @@ service cloud.firestore {
 
       match /lessons/{lessonId} {
         allow read: if isAdmin() || isSignedIn();
-        allow create, update, delete: if isAdmin() || (
-          isTeacherLike() &&
-          exists(/databases/$(database)/documents/courses/$(courseId)) &&
-          get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
-        );
+        allow create, update, delete: if canManageCourse(courseId);
 
         match /classes/{classId} {
           allow read: if isAdmin() || isSignedIn();
           // Para likesCount permitimos a cualquier usuario autenticado actualizar solo ese campo.
           allow update: if canUpdateLikesCountOnly();
-          allow create, delete: if isAdmin() || (
-            isTeacherLike() &&
-            exists(/databases/$(database)/documents/courses/$(courseId)) &&
-            get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
-          );
-          allow update: if isAdmin() || (
-            isTeacherLike() &&
-            exists(/databases/$(database)/documents/courses/$(courseId)) &&
-            get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
-          ) || canUpdateLikesCountOnly();
+          allow create, delete: if canManageCourse(courseId);
+          allow update: if canManageCourse(courseId) || canUpdateLikesCountOnly();
 
           match /questions/{questionId} {
             allow read: if isAdmin() || isSignedIn();
-            allow create, update, delete: if isAdmin() || (
-              isTeacherLike() &&
-              exists(/databases/$(database)/documents/courses/$(courseId)) &&
-              get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
-            );
+            allow create, update, delete: if canManageCourse(courseId);
           }
 
           // Likes por usuario
           match /likes/{userId} {
             allow read: if isSignedIn();
-            allow create, update, delete: if isSelf(userId) || isAdmin();
+            allow create, update, delete: if isSelf(userId) || canManageCourse(courseId) || isAdmin();
           }
 
           // Comentarios por clase
@@ -165,8 +175,29 @@ service cloud.firestore {
             // Lectura abierta para simplificar acceso a hilos en el feed.
             allow read: if true;
             allow create: if isSignedIn();
-            allow update, delete: if isAdmin() || (isSignedIn() && resource.data.authorId == request.auth.uid);
+            allow update, delete: if isAdmin() || canManageCourse(courseId) || (isSignedIn() && resource.data.authorId == request.auth.uid);
           }
+
+          // Foro (posts por clase, opcional)
+          match /forums/{postId} {
+            allow read: if isSignedIn();
+            // Crear: alumno autenticado que se firma como autor, o profesor/admin del curso.
+            allow create: if (isSignedIn() && request.resource.data.authorId == request.auth.uid) || isAdmin() || canManageCourse(courseId);
+            // Update/Delete: profesor/admin del curso o el autor del post.
+            allow update, delete: if isAdmin() || canManageCourse(courseId) || (isSignedIn() && resource.data.authorId == request.auth.uid);
+          }
+
+          // Respuestas/entregas de quizzes o clases
+          match /responses/{responseId} {
+            allow read: if isAdmin() || isSignedIn();
+            allow delete: if canManageCourse(courseId) || isAdmin();
+          }
+        }
+
+        // Inscripciones por curso (subcolección anidada en el curso)
+        match /enrollments/{userId} {
+          allow read: if isAdmin() || isSignedIn();
+          allow create, update, delete: if canManageCourse(courseId);
         }
       }
     }
@@ -175,7 +206,9 @@ service cloud.firestore {
     match /groups/{groupId} {
       allow read: if isSignedIn();
       allow create: if isAdmin() || isAdminTeacher();
-      allow update: if isAdmin() || isAdminTeacher() || canTeacherLinkCourseToGroup();
+      allow update: if isAdmin() || isAdminTeacher() ||
+        canTeacherLinkCourseToGroup() ||
+        canTeacherUnlinkCourseFromGroup(/databases/$(database)/documents/groups/$(groupId));
       allow delete: if isAdmin() || isAdminTeacher();
 
       match /students/{studentId} {

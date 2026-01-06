@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Image from "next/image";
 import toast from "react-hot-toast";
 import {
@@ -14,6 +14,11 @@ import {
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { auth } from "@/lib/firebase/client";
 import { v4 as uuidv4 } from "uuid";
+import { EditorContent, useEditor } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import ImageExtension from "@tiptap/extension-image";
+import Link from "@tiptap/extension-link";
+import Placeholder from "@tiptap/extension-placeholder";
 
 const classTypes = [
   {
@@ -114,13 +119,16 @@ export function AddClassModal({
   const [templateUploading, setTemplateUploading] = useState(false);
   const [videoDescription, setVideoDescription] = useState("");
   const [showVideoPreview, setShowVideoPreview] = useState(false);
+  const [forumEnabled, setForumEnabled] = useState(false);
+  const [forumFormat, setForumFormat] = useState<"text" | "audio" | "video">("text");
   const makeEmptyQuestion = () => ({
     id: uuidv4(),
     prompt: "",
+    explanation: "",
     type: "multiple" as "multiple" | "truefalse" | "open",
     options: [
-      { id: uuidv4(), text: "", isCorrect: true },
-      { id: uuidv4(), text: "", isCorrect: false },
+      { id: uuidv4(), text: "", isCorrect: true, feedback: "", correctFeedback: "", incorrectFeedback: "" },
+      { id: uuidv4(), text: "", isCorrect: false, feedback: "", correctFeedback: "", incorrectFeedback: "" },
     ],
     answerText: "",
   });
@@ -128,8 +136,16 @@ export function AddClassModal({
     Array<{
       id: string;
       prompt: string;
+      explanation?: string;
       type: "multiple" | "truefalse" | "open";
-      options: Array<{ id: string; text: string; isCorrect: boolean }>;
+      options: Array<{
+        id: string;
+        text: string;
+        isCorrect: boolean;
+        feedback?: string;
+        correctFeedback?: string;
+        incorrectFeedback?: string;
+      }>;
       answerText?: string;
     }>
   >([makeEmptyQuestion()]);
@@ -148,6 +164,12 @@ export function AddClassModal({
       setImageUrls(initialData.imageUrls ?? []);
       setHasAssignment(initialData.hasAssignment ?? false);
       setTemplateUrl(initialData.assignmentTemplateUrl ?? "");
+      setForumEnabled(initialData.forumEnabled ?? false);
+      setForumFormat(
+        initialData.forumRequiredFormat === "audio" || initialData.forumRequiredFormat === "video"
+          ? initialData.forumRequiredFormat
+          : "text",
+      );
       if (initialData.type === "image" && (initialData.imageUrls?.length ?? 0) > 1) {
         setImageMode("carousel");
       } else {
@@ -165,6 +187,7 @@ export function AddClassModal({
               qs.map((q) => ({
                 id: q.id,
                 prompt: q.prompt,
+                explanation: q.explanation ?? "",
                 type: q.type,
                 options:
                   q.type === "open"
@@ -173,6 +196,9 @@ export function AddClassModal({
                         id: o.id,
                         text: o.text,
                         isCorrect: o.isCorrect,
+                        feedback: o.feedback ?? "",
+                        correctFeedback: o.correctFeedback ?? "",
+                        incorrectFeedback: o.incorrectFeedback ?? "",
                       })),
                 answerText: q.answerText ?? "",
               })),
@@ -193,8 +219,25 @@ export function AddClassModal({
       setTemplateUrl("");
       setShowVideoPreview(false);
       setVideoDescription("");
+      setForumEnabled(false);
+      setForumFormat("text");
     }
   }, [mode, initialData, open, courseId, lessonId, classId]);
+
+  const handleImageUpload = async (file: File) => {
+    const user = auth.currentUser;
+    if (!user) {
+      toast.error("Inicia sesión para subir imágenes");
+      throw new Error("Not authenticated");
+    }
+    const storage = getStorage();
+    const ext = file.name.split(".").pop() || "jpg";
+    const storageRef = ref(storage, `class-descriptions/${user.uid}/${uuidv4()}.${ext.toLowerCase()}`);
+    const snapshot = await uploadBytes(storageRef, file, {
+      contentType: file.type,
+    });
+    return getDownloadURL(snapshot.ref);
+  };
 
   if (!open) return null;
 
@@ -247,6 +290,8 @@ export function AddClassModal({
           imageUrls: type === "image" ? imageUrls : [],
           hasAssignment,
           assignmentTemplateUrl: hasAssignment ? templateUrl : "",
+          forumEnabled,
+          forumRequiredFormat: forumEnabled ? forumFormat : null,
         });
       } else {
         savedClassId = await createClass({
@@ -267,6 +312,8 @@ export function AddClassModal({
           imageUrls: type === "image" ? imageUrls : [],
           hasAssignment,
           assignmentTemplateUrl: hasAssignment ? templateUrl : "",
+          forumEnabled,
+          forumRequiredFormat: forumEnabled ? forumFormat : null,
         });
       }
       if (type === "quiz" && savedClassId) {
@@ -278,7 +325,31 @@ export function AddClassModal({
           );
         }
         const trimmed = questions.map((q, idx) => {
+          if (q.type === "multiple") {
+            return {
+              prompt: q.prompt.trim(),
+              explanation: (q.explanation ?? "").trim(),
+              order: idx,
+              type: "multiple" as const,
+              options: q.options
+                .filter((o) => o.text.trim().length > 0)
+                .map((o) => ({
+                  ...o,
+                  text: o.text.trim(),
+                  feedback: (o.feedback ?? "").trim(),
+                  correctFeedback: (o.correctFeedback ?? "").trim(),
+                  incorrectFeedback: (o.incorrectFeedback ?? "").trim(),
+                })),
+            };
+          }
           if (q.type === "truefalse") {
+            const opts = q.options.map((o) => ({
+              ...o,
+              text: o.text.trim().toLowerCase(),
+              feedback: (o.feedback ?? "").trim(),
+              correctFeedback: (o.correctFeedback ?? "").trim(),
+              incorrectFeedback: (o.incorrectFeedback ?? "").trim(),
+            }));
             const isTrueCorrect = q.options.some(
               (o) => o.isCorrect && o.text.toLowerCase().startsWith("verdadero"),
             );
@@ -289,14 +360,21 @@ export function AddClassModal({
               id: uuidv4(),
               text: "Verdadero",
               isCorrect: isTrueCorrect || (!isTrueCorrect && !isFalseCorrect),
+              feedback: opts.find((o) => o.text.startsWith("verdadero"))?.feedback ?? "",
+              correctFeedback: opts.find((o) => o.text.startsWith("verdadero"))?.correctFeedback ?? "",
+              incorrectFeedback: opts.find((o) => o.text.startsWith("verdadero"))?.incorrectFeedback ?? "",
             };
             const falseOpt = {
               id: uuidv4(),
               text: "Falso",
               isCorrect: isFalseCorrect && !trueOpt.isCorrect,
+              feedback: opts.find((o) => o.text.startsWith("falso"))?.feedback ?? "",
+              correctFeedback: opts.find((o) => o.text.startsWith("falso"))?.correctFeedback ?? "",
+              incorrectFeedback: opts.find((o) => o.text.startsWith("falso"))?.incorrectFeedback ?? "",
             };
             return {
               prompt: q.prompt.trim(),
+              explanation: (q.explanation ?? "").trim(),
               order: idx,
               type: "truefalse" as const,
               options: [trueOpt, falseOpt],
@@ -305,6 +383,7 @@ export function AddClassModal({
           if (q.type === "open") {
             return {
               prompt: q.prompt.trim(),
+              explanation: (q.explanation ?? "").trim(),
               order: idx,
               type: "open" as const,
               options: [],
@@ -317,7 +396,13 @@ export function AddClassModal({
             type: "multiple" as const,
             options: q.options
               .filter((o) => o.text.trim().length > 0)
-              .map((o) => ({ ...o, text: o.text.trim() })),
+              .map((o) => ({
+                ...o,
+                text: o.text.trim(),
+                feedback: (o.feedback ?? "").trim(),
+                correctFeedback: (o.correctFeedback ?? "").trim(),
+                incorrectFeedback: (o.incorrectFeedback ?? "").trim(),
+              })),
           };
         });
         await Promise.all(
@@ -327,6 +412,7 @@ export function AddClassModal({
               lessonId,
               classId: savedClassId!,
               prompt: q.prompt,
+              explanation: q.explanation,
               options: q.options,
               order: q.order,
               type: q.type,
@@ -525,12 +611,23 @@ export function AddClassModal({
               <label className="text-sm font-medium text-slate-800">
                 Descripción del video
               </label>
-              <textarea
+              <RichTextEditor
                 value={videoDescription}
-                onChange={(e) => setVideoDescription(e.target.value)}
-                rows={3}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                onChange={setVideoDescription}
                 placeholder="Escribe una breve descripción del video"
+                onUploadImage={handleImageUpload}
+              />
+            </div>
+          ) : null}
+
+          {type === "text" ? (
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-800">Contenido de la clase</label>
+              <RichTextEditor
+                value={content}
+                onChange={setContent}
+                placeholder="Escribe el contenido y agrega imágenes"
+                onUploadImage={handleImageUpload}
               />
             </div>
           ) : null}
@@ -629,6 +726,63 @@ export function AddClassModal({
                     </div>
                   ) : null}
                 </div>
+              </div>
+            ) : null}
+          </div>
+
+          {/* Foro */}
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">Foro obligatorio</p>
+                <p className="text-xs text-slate-600">
+                  Si está activo, el alumno debe participar en el foro para avanzar.
+                </p>
+              </div>
+              <label className="flex cursor-pointer items-center gap-2">
+                <span className="text-xs text-slate-600">No</span>
+                <div
+                  role="switch"
+                  aria-checked={forumEnabled}
+                  tabIndex={0}
+                  onClick={() => setForumEnabled((prev) => !prev)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setForumEnabled((prev) => !prev);
+                    }
+                  }}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
+                    forumEnabled ? "bg-blue-500" : "bg-slate-300"
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-5 w-5 rounded-full bg-white shadow transition ${
+                      forumEnabled ? "translate-x-5" : "translate-x-1"
+                    }`}
+                  />
+                </div>
+                <span className="text-xs text-slate-600">Sí</span>
+              </label>
+            </div>
+
+            {forumEnabled ? (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="text-sm font-medium text-slate-800">Formato requerido</label>
+                  <select
+                    value={forumFormat}
+                    onChange={(e) => setForumFormat(e.target.value as "text" | "audio" | "video")}
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="text">Texto</option>
+                    <option value="audio">Audio</option>
+                    <option value="video">Video</option>
+                  </select>
+                </div>
+                <p className="text-xs text-slate-600 sm:col-span-2">
+                  El alumno deberá enviar al menos un aporte en este formato para desbloquear la siguiente clase.
+                </p>
               </div>
             ) : null}
           </div>
@@ -833,6 +987,22 @@ export function AddClassModal({
                     <div className="h-full w-3/4 animate-pulse rounded-full bg-blue-500/70" />
                   </div>
                 ) : null}
+                {type === "video" ? (
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-800">
+                      URL de video (Vimeo/YouTube o archivo subido)
+                    </label>
+                    <input
+                      value={url}
+                      onChange={(e) => setUrl(e.target.value)}
+                      placeholder="https://vimeo.com/123456789 o https://player.vimeo.com/video/123456789"
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <p className="text-xs text-slate-500">
+                      Pega un link de Vimeo/YouTube o usa el archivo subido arriba.
+                    </p>
+                  </div>
+                ) : null}
                 {!uploading && url && type === "video" ? (
                   <div className="mt-3 space-y-2 rounded-lg bg-green-50 px-3 py-2 text-sm text-green-800">
                     <div className="flex items-center justify-between gap-2">
@@ -916,27 +1086,55 @@ export function AddClassModal({
                                   prev.map((q) =>
                                     q.id === question.id
                                       ? nextType === "multiple"
-                                        ? {
-                                            ...q,
-                                            type: "multiple",
-                                            options: [
-                                              { id: uuidv4(), text: "", isCorrect: true },
-                                              { id: uuidv4(), text: "", isCorrect: false },
-                                            ],
-                                            answerText: "",
-                                          }
-                                        : nextType === "truefalse"
-                                        ? {
-                                            ...q,
-                                            type: "truefalse",
-                                            options: [
-                                              { id: uuidv4(), text: "Verdadero", isCorrect: true },
-                                              { id: uuidv4(), text: "Falso", isCorrect: false },
-                                            ],
-                                            answerText: "",
-                                          }
-                                        : {
-                                            ...q,
+                                      ? {
+                                          ...q,
+                                          type: "multiple",
+                                          options: [
+                                            {
+                                              id: uuidv4(),
+                                              text: "",
+                                              isCorrect: true,
+                                              feedback: "",
+                                              correctFeedback: "",
+                                              incorrectFeedback: "",
+                                            },
+                                            {
+                                              id: uuidv4(),
+                                              text: "",
+                                              isCorrect: false,
+                                              feedback: "",
+                                              correctFeedback: "",
+                                              incorrectFeedback: "",
+                                            },
+                                          ],
+                                          answerText: "",
+                                        }
+                                      : nextType === "truefalse"
+                                      ? {
+                                          ...q,
+                                          type: "truefalse",
+                                          options: [
+                                            {
+                                              id: uuidv4(),
+                                              text: "Verdadero",
+                                              isCorrect: true,
+                                              feedback: "",
+                                              correctFeedback: "",
+                                              incorrectFeedback: "",
+                                            },
+                                            {
+                                              id: uuidv4(),
+                                              text: "Falso",
+                                              isCorrect: false,
+                                              feedback: "",
+                                              correctFeedback: "",
+                                              incorrectFeedback: "",
+                                            },
+                                          ],
+                                          answerText: "",
+                                        }
+                                      : {
+                                          ...q,
                                             type: "open",
                                             options: [],
                                             answerText: "",
@@ -963,6 +1161,19 @@ export function AddClassModal({
                             }
                             placeholder="Escribe la pregunta"
                             className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          />
+                          <textarea
+                            value={question.explanation ?? ""}
+                            onChange={(e) =>
+                              setQuestions((prev) =>
+                                prev.map((q) =>
+                                  q.id === question.id ? { ...q, explanation: e.target.value } : q,
+                                ),
+                              )
+                            }
+                            placeholder="Explicación general de la pregunta (opcional, se muestra tras responder)"
+                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                            rows={2}
                           />
 
                           {question.type === "multiple" ? (
@@ -1015,6 +1226,68 @@ export function AddClassModal({
                                     placeholder={`Opción ${optIdx + 1}`}
                                     className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                                   />
+                                  <div className="space-y-2 w-full">
+                                    <input
+                                      value={opt.feedback ?? ""}
+                                      onChange={(e) =>
+                                        setQuestions((prev) =>
+                                          prev.map((q) =>
+                                            q.id === question.id
+                                              ? {
+                                                  ...q,
+                                                  options: q.options.map((o) =>
+                                                    o.id === opt.id ? { ...o, feedback: e.target.value } : o,
+                                                  ),
+                                                }
+                                              : q,
+                                          ),
+                                        )
+                                      }
+                                      placeholder="Explicación breve (siempre que elijan esta opción)"
+                                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                    />
+                                    {opt.isCorrect ? (
+                                      <input
+                                        value={opt.correctFeedback ?? ""}
+                                        onChange={(e) =>
+                                          setQuestions((prev) =>
+                                            prev.map((q) =>
+                                              q.id === question.id
+                                                ? {
+                                                    ...q,
+                                                    options: q.options.map((o) =>
+                                                      o.id === opt.id ? { ...o, correctFeedback: e.target.value } : o,
+                                                    ),
+                                                  }
+                                                : q,
+                                            ),
+                                          )
+                                        }
+                                        placeholder="Mensaje si se elige (opción correcta)"
+                                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                      />
+                                    ) : (
+                                      <input
+                                        value={opt.incorrectFeedback ?? ""}
+                                        onChange={(e) =>
+                                          setQuestions((prev) =>
+                                            prev.map((q) =>
+                                              q.id === question.id
+                                                ? {
+                                                    ...q,
+                                                    options: q.options.map((o) =>
+                                                      o.id === opt.id ? { ...o, incorrectFeedback: e.target.value } : o,
+                                                    ),
+                                                  }
+                                                : q,
+                                            ),
+                                          )
+                                        }
+                                        placeholder="Mensaje si se elige (opción incorrecta)"
+                                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                      />
+                                    )}
+                                  </div>
                                   {question.options.length > 2 ? (
                                     <button
                                       type="button"
@@ -1045,9 +1318,9 @@ export function AddClassModal({
                                       q.id === question.id
                                         ? {
                                             ...q,
-                                            options: [
+                                          options: [
                                               ...q.options,
-                                              { id: uuidv4(), text: "", isCorrect: false },
+                                              { id: uuidv4(), text: "", isCorrect: false, feedback: "", correctFeedback: "", incorrectFeedback: "" },
                                             ],
                                           }
                                         : q,
@@ -1074,8 +1347,26 @@ export function AddClassModal({
                                             ? {
                                                 ...q,
                                                 options: [
-                                                  { id: uuidv4(), text: "Verdadero", isCorrect: label === "Verdadero" },
-                                                  { id: uuidv4(), text: "Falso", isCorrect: label === "Falso" },
+                                                  {
+                                                    id: uuidv4(),
+                                                    text: "Verdadero",
+                                                    isCorrect: label === "Verdadero",
+                                                    feedback: q.options.find((o) => o.text === "Verdadero")?.feedback ?? "",
+                                                    correctFeedback:
+                                                      q.options.find((o) => o.text === "Verdadero")?.correctFeedback ?? "",
+                                                    incorrectFeedback:
+                                                      q.options.find((o) => o.text === "Verdadero")?.incorrectFeedback ?? "",
+                                                  },
+                                                  {
+                                                    id: uuidv4(),
+                                                    text: "Falso",
+                                                    isCorrect: label === "Falso",
+                                                    feedback: q.options.find((o) => o.text === "Falso")?.feedback ?? "",
+                                                    correctFeedback:
+                                                      q.options.find((o) => o.text === "Falso")?.correctFeedback ?? "",
+                                                    incorrectFeedback:
+                                                      q.options.find((o) => o.text === "Falso")?.incorrectFeedback ?? "",
+                                                  },
                                                 ],
                                               }
                                             : q,
@@ -1087,6 +1378,75 @@ export function AddClassModal({
                                   {label}
                                 </label>
                               ))}
+                              <div className="space-y-2 rounded-lg border border-slate-100 p-3 text-sm">
+                                <p className="text-xs font-semibold text-slate-600">
+                                  Explicación por opción (opcional)
+                                </p>
+                                {question.options.map((opt) => (
+                                  <div key={opt.id} className="space-y-2">
+                                    <input
+                                      value={opt.feedback ?? ""}
+                                      onChange={(e) =>
+                                        setQuestions((prev) =>
+                                          prev.map((q) =>
+                                            q.id === question.id
+                                              ? {
+                                                  ...q,
+                                                  options: q.options.map((o) =>
+                                                    o.id === opt.id ? { ...o, feedback: e.target.value } : o,
+                                                  ),
+                                                }
+                                              : q,
+                                          ),
+                                        )
+                                      }
+                                      placeholder={`Explicación breve para "${opt.text}"`}
+                                      className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                    />
+                                    {opt.isCorrect ? (
+                                      <input
+                                        value={opt.correctFeedback ?? ""}
+                                        onChange={(e) =>
+                                          setQuestions((prev) =>
+                                            prev.map((q) =>
+                                              q.id === question.id
+                                                ? {
+                                                    ...q,
+                                                    options: q.options.map((o) =>
+                                                      o.id === opt.id ? { ...o, correctFeedback: e.target.value } : o,
+                                                    ),
+                                                  }
+                                                : q,
+                                            ),
+                                          )
+                                        }
+                                        placeholder="Mensaje si se elige (opción correcta)"
+                                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                      />
+                                    ) : (
+                                      <input
+                                        value={opt.incorrectFeedback ?? ""}
+                                        onChange={(e) =>
+                                          setQuestions((prev) =>
+                                            prev.map((q) =>
+                                              q.id === question.id
+                                                ? {
+                                                    ...q,
+                                                    options: q.options.map((o) =>
+                                                      o.id === opt.id ? { ...o, incorrectFeedback: e.target.value } : o,
+                                                    ),
+                                                  }
+                                                : q,
+                                            ),
+                                          )
+                                        }
+                                        placeholder="Mensaje si se elige (opción incorrecta)"
+                                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 shadow-sm focus-border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                      />
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
                             </div>
                           ) : (
                             <div className="space-y-2">
@@ -1145,6 +1505,162 @@ export function AddClassModal({
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+type RichTextEditorProps = {
+  value: string;
+  onChange: (value: string) => void;
+  onUploadImage: (file: File) => Promise<string>;
+  placeholder?: string;
+};
+
+function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTextEditorProps) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [uploading, setUploading] = useState(false);
+
+  const editor = useEditor({
+    immediatelyRender: false,
+    extensions: [
+      StarterKit.configure({
+        history: false,
+      }),
+      Placeholder.configure({
+        placeholder: placeholder || "Escribe la descripción y agrega imágenes (arrastrar/pegar)",
+      }),
+      Link.configure({
+        openOnClick: true,
+        protocols: ["http", "https", "mailto"],
+      }),
+      ImageExtension.configure({
+        HTMLAttributes: {
+          class: "mt-2 max-h-64 w-auto rounded-lg border border-slate-200 object-contain shadow-sm",
+          loading: "lazy",
+        },
+      }),
+    ],
+    content: value || "<p></p>",
+    onUpdate: ({ editor: ed }) => {
+      onChange(ed.getHTML());
+    },
+  });
+
+  useEffect(() => {
+    if (editor && editor.getHTML() !== value) {
+      editor.commands.setContent(value || "<p></p>", false);
+    }
+  }, [editor, value]);
+
+  const handleAddLink = () => {
+    if (!editor) return;
+    const url = window.prompt("Pega el enlace");
+    if (!url) return;
+    editor.chain().focus().setLink({ href: url, target: "_blank", rel: "noopener noreferrer" }).run();
+  };
+
+  const handleImageFile = async (file: File) => {
+    if (!file.type.startsWith("image/")) {
+      toast.error("Solo se permiten imágenes");
+      return;
+    }
+    if (!editor) return;
+    setUploading(true);
+    try {
+      const url = await onUploadImage(file);
+      editor.chain().focus().setImage({ src: url, alt: file.name }).run();
+      toast.success("Imagen agregada");
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo subir la imagen");
+    } finally {
+      setUploading(false);
+      if (inputRef.current) {
+        inputRef.current.value = "";
+      }
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white">
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-3 py-2 text-xs text-slate-700">
+        <button
+          type="button"
+          onClick={() => editor?.chain().focus().toggleBold().run()}
+          className={`rounded px-2 py-1 font-semibold transition ${
+            editor?.isActive("bold") ? "bg-blue-100 text-blue-700" : "hover:bg-slate-100"
+          }`}
+        >
+          B
+        </button>
+        <button
+          type="button"
+          onClick={() => editor?.chain().focus().toggleItalic().run()}
+          className={`rounded px-2 py-1 italic transition ${
+            editor?.isActive("italic") ? "bg-blue-100 text-blue-700" : "hover:bg-slate-100"
+          }`}
+        >
+          I
+        </button>
+        <button
+          type="button"
+          onClick={() => editor?.chain().focus().toggleStrike().run()}
+          className={`rounded px-2 py-1 line-through transition ${
+            editor?.isActive("strike") ? "bg-blue-100 text-blue-700" : "hover:bg-slate-100"
+          }`}
+        >
+          S
+        </button>
+        <button
+          type="button"
+          onClick={() => editor?.chain().focus().toggleBulletList().run()}
+          className={`rounded px-2 py-1 transition ${
+            editor?.isActive("bulletList") ? "bg-blue-100 text-blue-700" : "hover:bg-slate-100"
+          }`}
+        >
+          • Lista
+        </button>
+        <button
+          type="button"
+          onClick={() => editor?.chain().focus().toggleOrderedList().run()}
+          className={`rounded px-2 py-1 transition ${
+            editor?.isActive("orderedList") ? "bg-blue-100 text-blue-700" : "hover:bg-slate-100"
+          }`}
+        >
+          1. Lista
+        </button>
+        <button
+          type="button"
+          onClick={handleAddLink}
+          className="rounded px-2 py-1 transition hover:bg-slate-100"
+        >
+          Link
+        </button>
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          className="inline-flex items-center gap-1 rounded px-2 py-1 transition hover:bg-slate-100"
+          disabled={uploading}
+        >
+          <span role="img" aria-label="imagen">
+            🖼️
+          </span>
+          {uploading ? "Subiendo..." : "Imagen"}
+        </button>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={async (e) => {
+            const file = e.target.files?.[0];
+            if (file) await handleImageFile(file);
+          }}
+        />
+      </div>
+      <div className="min-h-[180px] max-h-[320px] overflow-y-auto px-3 py-2">
+        <EditorContent editor={editor} className="prose max-w-none text-sm text-slate-900" />
       </div>
     </div>
   );

@@ -12,6 +12,7 @@ import {
   where,
   setDoc,
   getDoc,
+  writeBatch,
 } from "firebase/firestore";
 import { db } from "./firestore";
 
@@ -165,6 +166,8 @@ export type ClassItem = {
   imageUrls?: string[] | null;
   hasAssignment?: boolean;
   assignmentTemplateUrl?: string | null;
+  forumEnabled?: boolean;
+  forumRequiredFormat?: "text" | "audio" | "video" | null;
 };
 
 export async function getClasses(courseId: string, lessonId: string): Promise<ClassItem[]> {
@@ -185,6 +188,8 @@ export async function getClasses(courseId: string, lessonId: string): Promise<Cl
       imageUrls: data.imageUrls ?? [],
       hasAssignment: data.hasAssignment ?? false,
       assignmentTemplateUrl: data.assignmentTemplateUrl ?? "",
+      forumEnabled: data.forumEnabled ?? false,
+      forumRequiredFormat: data.forumRequiredFormat ?? null,
     };
   });
 }
@@ -202,6 +207,8 @@ type CreateClassInput = {
   imageUrls?: string[];
   hasAssignment?: boolean;
   assignmentTemplateUrl?: string | null;
+  forumEnabled?: boolean;
+  forumRequiredFormat?: "text" | "audio" | "video" | null;
 };
 
 export async function createClass(input: CreateClassInput): Promise<string> {
@@ -224,6 +231,8 @@ export async function createClass(input: CreateClassInput): Promise<string> {
     imageUrls: input.imageUrls ?? [],
     hasAssignment: input.hasAssignment ?? false,
     assignmentTemplateUrl: input.assignmentTemplateUrl ?? "",
+    forumEnabled: input.forumEnabled ?? false,
+    forumRequiredFormat: input.forumRequiredFormat ?? null,
     createdAt: serverTimestamp(),
   });
   return docRef.id;
@@ -243,6 +252,8 @@ type UpdateClassInput = {
   imageUrls?: string[] | null;
   hasAssignment?: boolean;
   assignmentTemplateUrl?: string | null;
+  forumEnabled?: boolean;
+  forumRequiredFormat?: "text" | "audio" | "video" | null;
 };
 
 export async function updateClass(input: UpdateClassInput): Promise<void> {
@@ -267,6 +278,8 @@ export async function updateClass(input: UpdateClassInput): Promise<void> {
   if (input.hasAssignment !== undefined) payload.hasAssignment = input.hasAssignment;
   if (input.assignmentTemplateUrl !== undefined)
     payload.assignmentTemplateUrl = input.assignmentTemplateUrl;
+  if (input.forumEnabled !== undefined) payload.forumEnabled = input.forumEnabled;
+  if (input.forumRequiredFormat !== undefined) payload.forumRequiredFormat = input.forumRequiredFormat;
   if (Object.keys(payload).length === 0) return;
   await updateDoc(classRef, payload);
 }
@@ -295,6 +308,78 @@ export async function publishCourse(courseId: string, isPublished: boolean): Pro
 
 export async function deleteCourse(courseId: string): Promise<void> {
   const courseRef = doc(db, "courses", courseId);
+
+  // Firestore no elimina subcolecciones de forma automática, así que
+  // las borramos en cascada (clases -> preguntas/comentarios/likes/respuestas -> lecciones).
+  const lessonsSnap = await getDocs(collection(db, "courses", courseId, "lessons"));
+  for (const lessonDoc of lessonsSnap.docs) {
+    const lessonId = lessonDoc.id;
+    const classesSnap = await getDocs(
+      collection(db, "courses", courseId, "lessons", lessonId, "classes"),
+    );
+    for (const classDoc of classesSnap.docs) {
+      const classRef = classDoc.ref;
+      const nestedCollections = ["questions", "comments", "likes", "responses"];
+      for (const nested of nestedCollections) {
+        const nestedSnap = await getDocs(collection(classRef, nested));
+        if (!nestedSnap.empty) {
+          const batch = writeBatch(db);
+          nestedSnap.docs.forEach((d) => batch.delete(d.ref));
+          await batch.commit();
+        }
+      }
+      await deleteDoc(classRef);
+    }
+    await deleteDoc(lessonDoc.ref);
+  }
+
+  // Inscripciones bajo el curso
+  try {
+    const enrollmentsSnap = await getDocs(collection(db, "courses", courseId, "enrollments"));
+    for (const enrDoc of enrollmentsSnap.docs) {
+      await deleteDoc(enrDoc.ref);
+    }
+  } catch (err) {
+    // Puede fallar por reglas (no hay reglas explícitas para enrollments en /courses),
+    // pero no debe bloquear el borrado principal.
+    console.warn("No se pudieron eliminar las inscripciones del curso", courseId, err);
+  }
+
+  // Limpiar referencias en grupos (courseId y courseIds).
+  try {
+    const groupsRef = collection(db, "groups");
+    const [snapByField, snapByArray] = await Promise.all([
+      getDocs(query(groupsRef, where("courseId", "==", courseId))),
+      getDocs(query(groupsRef, where("courseIds", "array-contains", courseId))),
+    ]);
+    const groupsMap = new Map<string, typeof snapByField.docs[number]>();
+    snapByField.docs.forEach((d) => groupsMap.set(d.id, d));
+    snapByArray.docs.forEach((d) => groupsMap.set(d.id, d));
+
+    for (const groupDoc of groupsMap.values()) {
+      const data = groupDoc.data();
+      const nextCourses = Array.isArray(data.courses)
+        ? data.courses.filter((c: { courseId?: string }) => c.courseId !== courseId)
+        : [];
+      const nextCourseIds = Array.isArray(data.courseIds)
+        ? data.courseIds.filter((id: string) => id !== courseId)
+        : [];
+      const payload: Record<string, unknown> = {
+        courses: nextCourses,
+        courseIds: nextCourseIds,
+        updatedAt: serverTimestamp(),
+      };
+      if (data.courseId === courseId) {
+        payload.courseId = nextCourseIds[0] ?? "";
+        payload.courseName = nextCourses[0]?.courseName ?? "";
+      }
+      await updateDoc(groupDoc.ref, payload);
+    }
+  } catch (err) {
+    // Si no se pueden limpiar los grupos (p. ej. permisos), no bloqueamos el borrado del curso.
+    console.warn("No se pudieron limpiar referencias de grupos para el curso", courseId, err);
+  }
+
   await deleteDoc(courseRef);
 }
 
@@ -305,7 +390,15 @@ export type QuizQuestion = {
   prompt: string;
   type: "multiple" | "truefalse" | "open";
   order: number;
-  options: Array<{ id: string; text: string; isCorrect: boolean }>;
+  explanation?: string;
+  options: Array<{
+    id: string;
+    text: string;
+    isCorrect: boolean;
+    feedback?: string;
+    correctFeedback?: string;
+    incorrectFeedback?: string;
+  }>;
   answerText?: string;
 };
 
@@ -331,9 +424,17 @@ export async function getQuizQuestions(
     return {
       id: doc.id,
       prompt: data.prompt ?? "",
+      explanation: data.explanation ?? data.questionFeedback ?? "",
       type: data.type ?? "multiple",
       order: data.order ?? 0,
-      options: data.options ?? [],
+      options: (data.options ?? []).map((opt: any) => ({
+        id: opt.id,
+        text: opt.text,
+        isCorrect: opt.isCorrect,
+        feedback: opt.feedback,
+        correctFeedback: opt.correctFeedback,
+        incorrectFeedback: opt.incorrectFeedback,
+      })),
       answerText: data.answerText,
     };
   });
@@ -344,7 +445,15 @@ type CreateQuizQuestionInput = {
   lessonId: string;
   classId: string;
   prompt: string;
-  options: Array<{ id: string; text: string; isCorrect: boolean }>;
+  explanation?: string;
+  options: Array<{
+    id: string;
+    text: string;
+    isCorrect: boolean;
+    feedback?: string;
+    correctFeedback?: string;
+    incorrectFeedback?: string;
+  }>;
   order: number;
   type?: "multiple" | "truefalse" | "open";
   answerText?: string;
@@ -363,6 +472,7 @@ export async function createQuizQuestion(input: CreateQuizQuestionInput): Promis
   );
   const docRef = await addDoc(refQuestions, {
     prompt: input.prompt,
+    explanation: input.explanation ?? null,
     type: input.type ?? "multiple",
     options: input.options,
     order: input.order,

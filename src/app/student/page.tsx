@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import Player from "@vimeo/player";
 import { auth } from "@/lib/firebase/client";
 import { onAuthStateChanged, User } from "firebase/auth";
@@ -25,6 +26,8 @@ import {
 } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { createSubmission } from "@/lib/firebase/submissions-service";
+import { v4 as uuidv4 } from "uuid";
+import sanitizeHtml from "sanitize-html";
 
 type FeedClass = {
   id: string;
@@ -46,6 +49,8 @@ type FeedClass = {
   lessonTitle?: string;
   lessonName?: string;
   likesCount?: number;
+  forumEnabled?: boolean;
+  forumRequiredFormat?: "text" | "audio" | "video" | null;
 };
 
 const VIDEO_COMPLETION_THRESHOLD = 80;
@@ -155,6 +160,61 @@ export default function StudentFeedPage() {
   const [likePendingMap, setLikePendingMap] = useState<Record<string, boolean>>({});
   const [loadingCommentsMap, setLoadingCommentsMap] = useState<Record<string, boolean>>({});
   const [mobileClassesOpen, setMobileClassesOpen] = useState(false);
+  const [forumDoneMap, setForumDoneMap] = useState<Record<string, boolean>>({});
+  const [forumsReady, setForumsReady] = useState(false);
+  const [forumPanel, setForumPanel] = useState<{ open: boolean; classId?: string }>({ open: false });
+  const searchParams = useSearchParams();
+  const previewCourseId = searchParams.get("previewCourseId") ?? searchParams.get("courseId");
+  const previewMode = Boolean(previewCourseId);
+  const router = useRouter();
+
+  const sanitizeOptions = useMemo(
+    () => ({
+      allowedTags: [
+        "p",
+        "br",
+        "strong",
+        "em",
+        "u",
+        "s",
+        "ul",
+        "ol",
+        "li",
+        "blockquote",
+        "a",
+        "img",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "span",
+        "div",
+      ],
+      allowedAttributes: {
+        a: ["href", "target", "rel"],
+        img: ["src", "alt", "title", "width", "height", "style"],
+        span: ["style"],
+        div: ["style"],
+      },
+      allowedSchemes: ["http", "https", "data", "mailto"],
+      transformTags: {
+        a: sanitizeHtml.simpleTransform("a", { target: "_blank", rel: "noopener noreferrer" }),
+      },
+    }),
+    [],
+  );
+
+  const sanitizedContentMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    classes.forEach((cls) => {
+      if ((cls.type === "video" || cls.type === "text") && typeof cls.content === "string" && cls.content.trim()) {
+        map[cls.id] = sanitizeHtml(cls.content, sanitizeOptions);
+      }
+    });
+    return map;
+  }, [classes, sanitizeOptions]);
 
   const getPrevSameCourse = useCallback(
     (targetIdx: number) => {
@@ -178,12 +238,110 @@ export default function StudentFeedPage() {
     [classes],
   );
 
+  const isForumSatisfied = useCallback(
+    (cls: FeedClass) => {
+      if (!cls.forumEnabled) return true;
+      return forumDoneMap[cls.id] === true;
+    },
+    [forumDoneMap],
+  );
+
+  const loadForumStatus = useCallback(
+    async (classId: string) => {
+      if (previewMode) return;
+      if (!currentUser?.uid) return;
+      const cls = findClassById(classId);
+      if (!cls || !cls.forumEnabled) {
+        setForumDoneMap((prev) => ({ ...prev, [classId]: true }));
+        return;
+      }
+      if (!cls.courseId || !cls.lessonId || !(cls.classDocId ?? cls.id)) return;
+      if (forumDoneMap[classId] === true) return;
+      try {
+        const forumSnap = await getDocs(
+          query(
+            collection(
+              db,
+              "courses",
+              cls.courseId,
+              "lessons",
+              cls.lessonId,
+              "classes",
+              cls.classDocId ?? cls.id,
+              "forums",
+            ),
+            where("authorId", "==", currentUser.uid),
+            ...(cls.forumRequiredFormat ? [where("format", "==", cls.forumRequiredFormat)] : []),
+            limit(1),
+          ),
+        );
+        setForumDoneMap((prev) => ({ ...prev, [classId]: !forumSnap.empty }));
+      } catch (err) {
+        console.warn("No se pudo cargar el estado de foro:", err);
+      }
+    },
+    [currentUser?.uid, findClassById, forumDoneMap, previewMode],
+  );
+
+  const loadForumStatusesForAll = useCallback(async () => {
+    if (previewMode) {
+      setForumsReady(true);
+      return;
+    }
+    if (!currentUser?.uid) {
+      setForumsReady(true);
+      return;
+    }
+    const forumClasses = classes.filter((c) => c.forumEnabled);
+    if (forumClasses.length === 0) {
+      setForumsReady(true);
+      return;
+    }
+    const entries: Record<string, boolean> = {};
+    await Promise.all(
+      forumClasses.map(async (cls) => {
+        try {
+          const forumSnap = await getDocs(
+            query(
+              collection(
+                db,
+                "courses",
+                cls.courseId ?? "",
+                "lessons",
+                cls.lessonId ?? "",
+                "classes",
+                cls.classDocId ?? cls.id,
+                "forums",
+              ),
+              where("authorId", "==", currentUser.uid),
+              ...(cls.forumRequiredFormat ? [where("format", "==", cls.forumRequiredFormat)] : []),
+              limit(1),
+            ),
+          );
+          entries[cls.id] = !forumSnap.empty;
+        } catch (err) {
+          console.warn("No se pudo cargar estado de foro:", err);
+          entries[cls.id] = false;
+        }
+      }),
+    );
+    setForumDoneMap((prev) => ({ ...prev, ...entries }));
+    setForumsReady(true);
+  }, [classes, currentUser?.uid, previewMode]);
+
   useEffect(() => {
     if (activeClass?.type === "image" && activeClass.id && imageIndexMap[activeClass.id] === undefined) {
       imageIndexRef.current[activeClass.id] = 0;
       setImageIndexMap((prev) => ({ ...prev, [activeClass.id]: 0 }));
     }
   }, [activeClass?.id, activeClass?.type, imageIndexMap]);
+
+  useEffect(() => {
+    if (previewMode) return;
+    const cls = classes[activeIndex];
+    if (!cls || !cls.forumEnabled) return;
+    loadForumStatus(cls.id);
+  }, [activeIndex, classes, loadForumStatus, previewMode]);
 
   const courseThreads = useMemo(() => {
     const courseMap = new Map<
@@ -266,6 +424,7 @@ export default function StudentFeedPage() {
 
   const saveSeenForUser = useCallback(
     async (classId: string, progress: number, completed: boolean) => {
+      if (previewMode) return;
       if (!currentUser?.uid) return;
       try {
         const seenDoc = doc(db, "users", currentUser.uid, "seenClasses", classId);
@@ -285,12 +444,13 @@ export default function StudentFeedPage() {
         }
       }
     },
-    [currentUser?.uid],
+    [currentUser?.uid, previewMode],
   );
 
   // Función para guardar progreso en Firestore
   const saveProgressToFirestore = useCallback(
     async (classId: string, progress: number, previousProgress: number, requiredPct: number) => {
+      if (previewMode) return;
       if (!currentUser?.uid || !enrollmentId) return;
 
       try {
@@ -336,11 +496,15 @@ export default function StudentFeedPage() {
         console.error("Error guardando progreso:", error);
       }
     },
-    [currentUser?.uid, enrollmentId, saveSeenForUser],
+    [currentUser?.uid, enrollmentId, saveSeenForUser, previewMode],
   );
 
   // Función para cargar progreso desde Firestore
   const loadProgressFromFirestore = async (enrollId: string) => {
+    if (previewMode) {
+      setProgressReady(true);
+      return;
+    }
     if (!currentUser?.uid) return;
 
     try {
@@ -406,6 +570,10 @@ export default function StudentFeedPage() {
 
   const handleToggleLike = useCallback(
     async (cls: FeedClass) => {
+      if (previewMode) {
+        toast.error("La vista previa es de solo lectura.");
+        return;
+      }
       if (!currentUser?.uid) {
         toast.error("Inicia sesión para dar like.");
         return;
@@ -481,7 +649,7 @@ export default function StudentFeedPage() {
         setLikePendingMap((prev) => ({ ...prev, [classId]: false }));
       }
     },
-    [currentUser?.uid, likePendingMap, likedMap],
+    [currentUser?.uid, likePendingMap, likedMap, previewMode],
   );
 
   useEffect(() => {
@@ -494,6 +662,10 @@ export default function StudentFeedPage() {
 
   useEffect(() => {
     const handleOpenComments = () => {
+      if (previewMode) {
+        toast.error("Los comentarios están deshabilitados en la vista previa.");
+        return;
+      }
       const targetId = activeIdRef.current ?? classes[activeIndex]?.id ?? null;
       if (!targetId) return;
       setCommentsClassId(targetId);
@@ -501,7 +673,7 @@ export default function StudentFeedPage() {
     };
     window.addEventListener("open-comments", handleOpenComments);
     return () => window.removeEventListener("open-comments", handleOpenComments);
-  }, [activeIndex, classes]);
+  }, [activeIndex, classes, previewMode]);
 
   const loadCommentsForClass = useCallback(
     async (classId: string) => {
@@ -609,6 +781,7 @@ export default function StudentFeedPage() {
   // Cargar estado de tarea enviada cuando se abre el panel de tarea
   useEffect(() => {
     const loadAssignmentStatus = async () => {
+      if (previewMode) return;
       if (!assignmentPanel.open || !assignmentPanel.classId) return;
       if (!currentUser?.uid) return;
       const cls = findClassById(assignmentPanel.classId);
@@ -634,13 +807,133 @@ export default function StudentFeedPage() {
       }
     };
     loadAssignmentStatus();
-  }, [assignmentPanel.open, assignmentPanel.classId, currentUser?.uid, findClassById]);
+  }, [assignmentPanel.open, assignmentPanel.classId, currentUser?.uid, findClassById, previewMode]);
 
   useEffect(() => {
     const load = async () => {
       setClasses([]);
       setActiveId(null);
       setActiveIndex(0);
+      if (previewMode) {
+        if (!previewCourseId) return;
+        if (!currentUser?.uid) {
+          setError("Inicia sesión para ver la vista previa del curso.");
+          setLoading(false);
+          return;
+        }
+        try {
+          setProgressReady(false);
+          initialPositionedRef.current = false;
+          setError(null);
+          setEnrollmentId(null);
+          setGroupId(null);
+          const courseDoc = await getDoc(doc(db, "courses", previewCourseId));
+          if (!courseDoc.exists()) {
+            setError("No se encontró el curso para previsualizar.");
+            setLoading(false);
+            return;
+          }
+          const courseData = courseDoc.data();
+          const courseTitle = courseData?.title ?? "Curso";
+          const lessonsSnap = await getDocs(
+            query(collection(db, "courses", previewCourseId, "lessons"), orderBy("order", "asc")),
+          );
+          const feed: FeedClass[] = [];
+          for (const lesson of lessonsSnap.docs) {
+            const ldata = lesson.data();
+            const lessonTitle = ldata.title ?? "Lección";
+            const classesSnap = await getDocs(
+              query(
+                collection(db, "courses", previewCourseId, "lessons", lesson.id, "classes"),
+                orderBy("order", "asc"),
+              ),
+            );
+            classesSnap.forEach((cls) => {
+              const c = cls.data();
+              const normType = normalizeClassType(c.type);
+              const imageArray = c.images ?? c.imageUrls ?? (c.imageUrl ? [c.imageUrl] : []);
+              feed.push({
+                id: `${previewCourseId}_${cls.id}`,
+                classDocId: cls.id,
+                title: c.title ?? "Clase sin título",
+                type: normType,
+                courseId: previewCourseId,
+                lessonId: lesson.id,
+                enrollmentId: null,
+                groupId: null,
+                classTitle: c.title ?? "Clase sin título",
+                videoUrl: (c.videoUrl ?? "").trim(),
+                audioUrl: (c.audioUrl ?? "").trim(),
+                content: c.content ?? "",
+                images: Array.isArray(imageArray) ? imageArray.filter(Boolean).map((u: string) => u.trim()) : [],
+                hasAssignment: c.hasAssignment ?? false,
+                assignmentTemplateUrl: c.assignmentTemplateUrl ?? "",
+                lessonTitle,
+                lessonName: lessonTitle,
+                courseTitle,
+                likesCount: c.likesCount ?? 0,
+                forumEnabled: c.forumEnabled ?? false,
+                forumRequiredFormat: c.forumRequiredFormat ?? null,
+              });
+            });
+          }
+
+          if (feed.length === 0) {
+            setError("Este curso aún no tiene clases para previsualizar.");
+            setClasses([]);
+            setActiveId(null);
+            setActiveIndex(0);
+            setLoading(false);
+            return;
+          }
+
+          setCourseTitleMap((prev) => ({
+            ...prev,
+            [previewCourseId]: courseTitle,
+          }));
+          setCourseName(courseTitle);
+          setGroupName("Vista previa del alumno");
+          setStudentName(currentUser.displayName ?? "Profesor");
+
+          const previewProgress: Record<string, number> = {};
+          const previewCompleted: Record<string, boolean> = {};
+          const previewSeen: Record<string, boolean> = {};
+          const forumStatus: Record<string, boolean> = {};
+          const initialLikes: Record<string, number> = {};
+          feed.forEach((item) => {
+            previewProgress[item.id] = 100;
+            previewCompleted[item.id] = true;
+            previewSeen[item.id] = true;
+            if (item.forumEnabled) {
+              forumStatus[item.id] = true;
+            }
+            initialLikes[item.id] = item.likesCount ?? 0;
+          });
+
+          setProgressMap(previewProgress);
+          progressRef.current = previewProgress;
+          setCompletedMap(previewCompleted);
+          completedRef.current = previewCompleted;
+          setSeenMap(previewSeen);
+          seenRef.current = previewSeen;
+          setForumDoneMap((prev) => ({ ...prev, ...forumStatus }));
+          setForumsReady(true);
+          setProgressReady(true);
+          setClasses(feed);
+          setLikesMap(initialLikes);
+          setLikedMap({});
+          setLikePendingMap({});
+          setActiveIndex(0);
+          setActiveId(feed[0]?.id ?? null);
+        } catch (err) {
+          console.error(err);
+          setError("No se pudo cargar la vista previa del curso");
+        } finally {
+          setLoading(false);
+        }
+        return;
+      }
+
       if (!currentUser?.uid) {
         setError("No hay usuario autenticado");
         setLoading(false);
@@ -733,40 +1026,40 @@ export default function StudentFeedPage() {
           setLoading(false);
           return;
         }
-      const groupData = groupDoc.data();
-      setGroupName(groupData.groupName ?? "");
-      setGroupId(groupId);
-      const coursesArray: Array<{ courseId: string; courseName: string }> =
-        Array.isArray(groupData.courses) && groupData.courses.length > 0
-          ? groupData.courses
-          : groupData.courseId
-            ? [{ courseId: groupData.courseId, courseName: groupData.courseName ?? "" }]
-            : [];
-      const primaryCourseId = coursesArray[0]?.courseId ?? groupData.courseId;
-      const primaryCourseName = coursesArray[0]?.courseName ?? groupData.courseName ?? "";
-      setStudentName(enrollment.studentName ?? currentUser.displayName ?? "Estudiante");
+        const groupData = groupDoc.data();
+        setGroupName(groupData.groupName ?? "");
+        setGroupId(groupId);
+        const coursesArray: Array<{ courseId: string; courseName: string }> =
+          Array.isArray(groupData.courses) && groupData.courses.length > 0
+            ? groupData.courses
+            : groupData.courseId
+              ? [{ courseId: groupData.courseId, courseName: groupData.courseName ?? "" }]
+              : [];
+        const primaryCourseId = coursesArray[0]?.courseId ?? groupData.courseId;
+        const primaryCourseName = coursesArray[0]?.courseName ?? groupData.courseName ?? "";
+        setStudentName(enrollment.studentName ?? currentUser.displayName ?? "Estudiante");
 
-      const feed: FeedClass[] = [];
-      for (const courseEntry of coursesArray) {
-        const courseDoc = await getDoc(doc(db, "courses", courseEntry.courseId));
-        const courseData = courseDoc.exists() ? courseDoc.data() : null;
-        if (!courseData) {
-          // Curso eliminado: saltar y no mostrar clases
-          continue;
-        }
-        const courseTitle = courseData?.title ?? courseEntry.courseName ?? "Curso";
-        if (courseData?.isArchived) {
-          // Saltar cursos archivados en el feed
-          continue;
-        }
+        const feed: FeedClass[] = [];
+        for (const courseEntry of coursesArray) {
+          const courseDoc = await getDoc(doc(db, "courses", courseEntry.courseId));
+          const courseData = courseDoc.exists() ? courseDoc.data() : null;
+          if (!courseData) {
+            // Curso eliminado: saltar y no mostrar clases
+            continue;
+          }
+          const courseTitle = courseData?.title ?? courseEntry.courseName ?? "Curso";
+          if (courseData?.isArchived) {
+            // Saltar cursos archivados en el feed
+            continue;
+          }
 
-        // 3) Lecciones y clases por curso
-        const lessonsSnap = await getDocs(
-          query(collection(db, "courses", courseEntry.courseId, "lessons"), orderBy("order", "asc")),
-        );
-        for (const lesson of lessonsSnap.docs) {
-          const ldata = lesson.data();
-          const lessonTitle = ldata.title ?? "Lección";
+          // 3) Lecciones y clases por curso
+          const lessonsSnap = await getDocs(
+            query(collection(db, "courses", courseEntry.courseId, "lessons"), orderBy("order", "asc")),
+          );
+          for (const lesson of lessonsSnap.docs) {
+            const ldata = lesson.data();
+            const lessonTitle = ldata.title ?? "Lección";
             const classesSnap = await getDocs(
               query(
                 collection(db, "courses", courseEntry.courseId, "lessons", lesson.id, "classes"),
@@ -781,62 +1074,64 @@ export default function StudentFeedPage() {
                 c.imageUrls ??
                 (c.imageUrl ? [c.imageUrl] : []);
 
-            feed.push({
-              id: `${courseEntry.courseId}_${cls.id}`,
-              classDocId: cls.id,
-              title: c.title ?? "Clase sin título",
-              type: normType,
-              courseId: courseEntry.courseId,
-              lessonId: lesson.id,
-              enrollmentId: currentEnrollmentId,
-              groupId,
-              classTitle: c.title ?? "Clase sin título",
-              videoUrl: (c.videoUrl ?? "").trim(),
-              audioUrl: (c.audioUrl ?? "").trim(),
-              content: c.content ?? "",
-              images: Array.isArray(imageArray)
-                ? imageArray.filter(Boolean).map((u: string) => u.trim())
-                : [],
-              hasAssignment: c.hasAssignment ?? false,
-              assignmentTemplateUrl: c.assignmentTemplateUrl ?? "",
-              lessonTitle,
-              lessonName: lessonTitle,
-              courseTitle,
-              likesCount: c.likesCount ?? 0,
+              feed.push({
+                id: `${courseEntry.courseId}_${cls.id}`,
+                classDocId: cls.id,
+                title: c.title ?? "Clase sin título",
+                type: normType,
+                courseId: courseEntry.courseId,
+                lessonId: lesson.id,
+                enrollmentId: currentEnrollmentId,
+                groupId,
+                classTitle: c.title ?? "Clase sin título",
+                videoUrl: (c.videoUrl ?? "").trim(),
+                audioUrl: (c.audioUrl ?? "").trim(),
+                content: c.content ?? "",
+                images: Array.isArray(imageArray)
+                  ? imageArray.filter(Boolean).map((u: string) => u.trim())
+                  : [],
+                hasAssignment: c.hasAssignment ?? false,
+                assignmentTemplateUrl: c.assignmentTemplateUrl ?? "",
+                lessonTitle,
+                lessonName: lessonTitle,
+                courseTitle,
+                likesCount: c.likesCount ?? 0,
+                forumEnabled: c.forumEnabled ?? false,
+                forumRequiredFormat: c.forumRequiredFormat ?? null,
+              });
             });
-          });
+          }
+          setCourseTitleMap((prev) => ({
+            ...prev,
+            [courseEntry.courseId]: courseTitle,
+          }));
         }
-        setCourseTitleMap((prev) => ({
-          ...prev,
-          [courseEntry.courseId]: courseTitle,
-        }));
-      }
 
-      if (feed.length === 0) {
-        setError(
-          "Las materias asignadas a tu grupo están archivadas o sin contenido disponible.",
-        );
-        setClasses([]);
-        setActiveId(null);
+        if (feed.length === 0) {
+          setError(
+            "Las materias asignadas a tu grupo están archivadas o sin contenido disponible.",
+          );
+          setClasses([]);
+          setActiveId(null);
+          setActiveIndex(0);
+          setLoading(false);
+          return;
+        }
+
+        // Actualizar nombre mostrado (curso base)
+        setCourseName(primaryCourseName);
+
+        const initialLikes: Record<string, number> = {};
+        feed.forEach((item) => {
+          initialLikes[item.id] = item.likesCount ?? 0;
+        });
+
+        setClasses(feed);
+        setLikesMap(initialLikes);
+        setLikedMap({});
+        setLikePendingMap({});
         setActiveIndex(0);
-        setLoading(false);
-        return;
-      }
-
-      // Actualizar nombre mostrado (curso base)
-      setCourseName(primaryCourseName);
-
-      const initialLikes: Record<string, number> = {};
-      feed.forEach((item) => {
-        initialLikes[item.id] = item.likesCount ?? 0;
-      });
-
-      setClasses(feed);
-      setLikesMap(initialLikes);
-      setLikedMap({});
-      setLikePendingMap({});
-      setActiveIndex(0);
-      setActiveId(feed[0]?.id ?? null);
+        setActiveId(feed[0]?.id ?? null);
       } catch (err) {
         console.error(err);
         setError("No se pudieron cargar tus clases");
@@ -847,12 +1142,13 @@ export default function StudentFeedPage() {
     if (!authLoading) {
       load();
     }
-  }, [authLoading, currentUser?.uid]);
+  }, [authLoading, currentUser?.uid, previewCourseId, previewMode]);
 
   // Cargar likes propios por clase
   useEffect(() => {
     let cancelled = false;
     const loadLikes = async () => {
+      if (previewMode) return;
       if (!currentUser?.uid) return;
       if (!classes.length) return;
       try {
@@ -893,7 +1189,7 @@ export default function StudentFeedPage() {
     return () => {
       cancelled = true;
     };
-  }, [classes, currentUser?.uid]);
+  }, [classes, currentUser?.uid, previewMode]);
 
   // Snap & reproducción: usamos IntersectionObserver para determinar la tarjeta activa
   useEffect(() => {
@@ -968,48 +1264,60 @@ export default function StudentFeedPage() {
 
   const isClassComplete = useCallback(
     (cls: FeedClass) => {
+      if (previewMode) return true;
       const pct = Math.max(
         progressMap[cls.id] ?? 0,
         progressRef.current[cls.id] ?? 0,
         completedMap[cls.id] || completedRef.current[cls.id] || seenMap[cls.id] || seenRef.current[cls.id] ? 100 : 0,
       );
-      return pct >= getRequiredPct(cls.type);
+      const baseComplete = pct >= getRequiredPct(cls.type);
+      return baseComplete && isForumSatisfied(cls);
     },
-    [completedMap, progressMap, seenMap],
+    [completedMap, progressMap, seenMap, isForumSatisfied, previewMode],
   );
 
-  // Al cargar, posicionar en la primera clase pendiente
-  useEffect(() => {
-    if (loading || initialPositionedRef.current || !progressReady) return;
-    if (!classes.length) return;
-
+  const pendingPosition = useMemo(() => {
+    if (previewMode) {
+      return { index: 0, id: classes[0]?.id ?? null };
+    }
+    if (!classes.length) return { index: 0, id: null as string | null };
     const computeComplete = (cls: FeedClass) => {
       const pct = Math.max(
         progressMap[cls.id] ?? 0,
         completedMap[cls.id] || seenMap[cls.id] ? 100 : 0,
       );
-      return pct >= getRequiredPct(cls.type);
+      const baseOk = pct >= getRequiredPct(cls.type);
+      const forumOk = cls.forumEnabled ? forumDoneMap[cls.id] === true : true;
+      return baseOk && forumOk;
     };
-
     const firstPendingIdx = classes.findIndex((cls) => !computeComplete(cls));
     const targetIndex = firstPendingIdx === -1 ? Math.max(classes.length - 1, 0) : firstPendingIdx;
-    const targetId = classes[targetIndex]?.id ?? null;
-    setActiveIndex(targetIndex);
-    setActiveId(targetId);
-    lastActiveRef.current = targetIndex;
-    activeIdRef.current = targetId;
+    return { index: targetIndex, id: classes[targetIndex]?.id ?? null };
+  }, [classes, progressMap, completedMap, seenMap, forumDoneMap, previewMode]);
+
+  // Al cargar, posicionar en la primera clase pendiente
+  useEffect(() => {
+    if (loading || !progressReady || !forumsReady) return;
+    if (!classes.length) return;
+    // Solo posicionar automático en la primera carga (o cuando forzamos autoReposition).
+    if (initialPositionedRef.current === true && !autoReposition) return;
+
+    setActiveIndex(pendingPosition.index);
+    setActiveId(pendingPosition.id);
+    lastActiveRef.current = pendingPosition.index;
+    activeIdRef.current = pendingPosition.id;
     requestAnimationFrame(() => {
-      scrollToIndex(targetIndex, false);
+      scrollToIndex(pendingPosition.index, false);
       initialPositionedRef.current = true;
     });
     if (autoReposition) {
       requestAnimationFrame(() => {
-        scrollToIndex(targetIndex, false);
+        scrollToIndex(pendingPosition.index, false);
         initialPositionedRef.current = true;
         setAutoReposition(false);
       });
     }
-  }, [classes, isClassComplete, loading, progressReady, progressMap, completedMap, seenMap, autoReposition]);
+  }, [pendingPosition.index, pendingPosition.id, loading, progressReady, forumsReady, autoReposition, classes.length, scrollToIndex]);
 
   // Reforzar ubicación si se actualiza el progreso después del montaje (desactivado auto-jump)
   useEffect(() => {
@@ -1019,14 +1327,30 @@ export default function StudentFeedPage() {
   const jumpToIndex = useCallback(
     (idx: number) => {
       setAutoReposition(false);
+      if (previewMode) {
+        scrollToIndex(idx, true);
+        return;
+      }
       const prevSameCourse = getPrevSameCourse(idx);
       if (prevSameCourse && !isClassComplete(prevSameCourse)) {
-        toast.error("Completa la clase anterior de esta materia antes de continuar.");
+        const pct = Math.round(
+          Math.max(
+            progressMap[prevSameCourse.id] ?? 0,
+            progressRef.current[prevSameCourse.id] ?? 0,
+            completedMap[prevSameCourse.id] || seenMap[prevSameCourse.id] ? 100 : 0,
+          ),
+        );
+        const needsForum = prevSameCourse.forumEnabled && !isForumSatisfied(prevSameCourse);
+        toast.error(
+          needsForum
+            ? "Participa en el foro requerido para avanzar."
+            : `Completa la clase anterior de esta materia (progreso ${pct}%).`,
+        );
         return;
       }
       scrollToIndex(idx, true);
     },
-    [getPrevSameCourse, isClassComplete, scrollToIndex],
+    [getPrevSameCourse, isClassComplete, scrollToIndex, progressMap, completedMap, seenMap, isForumSatisfied, previewMode],
   );
 
   const handleTextReachEnd = useCallback(
@@ -1099,10 +1423,13 @@ export default function StudentFeedPage() {
   // Handler de progreso que NO causa re-renders excesivos
   const handleProgress = useCallback(
     (classId: string, pct: number, classType: string, hasAssignment: boolean, assignmentTemplateUrl?: string) => {
+      if (previewMode) return;
       const previousCompleted = completedRef.current[classId] ?? false;
       const previousProgress = progressRef.current[classId] ?? 0;
       const maxProgress = Math.max(pct, previousProgress);
       const requiredPct = getRequiredPct(classType);
+      const meta = findClassById(classId);
+      const forumOk = meta ? isForumSatisfied(meta) : true;
 
       // Siempre actualizar progressRef para tener el valor más reciente
       progressRef.current[classId] = maxProgress;
@@ -1124,7 +1451,7 @@ export default function StudentFeedPage() {
         saveProgressToFirestore(classId, maxProgress, previousProgress, requiredPct);
       }
 
-      if ((!previousCompleted && maxProgress >= requiredPct) || seenRef.current[classId]) {
+      if ((!previousCompleted && maxProgress >= requiredPct && forumOk) || (seenRef.current[classId] && forumOk)) {
         completedRef.current[classId] = true;
         setCompletedMap((prev) => ({ ...prev, [classId]: true }));
         seenRef.current[classId] = true;
@@ -1146,21 +1473,33 @@ export default function StudentFeedPage() {
         });
       }
     },
-    [saveProgressToFirestore],
+    [saveProgressToFirestore, findClassById, isForumSatisfied, previewMode],
   );
 
   useEffect(() => {
+    if (previewMode) return;
     const cls = classes[activeIndex];
     if (!cls) return;
     if (completedRef.current[cls.id] || seenRef.current[cls.id]) return;
 
-    if (cls.type === "quiz" || (cls.type === "text" && !cls.content)) {
+    if (cls.type === "text" && !cls.content) {
       handleProgress(cls.id, 100, cls.type, cls.hasAssignment || false, cls.assignmentTemplateUrl);
     }
-  }, [activeIndex, classes, handleProgress]);
+  }, [activeIndex, classes, handleProgress, previewMode]);
+
+  useEffect(() => {
+    if (previewMode) {
+      setForumsReady(true);
+      return;
+    }
+    setForumsReady(false);
+    loadForumStatusesForAll();
+  }, [classes, currentUser?.uid, loadForumStatusesForAll, previewMode]);
 
   const renderContent = (cls: FeedClass, idx: number) => {
     if (cls.type === "video" && cls.videoUrl) {
+      const sanitizedDescription = cls.content && cls.id ? sanitizedContentMap[cls.id] ?? "" : "";
+      const plainDescription = sanitizedDescription.replace(/<[^>]+>/g, "").trim();
       return (
         <div className="relative w-full h-full flex items-center justify-center">
           <VideoPlayer
@@ -1184,29 +1523,71 @@ export default function StudentFeedPage() {
             assignmentTemplateUrl={cls.assignmentTemplateUrl}
           />
           {(cls.title || cls.content) ? (
-            <div className="pointer-events-auto absolute left-3 right-3 bottom-16 max-w-[90%] rounded-2xl bg-black/45 px-3 py-2 text-white shadow-lg backdrop-blur-sm lg:bottom-14">
-              <div className="text-sm font-semibold leading-tight">{cls.title}</div>
-              {cls.content ? (
-                <div className="mt-1 text-xs leading-relaxed text-white/90">
-                  <p
-                    className={`whitespace-pre-wrap ${descriptionExpanded[cls.id] ? "" : "line-clamp-2"}`}
+            <div
+              className={`pointer-events-auto absolute z-20 text-white shadow-lg backdrop-blur-md transition-all ${
+                descriptionExpanded[cls.id]
+                  ? "inset-3 lg:inset-4 left-3 right-6 lg:left-4 lg:right-20 rounded-2xl bg-black/55"
+                  : "left-3 right-3 bottom-16 max-w-[90%] rounded-2xl bg-black/45 lg:bottom-14"
+              }`}
+              onWheelCapture={(e) => {
+                if (descriptionExpanded[cls.id]) e.stopPropagation();
+              }}
+              onTouchMoveCapture={(e) => {
+                if (descriptionExpanded[cls.id]) e.stopPropagation();
+              }}
+            >
+              <div
+                className={`flex h-full min-h-0 flex-col ${
+                  descriptionExpanded[cls.id]
+                    ? "gap-2 px-4 py-3 lg:px-5 lg:py-4 pb-10 lg:pb-12"
+                    : "px-3 py-2"
+                }`}
+              >
+                <div className="text-sm font-semibold leading-tight">{cls.title}</div>
+                {sanitizedDescription ? (
+                  <div
+                    className={`text-xs leading-relaxed text-white/90 ${
+                      descriptionExpanded[cls.id] ? "flex-1 min-h-0" : ""
+                    }`}
                   >
-                    {cls.content}
-                  </p>
-                  {cls.content.length > 120 ? (
-                    <button
-                      type="button"
-                      className="mt-1 text-[11px] font-semibold text-blue-200 hover:text-blue-100"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDescriptionExpanded((prev) => ({ ...prev, [cls.id]: !prev[cls.id] }));
+                    <div
+                      className={`text-white/90 [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0 [&_img]:max-h-64 [&_img]:rounded-lg [&_img]:border [&_img]:border-white/20 [&_img]:object-contain ${
+                        descriptionExpanded[cls.id]
+                          ? "h-full overflow-y-auto pr-2"
+                          : "max-h-16 overflow-hidden"
+                      }`}
+                      style={{
+                        scrollbarWidth: "thin",
+                        overscrollBehavior: "contain",
+                        WebkitOverflowScrolling: "touch",
                       }}
-                    >
-                      {descriptionExpanded[cls.id] ? "menos" : "más"}
-                    </button>
-                  ) : null}
-                </div>
-              ) : null}
+                      onWheelCapture={(e) => {
+                        if (descriptionExpanded[cls.id]) {
+                          e.stopPropagation();
+                        }
+                      }}
+                      onTouchMoveCapture={(e) => {
+                        if (descriptionExpanded[cls.id]) {
+                          e.stopPropagation();
+                        }
+                      }}
+                      dangerouslySetInnerHTML={{ __html: sanitizedDescription }}
+                    />
+                    {plainDescription.length > 120 ? (
+                      <button
+                        type="button"
+                        className="mt-2 text-[11px] font-semibold text-blue-200 hover:text-blue-100"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDescriptionExpanded((prev) => ({ ...prev, [cls.id]: !prev[cls.id] }));
+                        }}
+                      >
+                        {descriptionExpanded[cls.id] ? "menos" : "más"}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
             </div>
           ) : null}
         </div>
@@ -1269,10 +1650,12 @@ export default function StudentFeedPage() {
     }
 
     if (cls.type === "text" && cls.content) {
+      const sanitizedText = cls.id ? sanitizedContentMap[cls.id] ?? "" : "";
       return (
         <TextContent
           title={cls.title}
           content={cls.content}
+          contentHtml={sanitizedText}
           isActive={activeId === cls.id}
           onProgress={(pct) => handleProgress(cls.id, pct, cls.type, cls.hasAssignment || false, cls.assignmentTemplateUrl)}
           onReachEnd={() => handleTextReachEnd(idx)}
@@ -1338,7 +1721,12 @@ export default function StudentFeedPage() {
           acc +
           l.items.filter(
             (it) =>
-              Math.max(progressMap[it.id] ?? 0, completedMap[it.id] || seenMap[it.id] ? 100 : 0) >= getRequiredPct(it.type),
+              (() => {
+                const classData = findClassById(it.id);
+                const forumOk = classData ? isForumSatisfied(classData) : true;
+                const pct = Math.max(progressMap[it.id] ?? 0, completedMap[it.id] || seenMap[it.id] ? 100 : 0);
+                return pct >= getRequiredPct(it.type) && forumOk;
+              })(),
           ).length,
         0,
       );
@@ -1355,8 +1743,12 @@ export default function StudentFeedPage() {
               const totalItems = lesson.items.length;
               const completedItems = lesson.items.filter(
                 (it) =>
-                  Math.max(progressMap[it.id] ?? 0, (completedMap[it.id] || seenMap[it.id]) ? 100 : 0) >=
-                  getRequiredPct(it.type),
+                  (() => {
+                    const classData = findClassById(it.id);
+                    const forumOk = classData ? isForumSatisfied(classData) : true;
+                    const pct = Math.max(progressMap[it.id] ?? 0, (completedMap[it.id] || seenMap[it.id]) ? 100 : 0);
+                    return pct >= getRequiredPct(it.type) && forumOk;
+                  })(),
               ).length;
               const collapsed = collapsedLessons[lesson.lessonId] ?? false;
               return (
@@ -1394,7 +1786,9 @@ export default function StudentFeedPage() {
                         const isActive = activeId === item.id;
                         const isLast = itemIdx === lesson.items.length - 1;
                         const requiredPct = getRequiredPct(item.type);
-                        const isCompleted = pct >= requiredPct;
+                        const classData = findClassById(item.id);
+                        const forumOk = classData ? isForumSatisfied(classData) : true;
+                        const isCompleted = pct >= requiredPct && forumOk;
                         return (
                           <div key={item.id} className="relative pl-5">
                             <span
@@ -1439,6 +1833,20 @@ export default function StudentFeedPage() {
 
   return (
     <div className="min-h-screen bg-black text-white" style={{ touchAction: "pan-y" }}>
+      {previewMode ? (
+        <div className="sticky top-0 z-30 flex items-center justify-between gap-3 rounded-b-2xl border-b border-yellow-700 bg-yellow-400/95 px-4 py-2 text-xs font-semibold text-black shadow-lg lg:ml-64 lg:px-6">
+          <p className="m-0 flex-1 text-left leading-snug">
+            Estás viendo este curso en modo previsualización; los cambios no se guardan.
+          </p>
+          <button
+            type="button"
+            onClick={() => router.push("/creator")}
+            className="rounded-full border border-black/20 bg-black/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-black transition hover:bg-black/20"
+          >
+            Volver al feed del profesor
+          </button>
+        </div>
+      ) : null}
       <header className="fixed left-0 top-0 z-20 hidden h-full w-64 flex-col border-r border-white/10 bg-neutral-900/80 p-4 lg:flex">
         <div className="space-y-1">
           <h1 className="text-xl font-bold">Mis clases</h1>
@@ -1459,13 +1867,24 @@ export default function StudentFeedPage() {
           <ControlIcon name="menu" />
           Mis clases
         </button>
-        <Link
-          href="/student/profile"
-          className="pointer-events-auto fixed right-3 top-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white shadow-lg backdrop-blur transition hover:bg-white/20"
-          aria-label="Perfil de alumno"
-        >
-          <ControlIcon name="user" />
-        </Link>
+        {previewMode ? (
+          <button
+            type="button"
+            disabled
+            className="pointer-events-auto fixed right-3 top-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white shadow-lg backdrop-blur opacity-40"
+            aria-label="Perfil de alumno deshabilitado"
+          >
+            <ControlIcon name="user" />
+          </button>
+        ) : (
+          <Link
+            href="/student/profile"
+            className="pointer-events-auto fixed right-3 top-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white shadow-lg backdrop-blur transition hover:bg-white/20"
+            aria-label="Perfil de alumno"
+          >
+            <ControlIcon name="user" />
+          </Link>
+        )}
         {/* Header overlay móvil */}
         <div className="pointer-events-none absolute inset-x-0 top-4 z-30 flex items-center justify-center text-xs text-white/80 lg:hidden">
           <span className="rounded-full bg-black/50 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.12em]">
@@ -1506,12 +1925,6 @@ export default function StudentFeedPage() {
             </div>
           </aside>
           {classes.map((cls, idx) => {
-            const safeDescription =
-              cls.type === "text"
-                ? ""
-                : typeof cls.content === "string"
-                  ? cls.content.replace(/<[^>]+>/g, "").trim()
-                  : "";
             const contentBoxSizeClass =
               "h-[calc(100vh-120px)] max-h-full lg:w-[min(90vh,90vw,820px)] lg:h-[min(90vh,90vw,820px)]";
 
@@ -1537,10 +1950,40 @@ export default function StudentFeedPage() {
                           likes={likesMap[cls.id] ?? cls.likesCount ?? 0}
                           comments={(commentsCountMap[cls.id] ?? commentsMap[cls.id]?.length ?? 0)}
                           isLiked={likedMap[cls.id] ?? false}
-                          onLike={() => handleToggleLike(cls)}
-                          likeDisabled={likePendingMap[cls.id] ?? false}
+                          onLike={() => {
+                            if (previewMode) {
+                              toast.error("La vista previa es de solo lectura.");
+                              return;
+                            }
+                            handleToggleLike(cls);
+                          }}
+                          likeDisabled={previewMode || (likePendingMap[cls.id] ?? false)}
                           hasAssignment={cls.hasAssignment || false}
-                          onAssignment={() => setAssignmentPanel({ open: true, classId: cls.id })}
+                          onAssignment={() => {
+                            if (previewMode) {
+                              toast.error("Las tareas están deshabilitadas en la vista previa.");
+                              return;
+                            }
+                            setAssignmentPanel({ open: true, classId: cls.id });
+                          }}
+                          hasForum={cls.forumEnabled || false}
+                          forumDone={previewMode ? true : (forumDoneMap[cls.id] ?? false)}
+                          onForum={() => {
+                            if (previewMode) {
+                              toast.error("El foro está deshabilitado en la vista previa.");
+                              return;
+                            }
+                            setForumPanel({ open: true, classId: cls.id });
+                          }}
+                          commentsDisabled={previewMode}
+                          onComments={() => {
+                            if (previewMode) {
+                              toast.error("Los comentarios están deshabilitados en la vista previa.");
+                              return;
+                            }
+                            setCommentsClassId(cls.id);
+                            setCommentsOpen(true);
+                          }}
                           positionClass="absolute right-2 top-1/4 -translate-y-1/4 lg:hidden"
                         />
                       ) : null}
@@ -1567,10 +2010,40 @@ export default function StudentFeedPage() {
                       likes={likesMap[cls.id] ?? cls.likesCount ?? 0}
                       comments={(commentsCountMap[cls.id] ?? commentsMap[cls.id]?.length ?? 0)}
                       isLiked={likedMap[cls.id] ?? false}
-                      onLike={() => handleToggleLike(cls)}
-                      likeDisabled={likePendingMap[cls.id] ?? false}
+                      onLike={() => {
+                        if (previewMode) {
+                          toast.error("La vista previa es de solo lectura.");
+                          return;
+                        }
+                        handleToggleLike(cls);
+                      }}
+                      likeDisabled={previewMode || (likePendingMap[cls.id] ?? false)}
                       hasAssignment={cls.hasAssignment || false}
-                      onAssignment={() => setAssignmentPanel({ open: true, classId: cls.id })}
+                      onAssignment={() => {
+                        if (previewMode) {
+                          toast.error("Las tareas están deshabilitadas en la vista previa.");
+                          return;
+                        }
+                        setAssignmentPanel({ open: true, classId: cls.id });
+                      }}
+                      hasForum={cls.forumEnabled || false}
+                      forumDone={previewMode ? true : (forumDoneMap[cls.id] ?? false)}
+                      onForum={() => {
+                        if (previewMode) {
+                          toast.error("El foro está deshabilitado en la vista previa.");
+                          return;
+                        }
+                        setForumPanel({ open: true, classId: cls.id });
+                      }}
+                      commentsDisabled={previewMode}
+                      onComments={() => {
+                        if (previewMode) {
+                          toast.error("Los comentarios están deshabilitados en la vista previa.");
+                          return;
+                        }
+                        setCommentsClassId(cls.id);
+                        setCommentsOpen(true);
+                      }}
                       positionClass="hidden lg:flex flex-col items-center gap-4"
                     />
                   ) : null}
@@ -1608,6 +2081,10 @@ export default function StudentFeedPage() {
               loading={loadingCommentsMap[commentsClassId] ?? false}
               onClose={() => setCommentsOpen(false)}
               onAdd={(text, parentId) => {
+                if (previewMode) {
+                  toast.error("La vista previa es de solo lectura.");
+                  return;
+                }
                 if (!currentUser) {
                   toast.error("Inicia sesión para comentar");
                   return;
@@ -1674,8 +2151,29 @@ export default function StudentFeedPage() {
             />
           ) : null}
 
+          {forumPanel.open && !previewMode ? (
+            <ForumPanel
+              open={forumPanel.open}
+              onClose={() => setForumPanel({ open: false, classId: undefined })}
+              classMeta={findClassById(forumPanel.classId ?? null)}
+              requiredFormat={
+                (findClassById(forumPanel.classId ?? null)?.forumRequiredFormat as "text" | "audio" | "video") ?? "text"
+              }
+              studentName={studentName || currentUser?.displayName || "Estudiante"}
+              studentId={currentUser?.uid}
+              onSubmitted={() => {
+                const cls = findClassById(forumPanel.classId ?? null);
+                if (cls?.id) {
+                  setForumDoneMap((prev) => ({ ...prev, [cls.id]: true }));
+                  const pct = Math.max(progressRef.current[cls.id] ?? 0, progressMap[cls.id] ?? 0);
+                  handleProgress(cls.id, pct, cls.type, cls.hasAssignment || false, cls.assignmentTemplateUrl);
+                }
+              }}
+            />
+          ) : null}
+
           {/* Modal de tarea */}
-          {assignmentModal.open ? (
+          {assignmentModal.open && !previewMode ? (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
               <div className="w-full max-w-md rounded-2xl bg-neutral-900 p-6 shadow-2xl">
                 <h3 className="text-lg font-semibold text-white">Descarga la plantilla</h3>
@@ -1729,7 +2227,7 @@ export default function StudentFeedPage() {
           ) : null}
 
           {/* Panel de tarea lateral */}
-          {assignmentPanel.open && assignmentPanel.classId ? (() => {
+          {assignmentPanel.open && assignmentPanel.classId && !previewMode ? (() => {
             const cls = findClassById(assignmentPanel.classId);
             if (!cls) return null;
             return (
@@ -1924,7 +2422,11 @@ const VideoPlayer = React.memo(function VideoPlayer({
         player.on('play', () => setIsPlaying(true));
         player.on('playing', () => setIsPlaying(true));
         player.on('pause', () => setIsPlaying(false));
-        player.on('ended', () => setIsPlaying(false));
+        player.on('ended', () => {
+          setIsPlaying(false);
+          setProgress(100);
+          onProgressRef.current?.(100);
+        });
         player.on('timeupdate', (data) => {
           const pct = (data.seconds / data.duration) * 100;
           setProgress(pct);
@@ -2218,9 +2720,39 @@ type ActionStackProps = {
   likeDisabled?: boolean;
   hasAssignment?: boolean;
   onAssignment?: () => void;
+  hasForum?: boolean;
+  forumDone?: boolean;
+  onForum?: () => void;
+  commentsDisabled?: boolean;
+  onComments?: () => void;
 };
 
-function ActionStack({ logoSrc = UNIVERSITY_LOGO_SRC, likes = 0, comments = 0, positionClass, isLiked = false, onLike, likeDisabled = false, hasAssignment = false, onAssignment }: ActionStackProps) {
+function ActionStack({
+  logoSrc = UNIVERSITY_LOGO_SRC,
+  likes = 0,
+  comments = 0,
+  positionClass,
+  isLiked = false,
+  onLike,
+  likeDisabled = false,
+  hasAssignment = false,
+  onAssignment,
+  hasForum = false,
+  forumDone = false,
+  onForum,
+  commentsDisabled = false,
+  onComments,
+}: ActionStackProps) {
+  const handleComments = () => {
+    if (commentsDisabled) return;
+    if (onComments) {
+      onComments();
+      return;
+    }
+    const evt = new CustomEvent("open-comments", { detail: null });
+    window.dispatchEvent(evt);
+  };
+
   return (
     <div className={`pointer-events-auto z-30 flex flex-col items-center gap-4 text-white ${positionClass ?? ""}`}>
       <div className="flex flex-col items-center gap-2">
@@ -2243,10 +2775,20 @@ function ActionStack({ logoSrc = UNIVERSITY_LOGO_SRC, likes = 0, comments = 0, p
       {hasAssignment ? (
         <ActionButton icon="assignment" label="Tarea" onClick={onAssignment} />
       ) : null}
-      <ActionButton icon="comment" label={comments.toLocaleString("es-MX")} onClick={() => {
-        const evt = new CustomEvent("open-comments", { detail: null });
-        window.dispatchEvent(evt);
-      }} />
+      {hasForum ? (
+        <ActionButton
+          icon="comment"
+          label={forumDone ? "Foro listo" : "Foro"}
+          onClick={onForum}
+          isActive={forumDone}
+        />
+      ) : null}
+      <ActionButton
+        icon="comment"
+        label={comments.toLocaleString("es-MX")}
+        onClick={handleComments}
+        disabled={commentsDisabled}
+      />
     </div>
   );
 }
@@ -2394,8 +2936,9 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
     Array<{
       id: string;
       text?: string;
+      explanation?: string;
       order?: number;
-      options?: Array<{ id: string; text?: string; isCorrect?: boolean }>;
+      options?: Array<{ id: string; text?: string; isCorrect?: boolean; feedback?: string; correctFeedback?: string; incorrectFeedback?: string }>;
     }>
   >([]);
   const [currentIdx, setCurrentIdx] = useState(0);
@@ -2408,6 +2951,7 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
   const containerRef = useRef<HTMLDivElement | null>(null);
   const onProgressRef = useRef(onProgress);
   const savedRef = useRef(false);
+  const [feedbackMap, setFeedbackMap] = useState<Record<string, { status: "correct" | "incorrect"; message?: string }>>({});
 
   useEffect(() => {
     onProgressRef.current = onProgress;
@@ -2444,8 +2988,18 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
           return {
             id: d.id,
             text: qd.text ?? qd.question ?? "",
+            explanation: qd.explanation ?? qd.questionFeedback ?? "",
             order: qd.order ?? 0,
-            options: Array.isArray(qd.options) ? qd.options : [],
+            options: Array.isArray(qd.options)
+              ? qd.options.map((opt: any) => ({
+                  id: opt.id ?? opt.text ?? uuidv4(),
+                  text: opt.text ?? "",
+                  isCorrect: opt.isCorrect,
+                  feedback: opt.feedback,
+                  correctFeedback: opt.correctFeedback,
+                  incorrectFeedback: opt.incorrectFeedback,
+                }))
+              : [],
           };
         });
         console.log('Processed questions:', data);
@@ -2476,9 +3030,30 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
   }, [questions.length]);
 
   const handleSelect = (questionId: string, optionId: string) => {
-    if (submitted) return;
+    if (submitted || answers[questionId]) return;
     setAnswers((prev) => ({ ...prev, [questionId]: optionId }));
     const idx = questions.findIndex((q) => q.id === questionId);
+    const question = questions[idx];
+    const selectedOpt = (question?.options ?? []).find((o) => o.id === optionId);
+    const hasCorrectness = (question?.options ?? []).some((o) => typeof o.isCorrect === "boolean");
+
+    if (hasCorrectness && question && selectedOpt) {
+      const correctOpt = (question.options ?? []).find((o) => o.isCorrect === true);
+      const isCorrect = selectedOpt.isCorrect === true;
+      const message =
+        selectedOpt.feedback ||
+        (isCorrect ? selectedOpt.correctFeedback : selectedOpt.incorrectFeedback) ||
+        (isCorrect
+          ? "¡Respuesta correcta!"
+          : correctOpt
+            ? `No es correcto. La respuesta correcta es "${correctOpt.text ?? ""}".`
+            : "Respuesta incorrecta.");
+      setFeedbackMap((prev) => ({
+        ...prev,
+        [questionId]: { status: isCorrect ? "correct" : "incorrect", message },
+      }));
+    }
+
     if (idx !== -1 && idx < questions.length - 1) {
       setCurrentIdx(idx + 1);
     }
@@ -2662,6 +3237,7 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
               {(currentQuestion.options ?? []).length > 0 ? (
                 (currentQuestion.options ?? []).map((opt) => {
                   const selected = answers[currentQuestion.id] === opt.id;
+                  const alreadyAnswered = !!answers[currentQuestion.id];
                   return (
                     <label
                       key={opt.id ?? opt.text}
@@ -2669,6 +3245,8 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
                         selected ? "border-blue-500 bg-blue-500/20 text-white" : "border-white/10 bg-white/5 text-neutral-100"
                       }`}
                       onClick={() => handleSelect(currentQuestion.id, opt.id ?? String(opt.text ?? ""))}
+                      aria-disabled={alreadyAnswered}
+                      style={alreadyAnswered ? { opacity: 0.8, cursor: "not-allowed" } : undefined}
                     >
                       <span
                         className={`inline-flex h-4 w-4 items-center justify-center rounded-full border ${
@@ -2683,6 +3261,7 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
                 <div className="space-y-2">
                   <textarea
                     value={textInputs[currentQuestion.id] ?? answers[currentQuestion.id] ?? ""}
+                    disabled={!!answers[currentQuestion.id]}
                     onChange={(e) =>
                       setTextInputs((prev) => ({ ...prev, [currentQuestion.id]: e.target.value }))
                     }
@@ -2693,7 +3272,7 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
                   <div className="flex justify-end">
                     <button
                       type="button"
-                      disabled={!(textInputs[currentQuestion.id] ?? answers[currentQuestion.id])?.trim()}
+                      disabled={!!answers[currentQuestion.id] || !(textInputs[currentQuestion.id] ?? answers[currentQuestion.id])?.trim()}
                       onClick={() => {
                         const val = (textInputs[currentQuestion.id] ?? answers[currentQuestion.id] ?? "").trim();
                         if (!val) return;
@@ -2707,6 +3286,28 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
                 </div>
               )}
             </div>
+            {feedbackMap[currentQuestion.id] ? (
+              <div
+                className={`mt-1 rounded-lg border px-3 py-2 text-sm ${
+                  feedbackMap[currentQuestion.id]?.status === "correct"
+                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100"
+                    : "border-rose-500/40 bg-rose-500/10 text-rose-100"
+                }`}
+              >
+                <p className="font-semibold">
+                  {feedbackMap[currentQuestion.id]?.status === "correct" ? "¡Respuesta correcta!" : "Respuesta incorrecta"}
+                </p>
+                {feedbackMap[currentQuestion.id]?.message ? (
+                  <p className="text-[13px] text-white/80">{feedbackMap[currentQuestion.id]?.message}</p>
+                ) : null}
+              </div>
+            ) : null}
+            {!!answers[currentQuestion.id] && currentQuestion.explanation ? (
+              <div className="mt-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-neutral-100">
+                <p className="font-semibold text-white">Explicación de la pregunta</p>
+                <p className="text-[13px] text-white/80">{currentQuestion.explanation}</p>
+              </div>
+            ) : null}
           </div>
         ) : questions.length > 0 ? (
           <p className="text-sm text-neutral-300">Error: No se pudo cargar la pregunta actual. Index: {currentIdx}, Total: {questions.length}</p>
@@ -2749,6 +3350,7 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
 type TextContentProps = {
   title?: string;
   content: string;
+  contentHtml?: string;
   onProgress?: (pct: number) => void;
   isActive?: boolean;
   onReachEnd?: () => void;
@@ -2757,6 +3359,7 @@ type TextContentProps = {
 function TextContent({
   title,
   content,
+  contentHtml,
   onProgress,
   isActive = true,
   onReachEnd,
@@ -2768,6 +3371,7 @@ function TextContent({
   const hasInteractedRef = useRef(false);
   const reachedEndRef = useRef(false);
   const lastScrollTopRef = useRef(0);
+  const contentKey = contentHtml ?? content;
 
   useEffect(() => {
     onProgressRef.current = onProgress;
@@ -2781,7 +3385,7 @@ function TextContent({
     endNotifiedRef.current = false;
     hasInteractedRef.current = false;
     reachedEndRef.current = false;
-  }, [content, isActive]);
+  }, [contentKey, isActive]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -2846,9 +3450,16 @@ function TextContent({
           {title}
         </h2>
       ) : null}
-      <p className="whitespace-pre-wrap text-base lg:text-lg leading-relaxed text-neutral-50">
-        {content || "Contenido no disponible"}
-      </p>
+      {contentHtml ? (
+        <div
+          className="prose prose-invert max-w-none text-base lg:text-lg leading-relaxed text-neutral-50 [&_img]:max-w-full [&_img]:rounded-lg [&_img]:border [&_img]:border-white/10 [&_img]:my-2"
+          dangerouslySetInnerHTML={{ __html: contentHtml }}
+        />
+      ) : (
+        <p className="whitespace-pre-wrap text-base lg:text-lg leading-relaxed text-neutral-50">
+          {content || "Contenido no disponible"}
+        </p>
+      )}
       </div>
     </div>
   );
@@ -2999,6 +3610,343 @@ function CommentsPanel({ classId, comments, onAdd, onClose, loading = false }: C
   );
 }
 
+type ForumPanelProps = {
+  open: boolean;
+  onClose: () => void;
+  classMeta: FeedClass | null;
+  requiredFormat: "text" | "audio" | "video";
+  studentName: string;
+  studentId?: string;
+  onSubmitted: () => void;
+};
+
+function ForumPanel({ open, onClose, classMeta, requiredFormat, studentName, studentId, onSubmitted }: ForumPanelProps) {
+  const [text, setText] = useState("");
+  const [mediaFile, setMediaFile] = useState<File | null>(null);
+  const [mediaUrl, setMediaUrl] = useState("");
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [alreadySubmitted, setAlreadySubmitted] = useState(false);
+  const [checkingExisting, setCheckingExisting] = useState(false);
+  const audioFormat = requiredFormat === "audio";
+  const videoFormat = requiredFormat === "video";
+  const requiresMedia = audioFormat || videoFormat;
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<BlobPart[]>([]);
+  const [recording, setRecording] = useState(false);
+  const [recordingError, setRecordingError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Generar previsualización
+    if (mediaFile) {
+      const url = URL.createObjectURL(mediaFile);
+      setPreviewUrl(url);
+      return () => {
+        URL.revokeObjectURL(url);
+      };
+    }
+    if (mediaUrl.trim()) {
+      setPreviewUrl(mediaUrl.trim());
+    } else {
+      setPreviewUrl("");
+    }
+    return undefined;
+  }, [mediaFile, mediaUrl]);
+
+  useEffect(() => {
+    if (!open) {
+      setAlreadySubmitted(false);
+      setCheckingExisting(false);
+      return;
+    }
+    const checkExisting = async () => {
+      if (!studentId || !classMeta?.courseId || !classMeta.lessonId || !(classMeta.classDocId ?? classMeta.id)) return;
+      setCheckingExisting(true);
+      try {
+        const forumDocRef = doc(
+          db,
+          "courses",
+          classMeta.courseId,
+          "lessons",
+          classMeta.lessonId,
+          "classes",
+          classMeta.classDocId ?? classMeta.id,
+          "forums",
+          studentId,
+        );
+        const snap = await getDoc(forumDocRef);
+        setAlreadySubmitted(snap.exists());
+      } catch (err) {
+        console.warn("No se pudo verificar foro existente:", err);
+      } finally {
+        setCheckingExisting(false);
+      }
+    };
+    checkExisting();
+  }, [open, classMeta?.courseId, classMeta?.lessonId, classMeta?.classDocId, classMeta?.id, studentId]);
+
+  if (!open || !classMeta) return null;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (alreadySubmitted) {
+      toast.success("Ya enviaste un aporte para este foro.");
+      onSubmitted();
+      onClose();
+      return;
+    }
+    if (!studentId) {
+      toast.error("Inicia sesión para participar en el foro");
+      return;
+    }
+    if (!classMeta.courseId || !classMeta.lessonId || !(classMeta.classDocId ?? classMeta.id)) {
+      toast.error("No se encontró la clase para enviar el foro");
+      return;
+    }
+    if (requiredFormat === "text" && !text.trim()) {
+      toast.error("Escribe tu aporte para continuar");
+      return;
+    }
+    if (videoFormat && !mediaFile) {
+      toast.error("Sube un archivo de video");
+      return;
+    }
+    if (audioFormat && !mediaFile && !mediaUrl.trim()) {
+      toast.error("Sube un archivo o pega un enlace");
+      return;
+    }
+    const targetClassId = classMeta.classDocId ?? classMeta.id;
+    const forumDocRef = doc(
+      db,
+      "courses",
+      classMeta.courseId ?? "",
+      "lessons",
+      classMeta.lessonId ?? "",
+      "classes",
+      targetClassId,
+      "forums",
+      studentId,
+    );
+
+    // Evitar envíos duplicados: si ya existe aporte del alumno, marcamos como listo y cerramos.
+    try {
+      const existing = await getDoc(forumDocRef);
+      if (existing.exists()) {
+        toast.success("Ya enviaste un aporte para este foro.");
+        onSubmitted();
+        onClose();
+        return;
+      }
+    } catch (err) {
+      console.warn("No se pudo verificar envío previo del foro:", err);
+    }
+
+    setUploading(true);
+    try {
+      let storedUrl = mediaUrl.trim();
+      if (mediaFile) {
+        const storage = getStorage();
+        const ext = mediaFile.name.split(".").pop() || (requiredFormat === "audio" ? "aac" : "mp4");
+        const storageRef = ref(
+          storage,
+          `forum-posts/${studentId}/${classMeta.id}/${uuidv4()}.${ext}`,
+        );
+        await uploadBytes(storageRef, mediaFile, { contentType: mediaFile.type || undefined });
+        storedUrl = await getDownloadURL(storageRef);
+      }
+      await setDoc(forumDocRef, {
+        text: text.trim(),
+        authorId: studentId,
+        authorName: studentName || "Estudiante",
+        format: requiredFormat,
+        mediaUrl: storedUrl || null,
+        createdAt: serverTimestamp(),
+      });
+      toast.success("Aporte enviado");
+      onSubmitted();
+      onClose();
+      setText("");
+      setMediaFile(null);
+      setMediaUrl("");
+    } catch (err) {
+      console.error("No se pudo enviar al foro:", err);
+      toast.error("No se pudo enviar el aporte");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-y-0 right-0 z-40 w-full max-w-md bg-neutral-900/95 backdrop-blur-lg text-white shadow-2xl lg:top-0 lg:right-0">
+      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+        <div>
+          <p className="text-sm font-semibold">Foro</p>
+          <p className="text-xs text-white/60">Clase {classMeta.classTitle ?? classMeta.title}</p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-full bg-white/10 px-3 py-1 text-xs hover:bg-white/20"
+        >
+          Cerrar
+        </button>
+      </div>
+
+      <form onSubmit={handleSubmit} className="flex h-[70vh] flex-col">
+        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+          <div className="rounded-2xl bg-white/5 p-3 text-sm text-white/90 space-y-2">
+            <p className="text-xs uppercase tracking-wide text-white/60">Formato requerido</p>
+            <p className="text-base font-semibold">
+              {requiredFormat === "text" ? "Texto" : requiredFormat === "audio" ? "Audio" : "Video"}
+            </p>
+            <p className="text-xs text-white/60">
+              Envía al menos un aporte en este formato para desbloquear la siguiente clase.
+            </p>
+          </div>
+
+          {alreadySubmitted ? (
+            <div className="rounded-2xl border border-green-500/30 bg-green-500/10 px-4 py-3 text-sm text-green-100">
+              Ya enviaste un aporte para este foro. Solo se permite un envío por clase.
+            </div>
+          ) : (
+            <>
+              {!audioFormat && !videoFormat ? (
+                <div className="space-y-2 rounded-2xl bg-white/5 p-3">
+                  <label className="text-sm font-semibold text-white">
+                    {videoFormat ? "Tu aporte en texto (obligatorio)" : "Mensaje"}
+                  </label>
+                  <textarea
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                    disabled={alreadySubmitted || uploading}
+                    rows={3}
+                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none"
+                    placeholder="Escribe tu aporte"
+                  />
+                </div>
+              ) : null}
+
+              {audioFormat ? (
+                <div className="space-y-2 rounded-2xl bg-white/5 p-3">
+                  <label className="text-sm font-semibold text-white">
+                    Sube audio, graba o pega enlace
+                  </label>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setRecordingError(null);
+                        if (recording) {
+                          recorderRef.current?.stop();
+                          return;
+                        }
+                        try {
+                          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                          const recorder = new MediaRecorder(stream);
+                          recorderRef.current = recorder;
+                          chunksRef.current = [];
+                          recorder.ondataavailable = (ev) => {
+                            if (ev.data.size > 0) chunksRef.current.push(ev.data);
+                          };
+                          recorder.onstop = () => {
+                            const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+                            const file = new File([blob], `grabacion-${Date.now()}.webm`, { type: "audio/webm" });
+                            setMediaFile(file);
+                            setMediaUrl("");
+                            stream.getTracks().forEach((t) => t.stop());
+                            setRecording(false);
+                          };
+                          recorder.start();
+                          setRecording(true);
+                        } catch (err: any) {
+                          console.error("No se pudo iniciar grabación:", err);
+                          setRecordingError("No se pudo acceder al micrófono");
+                          setRecording(false);
+                        }
+                      }}
+                      disabled={alreadySubmitted || uploading}
+                      className={`rounded-full px-3 py-2 text-xs font-semibold ${
+                        recording ? "bg-red-600 text-white" : "bg-white/10 text-white hover:bg-white/20"
+                      }`}
+                    >
+                      {recording ? "Detener grabación" : "Grabar audio"}
+                    </button>
+                    {recordingError ? <span className="text-xs text-red-300">{recordingError}</span> : null}
+                  </div>
+                  <div className="space-y-2">
+                    <input
+                      type="file"
+                      accept="audio/*"
+                      onChange={(e) => setMediaFile(e.target.files?.[0] ?? null)}
+                      disabled={alreadySubmitted || uploading}
+                      className="w-full text-sm text-white"
+                    />
+                    <input
+                      value={mediaUrl}
+                      onChange={(e) => setMediaUrl(e.target.value)}
+                      disabled={alreadySubmitted || uploading}
+                      placeholder="https://... (opcional)"
+                      className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none"
+                    />
+                    {mediaFile ? (
+                      <p className="text-xs text-white/70">Archivo seleccionado: {mediaFile.name}</p>
+                    ) : null}
+                    {previewUrl ? (
+                      <div className="rounded-lg border border-white/10 bg-white/5 p-2">
+                        <p className="text-xs text-white/60 mb-1">Previsualización</p>
+                        <audio controls src={previewUrl} className="w-full" />
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : videoFormat ? (
+                <div className="space-y-2 rounded-2xl bg-white/5 p-3">
+                  <label className="text-sm font-semibold text-white">Sube tu video</label>
+                  <input
+                    type="file"
+                    accept="video/*"
+                    onChange={(e) => setMediaFile(e.target.files?.[0] ?? null)}
+                    disabled={alreadySubmitted || uploading}
+                    className="w-full text-sm text-white"
+                  />
+                  {mediaFile ? (
+                    <p className="text-xs text-white/70">Archivo seleccionado: {mediaFile.name}</p>
+                  ) : null}
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
+
+        {!alreadySubmitted ? (
+          <div className="px-4 pb-4">
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/20"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={uploading || alreadySubmitted}
+                className={`inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold text-white ${
+                  uploading || alreadySubmitted
+                    ? "bg-green-600/60 cursor-not-allowed"
+                    : "bg-green-600 hover:bg-green-500"
+                }`}
+              >
+                {alreadySubmitted ? "Aporte enviado" : uploading ? "Enviando..." : "Enviar aporte"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </form>
+    </div>
+  );
+}
+
 type AssignmentPanelProps = {
   classId: string;
   classTitle?: string;
@@ -3144,6 +4092,7 @@ function ImageCarousel({
   const startXRef = useRef<number>(0);
   const isDraggingRef = useRef(false);
   const onProgressRef = useRef(onProgress);
+  const singleImageTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     onProgressRef.current = onProgress;
@@ -3152,7 +4101,12 @@ function ImageCarousel({
   useEffect(() => {
     setCurrentIndex(activeIndex);
     if (onProgressRef.current && isActive) {
-      const pct = images.length > 0 ? ((activeIndex + 1) / images.length) * 100 : 0;
+      const pct =
+        images.length === 1
+          ? 0 // una sola imagen requiere tiempo mínimo, iniciamos en 0
+          : images.length > 0
+            ? ((activeIndex + 1) / images.length) * 100
+            : 0;
       onProgressRef.current(Math.min(100, Math.max(0, pct)));
     }
   }, [activeIndex, images.length, isActive]);
@@ -3169,6 +4123,34 @@ function ImageCarousel({
     const isLast = images.length > 0 && index >= images.length - 1;
     const pct = images.length > 0 ? ((index + 1) / images.length) * 100 : 0;
     onProgressRef.current(isLast ? 100 : Math.min(100, Math.max(0, pct)));
+  }, [images.length, isActive]);
+
+  // Temporizador para imagen única (mínimo 10s)
+  useEffect(() => {
+    if (images.length !== 1 || !isActive) {
+      if (singleImageTimerRef.current) {
+        clearInterval(singleImageTimerRef.current);
+        singleImageTimerRef.current = null;
+      }
+      return;
+    }
+    const startedAt = Date.now();
+    const requiredMs = 10_000;
+    singleImageTimerRef.current = setInterval(() => {
+      const elapsed = Date.now() - startedAt;
+      const pct = Math.min(100, (elapsed / requiredMs) * 100);
+      onProgressRef.current?.(pct);
+      if (pct >= 100 && singleImageTimerRef.current) {
+        clearInterval(singleImageTimerRef.current);
+        singleImageTimerRef.current = null;
+      }
+    }, 400);
+    return () => {
+      if (singleImageTimerRef.current) {
+        clearInterval(singleImageTimerRef.current);
+        singleImageTimerRef.current = null;
+      }
+    };
   }, [images.length, isActive]);
 
   const scrollToIndex = (index: number) => {
@@ -3353,10 +4335,14 @@ function toEmbedUrl(url: string) {
     try {
       const u = new URL(safe);
       const parts = u.pathname.split("/").filter(Boolean);
-      const id = parts[0] ?? "";
-      const hash = parts[1] ?? "";
-      const hParam = hash ? `?h=${hash}` : "";
-      return `https://player.vimeo.com/video/${id}${hParam}`;
+      // Para player.vimeo.com/video/123 o vimeo.com/123/abcd
+      const candidateId = parts.length ? parts[parts.length - 1] : "";
+      const hashFromPath = parts.length > 1 ? parts[parts.length - 2] : "";
+      const hashFromQuery = u.searchParams.get("h") ?? "";
+      const id = /^\d+$/.test(candidateId) ? candidateId : parts.find((p) => /^\d+$/.test(p)) ?? "";
+      const hParam = hashFromQuery || (!/^\d+$/.test(hashFromPath) ? hashFromPath : "");
+      const query = hParam ? `?h=${hParam}` : "";
+      return `https://player.vimeo.com/video/${id}${query}`;
     } catch {
       const raw = safe.split("vimeo.com/")[1] ?? "";
       const [idRaw, hashRaw] = raw.split("/");

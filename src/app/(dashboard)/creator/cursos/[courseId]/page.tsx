@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
   ClassItem as ClassData,
@@ -239,6 +240,8 @@ export default function CourseBuilderPage() {
             imageUrls: d.imageUrls ?? [],
             hasAssignment: d.hasAssignment ?? false,
             assignmentTemplateUrl: d.assignmentTemplateUrl ?? "",
+            forumEnabled: d.forumEnabled ?? false,
+            forumRequiredFormat: d.forumRequiredFormat ?? null,
           };
         });
         setClassesMap((prev) => ({ ...prev, [lessonId]: data }));
@@ -528,7 +531,16 @@ export default function CourseBuilderPage() {
           >
             ← Volver a cursos
           </button>
-          <span className="text-xs text-slate-500">ID: {courseId}</span>
+          <div className="flex items-center gap-3">
+            <Link
+              href={`/student?previewCourseId=${courseId}`}
+              target="_blank"
+              className="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+            >
+              Vista previa alumno
+            </Link>
+            <span className="text-xs text-slate-500">ID: {courseId}</span>
+          </div>
         </div>
         <div className="mt-3">
           <h1 className="text-2xl font-semibold text-slate-900">

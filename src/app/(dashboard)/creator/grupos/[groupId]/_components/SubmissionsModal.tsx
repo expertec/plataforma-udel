@@ -12,6 +12,8 @@ type Props = {
   groupId: string;
   classId: string;
   courseId?: string;
+  lessonId?: string;
+  classType?: string;
   className: string;
   isOpen: boolean;
   onClose: () => void;
@@ -27,7 +29,16 @@ type Row = {
   submission?: Submission;
 };
 
-export function SubmissionsModal({ groupId, classId, className, courseId, isOpen, onClose }: Props) {
+export function SubmissionsModal({
+  groupId,
+  classId,
+  className,
+  courseId,
+  lessonId,
+  classType,
+  isOpen,
+  onClose,
+}: Props) {
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [gradeModal, setGradeModal] = useState<{
@@ -50,9 +61,35 @@ export function SubmissionsModal({ groupId, classId, className, courseId, isOpen
           };
         });
 
-        const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
-          (s) => !courseId || !s.courseId || s.courseId === courseId,
-        );
+        let submissions: Submission[] = [];
+        if (classType === "forum" && courseId && lessonId) {
+          const forumSnap = await getDocs(
+            collection(db, "courses", courseId, "lessons", lessonId, "classes", classId, "forums"),
+          );
+          submissions = forumSnap.docs.map((d) => {
+            const data = d.data() as any;
+            return {
+              id: d.id,
+              classId,
+              classDocId: classId,
+              courseId,
+              className,
+              classType: "forum",
+              studentId: data.authorId ?? "",
+              studentName: data.authorName ?? "",
+              submittedAt: data.createdAt?.toDate?.() ?? null,
+              fileUrl: data.mediaUrl ?? "",
+              content: data.text ?? "",
+              status: "pending",
+              grade: undefined,
+              feedback: "",
+            };
+          });
+        } else {
+          submissions = (await getSubmissionsByClass(groupId, classId)).filter(
+            (s) => !courseId || !s.courseId || s.courseId === courseId,
+          );
+        }
         const rows: Row[] = students.map((s) => ({
           student: s,
           submission: submissions.find((sub) => sub.studentId === s.id),
@@ -65,7 +102,7 @@ export function SubmissionsModal({ groupId, classId, className, courseId, isOpen
       }
     };
     load();
-  }, [isOpen, groupId, classId, courseId]);
+  }, [isOpen, groupId, classId, courseId, lessonId, classType]);
 
   const formatDate = (date?: Date | null) => {
     if (!date) return "-";
@@ -96,42 +133,69 @@ export function SubmissionsModal({ groupId, classId, className, courseId, isOpen
                 <tr>
                   <th className="px-3 py-2 text-left">Nombre</th>
                   <th className="px-3 py-2 text-left">Fecha entrega</th>
-                  <th className="px-3 py-2 text-left">Calificación</th>
-                  <th className="px-3 py-2 text-left">Acción</th>
+                  {classType === "forum" ? <th className="px-3 py-2 text-left">Aporte</th> : null}
+                  {classType !== "forum" ? (
+                    <>
+                      <th className="px-3 py-2 text-left">Calificación</th>
+                      <th className="px-3 py-2 text-left">Acción</th>
+                    </>
+                  ) : null}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {rows.map((row) => {
                   const sub = row.submission;
-                  const actionLabel = !sub
-                    ? "Pendiente"
-                    : sub.grade == null
-                    ? "Calificar"
-                    : "Ver";
-                  const isReadonly = sub?.grade != null;
                   return (
                     <tr key={row.student.id} className="hover:bg-slate-50">
                       <td className="px-3 py-2 text-slate-900">{row.student.name}</td>
                       <td className="px-3 py-2 text-slate-600">
                         {sub ? formatDate(sub.submittedAt) : "-"}
                       </td>
-                      <td className="px-3 py-2 text-slate-600">
-                        {sub?.grade != null ? sub.grade : "-"}
-                      </td>
-                      <td className="px-3 py-2">
-                        <button
-                          type="button"
-                          className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-medium text-blue-600 hover:border-blue-400 disabled:opacity-60"
-                          disabled={!sub}
-                          onClick={() =>
-                            sub
-                              ? setGradeModal({ open: true, submission: sub, readonly: isReadonly })
-                              : null
-                          }
-                        >
-                          {actionLabel}
-                        </button>
-                      </td>
+                      {classType === "forum" ? (
+                        <td className="px-3 py-2 text-slate-600">
+                          {sub ? (
+                            <div className="space-y-1">
+                              {sub.content ? <p className="text-sm text-slate-800">{sub.content}</p> : null}
+                              {sub.fileUrl ? (
+                                <a
+                                  href={sub.fileUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-xs font-semibold text-blue-600 hover:underline"
+                                >
+                                  Ver adjunto
+                                </a>
+                              ) : null}
+                            </div>
+                          ) : (
+                            "-"
+                          )}
+                        </td>
+                      ) : (
+                        <>
+                          <td className="px-3 py-2 text-slate-600">
+                            {sub?.grade != null ? sub.grade : "-"}
+                          </td>
+                          <td className="px-3 py-2">
+                            <button
+                              type="button"
+                              className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-medium text-blue-600 hover:border-blue-400 disabled:opacity-60"
+                              disabled={!sub}
+                              onClick={() =>
+                                sub
+                                  ? setGradeModal({
+                                      open: true,
+                                      submission: sub,
+                                      readonly: sub?.grade != null,
+                                    })
+                                  : null
+                              }
+                            >
+                              {!sub ? "Pendiente" : sub.grade == null ? "Calificar" : "Ver"}
+                            </button>
+                          </td>
+                        </>
+                      )}
                     </tr>
                   );
                 })}

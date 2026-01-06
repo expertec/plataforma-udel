@@ -15,6 +15,7 @@ type EntregasTabProps = {
 type AssignmentRow = {
   classId: string;
   courseId: string;
+  lessonId: string;
   className: string;
   classType: string;
   submissions: Submission[];
@@ -24,13 +25,29 @@ type AssignmentRow = {
 export function EntregasTab({ groupId, courseIds, studentsCount }: EntregasTabProps) {
   const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<{ classId: string; className: string; courseId: string } | null>(null);
+  const [selected, setSelected] = useState<{
+    classId: string;
+    className: string;
+    courseId: string;
+    lessonId: string;
+    classType: string;
+  } | null>(null);
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
       try {
-        const allClasses: Array<{ lessonId: string; classId: string; title: string; classType: string; courseId: string }> = [];
+        const studentsSnap = await getDocs(collection(db, "groups", groupId, "students"));
+        const studentIds = new Set(studentsSnap.docs.map((d) => d.id));
+
+        const allClasses: Array<{
+          lessonId: string;
+          classId: string;
+          title: string;
+          classType: string;
+          courseId: string;
+          forumEnabled?: boolean;
+        }> = [];
         for (const cid of courseIds) {
           const lessonsSnap = await getDocs(collection(db, "courses", cid, "lessons"));
           const classesPromises = lessonsSnap.docs.map(async (lessonDoc) => {
@@ -44,32 +61,80 @@ export function EntregasTab({ groupId, courseIds, studentsCount }: EntregasTabPr
                   title?: string;
                   hasAssignment?: boolean;
                   assignmentTemplateUrl?: string;
+                  forumEnabled?: boolean;
                 };
                 return {
                   id: docSnap.id,
                   type: data.type,
                   title: data.title,
                   hasAssignment: data.hasAssignment ?? false,
+                  forumEnabled: data.forumEnabled ?? false,
                 };
               })
-              .filter((c) => c.type === "quiz" || c.hasAssignment === true)
+              .filter((c) => c.type === "quiz" || c.hasAssignment === true || c.forumEnabled === true)
               .map((c) => ({
                 lessonId: lessonDoc.id,
                 classId: c.id,
                 courseId: cid,
                 title: c.title ?? "Sin título",
-                classType: c.type ?? (c.hasAssignment ? "assignment" : ""),
+                classType:
+                  c.type === "quiz"
+                    ? "quiz"
+                    : c.forumEnabled
+                    ? "forum"
+                    : c.hasAssignment
+                    ? "assignment"
+                    : "",
               }));
           });
           const classes = (await Promise.all(classesPromises)).flat();
           allClasses.push(...classes);
         }
 
-        const allSubs = await getAllSubmissions(groupId);
+        const allSubs: Submission[] = await getAllSubmissions(groupId);
+
+        const forumSubs: Submission[] = [];
+        for (const cls of allClasses.filter((c) => c.classType === "forum")) {
+          const snap = await getDocs(
+            collection(
+              db,
+              "courses",
+              cls.courseId,
+              "lessons",
+              cls.lessonId,
+              "classes",
+              cls.classId,
+              "forums",
+            ),
+          );
+          snap.docs.forEach((d) => {
+            const data = d.data() as any;
+            const authorId = data.authorId ?? "";
+            if (authorId && studentIds.size && !studentIds.has(authorId)) return;
+            forumSubs.push({
+              id: d.id,
+              classId: cls.classId,
+              classDocId: cls.classId,
+              courseId: cls.courseId,
+              className: cls.title,
+              classType: "forum",
+              studentId: authorId,
+              studentName: data.authorName ?? "",
+              submittedAt: data.createdAt?.toDate?.() ?? null,
+              fileUrl: data.mediaUrl ?? "",
+              content: data.text ?? "",
+              status: "pending",
+              grade: undefined,
+              feedback: "",
+            });
+          });
+        }
+
+        const mergedSubs = [...allSubs, ...forumSubs];
 
         const rows: AssignmentRow[] = [];
         for (const cls of allClasses) {
-          const submissions = allSubs.filter(
+          const submissions = mergedSubs.filter(
             (s) =>
               (s.classDocId ?? s.classId) === cls.classId &&
               (!s.courseId || s.courseId === cls.courseId),
@@ -80,6 +145,7 @@ export function EntregasTab({ groupId, courseIds, studentsCount }: EntregasTabPr
           rows.push({
             classId: cls.classId,
             courseId: cls.courseId,
+            lessonId: cls.lessonId,
             className: cls.title,
             classType: cls.classType,
             submissions,
@@ -123,15 +189,17 @@ export function EntregasTab({ groupId, courseIds, studentsCount }: EntregasTabPr
             {assignments.map((row) => (
               <div key={row.classId} className="grid grid-cols-4 gap-3 px-4 py-3 text-sm text-slate-800">
                 <span className="font-medium">{row.className}</span>
-                <span
-                  className={`w-fit rounded-full px-2 py-1 text-[11px] font-semibold ${
-                    row.classType === "quiz"
-                      ? "bg-amber-100 text-amber-700"
-                      : "bg-blue-100 text-blue-700"
-                  }`}
-                >
-                  {row.classType === "quiz" ? "Quiz" : "Tarea"}
-                </span>
+            <span
+              className={`w-fit rounded-full px-2 py-1 text-[11px] font-semibold ${
+                row.classType === "quiz"
+                  ? "bg-amber-100 text-amber-700"
+                  : row.classType === "forum"
+                  ? "bg-purple-100 text-purple-700"
+                  : "bg-blue-100 text-blue-700"
+              }`}
+            >
+              {row.classType === "quiz" ? "Quiz" : row.classType === "forum" ? "Foro" : "Tarea"}
+            </span>
                 <span className="text-slate-600">
                   {row.submissions.length}/{studentsCount || "?"}
                 </span>
@@ -142,7 +210,13 @@ export function EntregasTab({ groupId, courseIds, studentsCount }: EntregasTabPr
                   <button
                     type="button"
                     onClick={() =>
-                      setSelected({ classId: row.classId, className: row.className, courseId: row.courseId })
+                      setSelected({
+                        classId: row.classId,
+                        className: row.className,
+                        courseId: row.courseId,
+                        lessonId: row.lessonId,
+                        classType: row.classType,
+                      })
                     }
                     className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-blue-600 hover:border-blue-400"
                   >
@@ -160,6 +234,9 @@ export function EntregasTab({ groupId, courseIds, studentsCount }: EntregasTabPr
           groupId={groupId}
           classId={selected.classId}
           className={selected.className}
+          classType={selected.classType}
+          lessonId={selected.lessonId}
+          courseId={selected.courseId}
           isOpen
           onClose={() => setSelected(null)}
         />
