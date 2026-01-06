@@ -1524,9 +1524,7 @@ function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTex
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
-      StarterKit.configure({
-        history: false,
-      }),
+      StarterKit.configure({}),
       Placeholder.configure({
         placeholder: placeholder || "Escribe la descripción y agrega imágenes (arrastrar/pegar)",
       }),
