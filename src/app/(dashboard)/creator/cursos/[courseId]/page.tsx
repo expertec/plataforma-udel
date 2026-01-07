@@ -337,10 +337,10 @@ export default function CourseBuilderPage() {
         {
           id: groupId,
           groupName: newGroupName.trim(),
+          semester: "",
           status: "active",
           studentsCount: 0,
           maxStudents: 0,
-          program: newGroupProgram,
         },
         ...prev,
       ]);
