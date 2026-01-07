@@ -929,8 +929,9 @@ export default function StudentFeedPageClient() {
           setActiveId(feed[0]?.id ?? null);
           const previewCoverMap: Record<string, string> = {};
           feed.forEach((item) => {
-            if (!previewCoverMap[item.courseId] && item.images?.[0]) {
-              previewCoverMap[item.courseId] = item.images[0];
+            const courseKey = item.courseId ?? "sin-curso";
+            if (!previewCoverMap[courseKey] && item.images?.[0]) {
+              previewCoverMap[courseKey] = item.images[0];
             }
           });
           setCourseCoverMap((prev) => ({ ...prev, ...previewCoverMap }));
