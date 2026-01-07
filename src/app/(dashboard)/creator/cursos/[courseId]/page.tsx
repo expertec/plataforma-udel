@@ -544,7 +544,8 @@ export default function CourseBuilderPage() {
         console.error("No se pudo reordenar las clases", err);
         toast.error("No se pudo guardar el nuevo orden de clases.");
         if (previousOrder) {
-          setClassesMap((prev) => ({ ...prev, [lessonId]: previousOrder }));
+          const fallbackOrder = previousOrder;
+          setClassesMap((prev) => ({ ...prev, [lessonId]: fallbackOrder }));
         }
       }
     },
