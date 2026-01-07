@@ -119,6 +119,9 @@ export function AddClassModal({
   const [templateUploading, setTemplateUploading] = useState(false);
   const [videoDescription, setVideoDescription] = useState("");
   const [showVideoPreview, setShowVideoPreview] = useState(false);
+  const [showAudioPreview, setShowAudioPreview] = useState(false);
+  const [audioCoverUrl, setAudioCoverUrl] = useState("");
+  const [coverUploading, setCoverUploading] = useState(false);
   const [forumEnabled, setForumEnabled] = useState(false);
   const [forumFormat, setForumFormat] = useState<"text" | "audio" | "video">("text");
   const makeEmptyQuestion = () => ({
@@ -162,6 +165,11 @@ export function AddClassModal({
         setVideoDescription(initialData.content ?? "");
       }
       setImageUrls(initialData.imageUrls ?? []);
+      if (initialData.type === "audio") {
+        setAudioCoverUrl(initialData.imageUrls?.[0] ?? "");
+      } else {
+        setAudioCoverUrl("");
+      }
       setHasAssignment(initialData.hasAssignment ?? false);
       setTemplateUrl(initialData.assignmentTemplateUrl ?? "");
       setForumEnabled(initialData.forumEnabled ?? false);
@@ -213,6 +221,7 @@ export function AddClassModal({
       setUrl("");
       setContent("");
       setImageUrls([]);
+      setAudioCoverUrl("");
       setImageMode("single");
       setQuestions([makeEmptyQuestion()]);
       setHasAssignment(false);
@@ -223,6 +232,12 @@ export function AddClassModal({
       setForumFormat("text");
     }
   }, [mode, initialData, open, courseId, lessonId, classId]);
+
+  useEffect(() => {
+    if (type !== "audio") {
+      setShowAudioPreview(false);
+    }
+  }, [type]);
 
   const handleImageUpload = async (file: File) => {
     const user = auth.currentUser;
@@ -268,6 +283,12 @@ export function AddClassModal({
         return;
       }
     }
+    const coverImageUrls =
+      type === "image"
+        ? imageUrls
+        : type === "audio" && audioCoverUrl
+        ? [audioCoverUrl]
+        : [];
     setLoading(true);
     try {
       let savedClassId = classId;
@@ -287,7 +308,7 @@ export function AddClassModal({
               : type === "text" || type === "image" || type === "quiz"
               ? content
               : "",
-          imageUrls: type === "image" ? imageUrls : [],
+          imageUrls: coverImageUrls,
           hasAssignment,
           assignmentTemplateUrl: hasAssignment ? templateUrl : "",
           forumEnabled,
@@ -309,7 +330,7 @@ export function AddClassModal({
               : type === "text" || type === "image" || type === "quiz"
               ? content
               : "",
-          imageUrls: type === "image" ? imageUrls : [],
+          imageUrls: coverImageUrls,
           hasAssignment,
           assignmentTemplateUrl: hasAssignment ? templateUrl : "",
           forumEnabled,
@@ -328,7 +349,6 @@ export function AddClassModal({
           if (q.type === "multiple") {
             return {
               prompt: q.prompt.trim(),
-              explanation: (q.explanation ?? "").trim(),
               order: idx,
               type: "multiple" as const,
               options: q.options
@@ -374,7 +394,6 @@ export function AddClassModal({
             };
             return {
               prompt: q.prompt.trim(),
-              explanation: (q.explanation ?? "").trim(),
               order: idx,
               type: "truefalse" as const,
               options: [trueOpt, falseOpt],
@@ -383,7 +402,6 @@ export function AddClassModal({
           if (q.type === "open") {
             return {
               prompt: q.prompt.trim(),
-              explanation: (q.explanation ?? "").trim(),
               order: idx,
               type: "open" as const,
               options: [],
@@ -412,7 +430,6 @@ export function AddClassModal({
               lessonId,
               classId: savedClassId!,
               prompt: q.prompt,
-              explanation: q.explanation,
               options: q.options,
               order: q.order,
               type: q.type,
@@ -466,6 +483,21 @@ export function AddClassModal({
       toast.error("No se pudieron subir las imágenes");
     } finally {
       setUploading(false);
+    }
+  };
+  const handleAudioCoverFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setCoverUploading(true);
+    try {
+      const urls = await uploadFiles(files, "image");
+      if (urls.length > 0) {
+        setAudioCoverUrl(urls[0]);
+      }
+    } catch (err) {
+      console.error("No se pudo subir la portada del audio:", err);
+      toast.error("No se pudo subir la portada del audio");
+    } finally {
+      setCoverUploading(false);
     }
   };
 
@@ -982,6 +1014,52 @@ export function AddClassModal({
                     </div>
                   );
                 })()}
+                {type === "audio" ? (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-800">
+                      Portada del audio (opcional)
+                    </label>
+                    {audioCoverUrl ? (
+                      <div className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white/80 px-3 py-2 shadow">
+                        <div className="h-20 w-20 overflow-hidden rounded-lg bg-slate-100">
+                          <Image
+                            src={audioCoverUrl}
+                            alt="Portada del audio"
+                            width={80}
+                            height={80}
+                            className="h-full w-full object-cover"
+                          />
+                        </div>
+                        <div className="flex-1 text-sm text-slate-700">
+                          <p className="font-semibold text-slate-900">Portada cargada</p>
+                          <p className="text-xs text-slate-500">Se mostrará en el reproductor</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setAudioCoverUrl("")}
+                          className="rounded-full border border-slate-300 px-2 py-1 text-xs font-semibold text-red-600 transition hover:border-red-400 hover:text-red-500"
+                        >
+                          Quitar
+                        </button>
+                      </div>
+                    ) : (
+                      <label className="inline-flex w-full cursor-pointer items-center justify-center rounded-lg border border-dashed border-slate-300 px-3 py-4 text-sm text-slate-500 transition hover:border-blue-500 hover:text-blue-600">
+                        <span>Cargar portada del audio</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={async (e) => {
+                            await handleAudioCoverFiles(e.target.files);
+                          }}
+                        />
+                      </label>
+                    )}
+                    {coverUploading ? (
+                      <p className="text-xs text-slate-500">Subiendo portada...</p>
+                    ) : null}
+                  </div>
+                ) : null}
                 {uploading ? (
                   <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
                     <div className="h-full w-3/4 animate-pulse rounded-full bg-blue-500/70" />
@@ -1025,6 +1103,28 @@ export function AddClassModal({
                           controls
                           className="aspect-video w-full bg-black"
                         />
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                {!uploading && url && type === "audio" ? (
+                  <div className="mt-3 space-y-2 rounded-lg bg-green-50 px-3 py-2 text-sm text-green-800">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <p className="font-semibold">Audio cargado</p>
+                        <p className="text-xs text-green-700">Listo para reproducir.</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowAudioPreview((prev) => !prev)}
+                        className="rounded-full bg-green-600 px-3 py-1 text-xs font-semibold text-white hover:bg-green-500"
+                      >
+                        {showAudioPreview ? "Ocultar" : "Reproducir"}
+                      </button>
+                    </div>
+                    {showAudioPreview ? (
+                      <div className="overflow-hidden rounded-md border border-green-100 bg-white shadow-inner">
+                        <audio src={url} controls className="w-full bg-neutral-900" />
                       </div>
                     ) : null}
                   </div>
@@ -1162,71 +1262,59 @@ export function AddClassModal({
                             placeholder="Escribe la pregunta"
                             className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                           />
-                          <textarea
-                            value={question.explanation ?? ""}
-                            onChange={(e) =>
-                              setQuestions((prev) =>
-                                prev.map((q) =>
-                                  q.id === question.id ? { ...q, explanation: e.target.value } : q,
-                                ),
-                              )
-                            }
-                            placeholder="Explicación general de la pregunta (opcional, se muestra tras responder)"
-                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                            rows={2}
-                          />
-
                           {question.type === "multiple" ? (
                             <div className="space-y-2">
                               {question.options.map((opt, optIdx) => (
                                 <div
                                   key={opt.id}
-                                  className="flex flex-col gap-2 rounded-lg border border-slate-100 p-2 sm:flex-row sm:items-center"
+                                  className="space-y-2 rounded-lg border border-slate-100 p-2"
                                 >
-                                  <div className="flex items-center gap-2">
+                                  <div className="flex flex-wrap items-center gap-3 text-xs font-medium text-slate-700">
+                                    <div className="flex items-center gap-2">
+                                      <input
+                                        type="radio"
+                                        name={`correct-${question.id}`}
+                                        checked={opt.isCorrect}
+                                        onChange={() =>
+                                          setQuestions((prev) =>
+                                            prev.map((q) =>
+                                              q.id === question.id
+                                                ? {
+                                                    ...q,
+                                                    options: q.options.map((o) => ({
+                                                      ...o,
+                                                      isCorrect: o.id === opt.id,
+                                                    })),
+                                                  }
+                                                : q,
+                                            ),
+                                          )
+                                        }
+                                        className="h-4 w-4 text-blue-600"
+                                      />
+                                      <span className="text-xs text-slate-500">Correcta</span>
+                                    </div>
                                     <input
-                                      type="radio"
-                                      name={`correct-${question.id}`}
-                                      checked={opt.isCorrect}
-                                      onChange={() =>
+                                      value={opt.text}
+                                      onChange={(e) =>
                                         setQuestions((prev) =>
                                           prev.map((q) =>
                                             q.id === question.id
                                               ? {
                                                   ...q,
-                                                  options: q.options.map((o) => ({
-                                                    ...o,
-                                                    isCorrect: o.id === opt.id,
-                                                  })),
+                                                  options: q.options.map((o) =>
+                                                    o.id === opt.id ? { ...o, text: e.target.value } : o,
+                                                  ),
                                                 }
                                               : q,
                                           ),
                                         )
                                       }
-                                      className="h-4 w-4 text-blue-600"
+                                      placeholder={`Opción ${optIdx + 1}`}
+                                      className="flex-1 min-w-[180px] rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                                     />
-                                    <span className="text-xs text-slate-500">Correcta</span>
                                   </div>
-                                  <input
-                                    value={opt.text}
-                                    onChange={(e) =>
-                                      setQuestions((prev) =>
-                                        prev.map((q) =>
-                                          q.id === question.id
-                                            ? {
-                                                ...q,
-                                                options: q.options.map((o) =>
-                                                  o.id === opt.id ? { ...o, text: e.target.value } : o,
-                                                ),
-                                              }
-                                            : q,
-                                        ),
-                                      )
-                                    }
-                                    placeholder={`Opción ${optIdx + 1}`}
-                                    className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                  />
-                                  <div className="space-y-2 w-full">
+                                  {!opt.isCorrect ? (
                                     <input
                                       value={opt.feedback ?? ""}
                                       onChange={(e) =>
@@ -1243,51 +1331,10 @@ export function AddClassModal({
                                           ),
                                         )
                                       }
-                                      placeholder="Explicación breve (siempre que elijan esta opción)"
+                                      placeholder="Explicación breve (solo si es incorrecta)"
                                       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                                     />
-                                    {opt.isCorrect ? (
-                                      <input
-                                        value={opt.correctFeedback ?? ""}
-                                        onChange={(e) =>
-                                          setQuestions((prev) =>
-                                            prev.map((q) =>
-                                              q.id === question.id
-                                                ? {
-                                                    ...q,
-                                                    options: q.options.map((o) =>
-                                                      o.id === opt.id ? { ...o, correctFeedback: e.target.value } : o,
-                                                    ),
-                                                  }
-                                                : q,
-                                            ),
-                                          )
-                                        }
-                                        placeholder="Mensaje si se elige (opción correcta)"
-                                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                      />
-                                    ) : (
-                                      <input
-                                        value={opt.incorrectFeedback ?? ""}
-                                        onChange={(e) =>
-                                          setQuestions((prev) =>
-                                            prev.map((q) =>
-                                              q.id === question.id
-                                                ? {
-                                                    ...q,
-                                                    options: q.options.map((o) =>
-                                                      o.id === opt.id ? { ...o, incorrectFeedback: e.target.value } : o,
-                                                    ),
-                                                  }
-                                                : q,
-                                            ),
-                                          )
-                                        }
-                                        placeholder="Mensaje si se elige (opción incorrecta)"
-                                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                      />
-                                    )}
-                                  </div>
+                                  ) : null}
                                   {question.options.length > 2 ? (
                                     <button
                                       type="button"
@@ -1383,29 +1430,10 @@ export function AddClassModal({
                                   Explicación por opción (opcional)
                                 </p>
                                 {question.options.map((opt) => (
-                                  <div key={opt.id} className="space-y-2">
-                                    <input
-                                      value={opt.feedback ?? ""}
-                                      onChange={(e) =>
-                                        setQuestions((prev) =>
-                                          prev.map((q) =>
-                                            q.id === question.id
-                                              ? {
-                                                  ...q,
-                                                  options: q.options.map((o) =>
-                                                    o.id === opt.id ? { ...o, feedback: e.target.value } : o,
-                                                  ),
-                                                }
-                                              : q,
-                                          ),
-                                        )
-                                      }
-                                      placeholder={`Explicación breve para "${opt.text}"`}
-                                      className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                    />
-                                    {opt.isCorrect ? (
+                                  <div key={opt.id}>
+                                    {!opt.isCorrect ? (
                                       <input
-                                        value={opt.correctFeedback ?? ""}
+                                        value={opt.feedback ?? ""}
                                         onChange={(e) =>
                                           setQuestions((prev) =>
                                             prev.map((q) =>
@@ -1413,37 +1441,17 @@ export function AddClassModal({
                                                 ? {
                                                     ...q,
                                                     options: q.options.map((o) =>
-                                                      o.id === opt.id ? { ...o, correctFeedback: e.target.value } : o,
+                                                      o.id === opt.id ? { ...o, feedback: e.target.value } : o,
                                                     ),
                                                   }
                                                 : q,
                                             ),
                                           )
                                         }
-                                        placeholder="Mensaje si se elige (opción correcta)"
-                                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                        placeholder={`Explicación breve para "${opt.text}"`}
+                                        className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                                       />
-                                    ) : (
-                                      <input
-                                        value={opt.incorrectFeedback ?? ""}
-                                        onChange={(e) =>
-                                          setQuestions((prev) =>
-                                            prev.map((q) =>
-                                              q.id === question.id
-                                                ? {
-                                                    ...q,
-                                                    options: q.options.map((o) =>
-                                                      o.id === opt.id ? { ...o, incorrectFeedback: e.target.value } : o,
-                                                    ),
-                                                  }
-                                                : q,
-                                            ),
-                                          )
-                                        }
-                                        placeholder="Mensaje si se elige (opción incorrecta)"
-                                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 shadow-sm focus-border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                      />
-                                    )}
+                                    ) : null}
                                   </div>
                                 ))}
                               </div>

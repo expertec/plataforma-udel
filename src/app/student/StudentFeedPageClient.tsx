@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from "react"
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import Player from "@vimeo/player";
+import Image from "next/image";
 import { auth } from "@/lib/firebase/client";
 import { onAuthStateChanged, User } from "firebase/auth";
 import toast from "react-hot-toast";
@@ -155,6 +156,7 @@ export default function StudentFeedPageClient() {
   const wheelTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const gateToastRef = useRef<{ classId: string | null; ts: number }>({ classId: null, ts: 0 });
   const [courseTitleMap, setCourseTitleMap] = useState<Record<string, string>>({});
+  const [courseCoverMap, setCourseCoverMap] = useState<Record<string, string>>({});
   const [likesMap, setLikesMap] = useState<Record<string, number>>({});
   const [likedMap, setLikedMap] = useState<Record<string, boolean>>({});
   const [likePendingMap, setLikePendingMap] = useState<Record<string, boolean>>({});
@@ -925,6 +927,13 @@ export default function StudentFeedPageClient() {
           setLikePendingMap({});
           setActiveIndex(0);
           setActiveId(feed[0]?.id ?? null);
+          const previewCoverMap: Record<string, string> = {};
+          feed.forEach((item) => {
+            if (!previewCoverMap[item.courseId] && item.images?.[0]) {
+              previewCoverMap[item.courseId] = item.images[0];
+            }
+          });
+          setCourseCoverMap((prev) => ({ ...prev, ...previewCoverMap }));
         } catch (err) {
           console.error(err);
           setError("No se pudo cargar la vista previa del curso");
@@ -1046,6 +1055,14 @@ export default function StudentFeedPageClient() {
           if (!courseData) {
             // Curso eliminado: saltar y no mostrar clases
             continue;
+          }
+          const cover =
+            (Array.isArray(courseData.imageUrls) ? courseData.imageUrls.find(Boolean) : null) ??
+            courseData.imageUrl ??
+            courseData.thumbnail ??
+            "";
+          if (cover) {
+            setCourseCoverMap((prev) => ({ ...prev, [courseEntry.courseId]: cover }));
           }
           const courseTitle = courseData?.title ?? courseEntry.courseName ?? "Curso";
           if (courseData?.isArchived) {
@@ -1597,31 +1614,18 @@ export default function StudentFeedPageClient() {
     if (cls.type === "audio" && cls.audioUrl) {
       return (
         <div className="flex h-full w-full items-center justify-center px-4 lg:px-10 lg:pr-[140px]">
-          <div className="flex w-full max-w-3xl flex-col items-center justify-center gap-4 px-4 lg:px-6">
-            <div className="flex items-center gap-3">
-              <span className="rounded-full bg-white/10 p-3">
-                <ControlIcon name="audio" />
-              </span>
-              <p className="text-lg font-semibold text-white">{cls.title}</p>
-            </div>
-            <audio
-              controls
+          <div className="w-full max-w-3xl px-4 lg:px-6">
+            <AudioPlayer
               src={cls.audioUrl}
-              className="w-full rounded-full bg-white/5 px-2 py-1 text-white accent-red-500"
-              onTimeUpdate={(e) => {
-                if (activeId !== cls.id) return;
-                const duration = e.currentTarget.duration || 0;
-                if (!duration) return;
-                const pct = (e.currentTarget.currentTime / duration) * 100;
-                handleProgress(cls.id, pct, cls.type, cls.hasAssignment || false, cls.assignmentTemplateUrl);
-              }}
-              onEnded={() => {
-                if (activeId !== cls.id) return;
-                handleProgress(cls.id, 100, cls.type, cls.hasAssignment || false, cls.assignmentTemplateUrl);
-              }}
-            >
-              Tu navegador no soporta audio.
-            </audio>
+              title={cls.title}
+              coverUrl={cls.images?.[0]}
+              onProgress={(pct) =>
+                handleProgress(cls.id, pct, cls.type, cls.hasAssignment || false, cls.assignmentTemplateUrl)
+              }
+              onComplete={() =>
+                handleProgress(cls.id, 100, cls.type, cls.hasAssignment || false, cls.assignmentTemplateUrl)
+              }
+            />
           </div>
         </div>
       );
@@ -1732,12 +1736,32 @@ export default function StudentFeedPageClient() {
       );
       return (
         <div key={course.courseId} className="rounded-xl border border-white/5 bg-neutral-900/60 p-3 shadow-inner">
-          <div className="mb-3 flex items-center justify-between gap-3 rounded-lg bg-white/5 px-3 py-2">
-            <span className="text-sm font-semibold text-neutral-100">{course.courseTitle}</span>
-            <span className="text-[11px] text-neutral-300">
+      <div className="mb-3 overflow-hidden rounded-xl border border-white/5 bg-neutral-900/60">
+        <div
+          className="relative h-20 w-full bg-neutral-900"
+          style={
+            courseCoverMap[course.courseId]
+              ? {
+                  backgroundImage: `linear-gradient(180deg,rgba(0,0,0,0.4),rgba(0,0,0,0.9)),url(${courseCoverMap[course.courseId]})`,
+                  backgroundSize: "cover",
+                  backgroundPosition: "center",
+                }
+              : undefined
+          }
+        >
+          {!courseCoverMap[course.courseId] ? (
+            <div className="absolute inset-0 bg-gradient-to-b from-black/40 to-black/70" />
+          ) : null}
+          <div className="relative flex h-full items-end justify-between gap-3 px-4 pb-3">
+            <span className="text-sm font-semibold uppercase tracking-wide text-white/90">
+              {course.courseTitle}
+            </span>
+            <span className="rounded-full bg-white/10 px-3 py-1 text-[11px] text-white/80 backdrop-blur">
               {completedCourseItems}/{totalCourseItems}
             </span>
           </div>
+        </div>
+      </div>
           <div className="space-y-3">
             {course.lessons.map((lesson) => {
               const totalItems = lesson.items.length;
@@ -2916,6 +2940,214 @@ function ControlIcon({ name }: { name: ControlIconName }) {
   }
 }
 
+type AudioPlayerProps = {
+  src: string;
+  title?: string;
+  onProgress?: (pct: number) => void;
+  onComplete?: () => void;
+  coverUrl?: string;
+};
+
+function formatTime(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0:00";
+  const minutes = Math.floor(value / 60);
+  const seconds = Math.floor(value % 60);
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function AudioPlayer({ src, title, onProgress, onComplete, coverUrl }: AudioPlayerProps) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const timelineRef = useRef<HTMLDivElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(0.8);
+  const [waveLevels, setWaveLevels] = useState(() =>
+    Array.from({ length: 38 }, () => 30 + Math.random() * 60),
+  );
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.volume = volume;
+  }, [volume]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const handleTime = () => {
+      setCurrentTime(audio.currentTime);
+      setDuration(audio.duration || 0);
+      const pct = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
+      onProgress?.(Math.min(100, Math.max(0, pct)));
+    };
+    const handleLoaded = () => {
+      setDuration(audio.duration || 0);
+    };
+    const handleEnded = () => {
+      setPlaying(false);
+      onProgress?.(100);
+      onComplete?.();
+    };
+
+    audio.addEventListener("timeupdate", handleTime);
+    audio.addEventListener("loadedmetadata", handleLoaded);
+    audio.addEventListener("ended", handleEnded);
+
+    return () => {
+      audio.removeEventListener("timeupdate", handleTime);
+      audio.removeEventListener("loadedmetadata", handleLoaded);
+      audio.removeEventListener("ended", handleEnded);
+    };
+  }, [src, onProgress, onComplete]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.pause();
+    audio.currentTime = 0;
+    setPlaying(false);
+    setCurrentTime(0);
+  }, [src]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setWaveLevels(Array.from({ length: 38 }, () => 30 + Math.random() * 60));
+    }, 410);
+    return () => clearInterval(timer);
+  }, []);
+
+  const togglePlay = async () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playing) {
+      audio.pause();
+      setPlaying(false);
+      return;
+    }
+    try {
+      await audio.play();
+      setPlaying(true);
+    } catch {
+      setPlaying(false);
+    }
+  };
+
+  const jump = (delta: number) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const next = Math.min(Math.max(audio.currentTime + delta, 0), audio.duration || 0);
+    audio.currentTime = next;
+    setCurrentTime(next);
+  };
+
+  const handleTimelineClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!duration) return;
+    const rect = timelineRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const clickX = event.clientX - rect.left;
+    const pct = Math.min(Math.max(clickX / rect.width, 0), 1);
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.currentTime = pct * duration;
+    setCurrentTime(audio.currentTime);
+  };
+
+  const progressPercent = duration ? Math.min(Math.max((currentTime / duration) * 100, 0), 100) : 0;
+
+  return (
+    <div className="rounded-3xl bg-black/60 p-5 shadow-2xl shadow-black/50 ring-1 ring-white/10">
+      {title ? (
+        <p className="mb-3 text-center text-lg font-semibold text-white">{title}</p>
+      ) : null}
+      {coverUrl ? (
+        <div className="mb-4 overflow-hidden rounded-2xl border border-white/10 bg-white/5">
+          <Image
+            src={coverUrl}
+            alt="Portada del audio"
+            width={640}
+            height={360}
+            className="h-32 w-full object-cover"
+            priority={false}
+          />
+        </div>
+      ) : null}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between text-xs font-medium text-white/60">
+          <span>{formatTime(currentTime)}</span>
+          <span>{formatTime(duration)}</span>
+        </div>
+        <div
+          ref={timelineRef}
+          onClick={handleTimelineClick}
+          className="relative h-14 cursor-pointer overflow-hidden rounded-2xl border border-white/10 bg-white/5"
+        >
+          <div className="absolute inset-0 bg-[rgba(255,255,255,0.04)]" />
+          <div className="absolute inset-0 z-0 flex items-center justify-between px-2">
+            {waveLevels.map((level, idx) => (
+              <span
+                key={idx}
+                className="block w-1 rounded-full bg-emerald-300/60"
+                style={{
+                  height: `${level}%`,
+                  transition: "height 0.36s ease",
+                }}
+              />
+            ))}
+          </div>
+          <div
+            className="absolute inset-y-0 left-0 z-10 rounded-2xl bg-gradient-to-r from-emerald-500/70 via-emerald-400/60 to-emerald-500/10 shadow-[0_0_12px_rgba(16,185,129,0.6)]"
+            style={{ width: `${progressPercent}%` }}
+          />
+          <div
+            className="absolute top-1/2 -translate-y-1/2 h-12 w-12 -translate-x-1/2 rounded-full bg-white/90 shadow-lg transition-all"
+            style={{ left: `${progressPercent}%` }}
+          />
+        </div>
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => jump(-10)}
+              className="rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/20"
+            >
+              -10s
+            </button>
+            <button
+              type="button"
+              onClick={togglePlay}
+              className="flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-sky-500 text-white shadow-[0_10px_30px_rgba(14,165,233,0.4)] transition hover:scale-105"
+            >
+              {playing ? "❚❚" : "▶"}
+            </button>
+            <button
+              type="button"
+              onClick={() => jump(10)}
+              className="rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/20"
+            >
+              +10s
+            </button>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-white/70">
+            <span>Vol</span>
+            <input
+              value={volume}
+              min={0}
+              max={1}
+              step={0.01}
+              onChange={(e) => setVolume(Number(e.target.value))}
+              type="range"
+              className="h-1 w-24 cursor-pointer appearance-none rounded-full bg-white/20 accent-white"
+            />
+          </div>
+        </div>
+      </div>
+      <audio ref={audioRef} src={src} preload="metadata" className="sr-only" />
+    </div>
+  );
+}
+
 type QuizContentProps = {
   classId: string;
   classDocId?: string;
@@ -2935,6 +3167,7 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
   const [questions, setQuestions] = useState<
     Array<{
       id: string;
+      prompt?: string;
       text?: string;
       explanation?: string;
       order?: number;
@@ -2987,7 +3220,8 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
           console.log('Question data:', { id: d.id, data: qd });
           return {
             id: d.id,
-            text: qd.text ?? qd.question ?? "",
+            prompt: qd.prompt ?? qd.text ?? qd.question ?? "",
+            text: qd.text ?? qd.prompt ?? qd.question ?? "",
             explanation: qd.explanation ?? qd.questionFeedback ?? "",
             order: qd.order ?? 0,
             options: Array.isArray(qd.options)
@@ -3040,26 +3274,26 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
     if (hasCorrectness && question && selectedOpt) {
       const correctOpt = (question.options ?? []).find((o) => o.isCorrect === true);
       const isCorrect = selectedOpt.isCorrect === true;
-      const message =
-        selectedOpt.feedback ||
-        (isCorrect ? selectedOpt.correctFeedback : selectedOpt.incorrectFeedback) ||
-        (isCorrect
-          ? "¡Respuesta correcta!"
-          : correctOpt
-            ? `No es correcto. La respuesta correcta es "${correctOpt.text ?? ""}".`
-            : "Respuesta incorrecta.");
+      const correctMessage = selectedOpt.correctFeedback?.trim();
+      const incorrectMessage =
+        selectedOpt.feedback?.trim() ||
+        selectedOpt.incorrectFeedback?.trim() ||
+        (correctOpt
+          ? `No es correcto. La respuesta correcta es "${correctOpt.text ?? ""}".`
+          : "Respuesta incorrecta.");
+      const message = isCorrect ? correctMessage : incorrectMessage;
       setFeedbackMap((prev) => ({
         ...prev,
         [questionId]: { status: isCorrect ? "correct" : "incorrect", message },
       }));
     }
 
-    if (idx !== -1 && idx < questions.length - 1) {
-      setCurrentIdx(idx + 1);
-    }
   };
 
   const currentQuestion = questions[currentIdx];
+  const questionTitle = currentQuestion
+    ? (currentQuestion.prompt?.trim() || currentQuestion.text?.trim() || "")
+    : "";
   const allAnswered = answeredCount === questions.length && questions.length > 0;
 
   // Debug log
@@ -3218,12 +3452,15 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
         ref={containerRef}
         className="w-full max-w-3xl max-h-[88vh] overflow-auto px-1 sm:px-2 py-8 space-y-4"
       >
-        <div className="flex items-center justify-between text-xs text-neutral-300">
+        <div className="flex flex-col gap-1 text-xs text-neutral-300">
           <span>
             Pregunta {currentIdx + 1} de {Math.max(questions.length, 1)}
           </span>
           <span>{answeredCount}/{questions.length} respondidas</span>
         </div>
+        {questionTitle ? (
+          <p className="text-sm text-neutral-300">{questionTitle}</p>
+        ) : null}
 
         {questions.length === 0 ? (
           <p className="text-sm text-neutral-300">No hay preguntas cargadas para este quiz.</p>
@@ -3231,7 +3468,9 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
           <div className="space-y-3 rounded-lg border border-white/10 bg-white/5 p-4">
             <div className="flex items-start gap-2 text-neutral-100">
               <span className="mt-[2px] inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/10 text-xs font-semibold">{currentIdx + 1}</span>
-              <p className="text-sm font-semibold leading-snug">{currentQuestion.text || `Pregunta ${currentIdx + 1}`}</p>
+              <p className="text-sm font-semibold leading-snug">
+                {questionTitle || `Pregunta ${currentIdx + 1}`}
+              </p>
             </div>
             <div className="space-y-2 pl-8">
               {(currentQuestion.options ?? []).length > 0 ? (
@@ -3286,28 +3525,44 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
                 </div>
               )}
             </div>
-            {feedbackMap[currentQuestion.id] ? (
-              <div
-                className={`mt-1 rounded-lg border px-3 py-2 text-sm ${
-                  feedbackMap[currentQuestion.id]?.status === "correct"
-                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100"
-                    : "border-rose-500/40 bg-rose-500/10 text-rose-100"
-                }`}
+            <div className="flex items-center justify-between pt-3 text-xs text-neutral-400">
+              <button
+                type="button"
+                onClick={() => setCurrentIdx((prev) => Math.max(prev - 1, 0))}
+                disabled={currentIdx === 0}
+                className="rounded-full border border-white/20 px-3 py-1 text-[11px] font-semibold text-white/80 transition hover:border-white/40 disabled:opacity-50"
               >
-                <p className="font-semibold">
-                  {feedbackMap[currentQuestion.id]?.status === "correct" ? "¡Respuesta correcta!" : "Respuesta incorrecta"}
-                </p>
-                {feedbackMap[currentQuestion.id]?.message ? (
-                  <p className="text-[13px] text-white/80">{feedbackMap[currentQuestion.id]?.message}</p>
-                ) : null}
-              </div>
-            ) : null}
-            {!!answers[currentQuestion.id] && currentQuestion.explanation ? (
-              <div className="mt-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-neutral-100">
-                <p className="font-semibold text-white">Explicación de la pregunta</p>
-                <p className="text-[13px] text-white/80">{currentQuestion.explanation}</p>
-              </div>
-            ) : null}
+                Anterior
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentIdx((prev) => Math.min(prev + 1, Math.max(questions.length - 1, 0)))}
+                disabled={currentIdx >= questions.length - 1}
+                className="rounded-full border border-white/20 px-3 py-1 text-[11px] font-semibold text-white/80 transition hover:border-white/40 disabled:opacity-50"
+              >
+                Siguiente
+              </button>
+            </div>
+            {feedbackMap[currentQuestion.id] ? (() => {
+              const feedbackEntry = feedbackMap[currentQuestion.id];
+              const isCorrectFeedback = feedbackEntry?.status === "correct";
+              return (
+                <div
+                  className={`mt-1 rounded-lg border px-3 py-2 text-sm ${
+                    isCorrectFeedback
+                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100 motion-safe:animate-pulse shadow-emerald-400/50"
+                      : "border-rose-500/40 bg-rose-500/10 text-rose-100"
+                  }`}
+                >
+                  <p className="font-semibold">
+                    {isCorrectFeedback ? "¡Respuesta correcta!" : "Respuesta incorrecta"}
+                  </p>
+                  {feedbackEntry?.message ? (
+                    <p className="text-[13px] text-white/80">{feedbackEntry.message}</p>
+                  ) : null}
+                </div>
+              );
+            })() : null}
           </div>
         ) : questions.length > 0 ? (
           <p className="text-sm text-neutral-300">Error: No se pudo cargar la pregunta actual. Index: {currentIdx}, Total: {questions.length}</p>
