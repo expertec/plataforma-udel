@@ -965,49 +965,53 @@ export default function StudentFeedPageClient() {
 
         // 1.b) Fallback: si no existe enrollment, intentar derivarlo de la subcolección groups/*/students
         if (enrSnap.empty) {
-          const membershipSnap = await getDocs(
-            query(
-              collectionGroup(db, "students"),
-              where("studentId", "==", currentUser.uid),
-              limit(1),
-            ),
-          );
-          if (!membershipSnap.empty) {
-            const membership = membershipSnap.docs[0];
-            const groupIdFromRef = membership.ref.parent.parent?.id;
-            if (groupIdFromRef) {
-              const groupDoc = await getDoc(doc(db, "groups", groupIdFromRef));
-              if (groupDoc.exists()) {
-                const gd = groupDoc.data();
-                // Crea el enrollment faltante para que futuras cargas sean directas
-                await setDoc(
-                  doc(db, "studentEnrollments", `${groupIdFromRef}_${currentUser.uid}`),
-                  {
-                    studentId: currentUser.uid,
-                    studentName: membership.data().studentName ?? "",
-                    studentEmail: membership.data().studentEmail ?? "",
-                    groupId: groupIdFromRef,
-                    groupName: gd.groupName ?? "",
-                    courseId: gd.courseId ?? "",
-                    courseName: gd.courseName ?? "",
-                    teacherName: gd.teacherName ?? "",
-                    status: "active",
-                    enrolledAt: gd.updatedAt ?? new Date(),
-                    finalGrade: null,
-                  },
-                  { merge: true },
-                );
-                // Volver a cargar el enrollment recién creado
-                enrSnap = await getDocs(
-                  query(
-                    collection(db, "studentEnrollments"),
-                    where("studentId", "==", currentUser.uid),
-                    orderBy("enrolledAt", "desc"),
-                    limit(1),
-                  ),
-                );
+          try {
+            const membershipSnap = await getDocs(
+              query(
+                collectionGroup(db, "students"),
+                where("studentId", "==", currentUser.uid),
+                limit(1),
+              ),
+            );
+            if (!membershipSnap.empty) {
+              const membership = membershipSnap.docs[0];
+              const groupIdFromRef = membership.ref.parent.parent?.id;
+              if (groupIdFromRef) {
+                const groupDoc = await getDoc(doc(db, "groups", groupIdFromRef));
+                if (groupDoc.exists()) {
+                  const gd = groupDoc.data();
+                  // Crea el enrollment faltante para que futuras cargas sean directas
+                  await setDoc(
+                    doc(db, "studentEnrollments", `${groupIdFromRef}_${currentUser.uid}`),
+                    {
+                      studentId: currentUser.uid,
+                      studentName: membership.data().studentName ?? "",
+                      studentEmail: membership.data().studentEmail ?? "",
+                      groupId: groupIdFromRef,
+                      groupName: gd.groupName ?? "",
+                      courseId: gd.courseId ?? "",
+                      courseName: gd.courseName ?? "",
+                      teacherName: gd.teacherName ?? "",
+                      status: "active",
+                      enrolledAt: gd.updatedAt ?? new Date(),
+                      finalGrade: null,
+                    },
+                    { merge: true },
+                  );
+                  // Volver a cargar el enrollment recién creado
+                  enrSnap = await getDocs(
+                    query(
+                      collection(db, "studentEnrollments"),
+                      where("studentId", "==", currentUser.uid),
+                      orderBy("enrolledAt", "desc"),
+                      limit(1),
+                    ),
+                  );
+                }
               }
             }
+          } catch (err) {
+            console.warn("No pude reconstruir enrollment desde students:", err);
           }
         }
 
@@ -1016,6 +1020,7 @@ export default function StudentFeedPageClient() {
             "No tienes cursos asignados todavía. Pide a tu profesor que te inscriba en un grupo.",
           );
           setLoading(false);
+          setEnrollmentId(null);
           return;
         }
         const enrollmentDoc = enrSnap.docs[0];

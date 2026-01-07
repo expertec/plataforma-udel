@@ -6,7 +6,12 @@ import * as XLSX from "xlsx";
 import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import { resolveUserRole, UserRole } from "@/lib/firebase/roles";
-import { createStudentAccount, getStudentUsers, StudentUser } from "@/lib/firebase/students-service";
+import {
+  createStudentAccount,
+  deactivateStudent,
+  getStudentUsers,
+  StudentUser,
+} from "@/lib/firebase/students-service";
 import { getGroupStudents, getGroupsForTeacher } from "@/lib/firebase/groups-service";
 
 type ParsedStudentRow = {
@@ -38,6 +43,7 @@ export default function AlumnosPage() {
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
+  const [deletingStudentId, setDeletingStudentId] = useState<string | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -225,6 +231,22 @@ export default function AlumnosPage() {
   };
 
   const parsedPreview = useMemo(() => parsedRows.slice(0, 5), [parsedRows]);
+
+  const handleDeleteStudent = async (student: StudentUser) => {
+    if (!student.id) return;
+    if (!window.confirm(`¿Eliminar a ${student.name}? Se eliminarán sus inscripciones.`)) return;
+    setDeletingStudentId(student.id);
+    try {
+      await deactivateStudent(student.id);
+      toast.success("Alumno desactivado");
+      await loadStudents();
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo eliminar al alumno");
+    } finally {
+      setDeletingStudentId(null);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -440,23 +462,38 @@ export default function AlumnosPage() {
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div className="grid grid-cols-4 gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
+          <div className="grid grid-cols-5 gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
             <span>Nombre</span>
             <span>Email</span>
             <span>Inscrito</span>
             <span>Estado</span>
+            <span className="text-right">Acciones</span>
           </div>
           <div className="divide-y divide-slate-200">
             {students.map((s) => (
               <div
                 key={s.id}
-                className="grid grid-cols-4 gap-3 px-4 py-2 text-sm text-slate-800"
+                className="grid grid-cols-5 gap-3 px-4 py-2 text-sm text-slate-800"
               >
                 <span>{s.name}</span>
-                <span className="text-slate-600">{s.email}</span>
+                <span className="text-slate-600 truncate break-words">{s.email}</span>
                 <span className="text-slate-600">N/D</span>
                 <span className="font-medium capitalize text-green-600">
                   {s.estado || "Activo"}
+                </span>
+                <span className="flex justify-end">
+                  {userRole === "adminTeacher" ? (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteStudent(s)}
+                      disabled={deletingStudentId === s.id}
+                      className="rounded-lg border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 transition hover:border-red-400 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-300"
+                    >
+                      {deletingStudentId === s.id ? "Eliminando..." : "Eliminar"}
+                    </button>
+                  ) : (
+                    <span className="text-xs text-slate-500">—</span>
+                  )}
                 </span>
               </div>
             ))}

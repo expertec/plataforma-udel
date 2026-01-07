@@ -24,6 +24,7 @@ export type Group = {
   id: string;
   courseId: string;
   courseName: string;
+  program?: string;
   courses?: Array<{ courseId: string; courseName: string }>;
   courseIds?: string[];
   groupName: string;
@@ -42,14 +43,15 @@ export type Group = {
 };
 
 type CreateGroupData = {
-  courseId: string;
-  courseName: string;
+  courseId?: string;
+  courseName?: string;
+  program?: string;
   courses?: Array<{ courseId: string; courseName: string }>;
   courseIds?: string[];
   groupName: string;
   teacherId: string;
   teacherName: string;
-  semester: string;
+  semester?: string;
   startDate?: Date;
   endDate?: Date;
   maxStudents: number;
@@ -57,23 +59,28 @@ type CreateGroupData = {
 
 export async function createGroup(data: CreateGroupData): Promise<string> {
   const ref = collection(db, "groups");
-  const coursesList =
-    data.courses && data.courses.length > 0
-      ? data.courses
-      : [{ courseId: data.courseId, courseName: data.courseName }];
-  const courseIdsList =
+  const coursesList = Array.isArray(data.courses) ? data.courses : [];
+  const initialIds =
     data.courseIds && data.courseIds.length > 0
-      ? Array.from(new Set(data.courseIds))
-      : Array.from(new Set(coursesList.map((c) => c.courseId).filter(Boolean)));
+      ? data.courseIds
+      : coursesList.map((c) => c.courseId);
+  const courseIdsList = Array.from(new Set(initialIds.filter(Boolean)));
+  const primaryCourseId = data.courseId ?? courseIdsList[0] ?? coursesList[0]?.courseId ?? "";
+  const primaryCourseName =
+    data.courseName ??
+    coursesList.find((c) => c.courseId === primaryCourseId)?.courseName ??
+    coursesList[0]?.courseName ??
+    "";
   const docRef = await addDoc(ref, {
-    courseId: data.courseId,
-    courseName: data.courseName,
+    courseId: primaryCourseId,
+    courseName: primaryCourseName,
+    program: data.program ?? "",
     courses: coursesList,
     courseIds: courseIdsList,
     groupName: data.groupName,
     teacherId: data.teacherId,
     teacherName: data.teacherName,
-    semester: data.semester,
+    semester: data.semester ?? "",
     startDate: data.startDate ? Timestamp.fromDate(data.startDate) : null,
     endDate: data.endDate ? Timestamp.fromDate(data.endDate) : null,
     status: "active",
@@ -91,11 +98,12 @@ export async function getGroups(teacherId: string): Promise<Group[]> {
   const snap = await getDocs(q);
   return snap.docs.map((docSnap) => {
     const d = docSnap.data();
-    return {
-      id: docSnap.id,
-      courseId: d.courseId ?? "",
-      courseName: d.courseName ?? "",
-      courses: Array.isArray(d.courses)
+        return {
+          id: docSnap.id,
+          courseId: d.courseId ?? "",
+          courseName: d.courseName ?? "",
+          program: d.program ?? "",
+          courses: Array.isArray(d.courses)
         ? d.courses
         : d.courseId
           ? [{ courseId: d.courseId ?? "", courseName: d.courseName ?? "" }]
@@ -127,10 +135,11 @@ export async function getGroup(groupId: string): Promise<Group | null> {
   const snap = await getDoc(ref);
   if (!snap.exists()) return null;
   const d = snap.data();
-  return {
-    id: snap.id,
-    courseId: d.courseId ?? "",
-    courseName: d.courseName ?? "",
+      return {
+        id: snap.id,
+        courseId: d.courseId ?? "",
+        courseName: d.courseName ?? "",
+        program: d.program ?? "",
     courses: Array.isArray(d.courses)
       ? d.courses
       : d.courseId
@@ -176,10 +185,11 @@ export async function getGroupsByCourse(courseId: string, teacherId?: string): P
   const consume = (snap: QuerySnapshot<DocumentData>) => {
     snap.docs.forEach((docSnap: QueryDocumentSnapshot<DocumentData>) => {
       const d = docSnap.data();
-      map.set(docSnap.id, {
-        id: docSnap.id,
-        courseId: d.courseId ?? "",
-        courseName: d.courseName ?? "",
+        map.set(docSnap.id, {
+          id: docSnap.id,
+          courseId: d.courseId ?? "",
+          courseName: d.courseName ?? "",
+          program: d.program ?? "",
         courses: Array.isArray(d.courses)
           ? d.courses
           : d.courseId
@@ -384,6 +394,19 @@ export async function getGroupsForTeacher(teacherId: string): Promise<Group[]> {
   return Array.from(map.values());
 }
 
+export async function deleteGroup(groupId: string): Promise<void> {
+  if (!groupId) return;
+  const batch = writeBatch(db);
+  const studentsSnap = await getDocs(collection(db, "groups", groupId, "students"));
+  studentsSnap.forEach((studentDoc) => batch.delete(studentDoc.ref));
+  const enrollmentsSnap = await getDocs(
+    query(collection(db, "studentEnrollments"), where("groupId", "==", groupId)),
+  );
+  enrollmentsSnap.forEach((enrollmentDoc) => batch.delete(enrollmentDoc.ref));
+  batch.delete(doc(db, "groups", groupId));
+  await batch.commit();
+}
+
 export async function removeStudentFromGroup(groupId: string, studentId: string): Promise<void> {
   if (!groupId || !studentId) return;
   const batch = writeBatch(db);
@@ -394,8 +417,21 @@ export async function removeStudentFromGroup(groupId: string, studentId: string)
     studentsCount: increment(-1),
     updatedAt: serverTimestamp(),
   });
-  const enrollmentRef = doc(db, "studentEnrollments", `${groupId}_${studentId}`);
+  const primaryEnrollmentId = `${groupId}_${studentId}`;
+  const enrollmentRef = doc(db, "studentEnrollments", primaryEnrollmentId);
+  const enrollmentIds = new Set<string>([primaryEnrollmentId]);
   batch.delete(enrollmentRef);
+  const enrollmentsQuery = query(
+    collection(db, "studentEnrollments"),
+    where("studentId", "==", studentId),
+    where("groupId", "==", groupId),
+  );
+  const enrollmentsSnap = await getDocs(enrollmentsQuery);
+  enrollmentsSnap.docs.forEach((docSnap) => {
+    if (enrollmentIds.has(docSnap.id)) return;
+    enrollmentIds.add(docSnap.id);
+    batch.delete(doc(db, "studentEnrollments", docSnap.id));
+  });
   await batch.commit();
 }
 

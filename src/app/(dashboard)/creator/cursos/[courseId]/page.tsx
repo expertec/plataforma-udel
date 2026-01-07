@@ -101,8 +101,13 @@ export default function CourseBuilderPage() {
   >([]);
   const [loadingGroups, setLoadingGroups] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
-  const [newGroupSemester, setNewGroupSemester] = useState("2025-Q1");
-  const [newGroupMax, setNewGroupMax] = useState(30);
+  const [newGroupProgram, setNewGroupProgram] = useState("Licenciatura");
+  const [newProgramOptions, setNewProgramOptions] = useState([
+    "Licenciatura",
+    "Preparatoria",
+    "Maestría",
+  ]);
+  const [newCustomProgram, setNewCustomProgram] = useState("");
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [allGroups, setAllGroups] = useState<Group[]>([]);
   const [linkingGroup, setLinkingGroup] = useState(false);
@@ -310,8 +315,8 @@ export default function CourseBuilderPage() {
       toast.error("Asigna un nombre al grupo");
       return;
     }
-    if (newGroupMax <= 0) {
-      toast.error("El cupo debe ser mayor a 0");
+    if (!newGroupProgram.trim()) {
+      toast.error("Selecciona o agrega un programa");
       return;
     }
     setCreatingGroup(true);
@@ -324,17 +329,18 @@ export default function CourseBuilderPage() {
         groupName: newGroupName.trim(),
         teacherId: user.uid,
         teacherName: user.displayName ?? "Profesor",
-        semester: newGroupSemester,
-        maxStudents: newGroupMax,
+        semester: "",
+        maxStudents: 0,
+        program: newGroupProgram,
       });
       setCourseGroups((prev) => [
         {
           id: groupId,
           groupName: newGroupName.trim(),
-          semester: newGroupSemester,
           status: "active",
           studentsCount: 0,
-          maxStudents: newGroupMax,
+          maxStudents: 0,
+          program: newGroupProgram,
         },
         ...prev,
       ]);
@@ -347,6 +353,16 @@ export default function CourseBuilderPage() {
     } finally {
       setCreatingGroup(false);
     }
+  };
+
+  const handleAddNewProgram = () => {
+    const trimmed = newCustomProgram.trim();
+    if (!trimmed) return;
+    if (!newProgramOptions.includes(trimmed)) {
+      setNewProgramOptions((prev) => [...prev, trimmed]);
+    }
+    setNewGroupProgram(trimmed);
+    setNewCustomProgram("");
   };
 
   const handleLinkExistingGroup = async () => {
@@ -840,27 +856,39 @@ export default function CourseBuilderPage() {
                   <input
                     value={newGroupName}
                     onChange={(e) => setNewGroupName(e.target.value)}
-                    placeholder="Nombre del grupo (ej. Grupo A - Sem 1)"
+                    placeholder="Nombre del grupo (ej. Grupo A)"
                     className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
-                <div>
-                  <label className="text-sm font-semibold text-slate-800">Semestre</label>
-                  <input
-                    value={newGroupSemester}
-                    onChange={(e) => setNewGroupSemester(e.target.value)}
-                    className="mt-1 w-32 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-semibold text-slate-800">Cupo</label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={newGroupMax}
-                    onChange={(e) => setNewGroupMax(Number(e.target.value))}
-                    className="mt-1 w-24 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
+                <div className="flex-1">
+                  <label className="text-sm font-semibold text-slate-800">Programa</label>
+                  <select
+                    value={newGroupProgram}
+                    onChange={(e) => setNewGroupProgram(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    {newProgramOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      type="text"
+                      value={newCustomProgram}
+                      onChange={(e) => setNewCustomProgram(e.target.value)}
+                      placeholder="Agregar otro programa"
+                      className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddNewProgram}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-blue-600 transition hover:border-blue-300 hover:text-blue-500"
+                    >
+                      Agregar
+                    </button>
+                  </div>
                 </div>
                 <button
                   type="button"

@@ -6,7 +6,12 @@ import { User, onAuthStateChanged } from "firebase/auth";
 import { useRouter } from "next/navigation";
 import { auth } from "@/lib/firebase/client";
 import { resolveUserRole } from "@/lib/firebase/roles";
-import { createTeacherAccount, getTeacherUsers, TeacherUser } from "@/lib/firebase/teachers-service";
+import {
+  createTeacherAccount,
+  deactivateTeacher,
+  getTeacherUsers,
+  TeacherUser,
+} from "@/lib/firebase/teachers-service";
 
 export default function ProfesoresPage() {
   const [teachers, setTeachers] = useState<TeacherUser[]>([]);
@@ -22,6 +27,7 @@ export default function ProfesoresPage() {
   });
   const [roleReady, setRoleReady] = useState(false);
   const [isAdminTeacher, setIsAdminTeacher] = useState(false);
+  const [deletingTeacherId, setDeletingTeacherId] = useState<string | null>(null);
   const router = useRouter();
 
   const loadTeachers = useCallback(async () => {
@@ -107,6 +113,22 @@ export default function ProfesoresPage() {
       toast.error(message);
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleDeleteTeacher = async (teacher: TeacherUser) => {
+    if (!teacher.id) return;
+    if (!window.confirm(`¿Eliminar a ${teacher.name}? Ya no podrá iniciar sesión.`)) return;
+    setDeletingTeacherId(teacher.id);
+    try {
+      await deactivateTeacher(teacher.id);
+      toast.success("Profesor desactivado");
+      await loadTeachers();
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo eliminar al profesor");
+    } finally {
+      setDeletingTeacherId(null);
     }
   };
 
@@ -220,26 +242,37 @@ export default function ProfesoresPage() {
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div className="grid grid-cols-5 gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
+          <div className="grid grid-cols-[1.3fr_2fr_1fr_0.95fr_0.8fr_0.9fr] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
             <span>Nombre</span>
             <span>Email</span>
             <span>Teléfono</span>
             <span>Rol</span>
             <span>Estado</span>
+            <span className="text-right">Acciones</span>
           </div>
           <div className="divide-y divide-slate-200">
             {teachers.map((teacher) => (
               <div
                 key={teacher.id}
-                className="grid grid-cols-5 gap-3 px-4 py-2 text-sm text-slate-800"
+                className="grid grid-cols-[1.3fr_2fr_1fr_0.95fr_0.8fr_0.9fr] gap-3 px-4 py-2 text-sm text-slate-800"
               >
                 <span>{teacher.name}</span>
-                <span className="text-slate-600">{teacher.email}</span>
+                <span className="text-slate-600 break-words">{teacher.email}</span>
                 <span className="text-slate-600">{teacher.phone || "—"}</span>
                 <span className="font-medium capitalize text-blue-700">
                   {teacher.role === "adminTeacher" ? "AdminTeacher" : "Profesor"}
                 </span>
                 <span className="font-medium text-green-600">Activo</span>
+                <span className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteTeacher(teacher)}
+                    disabled={deletingTeacherId === teacher.id}
+                    className="rounded-lg border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 hover:border-red-400 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-300"
+                  >
+                    {deletingTeacherId === teacher.id ? "Eliminando..." : "Eliminar"}
+                  </button>
+                </span>
               </div>
             ))}
           </div>

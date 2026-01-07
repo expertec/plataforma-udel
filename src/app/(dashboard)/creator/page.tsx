@@ -29,8 +29,9 @@ export default function CreatorPage() {
       try {
         const role = await resolveUserRole(user);
         setUserRole(role);
+        const teacherId = role === "adminTeacher" ? undefined : user.uid;
         const [coursesData, groupsData] = await Promise.all([
-          getCourses(user.uid),
+          getCourses(teacherId),
           getGroups(user.uid),
         ]);
         setCourses(coursesData);

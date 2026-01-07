@@ -30,13 +30,15 @@ export type Course = {
   createdAt?: Date;
 };
 
-export async function getCourses(teacherId: string): Promise<Course[]> {
+export async function getCourses(teacherId?: string): Promise<Course[]> {
   const coursesRef = collection(db, "courses");
-  const q = query(
-    coursesRef,
-    where("teacherId", "==", teacherId),
-    orderBy("createdAt", "desc"),
-  );
+  const q = teacherId
+    ? query(
+        coursesRef,
+        where("teacherId", "==", teacherId),
+        orderBy("createdAt", "desc"),
+      )
+    : query(coursesRef, orderBy("createdAt", "desc"));
 
   const snap = await getDocs(q);
   return snap.docs.map((doc) => {

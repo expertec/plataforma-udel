@@ -106,6 +106,18 @@ export default function GroupDetailPage() {
     return `${group.studentsCount}/${group.maxStudents} estudiantes${range}`;
   }, [group]);
 
+  const assignedCourses = group?.courses?.filter((c) => c.courseId) ?? [];
+  const assignedCourseIds = assignedCourses.map((c) => c.courseId).filter(Boolean);
+  const explicitCourseIds = (group?.courseIds ?? []).filter(Boolean);
+  const courseIdsForGroup =
+    explicitCourseIds.length > 0
+      ? explicitCourseIds
+      : assignedCourseIds.length > 0
+        ? assignedCourseIds
+        : group?.courseId
+          ? [group.courseId]
+          : [];
+
   const handleRemoveStudent = async (student: GroupStudent) => {
     if (!group) return;
     const confirmed = window.confirm(`¿Eliminar a ${student.studentName} del grupo?`);
@@ -187,17 +199,33 @@ export default function GroupDetailPage() {
                 {group.semester}
               </span>
               <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-semibold text-green-700">
-                {group.status === "active" ? "Activo" : group.status === "finished" ? "Finalizado" : "Archivado"}
+                {group.status === "active"
+                  ? "Activo"
+                  : group.status === "finished"
+                  ? "Finalizado"
+                  : "Archivado"}
               </span>
             </div>
             <p className="mt-1 text-sm text-slate-600">
-              Curso base: <span className="font-medium">{group.courseName}</span>
+              {group.courseName
+                ? (
+                  <>
+                    Curso base: <span className="font-medium">{group.courseName}</span>
+                  </>
+                )
+                : "Este grupo aún no tiene cursos asignados."}
             </p>
-            {group.courses && group.courses.length > 1 ? (
+            <p className="text-sm text-slate-600 mt-1">
+              Programa:{" "}
+              <span className="font-medium">
+                {group.program || "Sin programa definido"}
+              </span>
+            </p>
+            {assignedCourses.length > 0 ? (
               <div className="mt-2 text-sm text-slate-600">
                 <p className="font-semibold text-slate-800">Materias asignadas</p>
                 <ul className="mt-1 list-disc space-y-1 pl-5">
-                  {group.courses.map((c) => (
+                  {assignedCourses.map((c) => (
                     <li key={c.courseId}>{c.courseName}</li>
                   ))}
                 </ul>
@@ -237,11 +265,7 @@ export default function GroupDetailPage() {
             <TabsContent value="entregas">
               <EntregasTab
                 groupId={group.id}
-                courseIds={
-                  group.courseIds && group.courseIds.length > 0
-                    ? group.courseIds
-                    : group.courses?.map((c) => c.courseId).filter(Boolean) ?? [group.courseId]
-                }
+                courseIds={courseIdsForGroup}
                 studentsCount={group.studentsCount}
               />
             </TabsContent>

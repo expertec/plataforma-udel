@@ -1,4 +1,4 @@
-import { collection, getDocs, orderBy, query, where, limit as fbLimit } from "firebase/firestore";
+import { collection, doc, getDocs, orderBy, query, serverTimestamp, updateDoc, where, limit as fbLimit } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { createAccountWithRole } from "./user-management";
 
@@ -50,5 +50,13 @@ export async function createTeacherAccount(params: {
     createdBy: params.createdBy,
     phone: params.phone,
   });
-  return uid;
+    return uid;
+}
+
+export async function deactivateTeacher(userId: string): Promise<void> {
+  if (!userId) return;
+  await updateDoc(doc(db, "users", userId), {
+    status: "deleted",
+    updatedAt: serverTimestamp(),
+  });
 }

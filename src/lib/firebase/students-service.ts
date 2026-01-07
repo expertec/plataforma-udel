@@ -1,4 +1,16 @@
-import { collection, getDocs, query, where, orderBy, limit as fbLimit } from "firebase/firestore";
+import {
+  collection,
+  collectionGroup,
+  doc,
+  getDocs,
+  orderBy,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where,
+  writeBatch,
+  limit as fbLimit,
+} from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { createAccountWithRole } from "./user-management";
 
@@ -43,4 +55,24 @@ export async function createStudentAccount(params: {
     phone: params.phone,
   });
   return uid;
+}
+
+export async function deactivateStudent(userId: string): Promise<void> {
+  if (!userId) return;
+  const batch = writeBatch(db);
+  batch.update(doc(db, "users", userId), {
+    status: "deleted",
+    updatedAt: serverTimestamp(),
+  });
+  const enrollmentsSnap = await getDocs(
+    query(collection(db, "studentEnrollments"), where("studentId", "==", userId)),
+  );
+  enrollmentsSnap.docs.forEach((enrollment) => batch.delete(enrollment.ref));
+
+  const studentEnrollmentsGroup = await getDocs(
+    query(collectionGroup(db, "students"), where("studentId", "==", userId)),
+  );
+  studentEnrollmentsGroup.docs.forEach((docSnap) => batch.delete(doc(db, "studentEnrollments", `${docSnap.ref.parent.parent?.id}_${userId}`)));
+
+  await batch.commit();
 }
