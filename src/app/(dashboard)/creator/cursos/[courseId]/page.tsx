@@ -345,7 +345,6 @@ export default function CourseBuilderPage() {
         ...prev,
       ]);
       setNewGroupName("");
-      setNewGroupMax(30);
       toast.success("Grupo creado y asociado a este curso");
     } catch (err) {
       console.error(err);
