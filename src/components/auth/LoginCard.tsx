@@ -4,7 +4,7 @@
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useState } from "react";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import { sendPasswordResetEmail, signInWithEmailAndPassword } from "firebase/auth";
 import toast from "react-hot-toast";
 import { auth } from "@/lib/firebase/client";
 import { resolveUserRole } from "@/lib/firebase/roles";
@@ -22,8 +22,13 @@ export function LoginCard({
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [remember, setRemember] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -123,10 +128,79 @@ export function LoginCard({
           <button
             type="button"
             className="font-medium text-[#6e2d2d] hover:opacity-80"
+            onClick={() =>
+              setRecoveryOpen((prev) => {
+                const next = !prev;
+                if (next) {
+                  setResetSent(false);
+                  setResetError(null);
+                  setResetEmail(email);
+                }
+                return next;
+              })
+            }
+            aria-expanded={recoveryOpen}
           >
             ¿Has perdido tu contraseña?
           </button>
         </div>
+
+        {recoveryOpen && (
+          <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-800">
+            <p>Te enviaremos un enlace al correo ingresado.</p>
+            <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Correo de recuperación
+            </label>
+            <input
+              type="email"
+              value={resetEmail}
+              onChange={(event) => {
+                setResetEmail(event.target.value);
+                if (resetError) setResetError(null);
+                if (resetSent) setResetSent(false);
+              }}
+              placeholder="tu@email.com"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-base text-slate-900 placeholder:text-slate-400 focus:border-[#6e2d2d] focus:outline-none focus:ring-1 focus:ring-[#6e2d2d]"
+            />
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!resetEmail) return;
+                  setResetLoading(true);
+                  setResetError(null);
+                  try {
+                    await sendPasswordResetEmail(auth, resetEmail);
+                    setResetSent(true);
+                    toast.success("Revisa tu correo para restablecer la contraseña.");
+                  } catch (error: unknown) {
+                    const code =
+                      typeof error === "object" && error !== null && "code" in error
+                        ? (error as { code?: string }).code
+                        : undefined;
+                    if (code === "auth/user-not-found") {
+                      setResetError("No existe una cuenta con ese correo.");
+                    } else if (code === "auth/invalid-email") {
+                      setResetError("Ingresa un correo válido.");
+                    } else {
+                      setResetError("No se pudo enviar el correo. Intenta más tarde.");
+                    }
+                  } finally {
+                    setResetLoading(false);
+                  }
+                }}
+                disabled={resetLoading || !resetEmail}
+                className="flex-1 rounded-lg bg-[#6e2d2d] px-3 py-2 text-center text-white transition hover:bg-[#5c2626] disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {resetLoading ? "Enviando..." : "Enviar enlace"}
+              </button>
+            </div>
+            {resetSent && (
+              <p className="text-xs text-emerald-700">Correo enviado, revisa tu bandeja.</p>
+            )}
+            {resetError && <p className="text-xs text-rose-600">{resetError}</p>}
+          </div>
+        )}
 
         <button
           type="submit"
