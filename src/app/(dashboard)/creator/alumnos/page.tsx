@@ -7,6 +7,7 @@ import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import { resolveUserRole, UserRole } from "@/lib/firebase/roles";
 import { createStudentAccount, getStudentUsers, StudentUser } from "@/lib/firebase/students-service";
+import { getGroupStudents, getGroupsForTeacher } from "@/lib/firebase/groups-service";
 
 type ParsedStudentRow = {
   row: number;
@@ -38,19 +39,6 @@ export default function AlumnosPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
 
-  const loadFromDb = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await getStudentUsers(200);
-      setStudents(data);
-    } catch (err) {
-      console.error(err);
-      toast.error("No se pudieron cargar los alumnos (users)");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
@@ -68,9 +56,49 @@ export default function AlumnosPage() {
     return () => unsub();
   }, []);
 
+  const loadStudents = useCallback(async () => {
+    const userId = currentUser?.uid;
+    if (!userId || !userRole) return;
+    setLoading(true);
+    try {
+      if (userRole === "adminTeacher") {
+        const data = await getStudentUsers(200);
+        setStudents(data);
+        return;
+      }
+      const groups = await getGroupsForTeacher(userId);
+      const studentMap = new Map<string, StudentUser>();
+      await Promise.all(
+        groups.map(async (group) => {
+          const groupStudents = await getGroupStudents(group.id);
+          groupStudents.forEach((student) => {
+            if (!student.studentEmail) return;
+            if (studentMap.has(student.id)) return;
+            studentMap.set(student.id, {
+              id: student.id,
+              name: student.studentName || "Alumno",
+              email: student.studentEmail,
+              estado: student.status,
+            });
+          });
+        }),
+      );
+      setStudents(Array.from(studentMap.values()));
+    } catch (err) {
+      console.error(err);
+      toast.error(
+        userRole === "adminTeacher"
+          ? "No se pudieron cargar los alumnos (users)"
+          : "No se pudieron cargar los alumnos de tus grupos",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [currentUser?.uid, userRole]);
+
   useEffect(() => {
-    loadFromDb();
-  }, [loadFromDb]);
+    loadStudents();
+  }, [loadStudents]);
 
   const handleCreateStudent = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -89,7 +117,7 @@ export default function AlumnosPage() {
       });
       toast.success("Alumno creado con acceso por correo/contraseña");
       setNewStudent({ name: "", email: "", password: "", phone: "" });
-      await loadFromDb();
+      await loadStudents();
     } catch (err: unknown) {
       console.error(err);
       const code = (err as { code?: string })?.code ?? "";
@@ -180,7 +208,7 @@ export default function AlumnosPage() {
     }
     setImportResults(results);
     setImporting(false);
-    await loadFromDb();
+    await loadStudents();
     toast.success("Importación finalizada (revisa los resultados por fila).");
   };
 
@@ -211,14 +239,16 @@ export default function AlumnosPage() {
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
-          onClick={loadFromDb}
+          onClick={loadStudents}
           className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
           disabled={loading}
         >
           {loading ? "Cargando..." : "Refrescar lista"}
         </button>
         <span className="text-sm text-slate-600">
-          Lista de usuarios con rol estudiante (colección &quot;users&quot;).
+          {userRole === "adminTeacher"
+            ? 'Lista de usuarios con rol estudiante (colección "users").'
+            : "Solo se muestran los alumnos de los grupos que tienes asignados."}
         </span>
       </div>
 
@@ -404,7 +434,9 @@ export default function AlumnosPage() {
         </div>
       ) : students.length === 0 ? (
         <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
-          No se encontraron alumnos con rol estudiante.
+          {userRole === "adminTeacher"
+            ? "No se encontraron alumnos con rol estudiante."
+            : "Aún no tienes alumnos asignados a tus grupos."}
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">

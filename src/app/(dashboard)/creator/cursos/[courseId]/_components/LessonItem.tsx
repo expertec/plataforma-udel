@@ -15,6 +15,7 @@ type LessonItemProps = {
   onDeleteLesson: (lessonId: string) => void;
   onEditClass: (lesson: Lesson, classItem: ClassData) => void;
   onOpenComments: (lesson: Lesson, classItem: ClassData) => void;
+  onReorderClass: (lessonId: string, fromIndex: number, toIndex: number) => void;
 };
 
 export function LessonItem({
@@ -28,8 +29,11 @@ export function LessonItem({
   onDeleteLesson,
   onEditClass,
   onOpenComments,
+  onReorderClass,
 }: LessonItemProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   return (
     <div className="rounded-lg border border-slate-200 border-l-4 border-l-blue-500 bg-white p-4 shadow-sm">
@@ -100,13 +104,41 @@ export function LessonItem({
               Aún no hay clases en esta lección.
             </div>
           ) : (
-            classes.map((cls) => (
+            classes.map((cls, idx) => (
               <ClassItem
                 key={cls.id}
                 item={cls}
                 onDelete={(classId) => onDeleteClass(lesson.id, classId)}
                 onEditClass={(classItem) => onEditClass(lesson, classItem)}
                 onOpenComments={(classItem) => onOpenComments(lesson, classItem)}
+                dragProps={{
+                  draggable: true,
+                  isDragging: draggingIndex === idx,
+                  isDragOver: dragOverIndex === idx,
+                  onDragStart: (event) => {
+                    event.dataTransfer.effectAllowed = "move";
+                    setDraggingIndex(idx);
+                  },
+                  onDragOver: (event) => {
+                    event.preventDefault();
+                    if (dragOverIndex !== idx) {
+                      setDragOverIndex(idx);
+                    }
+                  },
+                  onDrop: () => {
+                    if (draggingIndex !== null) {
+                      if (draggingIndex !== idx) {
+                        onReorderClass(lesson.id, draggingIndex, idx);
+                      }
+                    }
+                    setDraggingIndex(null);
+                    setDragOverIndex(null);
+                  },
+                  onDragEnd: () => {
+                    setDraggingIndex(null);
+                    setDragOverIndex(null);
+                  },
+                }}
               />
             ))
           )}

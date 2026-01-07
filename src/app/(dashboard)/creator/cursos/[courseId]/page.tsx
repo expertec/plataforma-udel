@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
@@ -8,6 +8,7 @@ import {
   ClassItem as ClassData,
   Lesson,
   Course,
+  reorderClasses,
   updateCourse,
 } from "@/lib/firebase/courses-service";
 import { collection, doc, onSnapshot, orderBy, query, Unsubscribe } from "firebase/firestore";
@@ -509,6 +510,46 @@ export default function CourseBuilderPage() {
     }));
   };
 
+  const handleReorderClasses = useCallback(
+    async (lessonId: string, fromIndex: number, toIndex: number) => {
+      if (!courseId) return;
+      let previousOrder: ClassData[] | null = null;
+      let nextOrder: ClassData[] | null = null;
+      let valid = false;
+      setClassesMap((prev) => {
+        const current = prev[lessonId];
+        if (
+          !current ||
+          fromIndex === toIndex ||
+          fromIndex < 0 ||
+          toIndex < 0 ||
+          fromIndex >= current.length ||
+          toIndex >= current.length
+        ) {
+          return prev;
+        }
+        valid = true;
+        previousOrder = current.map((cls) => ({ ...cls }));
+        const reordered = [...current];
+        const [moved] = reordered.splice(fromIndex, 1);
+        reordered.splice(toIndex, 0, moved);
+        nextOrder = reordered.map((cls, idx) => ({ ...cls, order: idx }));
+        return { ...prev, [lessonId]: nextOrder };
+      });
+      if (!valid || !nextOrder) return;
+      try {
+        await reorderClasses(courseId, lessonId, nextOrder.map((cls) => cls.id));
+      } catch (err) {
+        console.error("No se pudo reordenar las clases", err);
+        toast.error("No se pudo guardar el nuevo orden de clases.");
+        if (previousOrder) {
+          setClassesMap((prev) => ({ ...prev, [lessonId]: previousOrder }));
+        }
+      }
+    },
+    [courseId],
+  );
+
   // ya no se usa selector de preguntas desde el listado
 
   const handleEditClass = (lesson: Lesson, classItem: ClassData) => {
@@ -752,21 +793,22 @@ export default function CourseBuilderPage() {
                 .slice()
                 .sort((a, b) => a.order - b.order)
                 .map((lesson) => (
-                  <LessonItem
-                    key={lesson.id}
-                    lesson={lesson}
-                    expanded={expanded.has(lesson.id)}
-                    onToggle={toggleLesson}
-                    classes={classesMap[lesson.id] || []}
-                    loadingClasses={loadingClasses[lesson.id]}
-                    onAddClass={handleOpenAddClass}
-                    onDeleteClass={handleDeleteClass}
-                    onDeleteLesson={handleDeleteLesson}
-                    onEditClass={handleEditClass}
-                    onOpenComments={(lessonItem, classItem) =>
-                      setCommentsTarget({ open: true, lesson: lessonItem, classItem })
-                    }
-                  />
+                    <LessonItem
+                      key={lesson.id}
+                      lesson={lesson}
+                      expanded={expanded.has(lesson.id)}
+                      onToggle={toggleLesson}
+                      classes={classesMap[lesson.id] || []}
+                      loadingClasses={loadingClasses[lesson.id]}
+                      onAddClass={handleOpenAddClass}
+                      onDeleteClass={handleDeleteClass}
+                      onDeleteLesson={handleDeleteLesson}
+                      onEditClass={handleEditClass}
+                      onOpenComments={(lessonItem, classItem) =>
+                        setCommentsTarget({ open: true, lesson: lessonItem, classItem })
+                      }
+                      onReorderClass={handleReorderClasses}
+                    />
                 ))}
             </div>
           )}

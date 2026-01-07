@@ -1,12 +1,24 @@
 "use client";
 
 import { ClassItem as ClassData } from "@/lib/firebase/courses-service";
+import type { DragEventHandler } from "react";
+
+type DragProps = {
+  draggable?: boolean;
+  isDragging?: boolean;
+  isDragOver?: boolean;
+  onDragStart?: DragEventHandler<HTMLDivElement>;
+  onDragOver?: DragEventHandler<HTMLDivElement>;
+  onDrop?: DragEventHandler<HTMLDivElement>;
+  onDragEnd?: DragEventHandler<HTMLDivElement>;
+};
 
 type ClassItemProps = {
   item: ClassData;
   onDelete: (id: string) => void;
   onEditClass?: (item: ClassData) => void;
   onOpenComments?: (item: ClassData) => void;
+  dragProps?: DragProps;
 };
 
 const Icon = ({ path }: { path: string }) => (
@@ -32,9 +44,30 @@ const iconMap: Record<ClassData["type"], string> = {
   image: "M4 7.5A1.5 1.5 0 015.5 6h13A1.5 1.5 0 0120 7.5v9a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 16.5v-9zm0 8l4-4 3 3 4-4 5 5",
 };
 
-export function ClassItem({ item, onDelete, onEditClass, onOpenComments }: ClassItemProps) {
+export function ClassItem({
+  item,
+  onDelete,
+  onEditClass,
+  onOpenComments,
+  dragProps,
+}: ClassItemProps) {
+  const dragStyles = [
+    dragProps?.isDragging ? "opacity-70" : "",
+    dragProps?.isDragOver ? "bg-slate-100" : "",
+    dragProps?.draggable ? "cursor-grab" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div className="flex items-center justify-between rounded-md px-3 py-2 pl-8 text-sm text-slate-700 hover:bg-slate-50">
+    <div
+      className={`flex items-center justify-between rounded-md px-3 py-2 pl-8 text-sm text-slate-700 hover:bg-slate-50 ${dragStyles}`}
+      draggable={dragProps?.draggable ?? false}
+      onDragStart={dragProps?.onDragStart}
+      onDragOver={dragProps?.onDragOver}
+      onDrop={dragProps?.onDrop}
+      onDragEnd={dragProps?.onDragEnd}
+    >
       <div className="flex items-center gap-3">
         <Icon path={iconMap[item.type]} />
         <div>

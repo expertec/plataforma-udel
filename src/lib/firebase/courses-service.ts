@@ -284,6 +284,20 @@ export async function updateClass(input: UpdateClassInput): Promise<void> {
   await updateDoc(classRef, payload);
 }
 
+export async function reorderClasses(
+  courseId: string,
+  lessonId: string,
+  classIds: string[],
+): Promise<void> {
+  if (!classIds.length) return;
+  const batch = writeBatch(db);
+  classIds.forEach((classId, index) => {
+    const classRef = doc(db, "courses", courseId, "lessons", lessonId, "classes", classId);
+    batch.update(classRef, { order: index });
+  });
+  await batch.commit();
+}
+
 export async function deleteClass(
   courseId: string,
   lessonId: string,
