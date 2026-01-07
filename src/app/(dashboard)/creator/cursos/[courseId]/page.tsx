@@ -514,7 +514,7 @@ export default function CourseBuilderPage() {
     async (lessonId: string, fromIndex: number, toIndex: number) => {
       if (!courseId) return;
       let previousOrder: ClassData[] | null = null;
-      let nextOrder: ClassData[] | null = null;
+      let nextOrderIds: string[] | null = null;
       let valid = false;
       setClassesMap((prev) => {
         const current = prev[lessonId];
@@ -533,12 +533,13 @@ export default function CourseBuilderPage() {
         const reordered = [...current];
         const [moved] = reordered.splice(fromIndex, 1);
         reordered.splice(toIndex, 0, moved);
-        nextOrder = reordered.map((cls, idx) => ({ ...cls, order: idx }));
-        return { ...prev, [lessonId]: nextOrder };
+        const normalized = reordered.map((cls, idx) => ({ ...cls, order: idx }));
+        nextOrderIds = normalized.map((cls) => cls.id);
+        return { ...prev, [lessonId]: normalized };
       });
-      if (!valid || !nextOrder) return;
+      if (!valid || !nextOrderIds) return;
       try {
-        await reorderClasses(courseId, lessonId, nextOrder.map((cls) => cls.id));
+        await reorderClasses(courseId, lessonId, nextOrderIds);
       } catch (err) {
         console.error("No se pudo reordenar las clases", err);
         toast.error("No se pudo guardar el nuevo orden de clases.");
