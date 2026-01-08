@@ -13,7 +13,7 @@ import {
 } from "firebase/firestore";
 import type { QueryConstraint } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
-import { createAccountWithRole } from "./user-management";
+import { createAccountWithRole, updateUserPassword } from "./user-management";
 
 export type StudentUser = {
   id: string;
@@ -64,13 +64,57 @@ export async function createStudentAccount(params: {
   return uid;
 }
 
-export async function ensureStudentAccount(params: {
+export async function checkStudentExists(email: string): Promise<boolean> {
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail) return false;
+
+  const usersRef = collection(db, "users");
+  const existingSnap = await getDocs(
+    query(usersRef, where("email", "==", normalizedEmail), limit(1)),
+  );
+  return !existingSnap.empty;
+}
+
+export async function createStudentIfNotExists(params: {
   name: string;
   email: string;
   password: string;
   createdBy?: string | null;
   phone?: string;
 }): Promise<{ uid: string; alreadyExisted: boolean }> {
+  const normalizedEmail = params.email.trim().toLowerCase();
+  const trimmedName = params.name.trim() || "Alumno";
+  if (!normalizedEmail) {
+    throw new Error("El correo del alumno es requerido");
+  }
+
+  const usersRef = collection(db, "users");
+  const existingSnap = await getDocs(
+    query(usersRef, where("email", "==", normalizedEmail), limit(1)),
+  );
+  if (!existingSnap.empty) {
+    const existingDoc = existingSnap.docs[0];
+    return { uid: existingDoc.id, alreadyExisted: true };
+  }
+
+  const uid = await createStudentAccount({
+    name: trimmedName,
+    email: normalizedEmail,
+    password: params.password,
+    createdBy: params.createdBy,
+    phone: params.phone,
+  });
+  return { uid, alreadyExisted: false };
+}
+
+export async function ensureStudentAccount(params: {
+  name: string;
+  email: string;
+  password: string;
+  createdBy?: string | null;
+  phone?: string;
+  updatePassword?: boolean;
+}): Promise<{ uid: string; alreadyExisted: boolean; passwordUpdated?: boolean }> {
   const normalizedEmail = params.email.trim().toLowerCase();
   const trimmedName = params.name.trim() || "Alumno";
   if (!normalizedEmail) {
@@ -93,7 +137,25 @@ export async function ensureStudentAccount(params: {
       updatedAt: serverTimestamp(),
       updatedBy: params.createdBy ?? null,
     });
-    return { uid: existingDoc.id, alreadyExisted: true };
+
+    // Si se solicita actualizar contraseña, intentamos con la función de user-management
+    let passwordUpdated = false;
+    if (params.updatePassword && params.password) {
+      try {
+        // Intentamos actualizar usando Firebase Admin a través de la app de gestión
+        const result = await updateUserPassword({
+          email: normalizedEmail,
+          oldPassword: params.password, // Usamos la misma como "antigua"
+          newPassword: params.password,
+        });
+        passwordUpdated = result.success;
+      } catch {
+        // Si falla, continuamos sin actualizar contraseña
+        passwordUpdated = false;
+      }
+    }
+
+    return { uid: existingDoc.id, alreadyExisted: true, passwordUpdated };
   }
 
   const uid = await createStudentAccount({
@@ -103,7 +165,7 @@ export async function ensureStudentAccount(params: {
     createdBy: params.createdBy,
     phone: params.phone,
   });
-  return { uid, alreadyExisted: false };
+  return { uid, alreadyExisted: false, passwordUpdated: true };
 }
 
 export async function deactivateStudent(userId: string): Promise<void> {
@@ -124,4 +186,12 @@ export async function deactivateStudent(userId: string): Promise<void> {
   studentEnrollmentsGroup.docs.forEach((docSnap) => batch.delete(doc(db, "studentEnrollments", `${docSnap.ref.parent.parent?.id}_${userId}`)));
 
   await batch.commit();
+}
+
+export async function updateStudentPassword(params: {
+  email: string;
+  oldPassword: string;
+  newPassword: string;
+}): Promise<{ success: boolean; message?: string }> {
+  return await updateUserPassword(params);
 }

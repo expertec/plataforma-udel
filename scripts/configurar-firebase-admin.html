@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configurar Firebase Admin - UdelX</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+        .header p {
+            opacity: 0.9;
+            font-size: 16px;
+        }
+        .content {
+            padding: 40px;
+        }
+        .step {
+            margin-bottom: 40px;
+            padding-bottom: 40px;
+            border-bottom: 2px solid #e5e7eb;
+        }
+        .step:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+        .step-number {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 40px;
+            font-weight: bold;
+            font-size: 20px;
+            margin-bottom: 15px;
+        }
+        .step h2 {
+            color: #1f2937;
+            margin-bottom: 15px;
+            font-size: 24px;
+        }
+        .step p, .step li {
+            color: #4b5563;
+            line-height: 1.8;
+            margin-bottom: 10px;
+        }
+        .step ul {
+            margin-left: 20px;
+            margin-top: 15px;
+        }
+        .step ol {
+            margin-left: 20px;
+            margin-top: 15px;
+        }
+        .step ol li {
+            margin-bottom: 15px;
+        }
+        .code-block {
+            background: #1f2937;
+            color: #10b981;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            overflow-x: auto;
+            margin: 15px 0;
+            line-height: 1.6;
+        }
+        .code-inline {
+            background: #e5e7eb;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            color: #1f2937;
+        }
+        .alert {
+            background: #fef3c7;
+            border-left: 4px solid #f59e0b;
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .alert-danger {
+            background: #fee2e2;
+            border-left-color: #ef4444;
+        }
+        .alert-success {
+            background: #d1fae5;
+            border-left-color: #10b981;
+        }
+        .alert-info {
+            background: #dbeafe;
+            border-left-color: #3b82f6;
+        }
+        .alert strong {
+            display: block;
+            margin-bottom: 5px;
+            color: #1f2937;
+        }
+        .alert p {
+            margin: 0;
+            color: #4b5563;
+        }
+        .file-upload-area {
+            border: 3px dashed #d1d5db;
+            border-radius: 12px;
+            padding: 40px;
+            text-align: center;
+            margin: 20px 0;
+            transition: all 0.3s;
+            cursor: pointer;
+            background: #f9fafb;
+        }
+        .file-upload-area:hover {
+            border-color: #667eea;
+            background: #f3f4f6;
+        }
+        .file-upload-area.dragover {
+            border-color: #667eea;
+            background: #eef2ff;
+        }
+        .file-upload-area input[type="file"] {
+            display: none;
+        }
+        .file-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+        .btn {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 12px 30px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.3s;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .btn:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        .btn-success {
+            background: #10b981;
+        }
+        .btn-success:hover {
+            background: #059669;
+        }
+        #result {
+            display: none;
+            margin-top: 20px;
+        }
+        .screenshot {
+            background: #f3f4f6;
+            border: 2px solid #d1d5db;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            text-align: center;
+        }
+        .screenshot img {
+            max-width: 100%;
+            border-radius: 4px;
+        }
+        .copy-button {
+            background: #6b7280;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            margin-top: 10px;
+            transition: all 0.2s;
+        }
+        .copy-button:hover {
+            background: #4b5563;
+        }
+        .copy-button:active {
+            transform: scale(0.95);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔧 Configurar Firebase Admin SDK</h1>
+            <p>Guía paso a paso para habilitar la actualización masiva de contraseñas</p>
+        </div>
+
+        <div class="content">
+            <!-- PASO 1 -->
+            <div class="step">
+                <div class="step-number">1</div>
+                <h2>Obtener las Credenciales de Firebase</h2>
+                <ol>
+                    <li>
+                        <strong>Abre Firebase Console:</strong><br>
+                        <a href="https://console.firebase.google.com/" target="_blank" class="btn" style="margin-top: 10px;">
+                            Ir a Firebase Console →
+                        </a>
+                    </li>
+                    <li>
+                        <strong>Selecciona tu proyecto</strong> (UdelX)
+                    </li>
+                    <li>
+                        <strong>Ve a Project Settings:</strong><br>
+                        Haz clic en el ícono de ⚙️ (engranaje) en la barra lateral → "Project Settings"
+                    </li>
+                    <li>
+                        <strong>Ve a la pestaña "Service Accounts"</strong><br>
+                        En la parte superior verás varias pestañas, selecciona "Service Accounts"
+                    </li>
+                    <li>
+                        <strong>Genera la clave privada:</strong><br>
+                        Haz clic en el botón <span class="code-inline">Generate new private key</span>
+                    </li>
+                    <li>
+                        <strong>Confirma la descarga</strong><br>
+                        Se descargará un archivo JSON con un nombre como:<br>
+                        <span class="code-inline">udelx-xxxxx-firebase-adminsdk-xxxxx.json</span>
+                    </li>
+                </ol>
+
+                <div class="alert alert-danger">
+                    <strong>⚠️ IMPORTANTE - Seguridad</strong>
+                    <p>Este archivo contiene credenciales sensibles. NUNCA lo subas a GitHub ni lo compartas con nadie.</p>
+                </div>
+            </div>
+
+            <!-- PASO 2 -->
+            <div class="step">
+                <div class="step-number">2</div>
+                <h2>Extraer las Credenciales del Archivo JSON</h2>
+                <p>Arrastra el archivo JSON que descargaste aquí:</p>
+
+                <div class="file-upload-area" id="dropZone">
+                    <div class="file-icon">📄</div>
+                    <p style="font-size: 18px; font-weight: 600; margin-bottom: 10px;">
+                        Arrastra el archivo JSON aquí
+                    </p>
+                    <p style="color: #6b7280; margin-bottom: 15px;">o haz clic para seleccionarlo</p>
+                    <input type="file" id="fileInput" accept=".json">
+                    <button class="btn" onclick="document.getElementById('fileInput').click()">
+                        Seleccionar Archivo
+                    </button>
+                </div>
+
+                <div id="result">
+                    <div class="alert alert-success">
+                        <strong>✅ Archivo procesado correctamente</strong>
+                    </div>
+
+                    <h3 style="margin: 20px 0 10px 0;">Variables de Entorno Generadas:</h3>
+                    <p style="margin-bottom: 10px;">Copia este contenido y agrégalo a tu archivo <span class="code-inline">.env.local</span>:</p>
+
+                    <div class="code-block" id="envVars"></div>
+                    <button class="copy-button" onclick="copyToClipboard()">📋 Copiar al Portapapeles</button>
+                </div>
+            </div>
+
+            <!-- PASO 3 -->
+            <div class="step">
+                <div class="step-number">3</div>
+                <h2>Agregar Variables al Archivo .env.local</h2>
+                <ol>
+                    <li>Abre el archivo <span class="code-inline">.env.local</span> en la raíz de tu proyecto</li>
+                    <li>Pega las variables que copiaste del paso anterior al final del archivo</li>
+                    <li>Guarda el archivo</li>
+                </ol>
+
+                <div class="alert alert-info">
+                    <strong>💡 Tip</strong>
+                    <p>Si ya tenías variables de Firebase Admin antiguas, elimínalas primero para evitar conflictos.</p>
+                </div>
+            </div>
+
+            <!-- PASO 4 -->
+            <div class="step">
+                <div class="step-number">4</div>
+                <h2>Reiniciar el Servidor de Desarrollo</h2>
+                <p>Para que los cambios surtan efecto, reinicia tu servidor:</p>
+
+                <div class="code-block">
+# Presiona Ctrl+C para detener el servidor
+# Luego ejecuta:
+npm run dev</div>
+            </div>
+
+            <!-- PASO 5 -->
+            <div class="step">
+                <div class="step-number">5</div>
+                <h2>Probar la Funcionalidad</h2>
+                <ol>
+                    <li>Ve a la página de <strong>Alumnos</strong> en tu aplicación</li>
+                    <li>Busca la sección azul: <strong>"Actualizar contraseñas de alumnos existentes"</strong></li>
+                    <li>Carga un archivo Excel con emails y contraseñas</li>
+                    <li>Haz clic en <strong>"Actualizar contraseñas"</strong></li>
+                </ol>
+
+                <div class="alert alert-success">
+                    <strong>✅ ¡Listo!</strong>
+                    <p>Si todo salió bien, las contraseñas se actualizarán sin problemas.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const result = document.getElementById('result');
+        const envVars = document.getElementById('envVars');
+        let envContent = '';
+
+        // Prevent default drag behaviors
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, preventDefaults, false);
+            document.body.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        // Highlight drop zone when item is dragged over it
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, () => {
+                dropZone.classList.add('dragover');
+            }, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, () => {
+                dropZone.classList.remove('dragover');
+            }, false);
+        });
+
+        // Handle dropped files
+        dropZone.addEventListener('drop', handleDrop, false);
+        fileInput.addEventListener('change', handleFileSelect, false);
+
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            handleFiles(files);
+        }
+
+        function handleFileSelect(e) {
+            const files = e.target.files;
+            handleFiles(files);
+        }
+
+        function handleFiles(files) {
+            if (files.length === 0) return;
+
+            const file = files[0];
+
+            if (!file.name.endsWith('.json')) {
+                alert('❌ Por favor selecciona un archivo JSON');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const credentials = JSON.parse(e.target.result);
+
+                    // Validar que tenga los campos necesarios
+                    if (!credentials.project_id || !credentials.private_key || !credentials.client_email) {
+                        alert('❌ El archivo JSON no parece ser un archivo de credenciales de Firebase Admin válido');
+                        return;
+                    }
+
+                    // Generar las variables de entorno
+                    const privateKeyEscaped = credentials.private_key.replace(/\n/g, '\\n');
+
+                    envContent = `
+# Firebase Admin SDK Credentials
+FIREBASE_ADMIN_PROJECT_ID=${credentials.project_id}
+FIREBASE_ADMIN_CLIENT_EMAIL=${credentials.client_email}
+FIREBASE_ADMIN_PRIVATE_KEY="${privateKeyEscaped}"
+`.trim();
+
+                    envVars.textContent = envContent;
+                    result.style.display = 'block';
+
+                    // Scroll to result
+                    result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+                } catch (error) {
+                    alert('❌ Error al procesar el archivo JSON: ' + error.message);
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function copyToClipboard() {
+            navigator.clipboard.writeText(envContent).then(() => {
+                const button = event.target;
+                const originalText = button.textContent;
+                button.textContent = '✅ ¡Copiado!';
+                button.style.background = '#10b981';
+
+                setTimeout(() => {
+                    button.textContent = originalText;
+                    button.style.background = '#6b7280';
+                }, 2000);
+            }).catch(err => {
+                alert('Error al copiar: ' + err);
+            });
+        }
+    </script>
+</body>
+</html>

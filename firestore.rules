@@ -40,10 +40,11 @@ service cloud.firestore {
     }
     function canSelfUpsertProfile(userId) {
       return isSelf(userId) &&
-        request.resource.data.diff(resource.data).changedKeys().hasOnly(['displayName', 'name', 'photoURL', 'updatedAt']) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['displayName', 'name', 'photoURL', 'updatedAt', 'mustChangePassword']) &&
         (!("displayName" in request.resource.data) || isOptionalString(request.resource.data.displayName)) &&
         (!("name" in request.resource.data) || isOptionalString(request.resource.data.name)) &&
-        (!("photoURL" in request.resource.data) || isOptionalString(request.resource.data.photoURL));
+        (!("photoURL" in request.resource.data) || isOptionalString(request.resource.data.photoURL)) &&
+        (!("mustChangePassword" in request.resource.data) || request.resource.data.mustChangePassword is bool);
     }
     // Permite que profesores agreguen su materia a un grupo existente sin modificar otros campos.
     function canTeacherLinkCourseToGroup() {

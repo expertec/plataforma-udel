@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generador de Excel - Actualizar Contraseñas</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 900px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+        textarea {
+            width: 100%;
+            min-height: 200px;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 14px;
+            margin-bottom: 20px;
+            box-sizing: border-box;
+        }
+        input[type="text"], input[type="password"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            margin-bottom: 20px;
+            box-sizing: border-box;
+        }
+        .password-options {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+        .radio-group {
+            margin: 15px 0;
+        }
+        .radio-group label {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+            font-weight: normal;
+        }
+        .radio-group input[type="radio"] {
+            margin-right: 10px;
+            width: auto;
+        }
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 14px 28px;
+            font-size: 16px;
+            font-weight: 600;
+            border-radius: 6px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 10px;
+        }
+        button:hover {
+            background: #1d4ed8;
+        }
+        button:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+        }
+        .preview {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 20px;
+            display: none;
+        }
+        .preview.show {
+            display: block;
+        }
+        .preview h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        .preview-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            font-size: 13px;
+        }
+        .preview-table th, .preview-table td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        .preview-table th {
+            background: #e5e7eb;
+            font-weight: 600;
+        }
+        .alert {
+            background: #fef3c7;
+            border: 1px solid #fbbf24;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            color: #92400e;
+        }
+        .success {
+            background: #d1fae5;
+            border: 1px solid #10b981;
+            color: #065f46;
+        }
+        .code {
+            font-family: monospace;
+            background: #e5e7eb;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        .help-text {
+            font-size: 13px;
+            color: #666;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 Generador de Excel para Actualizar Contraseñas</h1>
+        <p class="subtitle">Crea un archivo Excel con emails y contraseñas para actualización masiva</p>
+
+        <div class="alert">
+            <strong>⚠️ Importante:</strong> Este archivo contendrá contraseñas en texto plano.
+            Guárdalo en un lugar seguro y elimínalo después de usarlo.
+        </div>
+
+        <label>📧 Lista de emails de alumnos (uno por línea):</label>
+        <textarea id="emailList" placeholder="alumno1@ejemplo.com&#10;alumno2@ejemplo.com&#10;alumno3@ejemplo.com"></textarea>
+        <p class="help-text">Pega aquí los emails de tus alumnos, uno por línea</p>
+
+        <div class="password-options">
+            <label>🔑 Tipo de contraseña:</label>
+            <div class="radio-group">
+                <label>
+                    <input type="radio" name="passwordType" value="same" checked>
+                    Usar la misma contraseña para todos
+                </label>
+                <label>
+                    <input type="radio" name="passwordType" value="random">
+                    Generar contraseña aleatoria única para cada alumno
+                </label>
+            </div>
+
+            <div id="samePasswordInput">
+                <label>Contraseña a usar:</label>
+                <input type="text" id="samePassword" value="alumno123" placeholder="Escribe la contraseña">
+                <p class="help-text">Esta contraseña se usará para todos los alumnos</p>
+            </div>
+        </div>
+
+        <button onclick="generateExcel()">📥 Generar y Descargar Excel</button>
+
+        <div id="preview" class="preview">
+            <h3>Vista previa (primeros 5 registros):</h3>
+            <table class="preview-table">
+                <thead>
+                    <tr>
+                        <th>Email</th>
+                        <th>Password</th>
+                    </tr>
+                </thead>
+                <tbody id="previewBody"></tbody>
+            </table>
+            <p id="totalCount" style="margin-top: 10px; font-weight: 600;"></p>
+        </div>
+
+        <div id="instructions" style="margin-top: 30px; display: none;">
+            <h3>📝 Próximos pasos:</h3>
+            <ol>
+                <li>Abre el archivo descargado y verifica que los datos sean correctos</li>
+                <li>Ve a la página de <strong>Alumnos</strong> en tu aplicación</li>
+                <li>Busca la sección azul <strong>"Actualizar contraseñas de alumnos existentes"</strong></li>
+                <li>Haz clic en <strong>"Cargar Excel"</strong> y selecciona el archivo descargado</li>
+                <li>Verifica la vista previa y haz clic en <strong>"Actualizar contraseñas"</strong></li>
+            </ol>
+        </div>
+    </div>
+
+    <script>
+        // Mostrar/ocultar input de contraseña según opción
+        document.querySelectorAll('input[name="passwordType"]').forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                const samePasswordInput = document.getElementById('samePasswordInput');
+                samePasswordInput.style.display = e.target.value === 'same' ? 'block' : 'none';
+            });
+        });
+
+        function generateRandomPassword(length = 12) {
+            const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+            let password = '';
+            const array = new Uint8Array(length);
+            crypto.getRandomValues(array);
+
+            for (let i = 0; i < length; i++) {
+                password += charset[array[i] % charset.length];
+            }
+
+            return password;
+        }
+
+        function generateExcel() {
+            const emailListText = document.getElementById('emailList').value.trim();
+
+            if (!emailListText) {
+                alert('Por favor, ingresa al menos un email');
+                return;
+            }
+
+            // Obtener emails (filtrar líneas vacías)
+            const emails = emailListText.split('\n')
+                .map(e => e.trim())
+                .filter(e => e.length > 0);
+
+            if (emails.length === 0) {
+                alert('No se encontraron emails válidos');
+                return;
+            }
+
+            // Determinar tipo de contraseña
+            const passwordType = document.querySelector('input[name="passwordType"]:checked').value;
+            const samePassword = document.getElementById('samePassword').value;
+
+            if (passwordType === 'same' && !samePassword) {
+                alert('Por favor, ingresa una contraseña');
+                return;
+            }
+
+            // Generar datos
+            const data = emails.map(email => ({
+                Email: email,
+                Password: passwordType === 'same' ? samePassword : generateRandomPassword(12)
+            }));
+
+            // Crear Excel
+            const worksheet = XLSX.utils.json_to_sheet(data);
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, 'Contraseñas');
+
+            // Descargar archivo
+            const fileName = `actualizar-contraseñas-${new Date().toISOString().split('T')[0]}.xlsx`;
+            XLSX.writeFile(workbook, fileName);
+
+            // Mostrar vista previa
+            showPreview(data);
+
+            // Mostrar instrucciones
+            document.getElementById('instructions').style.display = 'block';
+        }
+
+        function showPreview(data) {
+            const preview = document.getElementById('preview');
+            const previewBody = document.getElementById('previewBody');
+            const totalCount = document.getElementById('totalCount');
+
+            // Limpiar preview anterior
+            previewBody.innerHTML = '';
+
+            // Mostrar primeros 5
+            data.slice(0, 5).forEach(row => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${row.Email}</td>
+                    <td><code>${row.Password}</code></td>
+                `;
+                previewBody.appendChild(tr);
+            });
+
+            totalCount.textContent = `Total: ${data.length} alumno${data.length !== 1 ? 's' : ''}`;
+
+            if (data.length > 5) {
+                totalCount.textContent += ` (mostrando primeros 5)`;
+            }
+
+            preview.classList.add('show');
+        }
+    </script>
+</body>
+</html>

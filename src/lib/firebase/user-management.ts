@@ -6,8 +6,9 @@ import {
   signInWithEmailAndPassword,
   signOut,
   updateProfile,
+  updatePassword,
 } from "firebase/auth";
-import { doc, serverTimestamp, setDoc } from "firebase/firestore";
+import { doc, serverTimestamp, setDoc, getDoc } from "firebase/firestore";
 import { db } from "./firestore";
 import { UserRole } from "./roles";
 
@@ -106,5 +107,53 @@ export async function createAccountWithRole(input: CreateAccountInput): Promise<
       // ignore
     }
     return { uid: existingCred.user.uid };
+  }
+}
+
+export async function updateUserPassword(params: {
+  email: string;
+  oldPassword: string;
+  newPassword: string;
+}): Promise<{ success: boolean; message?: string }> {
+  const { email, oldPassword, newPassword } = params;
+  const auth = getManagementAuth();
+
+  try {
+    // Intentar iniciar sesión con la contraseña anterior
+    const cred = await signInWithEmailAndPassword(auth, email, oldPassword);
+
+    // Actualizar la contraseña
+    await updatePassword(cred.user, newPassword);
+
+    // Actualizar Firestore para indicar que debe cambiar contraseña
+    const userDoc = await getDoc(doc(db, "users", cred.user.uid));
+    if (userDoc.exists()) {
+      await setDoc(
+        doc(db, "users", cred.user.uid),
+        {
+          mustChangePassword: true,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+
+    // Cerrar sesión
+    await signOut(auth);
+
+    return { success: true };
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code ?? "";
+    let message = "No se pudo actualizar la contraseña";
+
+    if (code === "auth/wrong-password") {
+      message = "Contraseña anterior incorrecta";
+    } else if (code === "auth/user-not-found") {
+      message = "Usuario no encontrado";
+    } else if (code === "auth/weak-password") {
+      message = "La nueva contraseña es muy débil";
+    }
+
+    return { success: false, message };
   }
 }

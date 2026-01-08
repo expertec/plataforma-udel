@@ -11,6 +11,8 @@ import {
   deactivateStudent,
   getStudentUsers,
   StudentUser,
+  createStudentIfNotExists,
+  checkStudentExists,
 } from "@/lib/firebase/students-service";
 import { getGroupStudents, getGroupsForTeacher } from "@/lib/firebase/groups-service";
 
@@ -20,13 +22,20 @@ type ParsedStudentRow = {
   email: string;
   password: string;
   phone?: string;
+  exists?: boolean;
+  invalidEmail?: boolean;
 };
 
 type ImportResult = {
   row: number;
   email: string;
-  status: "ok" | "error";
+  status: "created" | "skipped" | "error";
   message?: string;
+};
+
+const isValidEmail = (email: string): boolean => {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
 };
 
 export default function AlumnosPage() {
@@ -44,6 +53,23 @@ export default function AlumnosPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [deletingStudentId, setDeletingStudentId] = useState<string | null>(null);
+  const [previewFilter, setPreviewFilter] = useState<"all" | "invalid" | "new" | "existing">("all");
+
+  // Estados para actualización de contraseñas
+  const [passwordFileName, setPasswordFileName] = useState<string | null>(null);
+  const [parsedPasswordRows, setParsedPasswordRows] = useState<ParsedStudentRow[]>([]);
+  const [passwordResults, setPasswordResults] = useState<ImportResult[]>([]);
+  const [updatingPasswords, setUpdatingPasswords] = useState(false);
+  const passwordFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Estados para cambio de contraseña individual
+  const [changePasswordModalOpen, setChangePasswordModalOpen] = useState(false);
+  const [selectedStudent, setSelectedStudent] = useState<StudentUser | null>(null);
+  const [newPassword, setNewPassword] = useState("ascensoUDEL");
+  const [changingPassword, setChangingPassword] = useState(false);
+
+  // Estado para búsqueda
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -170,6 +196,7 @@ export default function AlumnosPage() {
             email,
             password: password || "alumno123",
             phone: phone || "",
+            exists: undefined,
           };
         })
         .filter(Boolean) as ParsedStudentRow[];
@@ -177,8 +204,32 @@ export default function AlumnosPage() {
         setParseError("No se encontraron filas válidas. Usa las columnas Nombre, Email y Password.");
         return;
       }
-      setParsedRows(mapped);
-      toast.success(`Archivo listo (${mapped.length} alumnos detectados)`);
+
+      toast.success(`Verificando existencia de ${mapped.length} alumnos...`);
+
+      const mappedWithExists = await Promise.all(
+        mapped.map(async (student) => {
+          const invalidEmail = !isValidEmail(student.email);
+          const exists = invalidEmail ? false : await checkStudentExists(student.email);
+          return { ...student, exists, invalidEmail };
+        }),
+      );
+
+      setParsedRows(mappedWithExists);
+      const newCount = mappedWithExists.filter((s) => !s.exists && !s.invalidEmail).length;
+      const existingCount = mappedWithExists.filter((s) => s.exists).length;
+      const invalidCount = mappedWithExists.filter((s) => s.invalidEmail).length;
+
+      if (invalidCount > 0) {
+        toast.error(
+          `Archivo listo: ${newCount} nuevos, ${existingCount} ya existen, ${invalidCount} emails inválidos`,
+          { duration: 5000 }
+        );
+      } else {
+        toast.success(
+          `Archivo listo: ${newCount} nuevos, ${existingCount} ya existen`,
+        );
+      }
     } catch (err) {
       console.error(err);
       setParseError("No se pudo leer el archivo. Verifica el formato .xlsx");
@@ -193,29 +244,44 @@ export default function AlumnosPage() {
     setImporting(true);
     const results: ImportResult[] = [];
     for (const row of parsedRows) {
+      if (row.invalidEmail) {
+        results.push({
+          row: row.row,
+          email: row.email,
+          status: "error",
+          message: "Email inválido",
+        });
+        continue;
+      }
       try {
-        await createStudentAccount({
+        const result = await createStudentIfNotExists({
           name: row.name,
           email: row.email,
           password: row.password,
           createdBy: currentUser?.uid ?? null,
           phone: row.phone,
         });
-        results.push({ row: row.row, email: row.email, status: "ok" });
+        results.push({
+          row: row.row,
+          email: row.email,
+          status: result.alreadyExisted ? "skipped" : "created",
+          message: result.alreadyExisted ? "Ya existía" : undefined,
+        });
       } catch (err: unknown) {
         console.error(err);
-        const code = (err as { code?: string })?.code ?? "";
-        const message =
-          code === "auth/email-already-in-use"
-            ? "Correo ya existente"
-            : (err as { message?: string })?.message || "No se pudo crear";
+        const message = (err as { message?: string })?.message || "No se pudo crear";
         results.push({ row: row.row, email: row.email, status: "error", message });
       }
     }
     setImportResults(results);
     setImporting(false);
     await loadStudents();
-    toast.success("Importación finalizada (revisa los resultados por fila).");
+    const created = results.filter((r) => r.status === "created").length;
+    const skipped = results.filter((r) => r.status === "skipped").length;
+    const errors = results.filter((r) => r.status === "error").length;
+    toast.success(
+      `Importación finalizada: ${created} creados, ${skipped} omitidos, ${errors} errores.`,
+    );
   };
 
   const handleDownloadTemplate = () => {
@@ -230,7 +296,139 @@ export default function AlumnosPage() {
     XLSX.writeFile(workbook, "plantilla-alumnos.xlsx");
   };
 
-  const parsedPreview = useMemo(() => parsedRows.slice(0, 5), [parsedRows]);
+  const parsedPreview = useMemo(() => {
+    let filtered = parsedRows;
+    if (previewFilter === "invalid") {
+      filtered = parsedRows.filter((r) => r.invalidEmail);
+    } else if (previewFilter === "new") {
+      filtered = parsedRows.filter((r) => !r.exists && !r.invalidEmail);
+    } else if (previewFilter === "existing") {
+      filtered = parsedRows.filter((r) => r.exists);
+    }
+    return filtered.slice(0, 10);
+  }, [parsedRows, previewFilter]);
+
+  // Filtrar alumnos según búsqueda
+  const filteredStudents = useMemo(() => {
+    if (!searchQuery.trim()) {
+      return students;
+    }
+    const query = searchQuery.toLowerCase().trim();
+    return students.filter(
+      (student) =>
+        student.name.toLowerCase().includes(query) ||
+        student.email.toLowerCase().includes(query)
+    );
+  }, [students, searchQuery]);
+
+  const parsePasswordFile = async (file: File) => {
+    setPasswordResults([]);
+    setParsedPasswordRows([]);
+    setPasswordFileName(file.name);
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array" });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      if (!sheet) {
+        toast.error("El archivo no tiene hojas válidas.");
+        return;
+      }
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "" });
+      const mapped = rows
+        .map((row, idx) => {
+          const email = String(row.Email ?? row.Correo ?? row.email ?? "").trim().toLowerCase();
+          const password = String(
+            row.Password ?? row.Contraseña ?? row.Contrasena ?? row.password ?? "",
+          ).trim();
+          const name = String(row.Nombre ?? row.name ?? row.Name ?? "").trim();
+
+          if (!email) return null;
+          const invalidEmail = !isValidEmail(email);
+
+          return {
+            row: idx + 2,
+            name: name || "—",
+            email,
+            password: password || "alumno123",
+            phone: "",
+            exists: !invalidEmail,
+            invalidEmail,
+          };
+        })
+        .filter(Boolean) as ParsedStudentRow[];
+
+      if (!mapped.length) {
+        toast.error("No se encontraron filas válidas. Usa las columnas Email y Password.");
+        return;
+      }
+
+      setParsedPasswordRows(mapped);
+      const validCount = mapped.filter((s) => !s.invalidEmail).length;
+      const invalidCount = mapped.filter((s) => s.invalidEmail).length;
+
+      if (invalidCount > 0) {
+        toast.error(
+          `Archivo listo: ${validCount} válidos, ${invalidCount} emails inválidos`,
+          { duration: 5000 }
+        );
+      } else {
+        toast.success(`Archivo listo: ${validCount} contraseñas para actualizar`);
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo leer el archivo. Verifica el formato .xlsx");
+    }
+  };
+
+  const handleUpdatePasswords = async () => {
+    if (!parsedPasswordRows.length) {
+      toast.error("Primero carga un archivo con contraseñas.");
+      return;
+    }
+
+    const validRows = parsedPasswordRows.filter((r) => !r.invalidEmail);
+    if (!validRows.length) {
+      toast.error("No hay emails válidos para actualizar.");
+      return;
+    }
+
+    setUpdatingPasswords(true);
+    try {
+      const response = await fetch("/api/students/update-passwords", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          validRows.map((r) => ({
+            email: r.email,
+            newPassword: r.password,
+          }))
+        ),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Error al actualizar contraseñas");
+      }
+
+      const results: ImportResult[] = data.results.map((r: any) => ({
+        row: validRows.find((v) => v.email === r.email)?.row ?? 0,
+        email: r.email,
+        status: r.success ? "created" : "error",
+        message: r.success ? "Contraseña actualizada" : r.error,
+      }));
+
+      setPasswordResults(results);
+      toast.success(
+        `Actualización finalizada: ${data.summary.updated} actualizadas, ${data.summary.failed} errores.`
+      );
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || "Error al actualizar contraseñas");
+    } finally {
+      setUpdatingPasswords(false);
+    }
+  };
 
   const handleDeleteStudent = async (student: StudentUser) => {
     if (!student.id) return;
@@ -245,6 +443,58 @@ export default function AlumnosPage() {
       toast.error("No se pudo eliminar al alumno");
     } finally {
       setDeletingStudentId(null);
+    }
+  };
+
+  const handleOpenChangePassword = (student: StudentUser) => {
+    setSelectedStudent(student);
+    setNewPassword("ascensoUDEL");
+    setChangePasswordModalOpen(true);
+  };
+
+  const handleChangePassword = async () => {
+    if (!selectedStudent || !newPassword) {
+      toast.error("Completa la contraseña");
+      return;
+    }
+
+    if (newPassword.length < 6) {
+      toast.error("La contraseña debe tener al menos 6 caracteres");
+      return;
+    }
+
+    setChangingPassword(true);
+    try {
+      const response = await fetch("/api/students/update-passwords", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify([
+          {
+            email: selectedStudent.email,
+            newPassword: newPassword,
+          },
+        ]),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Error al actualizar contraseña");
+      }
+
+      if (data.results[0]?.success) {
+        toast.success(`Contraseña actualizada para ${selectedStudent.name}`);
+        setChangePasswordModalOpen(false);
+        setSelectedStudent(null);
+        setNewPassword("ascensoUDEL");
+      } else {
+        throw new Error(data.results[0]?.error || "Error al actualizar contraseña");
+      }
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || "No se pudo actualizar la contraseña");
+    } finally {
+      setChangingPassword(false);
     }
   };
 
@@ -384,9 +634,62 @@ export default function AlumnosPage() {
                 </button>
               </div>
               {fileName ? (
-                <p className="text-xs text-slate-600">
-                  Archivo seleccionado: <span className="font-medium">{fileName}</span> ({parsedRows.length} filas válidas)
-                </p>
+                <div className="text-xs text-slate-600">
+                  <p>
+                    Archivo seleccionado: <span className="font-medium">{fileName}</span> (
+                    {parsedRows.length} filas válidas)
+                  </p>
+                  {parsedRows.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPreviewFilter("all")}
+                        className={`rounded-md px-2 py-1 text-xs font-semibold transition ${
+                          previewFilter === "all"
+                            ? "bg-slate-200 text-slate-900"
+                            : "text-slate-600 hover:bg-slate-100"
+                        }`}
+                      >
+                        Todos ({parsedRows.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewFilter("new")}
+                        className={`rounded-md px-2 py-1 text-xs font-semibold transition ${
+                          previewFilter === "new"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : "text-emerald-600 hover:bg-emerald-50"
+                        }`}
+                      >
+                        Nuevos ({parsedRows.filter((r) => !r.exists && !r.invalidEmail).length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewFilter("existing")}
+                        className={`rounded-md px-2 py-1 text-xs font-semibold transition ${
+                          previewFilter === "existing"
+                            ? "bg-amber-100 text-amber-800"
+                            : "text-amber-600 hover:bg-amber-50"
+                        }`}
+                      >
+                        Ya existen ({parsedRows.filter((r) => r.exists).length})
+                      </button>
+                      {parsedRows.filter((r) => r.invalidEmail).length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setPreviewFilter("invalid")}
+                          className={`rounded-md px-2 py-1 text-xs font-semibold transition ${
+                            previewFilter === "invalid"
+                              ? "bg-red-100 text-red-800"
+                              : "text-red-600 hover:bg-red-50"
+                          }`}
+                        >
+                          Emails inválidos ({parsedRows.filter((r) => r.invalidEmail).length})
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
               ) : (
                 <p className="text-xs text-slate-600">Sube un .xlsx con tu listado.</p>
               )}
@@ -397,19 +700,51 @@ export default function AlumnosPage() {
               ) : null}
               {parsedPreview.length ? (
                 <div className="space-y-2">
-                  <p className="text-xs font-semibold text-slate-700">Vista previa (primeras filas)</p>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-slate-700">
+                      Vista previa{" "}
+                      {previewFilter === "invalid"
+                        ? `(${parsedPreview.length} emails inválidos)`
+                        : previewFilter === "new"
+                          ? `(${parsedPreview.length} nuevos)`
+                          : previewFilter === "existing"
+                            ? `(${parsedPreview.length} ya existen)`
+                            : `(primeras ${parsedPreview.length} filas)`}
+                    </p>
+                    {previewFilter !== "all" && (
+                      <button
+                        type="button"
+                        onClick={() => setPreviewFilter("all")}
+                        className="text-xs text-slate-500 hover:text-slate-700"
+                      >
+                        Ver todos
+                      </button>
+                    )}
+                  </div>
                   <div className="overflow-hidden rounded-lg border border-slate-200">
-                    <div className="grid grid-cols-3 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">
+                    <div className="grid grid-cols-4 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">
                       <span>Nombre</span>
                       <span>Correo</span>
                       <span>Contraseña</span>
+                      <span>Estado</span>
                     </div>
                     <div className="divide-y divide-slate-200 text-xs">
                       {parsedPreview.map((row) => (
-                        <div key={row.row} className="grid grid-cols-3 px-3 py-2 text-slate-800">
+                        <div key={row.row} className="grid grid-cols-4 px-3 py-2 text-slate-800">
                           <span>{row.name}</span>
                           <span className="truncate text-slate-600">{row.email}</span>
                           <span className="font-mono text-slate-700">{row.password}</span>
+                          <span
+                            className={
+                              row.invalidEmail
+                                ? "font-semibold text-red-600"
+                                : row.exists
+                                  ? "font-semibold text-amber-600"
+                                  : "font-semibold text-emerald-600"
+                            }
+                          >
+                            {row.invalidEmail ? "Email inválido" : row.exists ? "Ya existe" : "Nuevo"}
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -432,12 +767,18 @@ export default function AlumnosPage() {
                           <span className="truncate text-slate-700">{res.email}</span>
                           <span
                             className={
-                              res.status === "ok"
+                              res.status === "created"
                                 ? "font-semibold text-emerald-600"
-                                : "font-semibold text-red-600"
+                                : res.status === "skipped"
+                                  ? "font-semibold text-amber-600"
+                                  : "font-semibold text-red-600"
                             }
                           >
-                            {res.status === "ok" ? "Creado" : res.message || "Error"}
+                            {res.status === "created"
+                              ? "Creado"
+                              : res.status === "skipped"
+                                ? "Omitido (ya existía)"
+                                : res.message || "Error"}
                           </span>
                         </div>
                       ))}
@@ -447,6 +788,130 @@ export default function AlumnosPage() {
               ) : null}
             </div>
           </div>
+        </div>
+      ) : null}
+
+      {userRole === "adminTeacher" ? (
+        <div className="space-y-4 rounded-xl border border-blue-200 bg-blue-50 p-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.2em] text-blue-600">Actualización Masiva</p>
+            <h2 className="text-lg font-semibold text-slate-900">
+              Actualizar contraseñas de alumnos existentes
+            </h2>
+            <p className="text-sm text-slate-600">
+              Sube un archivo Excel con Email y Password para actualizar las contraseñas de múltiples alumnos.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm font-medium text-blue-700 shadow-sm hover:bg-blue-50">
+              <input
+                type="file"
+                ref={passwordFileInputRef}
+                accept=".xlsx,.xls"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) parsePasswordFile(file);
+                }}
+                className="hidden"
+              />
+              {passwordFileName ? "Cambiar archivo" : "Cargar Excel"}
+            </label>
+            <button
+              type="button"
+              onClick={handleUpdatePasswords}
+              disabled={updatingPasswords || !parsedPasswordRows.length}
+              className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {updatingPasswords ? "Actualizando..." : "Actualizar contraseñas"}
+            </button>
+          </div>
+
+          {passwordFileName && (
+            <div className="text-xs text-slate-600">
+              <p>
+                Archivo: <span className="font-medium">{passwordFileName}</span> (
+                {parsedPasswordRows.length} filas)
+              </p>
+              {parsedPasswordRows.length > 0 && (
+                <p className="mt-1">
+                  <span className="font-semibold text-blue-600">
+                    {parsedPasswordRows.filter((r) => !r.invalidEmail).length} válidos
+                  </span>
+                  {parsedPasswordRows.filter((r) => r.invalidEmail).length > 0 && (
+                    <>
+                      ,{" "}
+                      <span className="font-semibold text-red-600">
+                        {parsedPasswordRows.filter((r) => r.invalidEmail).length} inválidos
+                      </span>
+                    </>
+                  )}
+                </p>
+              )}
+            </div>
+          )}
+
+          {parsedPasswordRows.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-700">
+                Vista previa (primeras {Math.min(parsedPasswordRows.length, 5)} filas)
+              </p>
+              <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+                <div className="grid grid-cols-3 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">
+                  <span>Email</span>
+                  <span>Nueva Contraseña</span>
+                  <span>Estado</span>
+                </div>
+                <div className="divide-y divide-slate-200 text-xs">
+                  {parsedPasswordRows.slice(0, 5).map((row) => (
+                    <div key={row.row} className="grid grid-cols-3 px-3 py-2 text-slate-800">
+                      <span className="truncate">{row.email}</span>
+                      <span className="font-mono text-slate-700">{row.password}</span>
+                      <span
+                        className={
+                          row.invalidEmail
+                            ? "font-semibold text-red-600"
+                            : "font-semibold text-blue-600"
+                        }
+                      >
+                        {row.invalidEmail ? "Email inválido" : "Listo"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {passwordResults.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-700">Resultados</p>
+              <div className="max-h-40 overflow-auto rounded-lg border border-slate-200 bg-white">
+                <div className="grid grid-cols-3 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600">
+                  <span>Fila</span>
+                  <span>Email</span>
+                  <span>Estado</span>
+                </div>
+                <div className="divide-y divide-slate-200 text-[11px]">
+                  {passwordResults.map((res, idx) => (
+                    <div key={`${res.email}-${idx}`} className="grid grid-cols-3 px-3 py-2">
+                      <span>{res.row}</span>
+                      <span className="truncate text-slate-700">{res.email}</span>
+                      <span
+                        className={
+                          res.status === "created"
+                            ? "font-semibold text-emerald-600"
+                            : "font-semibold text-red-600"
+                        }
+                      >
+                        {res.status === "created" ? res.message : res.message || "Error"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       ) : null}
 
@@ -461,7 +926,58 @@ export default function AlumnosPage() {
             : "Aún no tienes alumnos asignados a tus grupos."}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div className="space-y-4">
+          {/* Buscador de alumnos */}
+          <div className="flex items-center gap-3">
+            <div className="relative flex-1">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Buscar por nombre o email..."
+                className="w-full rounded-lg border border-slate-300 px-4 py-2 pl-10 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+              />
+              <svg
+                className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                />
+              </svg>
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                >
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M6 18L18 6M6 6l12 12"
+                    />
+                  </svg>
+                </button>
+              )}
+            </div>
+            <div className="text-sm text-slate-600">
+              {filteredStudents.length} de {students.length} alumno{students.length !== 1 ? "s" : ""}
+            </div>
+          </div>
+
+          {/* Tabla de alumnos */}
+          {filteredStudents.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-600">
+              No se encontraron alumnos que coincidan con "{searchQuery}"
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
           <div className="grid grid-cols-5 gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
             <span>Nombre</span>
             <span>Email</span>
@@ -470,7 +986,7 @@ export default function AlumnosPage() {
             <span className="text-right">Acciones</span>
           </div>
           <div className="divide-y divide-slate-200">
-            {students.map((s) => (
+            {filteredStudents.map((s) => (
               <div
                 key={s.id}
                 className="grid grid-cols-5 gap-3 px-4 py-2 text-sm text-slate-800"
@@ -481,22 +997,94 @@ export default function AlumnosPage() {
                 <span className="font-medium capitalize text-green-600">
                   {s.estado || "Activo"}
                 </span>
-                <span className="flex justify-end">
+                <span className="flex justify-end gap-2">
                   {userRole === "adminTeacher" ? (
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteStudent(s)}
-                      disabled={deletingStudentId === s.id}
-                      className="rounded-lg border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 transition hover:border-red-400 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-300"
-                    >
-                      {deletingStudentId === s.id ? "Eliminando..." : "Eliminar"}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenChangePassword(s)}
+                        className="rounded-lg border border-blue-200 px-3 py-1 text-xs font-semibold text-blue-600 transition hover:border-blue-400 hover:bg-blue-50"
+                      >
+                        Cambiar contraseña
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteStudent(s)}
+                        disabled={deletingStudentId === s.id}
+                        className="rounded-lg border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 transition hover:border-red-400 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-300"
+                      >
+                        {deletingStudentId === s.id ? "Eliminando..." : "Eliminar"}
+                      </button>
+                    </>
                   ) : (
                     <span className="text-xs text-slate-500">—</span>
                   )}
                 </span>
               </div>
             ))}
+          </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Modal para cambiar contraseña individual */}
+      {changePasswordModalOpen && selectedStudent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
+            <div className="mb-4">
+              <h2 className="text-xl font-semibold text-slate-900">
+                Cambiar contraseña
+              </h2>
+              <p className="text-sm text-slate-600">
+                Alumno: <span className="font-medium">{selectedStudent.name}</span>
+              </p>
+              <p className="text-sm text-slate-600">
+                Email: <span className="font-medium">{selectedStudent.email}</span>
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Nueva contraseña
+                </label>
+                <input
+                  type="text"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="Mínimo 6 caracteres"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  autoFocus
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  La contraseña debe tener al menos 6 caracteres
+                </p>
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setChangePasswordModalOpen(false);
+                    setSelectedStudent(null);
+                    setNewPassword("ascensoUDEL");
+                  }}
+                  disabled={changingPassword}
+                  className="flex-1 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleChangePassword}
+                  disabled={changingPassword || !newPassword || newPassword.length < 6}
+                  className="flex-1 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {changingPassword ? "Actualizando..." : "Actualizar contraseña"}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
