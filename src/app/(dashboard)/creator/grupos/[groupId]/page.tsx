@@ -247,7 +247,6 @@ export default function GroupDetailPage() {
                 <AlumnosTab
                   groupId={group.id}
                   studentsCount={group.studentsCount}
-                  maxStudents={group.maxStudents}
                   students={groupStudents}
                   loadingStudents={loadingStudents}
                   removingId={removingId}
@@ -428,7 +427,6 @@ export default function GroupDetailPage() {
 type AlumnosTabProps = {
   groupId: string;
   studentsCount: number;
-  maxStudents: number;
   students: GroupStudent[];
   loadingStudents: boolean;
   removingId: string | null;
@@ -440,7 +438,6 @@ type AlumnosTabProps = {
 function AlumnosTab({
   onOpenModal,
   studentsCount,
-  maxStudents,
   students,
   loadingStudents,
   removingId,
@@ -452,10 +449,9 @@ function AlumnosTab({
         <button
           type="button"
           onClick={onOpenModal}
-          disabled={studentsCount >= maxStudents}
-          className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+          className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"
         >
-          {studentsCount >= maxStudents ? "Cupo lleno" : "+ Agregar Estudiantes"}
+          + Agregar Estudiantes
         </button>
         <button className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
           Importar CSV
