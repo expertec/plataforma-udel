@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Player from "@vimeo/player";
 import Image from "next/image";
 import { auth } from "@/lib/firebase/client";
-import { onAuthStateChanged, User } from "firebase/auth";
+import { onAuthStateChanged, signOut, updatePassword, User } from "firebase/auth";
 import toast from "react-hot-toast";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import {
@@ -165,6 +165,12 @@ export default function StudentFeedPageClient() {
   const [forumDoneMap, setForumDoneMap] = useState<Record<string, boolean>>({});
   const [forumsReady, setForumsReady] = useState(false);
   const [forumPanel, setForumPanel] = useState<{ open: boolean; classId?: string }>({ open: false });
+  const [mustChangePassword, setMustChangePassword] = useState(false);
+  const [forcePassword, setForcePassword] = useState("");
+  const [forceConfirmPassword, setForceConfirmPassword] = useState("");
+  const [forceLoading, setForceLoading] = useState(false);
+  const [forceError, setForceError] = useState<string | null>(null);
+  const [forceRequiresReauth, setForceRequiresReauth] = useState(false);
   const searchParams = useSearchParams();
   const previewCourseId = searchParams.get("previewCourseId") ?? searchParams.get("courseId");
   const previewMode = Boolean(previewCourseId);
@@ -779,6 +785,29 @@ export default function StudentFeedPageClient() {
       loadCommentsForClass(commentsClassId);
     }
   }, [commentsOpen, commentsClassId, loadCommentsForClass]);
+
+  useEffect(() => {
+    if (!currentUser?.uid) {
+      setMustChangePassword(false);
+      return;
+    }
+    let active = true;
+    const loadFlag = async () => {
+      try {
+        const snap = await getDoc(doc(db, "users", currentUser.uid));
+        if (!active) return;
+        const flag = snap.data()?.mustChangePassword;
+        setMustChangePassword(flag === undefined ? true : Boolean(flag));
+      } catch (err) {
+        console.warn("No se pudo leer mustChangePassword:", err);
+        if (active) setMustChangePassword(false);
+      }
+    };
+    loadFlag();
+    return () => {
+      active = false;
+    };
+  }, [currentUser?.uid]);
 
   // Cargar estado de tarea enviada cuando se abre el panel de tarea
   useEffect(() => {
@@ -1499,6 +1528,58 @@ export default function StudentFeedPageClient() {
     [saveProgressToFirestore, findClassById, isForumSatisfied, previewMode],
   );
 
+  const handleForceChangePassword = useCallback(async () => {
+    if (!currentUser) {
+      setForceError("Inicia sesión para cambiar la contraseña.");
+      return;
+    }
+    if (forcePassword.length < 6) {
+      setForceError("La contraseña debe tener al menos 6 caracteres.");
+      return;
+    }
+    if (forcePassword !== forceConfirmPassword) {
+      setForceError("Las contraseñas no coinciden.");
+      return;
+    }
+    setForceLoading(true);
+    setForceError(null);
+    setForceRequiresReauth(false);
+    try {
+      await updatePassword(currentUser, forcePassword);
+      await updateDoc(doc(db, "users", currentUser.uid), {
+        mustChangePassword: false,
+        updatedAt: serverTimestamp(),
+      });
+      setMustChangePassword(false);
+      setForcePassword("");
+      setForceConfirmPassword("");
+      setForceRequiresReauth(false);
+      toast.success("Contraseña actualizada");
+    } catch (err: unknown) {
+      console.error("No se pudo cambiar la contraseña forzada:", err);
+      const code = (err as { code?: string })?.code ?? "";
+      if (code === "auth/requires-recent-login") {
+        setForceError("Vuelve a iniciar sesión y prueba de nuevo.");
+        setForceRequiresReauth(true);
+      } else {
+        setForceError("No se pudo cambiar la contraseña.");
+        setForceRequiresReauth(false);
+      }
+    } finally {
+      setForceLoading(false);
+    }
+  }, [currentUser, forceConfirmPassword, forcePassword]);
+
+  const handleForceReauth = useCallback(async () => {
+    setForceLoading(true);
+    try {
+      await signOut(auth);
+      router.push("/auth/login");
+    } finally {
+      setForceLoading(false);
+    }
+  }, [router]);
+
   useEffect(() => {
     if (previewMode) return;
     const cls = classes[activeIndex];
@@ -1887,7 +1968,7 @@ export default function StudentFeedPageClient() {
         </div>
       </header>
 
-      <main className="ml-0 lg:ml-64">
+      <main className="ml-0 lg:ml-64" aria-hidden={mustChangePassword ? "true" : undefined}>
         <button
           type="button"
           onClick={() => setMobileClassesOpen(true)}
@@ -2350,6 +2431,96 @@ export default function StudentFeedPageClient() {
             );
           })() : null}
         </div>
+        {mustChangePassword && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/80 px-4 py-6">
+            <div className="w-full max-w-md rounded-3xl border border-white/10 bg-neutral-950/90 p-6 text-white shadow-2xl">
+              <div className="mb-2 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/60">Seguridad</p>
+                  <h3 className="text-lg font-semibold">Cambia tu contraseña</h3>
+                </div>
+                <span className="rounded-full bg-white/10 px-3 py-1 text-[11px] text-white/70">
+                  Obligatorio
+                </span>
+              </div>
+              <p className="text-sm text-white/70">
+                Por seguridad debes actualizar tu contraseña antes de continuar navegando.
+              </p>
+              <div className="mt-4 space-y-3">
+                <label className="block text-sm text-white/80">
+                  <span className="text-[11px] uppercase tracking-[0.2em] text-white/50">
+                    Nueva contraseña
+                  </span>
+                  <input
+                    type="password"
+                    value={forcePassword}
+                  onChange={(e) => {
+                    setForcePassword(e.target.value);
+                    if (forceError) setForceError(null);
+                    if (forceRequiresReauth) setForceRequiresReauth(false);
+                  }}
+                    placeholder="Al menos 6 caracteres"
+                    className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/30 focus:outline-none"
+                  />
+                </label>
+                <label className="block text-sm text-white/80">
+                  <span className="text-[11px] uppercase tracking-[0.2em] text-white/50">
+                    Confirmar contraseña
+                  </span>
+                  <input
+                    type="password"
+                    value={forceConfirmPassword}
+                  onChange={(e) => {
+                    setForceConfirmPassword(e.target.value);
+                    if (forceError) setForceError(null);
+                    if (forceRequiresReauth) setForceRequiresReauth(false);
+                  }}
+                    placeholder="Repite la nueva contraseña"
+                    className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/30 focus:outline-none"
+                  />
+                </label>
+              </div>
+              {forceError ? (
+                <p className="mt-3 text-xs font-semibold text-red-400">{forceError}</p>
+              ) : (
+                <p className="mt-3 text-xs text-white/60">
+                  Si ves un error de reautenticación, cierra sesión y vuelve a iniciar sesión antes de intentarlo de nuevo.
+                </p>
+              )}
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                <button
+                  type="button"
+                  onClick={handleForceChangePassword}
+                  disabled={forceLoading}
+                  className="inline-flex flex-1 items-center justify-center rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-white shadow-lg transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {forceLoading ? "Actualizando..." : "Guardar y continuar"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForcePassword("");
+                    setForceConfirmPassword("");
+                    setForceError(null);
+                  }}
+                  className="inline-flex flex-1 items-center justify-center rounded-full border border-white/20 px-4 py-2 text-sm font-semibold text-white transition hover:border-white/40"
+                >
+                  Limpiar
+                </button>
+              </div>
+              {forceRequiresReauth ? (
+                <button
+                  type="button"
+                  onClick={handleForceReauth}
+                  disabled={forceLoading}
+                  className="mt-3 w-full rounded-full border border-red-400 px-4 py-2 text-sm font-semibold text-red-400 transition hover:border-red-200 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Cerrar sesión y reautenticar
+                </button>
+              ) : null}
+            </div>
+          </div>
+        )}
         <style jsx global>{`
           .no-scrollbar {
             -ms-overflow-style: none;

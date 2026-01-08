@@ -56,6 +56,7 @@ export async function createAccountWithRole(input: CreateAccountInput): Promise<
         displayName,
         name: displayName,
         role,
+        mustChangePassword: role === "student",
         createdAt: serverTimestamp(),
         createdBy: createdBy ?? null,
         status: "active",

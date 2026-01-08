@@ -64,6 +64,48 @@ export async function createStudentAccount(params: {
   return uid;
 }
 
+export async function ensureStudentAccount(params: {
+  name: string;
+  email: string;
+  password: string;
+  createdBy?: string | null;
+  phone?: string;
+}): Promise<{ uid: string; alreadyExisted: boolean }> {
+  const normalizedEmail = params.email.trim().toLowerCase();
+  const trimmedName = params.name.trim() || "Alumno";
+  if (!normalizedEmail) {
+    throw new Error("El correo del alumno es requerido");
+  }
+
+  const usersRef = collection(db, "users");
+  const existingSnap = await getDocs(
+    query(usersRef, where("email", "==", normalizedEmail), limit(1)),
+  );
+  if (!existingSnap.empty) {
+    const existingDoc = existingSnap.docs[0];
+    await updateDoc(doc(db, "users", existingDoc.id), {
+      displayName: trimmedName,
+      name: trimmedName,
+      role: "student",
+      phone: params.phone ?? null,
+      status: "active",
+      provider: "password",
+      updatedAt: serverTimestamp(),
+      updatedBy: params.createdBy ?? null,
+    });
+    return { uid: existingDoc.id, alreadyExisted: true };
+  }
+
+  const uid = await createStudentAccount({
+    name: trimmedName,
+    email: normalizedEmail,
+    password: params.password,
+    createdBy: params.createdBy,
+    phone: params.phone,
+  });
+  return { uid, alreadyExisted: false };
+}
+
 export async function deactivateStudent(userId: string): Promise<void> {
   if (!userId) return;
   const batch = writeBatch(db);

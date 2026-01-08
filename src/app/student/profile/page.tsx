@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { auth } from "@/lib/firebase/client";
-import { onAuthStateChanged, User } from "firebase/auth";
+import { onAuthStateChanged, updatePassword, User } from "firebase/auth";
 import { collection, getDocs, limit, orderBy, query, where } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { getStudentSubmissions, Submission } from "@/lib/firebase/submissions-service";
@@ -30,6 +30,9 @@ export default function StudentProfilePage() {
   const [email, setEmail] = useState(auth.currentUser?.email ?? "");
   const [phone, setPhone] = useState("");
   const [degree, setDegree] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [changingPassword, setChangingPassword] = useState(false);
   const [grades, setGrades] = useState<GradeItem[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [groupId, setGroupId] = useState<string | null>(null);
@@ -111,6 +114,38 @@ export default function StudentProfilePage() {
     toast.success("Perfil actualizado");
   };
 
+  const handleChangePassword = async () => {
+    if (!user) {
+      toast.error("Inicia sesión para cambiar la contraseña.");
+      return;
+    }
+    if (newPassword.length < 6) {
+      toast.error("La contraseña debe tener al menos 6 caracteres.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      toast.error("Las contraseñas no coinciden.");
+      return;
+    }
+    setChangingPassword(true);
+    try {
+      await updatePassword(user, newPassword);
+      toast.success("Contraseña actualizada");
+      setNewPassword("");
+      setConfirmPassword("");
+    } catch (err: unknown) {
+      console.error("No se pudo actualizar la contraseña:", err);
+      const code = (err as { code?: string })?.code ?? "";
+      if (code === "auth/requires-recent-login") {
+        toast.error("Vuelve a iniciar sesión y prueba de nuevo.");
+      } else {
+        toast.error("No se pudo cambiar la contraseña");
+      }
+    } finally {
+      setChangingPassword(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
       <header className="sticky top-0 z-20 flex items-center justify-between border-b border-white/10 bg-neutral-900/80 px-4 py-3 backdrop-blur">
@@ -133,14 +168,15 @@ export default function StudentProfilePage() {
 
       <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-6">
         <section className="grid gap-6 lg:grid-cols-[1.4fr,1fr]">
-          <div className="rounded-2xl border border-white/10 bg-neutral-900/70 p-5 shadow-lg">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Información personal</h2>
-              <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-white/80">
-                {user ? "Editable" : "Inicia sesión para editar"}
-              </span>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-6">
+            <div className="rounded-2xl border border-white/10 bg-neutral-900/70 p-5 shadow-lg">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Información personal</h2>
+                <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-white/80">
+                  {user ? "Editable" : "Inicia sesión para editar"}
+                </span>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
               <label className="space-y-1 text-sm text-white/80">
                 <span>Nombre completo</span>
                 <input
@@ -198,6 +234,61 @@ export default function StudentProfilePage() {
               >
                 Restablecer
               </button>
+            </div>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-neutral-900/70 p-5 shadow-lg">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Cambiar contraseña</h2>
+                <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-white/80">
+                  {user ? "Seguro" : "Inicia sesión"}
+                </span>
+              </div>
+              <div className="space-y-3">
+                <label className="space-y-1 text-sm text-white/80">
+                  <span>Nueva contraseña</span>
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="Mínimo 6 caracteres"
+                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/30 focus:outline-none"
+                  />
+                </label>
+                <label className="space-y-1 text-sm text-white/80">
+                  <span>Confirmar contraseña</span>
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Reingresa la contraseña"
+                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/30 focus:outline-none"
+                  />
+                </label>
+              </div>
+              <p className="mt-3 text-xs text-white/60">
+                Actualizar la contraseña requiere haber iniciado sesión recientemente. Si recibes un error,
+                cierra sesión y vuelve a iniciar sesión antes de intentarlo otra vez.
+              </p>
+              <div className="mt-5 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={handleChangePassword}
+                  className="inline-flex items-center justify-center rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={!user || changingPassword}
+                >
+                  {changingPassword ? "Actualizando..." : "Cambiar contraseña"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewPassword("");
+                    setConfirmPassword("");
+                  }}
+                  className="inline-flex items-center justify-center rounded-full border border-white/20 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                >
+                  Limpiar campos
+                </button>
+              </div>
             </div>
           </div>
 
