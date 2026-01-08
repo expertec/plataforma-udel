@@ -37,6 +37,7 @@ export default function GroupDetailPage() {
   const [savingTeachers, setSavingTeachers] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
+  const [removingAssistantId, setRemovingAssistantId] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -75,7 +76,7 @@ export default function GroupDetailPage() {
         }
       } catch (err) {
         console.error(err);
-        toast.error("No se pudieron cargar los profesores");
+        toast.error("No se pudieron cargar los mentores");
       }
     };
     loadTeachers();
@@ -162,13 +163,42 @@ export default function GroupDetailPage() {
             }
           : prev,
       );
-      toast.success("Profesores asignados al grupo");
+      toast.success("Mentores asignados al grupo");
       setAssignTeachersOpen(false);
     } catch (err) {
       console.error(err);
-      toast.error("No se pudieron asignar los profesores");
+      toast.error("No se pudieron asignar los mentores");
     } finally {
       setSavingTeachers(false);
+    }
+  };
+
+  const handleRemoveAssistant = async (teacherId: string, teacherName: string) => {
+    if (!group) return;
+      const confirmed = window.confirm(`¿Deseas quitar a ${teacherName} como mentor?`);
+    if (!confirmed) return;
+    setRemovingAssistantId(teacherId);
+    try {
+      const remaining = (group.assistantTeachers ?? []).filter((t) => t.id !== teacherId);
+      await setAssistantTeachers(
+        group.id,
+        remaining.map((t) => ({ id: t.id, name: t.name, email: t.email })),
+      );
+      setGroup((prev) =>
+        prev
+          ? {
+              ...prev,
+              assistantTeacherIds: remaining.map((t) => t.id),
+              assistantTeachers: remaining,
+            }
+          : prev,
+      );
+      toast.success(`${teacherName} fue desvinculado del grupo`);
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo quitar al mentor");
+    } finally {
+      setRemovingAssistantId(null);
     }
   };
 
@@ -279,10 +309,10 @@ export default function GroupDetailPage() {
               <div className="rounded-lg bg-white p-6 shadow-sm space-y-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Profesores</p>
-                    <h3 className="text-lg font-semibold text-slate-900">Asignar profesores al grupo</h3>
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Mentores</p>
+                    <h3 className="text-lg font-semibold text-slate-900">Asignar mentores al grupo</h3>
                     <p className="text-sm text-slate-600">
-                      El profesor principal es {group.teacherName || "—"}. Puedes añadir profesores asistentes.
+                      El profesor principal es {group.teacherName || "—"}. Puedes añadir mentores.
                     </p>
                   </div>
                   {userRole === "adminTeacher" ? (
@@ -291,25 +321,37 @@ export default function GroupDetailPage() {
                       className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"
                       onClick={() => setAssignTeachersOpen(true)}
                     >
-                      Asignar profesores
+                      Asignar mentores
                     </button>
                   ) : null}
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
                   <p className="text-sm font-semibold text-slate-800">Profesor principal</p>
                   <p className="text-sm text-slate-700">{group.teacherName || "Sin asignar"}</p>
-                  <p className="mt-3 text-sm font-semibold text-slate-800">Profesores asistentes</p>
+                  <p className="mt-3 text-sm font-semibold text-slate-800">Mentores</p>
                   {group.assistantTeachers && group.assistantTeachers.length > 0 ? (
                     <ul className="mt-2 space-y-2 text-sm text-slate-700">
                       {group.assistantTeachers.map((t) => (
-                        <li key={t.id} className="flex items-center justify-between">
-                          <span>{t.name}</span>
-                          <span className="text-xs text-slate-500">{t.email}</span>
+                        <li key={t.id} className="flex items-center justify-between gap-3">
+                          <div>
+                            <p>{t.name}</p>
+                            <p className="text-xs text-slate-500">{t.email}</p>
+                          </div>
+                          {currentUser?.uid === group.teacherId ? (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveAssistant(t.id, t.name)}
+                              disabled={removingAssistantId === t.id}
+                              className="rounded-full border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 transition hover:border-red-400 disabled:border-red-100 disabled:text-red-300"
+                            >
+                              {removingAssistantId === t.id ? "Desvinculando..." : "Desvincular"}
+                            </button>
+                          ) : null}
                         </li>
                       ))}
                     </ul>
                   ) : (
-                    <p className="mt-1 text-sm text-slate-600">No hay profesores asistentes.</p>
+                    <p className="mt-1 text-sm text-slate-600">No hay mentores asignados.</p>
                   )}
                 </div>
               </div>
@@ -345,11 +387,11 @@ export default function GroupDetailPage() {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
-                  Profesores
+                  Mentores
                 </p>
-                <h4 className="text-lg font-semibold text-slate-900">Asignar profesores asistentes</h4>
+                <h4 className="text-lg font-semibold text-slate-900">Asignar mentores</h4>
                 <p className="text-sm text-slate-600">
-                  Selecciona los profesores que tendrán acceso a este grupo.
+                  Selecciona los mentores que tendrán acceso a este grupo.
                 </p>
               </div>
               <button
@@ -377,7 +419,7 @@ export default function GroupDetailPage() {
                 return (
                   <div className="max-h-64 overflow-auto rounded-lg border border-slate-200">
                     {filtered.length === 0 ? (
-                      <p className="p-3 text-sm text-slate-600">No hay profesores registrados.</p>
+                    <p className="p-3 text-sm text-slate-600">No hay mentores registrados.</p>
                     ) : (
                       <ul className="divide-y divide-slate-200">
                         {filtered.map((t) => (
@@ -413,7 +455,7 @@ export default function GroupDetailPage() {
                   {savingTeachers ? "Guardando..." : "Guardar asignación"}
                 </button>
                 <p className="text-xs text-slate-500">
-                  Los profesores seleccionados tendrán acceso a alumnos y entregas de este grupo.
+                  Los mentores seleccionados tendrán acceso a alumnos y entregas de este grupo.
                 </p>
               </div>
             </div>

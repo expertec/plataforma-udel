@@ -668,6 +668,48 @@ export default function StudentFeedPageClient() {
     return unsub;
   }, []);
 
+  // Guardar progreso cuando el usuario cambia de pestaña, minimiza la app o cierra (especial para móviles)
+  useEffect(() => {
+    const saveAllProgress = () => {
+      if (previewMode || !currentUser?.uid || !enrollmentId) return;
+
+      // Guardar todo el progreso actual
+      Object.keys(progressRef.current).forEach((classId) => {
+        const currentProgress = progressRef.current[classId];
+        const cls = classes.find(c => c.id === classId);
+        if (cls && currentProgress > 0) {
+          const requiredPct = getRequiredPct(cls.type);
+          // Guardado silencioso sin esperar respuesta
+          saveProgressToFirestore(classId, currentProgress, currentProgress - 1, requiredPct).catch(err => {
+            console.warn('Error guardando progreso en visibilitychange:', err);
+          });
+        }
+      });
+    };
+
+    // Evento cuando la página pierde visibilidad (cambio de tab, minimizar, etc.)
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        console.log('📱 Página oculta - guardando progreso automáticamente');
+        saveAllProgress();
+      }
+    };
+
+    // Evento antes de que la página se descargue (más confiable que beforeunload en móviles)
+    const handlePageHide = () => {
+      console.log('📱 Página cerrándose - guardando progreso final');
+      saveAllProgress();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
+    };
+  }, [previewMode, currentUser?.uid, enrollmentId, classes, saveProgressToFirestore]);
+
   useEffect(() => {
     const handleOpenComments = () => {
       if (previewMode) {
@@ -1243,6 +1285,51 @@ export default function StudentFeedPageClient() {
     };
   }, [classes, currentUser?.uid, previewMode]);
 
+  // Cargar contador de comentarios para todas las clases al inicio
+  useEffect(() => {
+    let cancelled = false;
+    const loadCommentsCount = async () => {
+      if (previewMode) return;
+      if (!classes.length) return;
+      try {
+        const counts = await Promise.all(
+          classes.map(async (cls) => {
+            if (!cls.courseId || !cls.lessonId || !cls.classDocId) return [cls.id, 0] as const;
+            try {
+              const commentsRef = collection(
+                db,
+                "courses",
+                cls.courseId,
+                "lessons",
+                cls.lessonId,
+                "classes",
+                cls.classDocId,
+                "comments",
+              );
+              const snap = await getDocs(commentsRef);
+              return [cls.id, snap.size] as const;
+            } catch (err) {
+              console.warn("No se pudo leer el conteo de comentarios de una clase:", err);
+              return [cls.id, 0] as const;
+            }
+          }),
+        );
+        if (cancelled) return;
+        const nextCounts: Record<string, number> = {};
+        counts.forEach(([id, count]) => {
+          nextCounts[id] = count;
+        });
+        setCommentsCountMap((prev) => ({ ...prev, ...nextCounts }));
+      } catch (err) {
+        console.warn("No se pudieron cargar los conteos de comentarios:", err);
+      }
+    };
+    loadCommentsCount();
+    return () => {
+      cancelled = true;
+    };
+  }, [classes, previewMode]);
+
   // Snap & reproducción: usamos IntersectionObserver para determinar la tarjeta activa
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -1283,22 +1370,57 @@ export default function StudentFeedPageClient() {
   }, [classes.length]);
 
   // Cuando cambia la clase activa, aseguramos audio activado y reproducimos el activo
+  // También guardamos el progreso de la clase anterior
   useEffect(() => {
     if (activeId) {
       setUnmutedId(activeId);
       activeIdRef.current = activeId;
       if (commentsOpen) setCommentsClassId(activeId);
     }
-    Object.entries(videosRef.current).forEach(([id, video]) => {
-      if (!video) return;
-      if (id === activeId) {
-        video.muted = false;
-        video.play().catch(() => {});
-      } else {
-        video.pause();
-      }
-    });
-  }, [activeId]);
+
+    // Guardar progreso de todas las clases antes de cambiar
+    if (!previewMode && currentUser?.uid && enrollmentId) {
+      Object.entries(videosRef.current).forEach(([id, video]) => {
+        if (!video) return;
+
+        // Si esta clase está saliendo (no es la activa), guardar su progreso
+        if (id !== activeId && video.currentTime > 0 && video.duration) {
+          const pct = (video.currentTime / video.duration) * 100;
+          const currentProgress = progressRef.current[id] ?? 0;
+          const maxProgress = Math.max(pct, currentProgress);
+
+          if (maxProgress > currentProgress) {
+            const cls = classes.find(c => c.id === id);
+            if (cls) {
+              const requiredPct = getRequiredPct(cls.type);
+              console.log(`💾 Guardando progreso al cambiar de clase - Clase: ${id}, Progreso: ${maxProgress.toFixed(2)}%`);
+              saveProgressToFirestore(id, maxProgress, currentProgress, requiredPct).catch(err => {
+                console.warn('Error guardando progreso al cambiar de clase:', err);
+              });
+            }
+          }
+        }
+
+        if (id === activeId) {
+          video.muted = false;
+          video.play().catch(() => {});
+        } else {
+          video.pause();
+        }
+      });
+    } else {
+      // Sin guardado en preview mode, solo controlar videos
+      Object.entries(videosRef.current).forEach(([id, video]) => {
+        if (!video) return;
+        if (id === activeId) {
+          video.muted = false;
+          video.play().catch(() => {});
+        } else {
+          video.pause();
+        }
+      });
+    }
+  }, [activeId, previewMode, currentUser?.uid, enrollmentId, classes, saveProgressToFirestore]);
 
   const scrollToIndex = (idx: number, smooth = true) => {
     const clampedIdx = Math.max(0, Math.min(classes.length - 1, idx));
@@ -1486,18 +1608,19 @@ export default function StudentFeedPageClient() {
       // Siempre actualizar progressRef para tener el valor más reciente
       progressRef.current[classId] = maxProgress;
 
-      // Actualizar estado cada 0.5% para visualización en tiempo real
-      if (Math.abs(maxProgress - previousProgress) >= 0.5) {
+      // Actualizar estado en tiempo real para que badges y UI se actualicen constantemente
+      // Cambio de 0.5% a actualización inmediata para mejor UX en badges/menús
+      if (maxProgress !== previousProgress) {
         setProgressMap((prev) => ({
           ...prev,
           [classId]: maxProgress,
         }));
       }
 
-      // Guardar en Firestore (debounced - solo cada 5%)
+      // Guardar en Firestore (mejorado para móviles - cada 2% en lugar de 5%)
       if (
         maxProgress > previousProgress + 0.01 &&
-        (Math.floor(maxProgress / 5) > Math.floor(previousProgress / 5) || (maxProgress >= 95 && previousProgress < 95))
+        (Math.floor(maxProgress / 2) > Math.floor(previousProgress / 2) || (maxProgress >= 95 && previousProgress < 95))
       ) {
         console.log(`💾 Guardando en Firestore - Clase: ${classId}, Progreso: ${maxProgress.toFixed(2)}%`);
         saveProgressToFirestore(classId, maxProgress, previousProgress, requiredPct);
@@ -1614,6 +1737,7 @@ export default function StudentFeedPageClient() {
             muted={unmutedId !== cls.id}
             onToggleMute={() => setUnmutedId((prev) => (prev === cls.id ? null : cls.id))}
             initialProgress={Math.max(
+              progressRef.current[cls.id] ?? 0,
               progressMap[cls.id] ?? 0,
               (completedMap[cls.id] || seenMap[cls.id]) ? 100 : 0,
             )}
@@ -2102,10 +2226,41 @@ export default function StudentFeedPageClient() {
                     {/* Overlay inferior con avance y estado */}
                     <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4">
                       <div className="mb-2 flex items-center gap-2 text-xs text-neutral-200">
-                        {/* Solo mostramos el estado listo; no mostramos avisos de % faltante */}
-                        <span className="inline-flex items-center rounded-full bg-green-500/20 px-3 py-1 text-green-200">
-                          {ENFORCE_VIDEO_GATE ? "Listo para avanzar" : "Avance libre"}
-                        </span>
+                        {/* Validar progreso antes de mostrar "Listo para avanzar" */}
+                        {(() => {
+                          const currentProgress = Math.max(
+                            progressRef.current[cls.id] ?? 0,
+                            progressMap[cls.id] ?? 0
+                          );
+                          const requiredPct = getRequiredPct(cls.type);
+                          const isCompleted = completedMap[cls.id] || seenMap[cls.id] || currentProgress >= requiredPct;
+                          const forumOk = cls.forumEnabled ? (forumDoneMap[cls.id] ?? false) : true;
+                          const canAdvance = isCompleted && forumOk;
+
+                          if (!ENFORCE_VIDEO_GATE) {
+                            return (
+                              <span className="inline-flex items-center rounded-full bg-green-500/20 px-3 py-1 text-green-200">
+                                Avance libre
+                              </span>
+                            );
+                          }
+
+                          if (canAdvance) {
+                            return (
+                              <span className="inline-flex items-center rounded-full bg-green-500/20 px-3 py-1 text-green-200">
+                                Listo para avanzar
+                              </span>
+                            );
+                          }
+
+                          // Mostrar progreso si no está listo
+                          const progressPct = Math.round(currentProgress);
+                          return (
+                            <span className="inline-flex items-center rounded-full bg-yellow-500/20 px-3 py-1 text-yellow-200">
+                              Progreso: {progressPct}%
+                            </span>
+                          );
+                        })()}
                         {cls.hasAssignment ? (
                           <span className="inline-flex items-center rounded-full bg-blue-500/20 px-3 py-1 text-[11px] font-semibold text-blue-100">
                             Tarea activa
@@ -2846,7 +3001,16 @@ const VideoPlayer = React.memo(function VideoPlayer({
     const currentProgress = progress;
     const maxProgress = Math.max(pct, currentProgress, initialProgress);
     setProgress(maxProgress);
-    onProgress?.(pct);
+    onProgress?.(maxProgress); // Enviar maxProgress en lugar de pct para mejor persistencia
+  };
+
+  const handlePause = () => {
+    const video = videoRef.current;
+    if (!video || !video.duration) return;
+    const pct = (video.currentTime / video.duration) * 100;
+    const maxProgress = Math.max(pct, progress, initialProgress);
+    // Forzar guardado inmediato al pausar
+    onProgress?.(maxProgress);
   };
 
   return (
@@ -2858,9 +3022,18 @@ const VideoPlayer = React.memo(function VideoPlayer({
         playsInline
         muted={muted}
         onTimeUpdate={handleTimeUpdate}
+        onPause={handlePause}
         onLoadedMetadata={() => {
           const v = videoRef.current;
           if (v && isActive) {
+            // Auto-resume: restaurar posición del video si hay progreso previo
+            if (initialProgress > 0 && initialProgress < 95) {
+              const targetTime = (v.duration * initialProgress) / 100;
+              v.currentTime = targetTime;
+              console.log(`⏩ Video HTML5 restaurado a ${initialProgress.toFixed(2)}% (${targetTime.toFixed(1)}s) - ID: ${id}`);
+            } else {
+              console.log(`▶️ Video HTML5 iniciando desde 0% - ID: ${id}, initialProgress: ${initialProgress}`);
+            }
             v.muted = muted;
             v.play().catch(() => {});
           }

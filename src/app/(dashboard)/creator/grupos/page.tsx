@@ -7,7 +7,7 @@ import { onAuthStateChanged, User } from "firebase/auth";
 import { getCourses } from "@/lib/firebase/courses-service";
 import { CreateGroupModal } from "./_components/CreateGroupModal";
 import { BulkCreateGroupsModal } from "./_components/BulkCreateGroupsModal";
-import { getGroups, Group, deleteGroup } from "@/lib/firebase/groups-service";
+import { getGroupsForTeacher, Group, deleteGroup } from "@/lib/firebase/groups-service";
 import toast from "react-hot-toast";
 import { RoleGate } from "@/components/auth/RoleGate";
 
@@ -38,10 +38,10 @@ export default function GroupsPage() {
     }
     setLoading(true);
     try {
-      const [myGroups, myCourses] = await Promise.all([
-        getGroups(currentUser.uid),
-        getCourses(),
-      ]);
+        const [myGroups, myCourses] = await Promise.all([
+          getGroupsForTeacher(currentUser.uid),
+          getCourses(),
+        ]);
       setGroups(myGroups);
       setCourses(myCourses.map((c) => ({ id: c.id, title: c.title })));
     } catch (err) {

@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import { Course, getCourses } from "@/lib/firebase/courses-service";
-import { Group, getGroups } from "@/lib/firebase/groups-service";
+import { Group, getGroupsForTeacher } from "@/lib/firebase/groups-service";
 import { resolveUserRole, UserRole } from "@/lib/firebase/roles";
 
 export default function CreatorPage() {
@@ -32,7 +32,7 @@ export default function CreatorPage() {
         const teacherId = role === "adminTeacher" ? undefined : user.uid;
         const [coursesData, groupsData] = await Promise.all([
           getCourses(teacherId),
-          getGroups(user.uid),
+          getGroupsForTeacher(user.uid),
         ]);
         setCourses(coursesData);
         setGroups(groupsData);

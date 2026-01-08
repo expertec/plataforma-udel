@@ -66,6 +66,7 @@ export default function AlumnosPage() {
   const [changePasswordModalOpen, setChangePasswordModalOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<StudentUser | null>(null);
   const [newPassword, setNewPassword] = useState("ascensoUDEL");
+  const [newEmail, setNewEmail] = useState("");
   const [changingPassword, setChangingPassword] = useState(false);
 
   // Estado para búsqueda
@@ -449,17 +450,25 @@ export default function AlumnosPage() {
   const handleOpenChangePassword = (student: StudentUser) => {
     setSelectedStudent(student);
     setNewPassword("ascensoUDEL");
+    setNewEmail(student.email);
     setChangePasswordModalOpen(true);
   };
 
   const handleChangePassword = async () => {
-    if (!selectedStudent || !newPassword) {
-      toast.error("Completa la contraseña");
+    if (!selectedStudent || !newPassword || !newEmail) {
+      toast.error("Completa todos los campos");
       return;
     }
 
     if (newPassword.length < 6) {
       toast.error("La contraseña debe tener al menos 6 caracteres");
+      return;
+    }
+
+    // Validar formato de email
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(newEmail)) {
+      toast.error("El email no tiene un formato válido");
       return;
     }
 
@@ -472,6 +481,7 @@ export default function AlumnosPage() {
           {
             email: selectedStudent.email,
             newPassword: newPassword,
+            newEmail: newEmail !== selectedStudent.email ? newEmail : undefined,
           },
         ]),
       });
@@ -479,20 +489,25 @@ export default function AlumnosPage() {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || "Error al actualizar contraseña");
+        throw new Error(data.error || "Error al actualizar datos");
       }
 
       if (data.results[0]?.success) {
-        toast.success(`Contraseña actualizada para ${selectedStudent.name}`);
+        const changes = [];
+        if (newEmail !== selectedStudent.email) changes.push("email");
+        changes.push("contraseña");
+        toast.success(`${changes.join(" y ")} actualizado${changes.length > 1 ? "s" : ""} para ${selectedStudent.name}`);
         setChangePasswordModalOpen(false);
         setSelectedStudent(null);
         setNewPassword("ascensoUDEL");
+        setNewEmail("");
+        await loadStudents();
       } else {
-        throw new Error(data.results[0]?.error || "Error al actualizar contraseña");
+        throw new Error(data.results[0]?.error || "Error al actualizar datos");
       }
     } catch (err: any) {
       console.error(err);
-      toast.error(err.message || "No se pudo actualizar la contraseña");
+      toast.error(err.message || "No se pudo actualizar los datos");
     } finally {
       setChangingPassword(false);
     }
@@ -1005,7 +1020,7 @@ export default function AlumnosPage() {
                         onClick={() => handleOpenChangePassword(s)}
                         className="rounded-lg border border-blue-200 px-3 py-1 text-xs font-semibold text-blue-600 transition hover:border-blue-400 hover:bg-blue-50"
                       >
-                        Cambiar contraseña
+                        Editar
                       </button>
                       <button
                         type="button"
@@ -1028,23 +1043,36 @@ export default function AlumnosPage() {
         </div>
       )}
 
-      {/* Modal para cambiar contraseña individual */}
+      {/* Modal para editar alumno */}
       {changePasswordModalOpen && selectedStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
           <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
             <div className="mb-4">
               <h2 className="text-xl font-semibold text-slate-900">
-                Cambiar contraseña
+                Editar Alumno
               </h2>
               <p className="text-sm text-slate-600">
                 Alumno: <span className="font-medium">{selectedStudent.name}</span>
               </p>
-              <p className="text-sm text-slate-600">
-                Email: <span className="font-medium">{selectedStudent.email}</span>
-              </p>
             </div>
 
             <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Email
+                </label>
+                <input
+                  type="email"
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  placeholder="correo@ejemplo.com"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  El email debe tener un formato válido
+                </p>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">
                   Nueva contraseña
@@ -1055,7 +1083,6 @@ export default function AlumnosPage() {
                   onChange={(e) => setNewPassword(e.target.value)}
                   placeholder="Mínimo 6 caracteres"
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                  autoFocus
                 />
                 <p className="mt-1 text-xs text-slate-500">
                   La contraseña debe tener al menos 6 caracteres
@@ -1069,6 +1096,7 @@ export default function AlumnosPage() {
                     setChangePasswordModalOpen(false);
                     setSelectedStudent(null);
                     setNewPassword("ascensoUDEL");
+                    setNewEmail("");
                   }}
                   disabled={changingPassword}
                   className="flex-1 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
@@ -1078,10 +1106,10 @@ export default function AlumnosPage() {
                 <button
                   type="button"
                   onClick={handleChangePassword}
-                  disabled={changingPassword || !newPassword || newPassword.length < 6}
+                  disabled={changingPassword || !newPassword || newPassword.length < 6 || !newEmail}
                   className="flex-1 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {changingPassword ? "Actualizando..." : "Actualizar contraseña"}
+                  {changingPassword ? "Actualizando..." : "Guardar cambios"}
                 </button>
               </div>
             </div>
