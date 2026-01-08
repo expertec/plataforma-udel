@@ -3,14 +3,15 @@ import {
   collectionGroup,
   doc,
   getDocs,
+  limit,
   orderBy,
   query,
   serverTimestamp,
   updateDoc,
   where,
   writeBatch,
-  limit as fbLimit,
 } from "firebase/firestore";
+import type { QueryConstraint } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { createAccountWithRole } from "./user-management";
 
@@ -22,10 +23,16 @@ export type StudentUser = {
   phone?: string | null;
 };
 
-export async function getStudentUsers(max = 100): Promise<StudentUser[]> {
+export async function getStudentUsers(maxResults?: number): Promise<StudentUser[]> {
   const usersRef = collection(db, "users");
-  const q = query(usersRef, where("role", "==", "student"), orderBy("createdAt", "desc"), fbLimit(max));
-  const snap = await getDocs(q);
+  const constraints: QueryConstraint[] = [
+    where("role", "==", "student"),
+    orderBy("createdAt", "desc"),
+  ];
+  if (typeof maxResults === "number" && maxResults > 0) {
+    constraints.push(limit(maxResults));
+  }
+  const snap = await getDocs(query(usersRef, ...constraints));
   return snap.docs.map((docSnap) => {
     const d = docSnap.data();
     return {

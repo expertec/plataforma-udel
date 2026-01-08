@@ -68,7 +68,7 @@ export default function AlumnosPage() {
     setLoading(true);
     try {
       if (userRole === "adminTeacher") {
-        const data = await getStudentUsers(200);
+        const data = await getStudentUsers();
         setStudents(data);
         return;
       }

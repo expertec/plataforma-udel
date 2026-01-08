@@ -537,7 +537,7 @@ function SelectStudentsModal({
   useEffect(() => {
     if (!open) return;
     setLoading(true);
-    getStudentUsers(100)
+    getStudentUsers()
       .then((res) => setStudents(res))
       .catch((err) => {
         console.error(err);
