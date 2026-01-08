@@ -62,11 +62,14 @@ export default function AlumnosPage() {
   const [updatingPasswords, setUpdatingPasswords] = useState(false);
   const passwordFileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Estados para cambio de contraseña individual
+  // Estados para editar alumno
+  const [editProfileModalOpen, setEditProfileModalOpen] = useState(false);
   const [changePasswordModalOpen, setChangePasswordModalOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<StudentUser | null>(null);
   const [newPassword, setNewPassword] = useState("ascensoUDEL");
   const [newEmail, setNewEmail] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newPhone, setNewPhone] = useState("");
   const [changingPassword, setChangingPassword] = useState(false);
 
   // Estado para búsqueda
@@ -447,21 +450,23 @@ export default function AlumnosPage() {
     }
   };
 
+  const handleOpenEditProfile = (student: StudentUser) => {
+    setSelectedStudent(student);
+    setNewEmail(student.email);
+    setNewName(student.name || "");
+    setNewPhone(student.phone || "");
+    setEditProfileModalOpen(true);
+  };
+
   const handleOpenChangePassword = (student: StudentUser) => {
     setSelectedStudent(student);
     setNewPassword("ascensoUDEL");
-    setNewEmail(student.email);
     setChangePasswordModalOpen(true);
   };
 
-  const handleChangePassword = async () => {
-    if (!selectedStudent || !newPassword || !newEmail) {
-      toast.error("Completa todos los campos");
-      return;
-    }
-
-    if (newPassword.length < 6) {
-      toast.error("La contraseña debe tener al menos 6 caracteres");
+  const handleUpdateProfile = async () => {
+    if (!selectedStudent || !newEmail || !newName) {
+      toast.error("El nombre y el email son obligatorios");
       return;
     }
 
@@ -474,16 +479,16 @@ export default function AlumnosPage() {
 
     setChangingPassword(true);
     try {
-      const response = await fetch("/api/students/update-passwords", {
+      const response = await fetch("/api/students/update-profile", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify([
-          {
-            email: selectedStudent.email,
-            newPassword: newPassword,
-            newEmail: newEmail !== selectedStudent.email ? newEmail : undefined,
-          },
-        ]),
+        body: JSON.stringify({
+          studentId: selectedStudent.id,
+          currentEmail: selectedStudent.email,
+          newEmail: newEmail !== selectedStudent.email ? newEmail : undefined,
+          newName: newName !== selectedStudent.name ? newName : undefined,
+          newPhone: newPhone !== selectedStudent.phone ? newPhone : undefined,
+        }),
       });
 
       const data = await response.json();
@@ -492,22 +497,70 @@ export default function AlumnosPage() {
         throw new Error(data.error || "Error al actualizar datos");
       }
 
-      if (data.results[0]?.success) {
+      if (data.success) {
         const changes = [];
+        if (newName !== selectedStudent.name) changes.push("nombre");
         if (newEmail !== selectedStudent.email) changes.push("email");
-        changes.push("contraseña");
-        toast.success(`${changes.join(" y ")} actualizado${changes.length > 1 ? "s" : ""} para ${selectedStudent.name}`);
-        setChangePasswordModalOpen(false);
+        if (newPhone !== selectedStudent.phone) changes.push("teléfono");
+
+        toast.success(
+          changes.length > 0
+            ? `${changes.join(", ")} actualizado${changes.length > 1 ? "s" : ""}`
+            : "Datos actualizados"
+        );
+        setEditProfileModalOpen(false);
         setSelectedStudent(null);
-        setNewPassword("ascensoUDEL");
         setNewEmail("");
+        setNewName("");
+        setNewPhone("");
         await loadStudents();
       } else {
-        throw new Error(data.results[0]?.error || "Error al actualizar datos");
+        throw new Error(data.error || "Error al actualizar datos");
       }
     } catch (err: any) {
       console.error(err);
       toast.error(err.message || "No se pudo actualizar los datos");
+    } finally {
+      setChangingPassword(false);
+    }
+  };
+
+  const handleChangePassword = async () => {
+    if (!selectedStudent || !newPassword || newPassword.length < 6) {
+      toast.error("La contraseña debe tener al menos 6 caracteres");
+      return;
+    }
+
+    setChangingPassword(true);
+    try {
+      const response = await fetch("/api/students/update-passwords", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify([
+          {
+            email: selectedStudent.email,
+            newPassword: newPassword,
+          },
+        ]),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Error al cambiar la contraseña");
+      }
+
+      if (data.success && data.results?.[0]?.success) {
+        toast.success("Contraseña actualizada correctamente");
+        setChangePasswordModalOpen(false);
+        setSelectedStudent(null);
+        setNewPassword("ascensoUDEL");
+      } else {
+        throw new Error(data.results?.[0]?.error || "Error al cambiar la contraseña");
+      }
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || "No se pudo cambiar la contraseña");
     } finally {
       setChangingPassword(false);
     }
@@ -1017,10 +1070,17 @@ export default function AlumnosPage() {
                     <>
                       <button
                         type="button"
-                        onClick={() => handleOpenChangePassword(s)}
+                        onClick={() => handleOpenEditProfile(s)}
                         className="rounded-lg border border-blue-200 px-3 py-1 text-xs font-semibold text-blue-600 transition hover:border-blue-400 hover:bg-blue-50"
                       >
                         Editar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenChangePassword(s)}
+                        className="rounded-lg border border-green-200 px-3 py-1 text-xs font-semibold text-green-600 transition hover:border-green-400 hover:bg-green-50"
+                      >
+                        Contraseña
                       </button>
                       <button
                         type="button"
@@ -1043,13 +1103,13 @@ export default function AlumnosPage() {
         </div>
       )}
 
-      {/* Modal para editar alumno */}
-      {changePasswordModalOpen && selectedStudent && (
+      {/* Modal para editar perfil del alumno */}
+      {editProfileModalOpen && selectedStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
           <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
             <div className="mb-4">
               <h2 className="text-xl font-semibold text-slate-900">
-                Editar Alumno
+                Editar Perfil
               </h2>
               <p className="text-sm text-slate-600">
                 Alumno: <span className="font-medium">{selectedStudent.name}</span>
@@ -1057,6 +1117,19 @@ export default function AlumnosPage() {
             </div>
 
             <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Nombre completo
+                </label>
+                <input
+                  type="text"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  placeholder="Nombre del alumno"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">
                   Email
@@ -1075,7 +1148,66 @@ export default function AlumnosPage() {
 
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">
-                  Nueva contraseña
+                  Teléfono
+                </label>
+                <input
+                  type="text"
+                  value={newPhone}
+                  onChange={(e) => setNewPhone(e.target.value)}
+                  placeholder="Número de teléfono (opcional)"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditProfileModalOpen(false);
+                    setSelectedStudent(null);
+                    setNewEmail("");
+                    setNewName("");
+                    setNewPhone("");
+                  }}
+                  disabled={changingPassword}
+                  className="flex-1 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleUpdateProfile}
+                  disabled={changingPassword || !newEmail || !newName}
+                  className="flex-1 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {changingPassword ? "Guardando..." : "Guardar cambios"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal para cambiar contraseña */}
+      {changePasswordModalOpen && selectedStudent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
+            <div className="mb-4">
+              <h2 className="text-xl font-semibold text-slate-900">
+                Cambiar Contraseña
+              </h2>
+              <p className="text-sm text-slate-600">
+                Alumno: <span className="font-medium">{selectedStudent.name}</span>
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                Email: {selectedStudent.email}
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Nueva Contraseña
                 </label>
                 <input
                   type="text"
@@ -1096,7 +1228,6 @@ export default function AlumnosPage() {
                     setChangePasswordModalOpen(false);
                     setSelectedStudent(null);
                     setNewPassword("ascensoUDEL");
-                    setNewEmail("");
                   }}
                   disabled={changingPassword}
                   className="flex-1 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
@@ -1106,10 +1237,10 @@ export default function AlumnosPage() {
                 <button
                   type="button"
                   onClick={handleChangePassword}
-                  disabled={changingPassword || !newPassword || newPassword.length < 6 || !newEmail}
+                  disabled={changingPassword || !newPassword || newPassword.length < 6}
                   className="flex-1 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {changingPassword ? "Actualizando..." : "Guardar cambios"}
+                  {changingPassword ? "Cambiando..." : "Cambiar contraseña"}
                 </button>
               </div>
             </div>

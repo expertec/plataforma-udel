@@ -673,13 +673,24 @@ export default function StudentFeedPageClient() {
     const saveAllProgress = () => {
       if (previewMode || !currentUser?.uid || !enrollmentId) return;
 
-      // Guardar todo el progreso actual
+      // CRÍTICO: Guardar INMEDIATAMENTE a localStorage (síncrono)
+      const localData = loadLocalProgress(currentUser.uid);
+      const updatedProgress = { ...localData.progress, ...progressRef.current };
+      const updatedCompleted = { ...localData.completed, ...completedRef.current };
+      const updatedSeen = { ...localData.seen, ...seenRef.current };
+      saveLocalProgress(currentUser.uid, {
+        progress: updatedProgress,
+        completed: updatedCompleted,
+        seen: updatedSeen,
+      });
+      console.log('💾 Guardado inmediato a localStorage completado');
+
+      // Intentar guardar a Firestore (puede no completarse si se cierra el navegador)
       Object.keys(progressRef.current).forEach((classId) => {
         const currentProgress = progressRef.current[classId];
         const cls = classes.find(c => c.id === classId);
         if (cls && currentProgress > 0) {
           const requiredPct = getRequiredPct(cls.type);
-          // Guardado silencioso sin esperar respuesta
           saveProgressToFirestore(classId, currentProgress, currentProgress - 1, requiredPct).catch(err => {
             console.warn('Error guardando progreso en visibilitychange:', err);
           });
@@ -701,12 +712,27 @@ export default function StudentFeedPageClient() {
       saveAllProgress();
     };
 
+    // beforeunload como última línea de defensa (desktop principalmente)
+    const handleBeforeUnload = () => {
+      console.log('⚠️ beforeunload - guardando a localStorage');
+      if (!previewMode && currentUser?.uid) {
+        const localData = loadLocalProgress(currentUser.uid);
+        saveLocalProgress(currentUser.uid, {
+          progress: { ...localData.progress, ...progressRef.current },
+          completed: { ...localData.completed, ...completedRef.current },
+          seen: { ...localData.seen, ...seenRef.current },
+        });
+      }
+    };
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, [previewMode, currentUser?.uid, enrollmentId, classes, saveProgressToFirestore]);
 
@@ -2506,7 +2532,7 @@ export default function StudentFeedPageClient() {
                 selectedFile={assignmentFileMap[cls.id] ?? null}
                 uploading={assignmentUploadingMap[cls.id] ?? false}
                 onFileChange={(file) => setAssignmentFileMap((prev) => ({ ...prev, [cls.id]: file }))}
-                submitted={assignmentStatusMap[cls.id] === "submitted" || assignmentAckRef.current[cls.id]}
+                submitted={assignmentStatusMap[cls.id] === "submitted"}
                 onClose={() => setAssignmentPanel({ open: false })}
                 onSubmit={async () => {
                   if (!currentUser?.uid || !enrollmentId || !cls.groupId) {
@@ -2792,6 +2818,20 @@ const VideoPlayer = React.memo(function VideoPlayer({
           }
         });
 
+        // Prevenir adelantar más allá del progreso máximo (Vimeo)
+        player.on('seeked', async (data) => {
+          const currentPct = (data.seconds / data.duration) * 100;
+          const currentMaxProgress = Math.max(progress, initialProgress);
+
+          // Si intenta adelantar más allá del progreso máximo, bloquearlo
+          if (currentPct > currentMaxProgress + 0.5) { // +0.5% de tolerancia
+            const maxAllowedTime = (currentMaxProgress / 100) * data.duration;
+            await player.setCurrentTime(maxAllowedTime);
+            console.log(`🚫 Vimeo: Intento de adelantar bloqueado. Máximo: ${currentMaxProgress.toFixed(1)}%`);
+          }
+          // Permitir retroceder libremente
+        });
+
         // Forzar mute inicial según prop antes de reproducir
         await player.setMuted(muted);
 
@@ -3013,6 +3053,23 @@ const VideoPlayer = React.memo(function VideoPlayer({
     onProgress?.(maxProgress);
   };
 
+  // Prevenir adelantar el video más allá del progreso máximo alcanzado
+  const handleSeeking = () => {
+    const video = videoRef.current;
+    if (!video || !video.duration) return;
+
+    const currentPct = (video.currentTime / video.duration) * 100;
+    const maxAllowedProgress = Math.max(progress, initialProgress);
+
+    // Si intenta adelantar más allá del progreso máximo, bloquearlo
+    if (currentPct > maxAllowedProgress + 0.5) { // +0.5% de tolerancia
+      const maxAllowedTime = (maxAllowedProgress / 100) * video.duration;
+      video.currentTime = maxAllowedTime;
+      console.log(`🚫 Intento de adelantar bloqueado. Máximo permitido: ${maxAllowedProgress.toFixed(1)}%`);
+    }
+    // Permitir retroceder libremente (no hacemos nada si currentPct <= maxAllowedProgress)
+  };
+
   return (
     <div className="relative w-full h-full bg-black flex items-center justify-center">
       <video
@@ -3023,6 +3080,7 @@ const VideoPlayer = React.memo(function VideoPlayer({
         muted={muted}
         onTimeUpdate={handleTimeUpdate}
         onPause={handlePause}
+        onSeeking={handleSeeking}
         onLoadedMetadata={() => {
           const v = videoRef.current;
           if (v && isActive) {
