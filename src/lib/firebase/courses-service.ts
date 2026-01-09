@@ -28,20 +28,46 @@ export type Course = {
   introVideoUrl?: string;
   category?: string;
   createdAt?: Date;
+  isMentorCourse?: boolean; // Indica si el curso pertenece a un grupo donde el usuario es mentor
+  teacherId?: string; // ID del profesor creador del curso
 };
 
 export async function getCourses(teacherId?: string): Promise<Course[]> {
   const coursesRef = collection(db, "courses");
-  const q = teacherId
-    ? query(
-        coursesRef,
-        where("teacherId", "==", teacherId),
-        orderBy("createdAt", "desc"),
-      )
-    : query(coursesRef, orderBy("createdAt", "desc"));
+
+  if (!teacherId) {
+    // Sin teacherId, devolver todos los cursos
+    const q = query(coursesRef, orderBy("createdAt", "desc"));
+    const snap = await getDocs(q);
+    return snap.docs.map((doc) => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        title: data.title ?? "Curso sin título",
+        description: data.description ?? "",
+        thumbnail: data.thumbnail ?? "",
+        isArchived: data.isArchived ?? false,
+        isPublished: Boolean(data.isPublished),
+        lessonsCount: data.lessonsCount ?? 0,
+        studentsCount: data.studentsCount ?? 0,
+        introVideoUrl: data.introVideoUrl ?? "",
+        category: data.category ?? "",
+        createdAt: data.createdAt?.toDate?.() ?? undefined,
+        teacherId: data.teacherId,
+        isMentorCourse: false,
+      };
+    });
+  }
+
+  // Con teacherId: obtener cursos propios + cursos de grupos donde es mentor
+  const q = query(
+    coursesRef,
+    where("teacherId", "==", teacherId),
+    orderBy("createdAt", "desc"),
+  );
 
   const snap = await getDocs(q);
-  return snap.docs.map((doc) => {
+  const ownCourses = snap.docs.map((doc) => {
     const data = doc.data();
     return {
       id: doc.id,
@@ -55,8 +81,85 @@ export async function getCourses(teacherId?: string): Promise<Course[]> {
       introVideoUrl: data.introVideoUrl ?? "",
       category: data.category ?? "",
       createdAt: data.createdAt?.toDate?.() ?? undefined,
+      teacherId: data.teacherId,
+      isMentorCourse: false,
     };
   });
+
+  // Obtener grupos donde es mentor
+  const groupsRef = collection(db, "groups");
+  const mentorGroupsQuery = query(
+    groupsRef,
+    where("assistantTeacherIds", "array-contains", teacherId)
+  );
+
+  const mentorGroupsSnap = await getDocs(mentorGroupsQuery);
+
+  // Recolectar IDs únicos de cursos de los grupos donde es mentor
+  const mentorCourseIds = new Set<string>();
+  mentorGroupsSnap.docs.forEach((doc) => {
+    const data = doc.data();
+    // Agregar courseId legacy si existe
+    if (data.courseId) {
+      mentorCourseIds.add(data.courseId);
+    }
+    // Agregar courseIds del array si existe
+    if (Array.isArray(data.courseIds)) {
+      data.courseIds.forEach((id: string) => mentorCourseIds.add(id));
+    }
+  });
+
+  // Si no hay cursos de mentoría, retornar solo los propios
+  if (mentorCourseIds.size === 0) {
+    return ownCourses;
+  }
+
+  // Obtener los cursos de mentoría (en lotes de 30 porque Firestore tiene límite de 30 en 'in')
+  const mentorCourseIdsArray = Array.from(mentorCourseIds);
+  const mentorCourses: Course[] = [];
+
+  // Filtrar los cursos que ya son propios para evitar duplicados
+  const ownCourseIds = new Set(ownCourses.map(c => c.id));
+  const uniqueMentorCourseIds = mentorCourseIdsArray.filter(id => !ownCourseIds.has(id));
+
+  // Procesar en lotes de 30
+  for (let i = 0; i < uniqueMentorCourseIds.length; i += 30) {
+    const batch = uniqueMentorCourseIds.slice(i, i + 30);
+    const mentorCoursesQuery = query(
+      coursesRef,
+      where("__name__", "in", batch)
+    );
+
+    const mentorCoursesSnap = await getDocs(mentorCoursesQuery);
+    mentorCoursesSnap.docs.forEach((doc) => {
+      const data = doc.data();
+      mentorCourses.push({
+        id: doc.id,
+        title: data.title ?? "Curso sin título",
+        description: data.description ?? "",
+        thumbnail: data.thumbnail ?? "",
+        isArchived: data.isArchived ?? false,
+        isPublished: Boolean(data.isPublished),
+        lessonsCount: data.lessonsCount ?? 0,
+        studentsCount: data.studentsCount ?? 0,
+        introVideoUrl: data.introVideoUrl ?? "",
+        category: data.category ?? "",
+        createdAt: data.createdAt?.toDate?.() ?? undefined,
+        teacherId: data.teacherId,
+        isMentorCourse: true,
+      });
+    });
+  }
+
+  // Combinar y ordenar por fecha
+  const allCourses = [...ownCourses, ...mentorCourses];
+  allCourses.sort((a, b) => {
+    const dateA = a.createdAt?.getTime() ?? 0;
+    const dateB = b.createdAt?.getTime() ?? 0;
+    return dateB - dateA; // Orden descendente (más reciente primero)
+  });
+
+  return allCourses;
 }
 
 type CreateCourseInput = {

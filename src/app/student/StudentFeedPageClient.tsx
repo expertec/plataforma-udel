@@ -2245,7 +2245,7 @@ export default function StudentFeedPageClient() {
                             setCommentsClassId(cls.id);
                             setCommentsOpen(true);
                           }}
-                          positionClass="absolute right-2 top-1/4 -translate-y-1/4 lg:hidden"
+                          positionClass="absolute right-2 top-20 lg:hidden"
                         />
                       ) : null}
 
@@ -2351,7 +2351,8 @@ export default function StudentFeedPageClient() {
               type="button"
               onClick={() => jumpToIndex(activeIndex - 1)}
               disabled={activeIndex === 0}
-              className="flex h-12 w-12 items-center justify-center rounded-full bg-black/40 text-white shadow-lg backdrop-blur transition hover:bg-white/20 disabled:opacity-40"
+              className="flex h-12 w-12 items-center justify-center rounded-full text-white shadow-lg backdrop-blur transition hover:opacity-80 disabled:opacity-40"
+              style={{ backgroundColor: '#400106' }}
             >
               <ControlIcon name="arrowUp" />
             </button>
@@ -2359,7 +2360,8 @@ export default function StudentFeedPageClient() {
               type="button"
               onClick={() => jumpToIndex(activeIndex + 1)}
               disabled={activeIndex >= classes.length - 1}
-              className="flex h-12 w-12 items-center justify-center rounded-full bg-black/40 text-white shadow-lg backdrop-blur transition hover:bg-white/20 disabled:opacity-40"
+              className="flex h-12 w-12 items-center justify-center rounded-full text-white shadow-lg backdrop-blur transition hover:opacity-80 disabled:opacity-40"
+              style={{ backgroundColor: '#400106' }}
             >
               <ControlIcon name="arrowDown" />
             </button>
@@ -2737,6 +2739,32 @@ const VideoPlayer = React.memo(function VideoPlayer({
   const progressThumbRef = useRef<HTMLDivElement>(null);
   const lastProgressUpdate = useRef(0);
   const isDragging = useRef(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const toggleFullscreen = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    if (!document.fullscreenElement) {
+      container.requestFullscreen().catch((err) => {
+        console.error("Error intentando entrar en pantalla completa:", err);
+      });
+    } else {
+      document.exitFullscreen();
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    };
+  }, []);
 
   const handleVimeoToggle = useCallback(() => {
     if (!isVimeo || !vimeoPlayerRef.current || !playerInitializedRef.current) return;
@@ -2908,7 +2936,7 @@ const VideoPlayer = React.memo(function VideoPlayer({
     }
 
     return (
-      <div className="relative h-full w-full bg-black vimeo-player-wrapper flex items-center justify-center">
+      <div ref={containerRef} className="relative h-full w-full bg-black vimeo-player-wrapper flex items-center justify-center">
         <iframe
           ref={iframeRef}
           title={`video-${id}`}
@@ -2928,6 +2956,18 @@ const VideoPlayer = React.memo(function VideoPlayer({
           aria-label={muted ? "Activar sonido" : "Silenciar video"}
         >
           <ControlIcon name={muted ? "muted" : "sound"} />
+        </button>
+
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            toggleFullscreen();
+          }}
+          className="absolute right-4 top-4 z-40 rounded-full bg-black/70 p-3 text-white shadow"
+          aria-label={isFullscreen ? "Salir de pantalla completa" : "Pantalla completa"}
+        >
+          <ControlIcon name={isFullscreen ? "exitFullscreen" : "fullscreen"} />
         </button>
 
         <div
@@ -3069,7 +3109,7 @@ const VideoPlayer = React.memo(function VideoPlayer({
   if (isYouTube) {
     const embedSrc = toEmbedUrl(src);
     return (
-      <div className="relative h-full w-full bg-black flex items-center justify-center">
+      <div ref={containerRef} className="relative h-full w-full bg-black flex items-center justify-center">
         <iframe
           ref={iframeRef}
           title={`video-${id}`}
@@ -3078,6 +3118,18 @@ const VideoPlayer = React.memo(function VideoPlayer({
           allow="autoplay; encrypted-media; picture-in-picture"
           allowFullScreen
         />
+
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            toggleFullscreen();
+          }}
+          className="absolute right-4 top-4 z-40 rounded-full bg-black/70 p-3 text-white shadow"
+          aria-label={isFullscreen ? "Salir de pantalla completa" : "Pantalla completa"}
+        >
+          <ControlIcon name={isFullscreen ? "exitFullscreen" : "fullscreen"} />
+        </button>
       </div>
     );
   }
@@ -3152,7 +3204,7 @@ const VideoPlayer = React.memo(function VideoPlayer({
   };
 
   return (
-    <div className="relative w-full h-full bg-black flex items-center justify-center">
+    <div ref={containerRef} className="relative w-full h-full bg-black flex items-center justify-center">
       <video
         ref={videoRef}
         src={src}
@@ -3189,6 +3241,18 @@ const VideoPlayer = React.memo(function VideoPlayer({
         className="absolute left-4 top-4 rounded-full bg-black/70 p-3 text-white shadow"
       >
         <ControlIcon name={muted ? "muted" : "sound"} />
+      </button>
+
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          toggleFullscreen();
+        }}
+        className="absolute right-4 top-4 rounded-full bg-black/70 p-3 text-white shadow"
+        aria-label={isFullscreen ? "Salir de pantalla completa" : "Pantalla completa"}
+      >
+        <ControlIcon name={isFullscreen ? "exitFullscreen" : "fullscreen"} />
       </button>
 
       {!isPlaying ? (
@@ -3403,7 +3467,9 @@ type ControlIconName =
   | "arrowDown"
   | "check"
   | "menu"
-  | "user";
+  | "user"
+  | "fullscreen"
+  | "exitFullscreen";
 
 function ControlIcon({ name }: { name: ControlIconName }) {
   const common = "h-5 w-5 fill-current";
@@ -3488,6 +3554,18 @@ function ControlIcon({ name }: { name: ControlIconName }) {
         <svg viewBox="0 0 24 24" className={common}>
           <path d="M12 12a4 4 0 100-8 4 4 0 000 8z" />
           <path d="M5 19a7 7 0 1114 0" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case "fullscreen":
+      return (
+        <svg viewBox="0 0 24 24" className={common}>
+          <path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case "exitFullscreen":
+      return (
+        <svg viewBox="0 0 24 24" className={common}>
+          <path d="M8 8V3m0 5H3m13 0h5m0 0V3m0 13v5m0-5h-5M3 16v5m0-5h5" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       );
     default:
@@ -4002,10 +4080,10 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
   }, [allAnswered, enrollmentId, studentId, groupId, submitting, questions, answers, classId, classTitle, studentName, courseId, classDocId, courseTitle]);
 
   return (
-    <div className="flex h-full w-full items-center justify-center px-4 lg:px-10 lg:pr-[140px]">
+    <div className="flex h-full w-full items-center justify-center px-0 lg:px-10">
       <div
         ref={containerRef}
-        className="w-full max-w-3xl max-h-[88vh] overflow-auto px-1 sm:px-2 py-8 space-y-4"
+        className="w-[90%] lg:w-full lg:max-w-3xl max-h-[88vh] overflow-auto px-4 sm:px-6 py-8 space-y-4"
       >
         <div className="flex flex-col gap-1 text-xs text-neutral-300">
           <span>
@@ -4080,12 +4158,12 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
                 </div>
               )}
             </div>
-            <div className="flex items-center justify-between pt-3 text-xs text-neutral-400">
+            <div className="relative z-10 flex items-center justify-between pt-3 text-xs text-neutral-400">
               <button
                 type="button"
                 onClick={() => setCurrentIdx((prev) => Math.max(prev - 1, 0))}
                 disabled={currentIdx === 0}
-                className="rounded-full border border-white/20 px-3 py-1 text-[11px] font-semibold text-white/80 transition hover:border-white/40 disabled:opacity-50"
+                className="relative z-10 rounded-full border border-white/20 px-3 py-1 text-[11px] font-semibold text-white/80 transition hover:border-white/40 disabled:opacity-50"
               >
                 Anterior
               </button>
@@ -4093,7 +4171,7 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
                 type="button"
                 onClick={() => setCurrentIdx((prev) => Math.min(prev + 1, Math.max(questions.length - 1, 0)))}
                 disabled={currentIdx >= questions.length - 1}
-                className="rounded-full border border-white/20 px-3 py-1 text-[11px] font-semibold text-white/80 transition hover:border-white/40 disabled:opacity-50"
+                className="relative z-10 rounded-full border border-white/20 px-3 py-1 text-[11px] font-semibold text-white/80 transition hover:border-white/40 disabled:opacity-50"
               >
                 Siguiente
               </button>
@@ -4103,7 +4181,7 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
               const isCorrectFeedback = feedbackEntry?.status === "correct";
               return (
                 <div
-                  className={`mt-1 rounded-lg border px-3 py-2 text-sm ${
+                  className={`relative z-0 mt-1 rounded-lg border px-3 py-2 text-sm ${
                     isCorrectFeedback
                       ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100 motion-safe:animate-pulse shadow-emerald-400/50"
                       : "border-rose-500/40 bg-rose-500/10 text-rose-100"
@@ -4124,9 +4202,9 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
         ) : null}
 
         {questions.length > 0 ? (
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+          <div className="relative z-10 flex flex-wrap items-center justify-between gap-2 pt-2">
             {submitted ? (
-              <div className="inline-flex items-center gap-2 rounded-full bg-green-600/20 px-4 py-2 text-sm font-semibold text-green-200">
+              <div className="relative z-10 inline-flex items-center gap-2 rounded-full bg-green-600/20 px-4 py-2 text-sm font-semibold text-green-200">
                 <span>Quiz enviado</span>
                 {submissionStatus ? (
                   <span className="rounded-full bg-white/10 px-2 py-[2px] text-[11px] text-white/90">
@@ -4140,12 +4218,12 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
                 ) : null}
               </div>
             ) : null}
-            <div className="flex items-center gap-2">
+            <div className="relative z-10 flex items-center gap-2">
               <button
                 type="button"
                 disabled={!allAnswered || submitting || submitted}
                 onClick={handleSubmit}
-                className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow disabled:opacity-50"
+                className="relative z-10 rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow disabled:opacity-50"
               >
                 {submitted ? "Ya enviado" : submitting ? "Enviando..." : allAnswered ? "Enviar quiz" : "Contesta todas las preguntas"}
               </button>
@@ -4899,8 +4977,7 @@ function ImageCarousel({
 }) {
   const [currentIndex, setCurrentIndex] = useState(activeIndex);
   const containerRef = useRef<HTMLDivElement>(null);
-  const startXRef = useRef<number>(0);
-  const isDraggingRef = useRef(false);
+  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const onProgressRef = useRef(onProgress);
   const singleImageTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -4963,6 +5040,16 @@ function ImageCarousel({
     };
   }, [images.length, isActive]);
 
+  // Cleanup scroll timeout al desmontar
+  useEffect(() => {
+    return () => {
+      if (scrollTimeoutRef.current) {
+        clearTimeout(scrollTimeoutRef.current);
+        scrollTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
   const scrollToIndex = (index: number) => {
     const newIndex = Math.max(0, Math.min(index, images.length - 1));
     setCurrentIndex(newIndex);
@@ -4978,71 +5065,35 @@ function ImageCarousel({
     }
   };
 
-  const handleTouchStart = (e: React.TouchEvent) => {
-    startXRef.current = e.touches[0].clientX;
-    isDraggingRef.current = true;
-  };
-
-  const handleTouchEnd = (e: React.TouchEvent) => {
-    if (!isDraggingRef.current) return;
-
-    const endX = e.changedTouches[0].clientX;
-    const diffX = startXRef.current - endX;
-    const threshold = 50; // mínimo swipe para cambiar
-
-    if (Math.abs(diffX) > threshold) {
-      if (diffX > 0 && currentIndex < images.length - 1) {
-        // Swipe left -> siguiente
-        scrollToIndex(currentIndex + 1);
-      } else if (diffX < 0 && currentIndex > 0) {
-        // Swipe right -> anterior
-        scrollToIndex(currentIndex - 1);
-      }
-    }
-
-    isDraggingRef.current = false;
-  };
-
   const handleScroll = useCallback(() => {
     const container = containerRef.current;
     if (!container || !isActive) return;
-    const width = container.offsetWidth || 1;
-    const raw = container.scrollLeft / width;
-    let idx = Math.round(raw);
-    // Clamp to last slide when near the end to evitar quedarse en 99%
-    if (container.scrollLeft + width >= container.scrollWidth - width * 0.2) {
-      idx = images.length - 1;
+
+    // Limpiar timeout previo
+    if (scrollTimeoutRef.current) {
+      clearTimeout(scrollTimeoutRef.current);
     }
-    idx = Math.max(0, Math.min(idx, images.length - 1));
-    if (idx !== currentIndex) {
-      setCurrentIndex(idx);
-      onIndexChange?.(idx);
-    }
-    reportProgress(idx);
-  }, [currentIndex, images.length, isActive, onIndexChange, reportProgress]);
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    startXRef.current = e.clientX;
-    isDraggingRef.current = true;
-  };
+    // Esperar a que el scroll termine antes de actualizar
+    scrollTimeoutRef.current = setTimeout(() => {
+      const width = container.offsetWidth || 1;
+      const raw = container.scrollLeft / width;
+      let idx = Math.round(raw);
 
-  const handleMouseUp = (e: React.MouseEvent) => {
-    if (!isDraggingRef.current) return;
-
-    const endX = e.clientX;
-    const diffX = startXRef.current - endX;
-    const threshold = 50;
-
-    if (Math.abs(diffX) > threshold) {
-      if (diffX > 0 && currentIndex < images.length - 1) {
-        scrollToIndex(currentIndex + 1);
-      } else if (diffX < 0 && currentIndex > 0) {
-        scrollToIndex(currentIndex - 1);
+      // Clamp to last slide when near the end
+      if (container.scrollLeft + width >= container.scrollWidth - width * 0.2) {
+        idx = images.length - 1;
       }
-    }
 
-    isDraggingRef.current = false;
-  };
+      idx = Math.max(0, Math.min(idx, images.length - 1));
+
+      if (idx !== currentIndex) {
+        setCurrentIndex(idx);
+        onIndexChange?.(idx);
+        reportProgress(idx);
+      }
+    }, 150); // Debounce de 150ms
+  }, [currentIndex, images.length, isActive, onIndexChange, reportProgress]);
 
   return (
     <div className="relative w-full h-full bg-black overflow-hidden flex items-center justify-center">
@@ -5054,24 +5105,32 @@ function ImageCarousel({
           scrollbarWidth: 'none',
           msOverflowStyle: 'none',
           WebkitOverflowScrolling: 'touch',
-          touchAction: 'pan-x', // permitir swipe horizontal aunque el contenedor padre use pan-y
+          touchAction: 'pan-x',
         }}
-        onTouchStart={handleTouchStart}
-        onTouchEnd={handleTouchEnd}
-        onMouseDown={handleMouseDown}
-        onMouseUp={handleMouseUp}
         onScroll={handleScroll}
       >
         {images.map((src, idx) => (
           <div
             key={idx}
             className="flex-shrink-0 w-full h-full flex items-center justify-center snap-center snap-always"
+            style={{
+              WebkitTouchCallout: 'none',
+              WebkitUserSelect: 'none',
+              userSelect: 'none',
+            }}
           >
             <img
               src={src}
               alt={`${title} - ${idx + 1}/${images.length}`}
               className="max-w-full max-h-full w-auto h-auto object-contain select-none"
               draggable={false}
+              onContextMenu={(e) => e.preventDefault()}
+              style={{
+                WebkitTouchCallout: 'none',
+                WebkitUserSelect: 'none',
+                userSelect: 'none',
+                touchAction: 'none',
+              }}
             />
           </div>
         ))}
@@ -5084,10 +5143,11 @@ function ImageCarousel({
             type="button"
             onClick={() => scrollToIndex(currentIndex - 1)}
             disabled={currentIndex === 0}
-            className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-3 text-white shadow-lg hover:bg-black/80 disabled:opacity-30 disabled:cursor-not-allowed z-10"
+            className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full p-3 shadow-lg disabled:opacity-30 disabled:cursor-not-allowed z-10"
+            style={{ backgroundColor: '#400106' }}
             aria-label="Imagen anterior"
           >
-            <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </button>
@@ -5095,10 +5155,11 @@ function ImageCarousel({
             type="button"
             onClick={() => scrollToIndex(currentIndex + 1)}
             disabled={currentIndex === images.length - 1}
-            className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-3 text-white shadow-lg hover:bg-black/80 disabled:opacity-30 disabled:cursor-not-allowed z-10"
+            className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full p-3 shadow-lg disabled:opacity-30 disabled:cursor-not-allowed z-10"
+            style={{ backgroundColor: '#400106' }}
             aria-label="Imagen siguiente"
           >
-            <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
           </button>

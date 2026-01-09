@@ -172,10 +172,17 @@ export default function CoursesPage() {
                 </div>
                 <div className="space-y-2 p-4">
                   <div className="flex items-start justify-between gap-2">
-                    <div className="space-y-1">
-                      <h3 className="text-lg font-semibold text-slate-900">
-                        {course.title}
-                      </h3>
+                    <div className="space-y-1 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="text-lg font-semibold text-slate-900">
+                          {course.title}
+                        </h3>
+                        {course.isMentorCourse && (
+                          <span className="inline-flex items-center rounded-full bg-purple-100 px-2 py-0.5 text-xs font-semibold text-purple-700">
+                            Mentor
+                          </span>
+                        )}
+                      </div>
                       <p className="text-sm text-slate-600 line-clamp-2">
                         {course.description || "Sin descripción"}
                       </p>
