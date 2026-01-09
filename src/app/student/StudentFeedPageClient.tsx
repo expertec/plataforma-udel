@@ -2466,52 +2466,37 @@ export default function StudentFeedPageClient() {
 
           {/* Modal de tarea */}
           {assignmentModal.open && !previewMode ? (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-              <div className="w-full max-w-md rounded-2xl bg-neutral-900 p-6 shadow-2xl">
-                <h3 className="text-lg font-semibold text-white">Descarga la plantilla</h3>
-                <p className="mt-2 text-sm text-neutral-300">
-                  Esta clase tiene tarea. Descarga la plantilla antes de continuar.
-                </p>
-                <div className="mt-4 flex flex-col gap-3">
-                  {assignmentModal.templateUrl ? (
-                    <a
-                      href={assignmentModal.templateUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                    className="inline-flex items-center justify-center rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500"
-                  >
-                    Descargar plantilla
-                  </a>
-                ) : (
-                  <p className="text-sm text-neutral-400">No hay plantilla adjunta.</p>
-                  )}
-                  <div className="flex justify-end gap-2">
-                    <button
-                      onClick={() => setAssignmentModal({ open: false })}
-                      className="rounded-full border border-white/20 px-4 py-2 text-sm text-white hover:bg-white/10"
-                    >
-                      Cerrar
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (assignmentModal.classId) {
-                          setAssignmentAck((prev) => {
-                            const next = { ...prev, [assignmentModal.classId!]: true };
-                            assignmentAckRef.current = next;
-                            return next;
-                          });
-                          setAssignmentModal({ open: false });
-                          if (assignmentModal.nextIndex !== undefined) {
-                            scrollToIndex(assignmentModal.nextIndex);
-                          }
-                        } else {
-                          setAssignmentModal({ open: false });
-                        }
-                      }}
-                      className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500"
-                    >
-                      Continuar
-                    </button>
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+              onClick={() => {
+                if (assignmentModal.classId) {
+                  setAssignmentAck((prev) => {
+                    const next = { ...prev, [assignmentModal.classId!]: true };
+                    assignmentAckRef.current = next;
+                    return next;
+                  });
+                }
+                setAssignmentModal({ open: false });
+                if (assignmentModal.nextIndex !== undefined) {
+                  scrollToIndex(assignmentModal.nextIndex);
+                }
+              }}
+            >
+              <div
+                className="w-full max-w-md rounded-2xl bg-neutral-900 p-6 shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-start gap-3">
+                  <div className="flex-shrink-0 rounded-full bg-blue-600/20 p-2">
+                    <svg className="h-5 w-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-base font-semibold text-white">Esta clase tiene tarea</h3>
+                    <p className="mt-1 text-sm text-neutral-300">
+                      Ve al icono de tarea para descargar la plantilla y enviarla.
+                    </p>
                   </div>
                 </div>
               </div>
@@ -2748,6 +2733,10 @@ const VideoPlayer = React.memo(function VideoPlayer({
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(initialProgress);
   const onProgressRef = useRef(onProgress);
+  const progressBarRef = useRef<HTMLDivElement>(null);
+  const progressThumbRef = useRef<HTMLDivElement>(null);
+  const lastProgressUpdate = useRef(0);
+  const isDragging = useRef(false);
 
   const handleVimeoToggle = useCallback(() => {
     if (!isVimeo || !vimeoPlayerRef.current || !playerInitializedRef.current) return;
@@ -2809,27 +2798,34 @@ const VideoPlayer = React.memo(function VideoPlayer({
           setProgress(100);
           onProgressRef.current?.(100);
         });
+        let lastVimeoUpdate = 0;
         player.on('timeupdate', (data) => {
+          if (isDragging.current) return;
+
           const pct = (data.seconds / data.duration) * 100;
-          setProgress(pct);
           if (data.seconds > 0) setIsPlaying(true);
-          if (onProgressRef.current) {
-            onProgressRef.current(pct);
+
+          // Actualizar visualmente sin re-render
+          if (progressBarRef.current) {
+            progressBarRef.current.style.width = `${pct}%`;
+          }
+          if (progressThumbRef.current) {
+            progressThumbRef.current.style.left = `calc(${pct}% - 6px)`;
+          }
+
+          // Solo actualizar estado cada 2%
+          if (Math.abs(pct - lastVimeoUpdate) >= 2) {
+            setProgress(pct);
+            if (onProgressRef.current) {
+              onProgressRef.current(pct);
+            }
+            lastVimeoUpdate = pct;
           }
         });
 
-        // Prevenir adelantar más allá del progreso máximo (Vimeo)
-        player.on('seeked', async (data) => {
-          const currentPct = (data.seconds / data.duration) * 100;
-          const currentMaxProgress = Math.max(progress, initialProgress);
-
-          // Si intenta adelantar más allá del progreso máximo, bloquearlo
-          if (currentPct > currentMaxProgress + 0.5) { // +0.5% de tolerancia
-            const maxAllowedTime = (currentMaxProgress / 100) * data.duration;
-            await player.setCurrentTime(maxAllowedTime);
-            console.log(`🚫 Vimeo: Intento de adelantar bloqueado. Máximo: ${currentMaxProgress.toFixed(1)}%`);
-          }
-          // Permitir retroceder libremente
+        // Permitir navegación libre en Vimeo - sin restricciones
+        player.on('seeked', async () => {
+          // Navegación libre permitida
         });
 
         // Forzar mute inicial según prop antes de reproducir
@@ -2957,12 +2953,94 @@ const VideoPlayer = React.memo(function VideoPlayer({
           </div>
         ) : null}
 
-        {/* Barra de progreso personalizada estilo TikTok */}
-        <div className="absolute bottom-0 left-0 right-0 px-4 pb-3 pointer-events-none z-30">
-          <div className="h-1 w-full rounded-full bg-white/20">
+        {/* Barra de progreso arrastrable */}
+        <div className="absolute bottom-0 left-0 right-0 px-4 pb-3 z-30">
+          <div className="relative w-full group">
+            <div className="h-1 w-full rounded-full bg-white/20" />
             <div
-              className="h-1 rounded-full bg-red-500"
+              ref={progressBarRef}
+              className="absolute top-0 left-0 h-1 rounded-full bg-red-500 pointer-events-none transition-none"
               style={{ width: `${progress}%` }}
+            />
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="0.1"
+              defaultValue={progress}
+              onInput={async (e) => {
+                const player = vimeoPlayerRef.current;
+                if (!player) return;
+
+                try {
+                  const newProgress = parseFloat(e.currentTarget.value);
+                  const duration = await player.getDuration();
+                  const newTime = (newProgress / 100) * duration;
+
+                  // Actualizar visualmente de inmediato
+                  if (progressBarRef.current) {
+                    progressBarRef.current.style.width = `${newProgress}%`;
+                  }
+                  if (progressThumbRef.current) {
+                    progressThumbRef.current.style.left = `calc(${newProgress}% - 6px)`;
+                  }
+
+                  await player.setCurrentTime(newTime);
+                } catch (error) {
+                  console.error('Error seeking Vimeo video:', error);
+                }
+              }}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                isDragging.current = true;
+              }}
+              onMouseUp={async (e) => {
+                e.stopPropagation();
+                isDragging.current = false;
+                const player = vimeoPlayerRef.current;
+                if (player) {
+                  try {
+                    const time = await player.getCurrentTime();
+                    const duration = await player.getDuration();
+                    const pct = (time / duration) * 100;
+                    setProgress(pct);
+                    onProgressRef.current?.(pct);
+                  } catch (error) {
+                    console.error('Error getting Vimeo time:', error);
+                  }
+                }
+              }}
+              onTouchStart={(e) => {
+                e.stopPropagation();
+                isDragging.current = true;
+              }}
+              onTouchEnd={async (e) => {
+                e.stopPropagation();
+                isDragging.current = false;
+                const player = vimeoPlayerRef.current;
+                if (player) {
+                  try {
+                    const time = await player.getCurrentTime();
+                    const duration = await player.getDuration();
+                    const pct = (time / duration) * 100;
+                    setProgress(pct);
+                    onProgressRef.current?.(pct);
+                  } catch (error) {
+                    console.error('Error getting Vimeo time:', error);
+                  }
+                }
+              }}
+              onClick={(e) => e.stopPropagation()}
+              className="absolute top-1/2 -translate-y-1/2 left-0 w-full h-4 opacity-0 cursor-pointer z-10"
+              style={{
+                WebkitAppearance: 'none',
+                appearance: 'none',
+              }}
+            />
+            <div
+              ref={progressThumbRef}
+              className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-lg pointer-events-none transition-none"
+              style={{ left: `calc(${progress}% - 6px)` }}
             />
           </div>
         </div>
@@ -3036,12 +3114,27 @@ const VideoPlayer = React.memo(function VideoPlayer({
 
   const handleTimeUpdate = () => {
     const video = videoRef.current;
-    if (!video || !video.duration) return;
+    if (!video || !video.duration || isDragging.current) return;
+
     const pct = (video.currentTime / video.duration) * 100;
     const currentProgress = progress;
     const maxProgress = Math.max(pct, currentProgress, initialProgress);
-    setProgress(maxProgress);
-    onProgress?.(maxProgress); // Enviar maxProgress en lugar de pct para mejor persistencia
+
+    // Actualizar visualmente la barra sin re-render usando refs
+    if (progressBarRef.current) {
+      progressBarRef.current.style.width = `${pct}%`;
+    }
+    if (progressThumbRef.current) {
+      progressThumbRef.current.style.left = `calc(${pct}% - 6px)`;
+    }
+
+    // Solo actualizar estado y llamar onProgress cada 2% o cada 2 segundos
+    const now = Date.now();
+    if (Math.abs(maxProgress - lastProgressUpdate.current) >= 2 || now - lastProgressUpdate.current > 2000) {
+      setProgress(maxProgress);
+      onProgress?.(maxProgress);
+      lastProgressUpdate.current = maxProgress;
+    }
   };
 
   const handlePause = () => {
@@ -3053,21 +3146,9 @@ const VideoPlayer = React.memo(function VideoPlayer({
     onProgress?.(maxProgress);
   };
 
-  // Prevenir adelantar el video más allá del progreso máximo alcanzado
+  // Permitir navegación libre en el video
   const handleSeeking = () => {
-    const video = videoRef.current;
-    if (!video || !video.duration) return;
-
-    const currentPct = (video.currentTime / video.duration) * 100;
-    const maxAllowedProgress = Math.max(progress, initialProgress);
-
-    // Si intenta adelantar más allá del progreso máximo, bloquearlo
-    if (currentPct > maxAllowedProgress + 0.5) { // +0.5% de tolerancia
-      const maxAllowedTime = (maxAllowedProgress / 100) * video.duration;
-      video.currentTime = maxAllowedTime;
-      console.log(`🚫 Intento de adelantar bloqueado. Máximo permitido: ${maxAllowedProgress.toFixed(1)}%`);
-    }
-    // Permitir retroceder libremente (no hacemos nada si currentPct <= maxAllowedProgress)
+    // Navegación libre permitida - sin restricciones
   };
 
   return (
@@ -3119,10 +3200,76 @@ const VideoPlayer = React.memo(function VideoPlayer({
       ) : null}
 
       <div className="absolute bottom-0 left-0 right-0 px-4 pb-3">
-        <div className="h-1 w-full rounded-full bg-white/20">
+        <div className="relative w-full group">
+          <div className="h-1 w-full rounded-full bg-white/20" />
           <div
-            className="h-1 rounded-full bg-red-500"
+            ref={progressBarRef}
+            className="absolute top-0 left-0 h-1 rounded-full bg-red-500 pointer-events-none transition-none"
             style={{ width: `${progress}%` }}
+          />
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="0.1"
+            defaultValue={progress}
+            onInput={(e) => {
+              const video = videoRef.current;
+              if (!video || !video.duration) return;
+
+              const newProgress = parseFloat(e.currentTarget.value);
+              const newTime = (newProgress / 100) * video.duration;
+
+              // Actualizar visualmente de inmediato
+              if (progressBarRef.current) {
+                progressBarRef.current.style.width = `${newProgress}%`;
+              }
+              if (progressThumbRef.current) {
+                progressThumbRef.current.style.left = `calc(${newProgress}% - 6px)`;
+              }
+
+              video.currentTime = newTime;
+            }}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              isDragging.current = true;
+            }}
+            onMouseUp={(e) => {
+              e.stopPropagation();
+              isDragging.current = false;
+              // Forzar guardado del progreso al soltar
+              const video = videoRef.current;
+              if (video && video.duration) {
+                const pct = (video.currentTime / video.duration) * 100;
+                setProgress(pct);
+                onProgress?.(pct);
+              }
+            }}
+            onTouchStart={(e) => {
+              e.stopPropagation();
+              isDragging.current = true;
+            }}
+            onTouchEnd={(e) => {
+              e.stopPropagation();
+              isDragging.current = false;
+              const video = videoRef.current;
+              if (video && video.duration) {
+                const pct = (video.currentTime / video.duration) * 100;
+                setProgress(pct);
+                onProgress?.(pct);
+              }
+            }}
+            onClick={(e) => e.stopPropagation()}
+            className="absolute top-1/2 -translate-y-1/2 left-0 w-full h-4 opacity-0 cursor-pointer z-10"
+            style={{
+              WebkitAppearance: 'none',
+              appearance: 'none',
+            }}
+          />
+          <div
+            ref={progressThumbRef}
+            className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-lg pointer-events-none transition-none"
+            style={{ left: `calc(${progress}% - 6px)` }}
           />
         </div>
       </div>

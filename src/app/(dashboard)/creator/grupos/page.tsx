@@ -7,12 +7,14 @@ import { onAuthStateChanged, User } from "firebase/auth";
 import { getCourses } from "@/lib/firebase/courses-service";
 import { CreateGroupModal } from "./_components/CreateGroupModal";
 import { BulkCreateGroupsModal } from "./_components/BulkCreateGroupsModal";
-import { getGroupsForTeacher, Group, deleteGroup } from "@/lib/firebase/groups-service";
+import { getGroupsForTeacher, Group, deleteGroup, getGroupsWhereAssistant } from "@/lib/firebase/groups-service";
 import toast from "react-hot-toast";
 import { RoleGate } from "@/components/auth/RoleGate";
+import { resolveUserRole, UserRole } from "@/lib/firebase/roles";
 
 export default function GroupsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
+  const [assistantGroups, setAssistantGroups] = useState<Group[]>([]);
   const [courses, setCourses] = useState<{ id: string; title: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -20,29 +22,45 @@ export default function GroupsPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [authLoading, setAuthLoading] = useState(!auth.currentUser);
   const [deletingGroupId, setDeletingGroupId] = useState<string | null>(null);
+  const [userRole, setUserRole] = useState<UserRole | null>(null);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
+    let cancelled = false;
+    const unsub = onAuthStateChanged(auth, async (u) => {
       setCurrentUser(u);
       setAuthLoading(false);
+      if (u) {
+        try {
+          const role = await resolveUserRole(u);
+          if (!cancelled) setUserRole(role);
+        } catch {
+          if (!cancelled) setUserRole(null);
+        }
+      }
     });
-    return unsub;
+    return () => {
+      cancelled = true;
+      unsub();
+    };
   }, []);
 
   const loadGroupsData = useCallback(async () => {
     if (!currentUser?.uid) {
       setGroups([]);
+      setAssistantGroups([]);
       setCourses([]);
       setLoading(false);
       return;
     }
     setLoading(true);
     try {
-        const [myGroups, myCourses] = await Promise.all([
-          getGroupsForTeacher(currentUser.uid),
-          getCourses(),
-        ]);
+      const [myGroups, myAssistantGroups, myCourses] = await Promise.all([
+        userRole === "adminTeacher" ? getGroupsForTeacher(currentUser.uid) : Promise.resolve([]),
+        getGroupsWhereAssistant(currentUser.uid),
+        getCourses(),
+      ]);
       setGroups(myGroups);
+      setAssistantGroups(myAssistantGroups);
       setCourses(myCourses.map((c) => ({ id: c.id, title: c.title })));
     } catch (err) {
       console.error(err);
@@ -50,7 +68,7 @@ export default function GroupsPage() {
     } finally {
       setLoading(false);
     }
-  }, [currentUser?.uid]);
+  }, [currentUser?.uid, userRole]);
 
   useEffect(() => {
     if (!authLoading) {
@@ -74,11 +92,18 @@ export default function GroupsPage() {
     }
   };
 
-  const { activeGroups, finishedGroups } = useMemo(() => {
+  const { activeGroups, finishedGroups, activeAssistantGroups, finishedAssistantGroups } = useMemo(() => {
     const active = groups.filter((g) => g.status !== "finished");
     const finished = groups.filter((g) => g.status === "finished");
-    return { activeGroups: active, finishedGroups: finished };
-  }, [groups]);
+    const activeAssistant = assistantGroups.filter((g) => g.status !== "finished");
+    const finishedAssistant = assistantGroups.filter((g) => g.status === "finished");
+    return {
+      activeGroups: active,
+      finishedGroups: finished,
+      activeAssistantGroups: activeAssistant,
+      finishedAssistantGroups: finishedAssistant,
+    };
+  }, [groups, assistantGroups]);
 
   const formatRange = (start?: Date | null, end?: Date | null) => {
     if (!start || !end) return "Sin fechas";
@@ -90,8 +115,11 @@ export default function GroupsPage() {
     setGroups((prev) => [group, ...prev]);
   };
 
+  const totalGroups = groups.length + assistantGroups.length;
+  const isAdminTeacher = userRole === "adminTeacher";
+
   return (
-    <RoleGate allowedRole={["adminTeacher"]}>
+    <RoleGate allowedRole={["teacher", "adminTeacher"]}>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
@@ -99,58 +127,87 @@ export default function GroupsPage() {
               Grupos
             </p>
             <h1 className="text-2xl font-semibold text-slate-900">
-              Mis grupos
+              {isAdminTeacher ? "Mis grupos" : "Grupos asignados"}
             </h1>
           </div>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => setModalOpen(true)}
-              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"
-            >
-              + Crear Grupo
-            </button>
-            <button
-              type="button"
-              onClick={() => setBulkModalOpen(true)}
-              className="rounded-lg border border-blue-200 bg-white px-4 py-2 text-sm font-semibold text-blue-700 shadow-sm hover:border-blue-400 hover:text-blue-800"
-            >
-              Importar desde Excel
-            </button>
-          </div>
+          {isAdminTeacher ? (
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setModalOpen(true)}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"
+              >
+                + Crear Grupo
+              </button>
+              <button
+                type="button"
+                onClick={() => setBulkModalOpen(true)}
+                className="rounded-lg border border-blue-200 bg-white px-4 py-2 text-sm font-semibold text-blue-700 shadow-sm hover:border-blue-400 hover:text-blue-800"
+              >
+                Importar desde Excel
+              </button>
+            </div>
+          ) : null}
         </div>
 
         {loading ? (
           <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-600 shadow-sm">
             Cargando grupos...
           </div>
-        ) : groups.length === 0 ? (
+        ) : totalGroups === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-600 shadow-sm">
-            Aún no tienes grupos. Crea el primero para asignar alumnos.
+            {isAdminTeacher
+              ? "Aún no tienes grupos. Crea el primero para asignar alumnos."
+              : "Aún no te han asignado como mentor de ningún grupo."}
           </div>
         ) : (
           <div className="space-y-6">
-            <section className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h2 className="text-sm font-semibold text-slate-800">Activos</h2>
-              </div>
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                {activeGroups.map((group) => (
-                  <GroupCard
-                    key={group.id}
-                    group={group}
-                    formatRange={formatRange}
-                    onDelete={handleDeleteGroup}
-                    deleting={deletingGroupId === group.id}
-                  />
-                ))}
-              </div>
-            </section>
+            {/* Grupos creados por el AdminTeacher */}
+            {isAdminTeacher && activeGroups.length > 0 ? (
+              <section className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-slate-800">Mis Grupos Activos</h2>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {activeGroups.map((group) => (
+                    <GroupCard
+                      key={group.id}
+                      group={group}
+                      formatRange={formatRange}
+                      onDelete={handleDeleteGroup}
+                      deleting={deletingGroupId === group.id}
+                    />
+                  ))}
+                </div>
+              </section>
+            ) : null}
 
-            {finishedGroups.length > 0 ? (
+            {/* Grupos donde es mentor */}
+            {activeAssistantGroups.length > 0 ? (
+              <section className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-slate-800">
+                    {isAdminTeacher ? "Grupos como Mentor - Activos" : "Grupos Activos"}
+                  </h2>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {activeAssistantGroups.map((group) => (
+                    <GroupCard
+                      key={group.id}
+                      group={group}
+                      formatRange={formatRange}
+                      isMentor
+                    />
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            {/* Grupos finalizados propios */}
+            {isAdminTeacher && finishedGroups.length > 0 ? (
               <section className="space-y-3">
                 <h2 className="text-sm font-semibold text-slate-800">
-                  Finalizados
+                  Mis Grupos Finalizados
                 </h2>
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                   {finishedGroups.map((group) => (
@@ -160,6 +217,25 @@ export default function GroupsPage() {
                       formatRange={formatRange}
                       onDelete={handleDeleteGroup}
                       deleting={deletingGroupId === group.id}
+                    />
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            {/* Grupos finalizados como mentor */}
+            {finishedAssistantGroups.length > 0 ? (
+              <section className="space-y-3">
+                <h2 className="text-sm font-semibold text-slate-800">
+                  {isAdminTeacher ? "Grupos como Mentor - Finalizados" : "Grupos Finalizados"}
+                </h2>
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {finishedAssistantGroups.map((group) => (
+                    <GroupCard
+                      key={group.id}
+                      group={group}
+                      formatRange={formatRange}
+                      isMentor
                     />
                   ))}
                 </div>
@@ -196,11 +272,13 @@ function GroupCard({
   formatRange,
   onDelete,
   deleting,
+  isMentor,
 }: {
   group: Group;
   formatRange: (s?: Date | null, e?: Date | null) => string;
   onDelete?: (groupId: string) => void;
   deleting?: boolean;
+  isMentor?: boolean;
 }) {
   const statusColor =
     group.status === "active" ? "text-green-600" : group.status === "finished" ? "text-slate-600" : "text-amber-600";
@@ -211,12 +289,24 @@ function GroupCard({
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-base font-semibold text-slate-900">{group.groupName}</p>
+          <div className="flex items-center gap-2">
+            <p className="text-base font-semibold text-slate-900">{group.groupName}</p>
+            {isMentor ? (
+              <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
+                Mentor
+              </span>
+            ) : null}
+          </div>
           <p className="text-sm text-slate-600">{group.courseName || "Grupo"}</p>
           {group.program ? (
             <span className="mt-1 inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
               {group.program}
             </span>
+          ) : null}
+          {isMentor ? (
+            <p className="mt-1 text-xs text-slate-500">
+              Profesor: {group.teacherName}
+            </p>
           ) : null}
         </div>
         <span className={`text-xs font-semibold ${statusColor}`}>{statusLabel}</span>

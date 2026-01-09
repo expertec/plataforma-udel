@@ -74,11 +74,9 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
     const items = [
       { href: "/creator", label: "Dashboard" },
       { href: "/creator/cursos", label: "Cursos" },
+      { href: "/creator/grupos", label: "Grupos" },
       { href: "/creator/alumnos", label: "Alumnos" },
     ];
-    if (userRole === "adminTeacher") {
-      items.splice(2, 0, { href: "/creator/grupos", label: "Grupos" });
-    }
     if (userRole === "adminTeacher") {
       items.push({ href: "/creator/profesores", label: "Profesores" });
     }

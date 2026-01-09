@@ -472,3 +472,47 @@ export async function setAssistantTeachers(groupId: string, teachers: Array<{ id
     updatedAt: serverTimestamp(),
   });
 }
+
+/**
+ * Obtiene todos los grupos donde el profesor es mentor (assistantTeacher)
+ */
+export async function getGroupsWhereAssistant(teacherId: string): Promise<Group[]> {
+  if (!teacherId) return [];
+
+  const q = query(
+    collection(db, "groups"),
+    where("assistantTeacherIds", "array-contains", teacherId),
+    orderBy("createdAt", "desc")
+  );
+
+  const snap = await getDocs(q);
+  return snap.docs.map((doc) => {
+    const d = doc.data();
+    return {
+      id: doc.id,
+      courseId: d.courseId ?? "",
+      courseName: d.courseName ?? "",
+      program: d.program ?? undefined,
+      courses: Array.isArray(d.courses)
+        ? d.courses.map((c: any) => ({
+            courseId: c.courseId ?? "",
+            courseName: c.courseName ?? "",
+          }))
+        : [],
+      courseIds: Array.isArray(d.courseIds) ? d.courseIds : [],
+      groupName: d.groupName ?? "",
+      teacherId: d.teacherId ?? "",
+      teacherName: d.teacherName ?? "",
+      assistantTeacherIds: Array.isArray(d.assistantTeacherIds) ? d.assistantTeacherIds : [],
+      assistantTeachers: Array.isArray(d.assistantTeachers) ? d.assistantTeachers : [],
+      semester: d.semester ?? "",
+      startDate: d.startDate?.toDate?.() ?? null,
+      endDate: d.endDate?.toDate?.() ?? null,
+      status: d.status ?? "active",
+      studentsCount: d.studentsCount ?? 0,
+      maxStudents: d.maxStudents ?? 0,
+      createdAt: d.createdAt?.toDate?.() ?? new Date(),
+      updatedAt: d.updatedAt?.toDate?.() ?? new Date(),
+    };
+  });
+}
