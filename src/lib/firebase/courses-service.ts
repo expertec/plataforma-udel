@@ -205,6 +205,64 @@ export async function updateCourse(courseId: string, data: UpdateCourseInput): P
   await updateDoc(courseRef, data);
 }
 
+/**
+ * Agrega mentores (assistant teachers) al array mentorIds de un curso
+ */
+export async function addMentorsToCourse(courseId: string, mentorIds: string[]): Promise<void> {
+  if (!courseId || !mentorIds || mentorIds.length === 0) return;
+
+  const courseRef = doc(db, "courses", courseId);
+  const courseSnap = await getDoc(courseRef);
+
+  if (!courseSnap.exists()) return;
+
+  const currentMentorIds = courseSnap.data()?.mentorIds ?? [];
+  const updatedMentorIds = Array.from(new Set([...currentMentorIds, ...mentorIds]));
+
+  await updateDoc(courseRef, {
+    mentorIds: updatedMentorIds,
+  });
+}
+
+/**
+ * Elimina mentores del array mentorIds de un curso
+ */
+export async function removeMentorsFromCourse(courseId: string, mentorIds: string[]): Promise<void> {
+  if (!courseId || !mentorIds || mentorIds.length === 0) return;
+
+  const courseRef = doc(db, "courses", courseId);
+  const courseSnap = await getDoc(courseRef);
+
+  if (!courseSnap.exists()) return;
+
+  const currentMentorIds = courseSnap.data()?.mentorIds ?? [];
+  const updatedMentorIds = currentMentorIds.filter((id: string) => !mentorIds.includes(id));
+
+  await updateDoc(courseRef, {
+    mentorIds: updatedMentorIds,
+  });
+}
+
+/**
+ * Sincroniza los mentorIds de los cursos cuando cambian los assistant teachers de un grupo
+ */
+export async function syncCourseMentors(
+  courseIds: string[],
+  mentorIds: string[]
+): Promise<void> {
+  if (!courseIds || courseIds.length === 0) return;
+
+  // Actualizar cada curso con los mentores actuales
+  const promises = courseIds.map(async (courseId) => {
+    const courseRef = doc(db, "courses", courseId);
+    await updateDoc(courseRef, {
+      mentorIds: mentorIds,
+    });
+  });
+
+  await Promise.all(promises);
+}
+
 export type Lesson = {
   id: string;
   lessonNumber: number;

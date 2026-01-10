@@ -30,6 +30,17 @@ export default function ProfesoresPage() {
   const [deletingTeacherId, setDeletingTeacherId] = useState<string | null>(null);
   const router = useRouter();
 
+  // Estados para editar profesor
+  const [editProfileModalOpen, setEditProfileModalOpen] = useState(false);
+  const [changePasswordModalOpen, setChangePasswordModalOpen] = useState(false);
+  const [selectedTeacher, setSelectedTeacher] = useState<TeacherUser | null>(null);
+  const [newPassword, setNewPassword] = useState("ascensoUDEL");
+  const [newEmail, setNewEmail] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newPhone, setNewPhone] = useState("");
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [updatingProfile, setUpdatingProfile] = useState(false);
+
   const loadTeachers = useCallback(async () => {
     setLoading(true);
     try {
@@ -129,6 +140,93 @@ export default function ProfesoresPage() {
       toast.error("No se pudo eliminar al profesor");
     } finally {
       setDeletingTeacherId(null);
+    }
+  };
+
+  const handleOpenEditProfile = (teacher: TeacherUser) => {
+    setSelectedTeacher(teacher);
+    setNewEmail(teacher.email);
+    setNewName(teacher.name);
+    setNewPhone(teacher.phone || "");
+    setEditProfileModalOpen(true);
+  };
+
+  const handleOpenChangePassword = (teacher: TeacherUser) => {
+    setSelectedTeacher(teacher);
+    setNewPassword("ascensoUDEL");
+    setChangePasswordModalOpen(true);
+  };
+
+  const handleUpdateProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedTeacher) return;
+
+    setUpdatingProfile(true);
+    try {
+      const response = await fetch("/api/teachers/update-profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          teacherId: selectedTeacher.id,
+          currentEmail: selectedTeacher.email,
+          newEmail: newEmail.trim().toLowerCase() !== selectedTeacher.email.toLowerCase() ? newEmail.trim() : undefined,
+          newName: newName.trim() !== selectedTeacher.name ? newName.trim() : undefined,
+          newPhone: newPhone.trim() !== (selectedTeacher.phone || "") ? newPhone.trim() : undefined,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Error al actualizar perfil");
+      }
+
+      toast.success("Perfil actualizado correctamente");
+      setEditProfileModalOpen(false);
+      await loadTeachers();
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || "No se pudo actualizar el perfil");
+    } finally {
+      setUpdatingProfile(false);
+    }
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedTeacher) return;
+
+    if (newPassword.length < 6) {
+      toast.error("La contraseña debe tener al menos 6 caracteres");
+      return;
+    }
+
+    setChangingPassword(true);
+    try {
+      const response = await fetch("/api/teachers/update-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          teacherId: selectedTeacher.id,
+          currentEmail: selectedTeacher.email,
+          newPassword: newPassword,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Error al cambiar contraseña");
+      }
+
+      toast.success("Contraseña actualizada correctamente");
+      setChangePasswordModalOpen(false);
+      setNewPassword("ascensoUDEL");
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || "No se pudo cambiar la contraseña");
+    } finally {
+      setChangingPassword(false);
     }
   };
 
@@ -242,7 +340,7 @@ export default function ProfesoresPage() {
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div className="grid grid-cols-[1.3fr_2fr_1fr_0.95fr_0.8fr_0.9fr] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
+          <div className="grid grid-cols-[1.3fr_2fr_1fr_0.95fr_0.8fr_1.5fr] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
             <span>Nombre</span>
             <span>Email</span>
             <span>Teléfono</span>
@@ -254,7 +352,7 @@ export default function ProfesoresPage() {
             {teachers.map((teacher) => (
               <div
                 key={teacher.id}
-                className="grid grid-cols-[1.3fr_2fr_1fr_0.95fr_0.8fr_0.9fr] gap-3 px-4 py-2 text-sm text-slate-800"
+                className="grid grid-cols-[1.3fr_2fr_1fr_0.95fr_0.8fr_1.5fr] gap-3 px-4 py-2 text-sm text-slate-800"
               >
                 <span>{teacher.name}</span>
                 <span className="text-slate-600 break-words">{teacher.email}</span>
@@ -263,7 +361,21 @@ export default function ProfesoresPage() {
                   {teacher.role === "adminTeacher" ? "AdminTeacher" : "Profesor"}
                 </span>
                 <span className="font-medium text-green-600">Activo</span>
-                <span className="flex justify-end">
+                <span className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleOpenEditProfile(teacher)}
+                    className="rounded-lg border border-blue-200 px-3 py-1 text-xs font-semibold text-blue-600 hover:border-blue-400"
+                  >
+                    Editar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenChangePassword(teacher)}
+                    className="rounded-lg border border-amber-200 px-3 py-1 text-xs font-semibold text-amber-600 hover:border-amber-400"
+                  >
+                    Cambiar Contraseña
+                  </button>
                   <button
                     type="button"
                     onClick={() => handleDeleteTeacher(teacher)}
@@ -275,6 +387,113 @@ export default function ProfesoresPage() {
                 </span>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Modal para editar perfil */}
+      {editProfileModalOpen && selectedTeacher && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+            <h2 className="mb-4 text-xl font-semibold text-slate-900">
+              Editar Perfil - {selectedTeacher.name}
+            </h2>
+            <form onSubmit={handleUpdateProfile} className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-slate-700">Nombre</label>
+                <input
+                  type="text"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  required
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-slate-700">Email</label>
+                <input
+                  type="email"
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  required
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-slate-700">Teléfono</label>
+                <input
+                  type="text"
+                  value={newPhone}
+                  onChange={(e) => setNewPhone(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setEditProfileModalOpen(false)}
+                  className="flex-1 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                  disabled={updatingProfile}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
+                  disabled={updatingProfile}
+                >
+                  {updatingProfile ? "Guardando..." : "Guardar Cambios"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal para cambiar contraseña */}
+      {changePasswordModalOpen && selectedTeacher && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+            <h2 className="mb-4 text-xl font-semibold text-slate-900">
+              Cambiar Contraseña - {selectedTeacher.name}
+            </h2>
+            <form onSubmit={handleChangePassword} className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-slate-700">Nueva Contraseña</label>
+                <input
+                  type="text"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  required
+                  minLength={6}
+                  placeholder="Mínimo 6 caracteres"
+                />
+                <p className="text-xs text-slate-500">
+                  La contraseña debe tener al menos 6 caracteres
+                </p>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setChangePasswordModalOpen(false);
+                    setNewPassword("ascensoUDEL");
+                  }}
+                  className="flex-1 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                  disabled={changingPassword}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-70"
+                  disabled={changingPassword}
+                >
+                  {changingPassword ? "Cambiando..." : "Cambiar Contraseña"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

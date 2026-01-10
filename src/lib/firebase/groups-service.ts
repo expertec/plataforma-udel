@@ -461,16 +461,39 @@ export async function linkCourseToGroup(params: {
     courseIds: nextCourseIds,
     updatedAt: serverTimestamp(),
   });
+
+  // Si el grupo tiene mentores, agregarlos al nuevo curso
+  const mentorIds = data.assistantTeacherIds ?? [];
+  if (mentorIds.length > 0 && !hasCourse) {
+    const { addMentorsToCourse } = await import("./courses-service");
+    await addMentorsToCourse(courseId, mentorIds);
+  }
 }
 
 export async function setAssistantTeachers(groupId: string, teachers: Array<{ id: string; name: string; email?: string }>) {
   if (!groupId) return;
   const ref = doc(db, "groups", groupId);
+
+  // Obtener el grupo para conocer sus cursos
+  const groupSnap = await getDoc(ref);
+  if (!groupSnap.exists()) return;
+
+  const groupData = groupSnap.data();
+  const courseIds = groupData.courseIds ?? [];
+  const mentorIds = teachers.map((t) => t.id);
+
+  // Actualizar el grupo con los nuevos mentores
   await updateDoc(ref, {
-    assistantTeacherIds: teachers.map((t) => t.id),
+    assistantTeacherIds: mentorIds,
     assistantTeachers: teachers,
     updatedAt: serverTimestamp(),
   });
+
+  // Sincronizar los mentorIds en los cursos asociados
+  if (courseIds.length > 0) {
+    const { syncCourseMentors } = await import("./courses-service");
+    await syncCourseMentors(courseIds, mentorIds);
+  }
 }
 
 /**

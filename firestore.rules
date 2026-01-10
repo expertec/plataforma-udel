@@ -70,17 +70,29 @@ service cloud.firestore {
         request.resource.data.likesCount is int &&
         request.resource.data.likesCount >= 0;
     }
-    function canManageCourse(courseId) {
-      return isAdmin() || (
-        isTeacherLike() &&
+    function isMentorOfCourse(courseId) {
+      // Verifica si el usuario es mentor del curso consultando el array mentorIds
+      let courseData = get(/databases/$(database)/documents/courses/$(courseId)).data;
+      return isTeacherLike() &&
         exists(/databases/$(database)/documents/courses/$(courseId)) &&
-        get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
-      );
+        courseData.keys().hasAny(['mentorIds']) &&
+        courseData.mentorIds is list &&
+        request.auth.uid in courseData.mentorIds;
+    }
+    function canManageCourse(courseId) {
+      return isAdmin() ||
+        isAdminTeacher() ||
+        (
+          isTeacherLike() &&
+          exists(/databases/$(database)/documents/courses/$(courseId)) &&
+          get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
+        ) ||
+        isMentorOfCourse(courseId);
     }
     
     /* users */
     match /users/{userId} {
-      allow read: if isSelf(userId) || isAdmin() || isAdminTeacher() || (isSignedIn() && resource.data.role == 'student');
+      allow read: if isSelf(userId) || isAdmin() || isAdminTeacher();
       allow create: if isAdmin() || isAdminTeacher() || canSelfUpsertProfile(userId);
       allow update: if isAdmin() || isAdminTeacher() || canSelfUpsertProfile(userId);
       allow delete: if isAdmin();
