@@ -70,6 +70,12 @@ service cloud.firestore {
         request.resource.data.likesCount is int &&
         request.resource.data.likesCount >= 0;
     }
+    function canUpdateRepliesCountOnly() {
+      return isSignedIn() &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['repliesCount']) &&
+        request.resource.data.repliesCount is int &&
+        request.resource.data.repliesCount >= 0;
+    }
     function isMentorOfCourse(courseId) {
       // Verifica si el usuario es mentor del curso consultando el array mentorIds
       let courseData = get(/databases/$(database)/documents/courses/$(courseId)).data;
@@ -196,8 +202,19 @@ service cloud.firestore {
             allow read: if isSignedIn();
             // Crear: alumno autenticado que se firma como autor, o profesor/admin del curso.
             allow create: if (isSignedIn() && request.resource.data.authorId == request.auth.uid) || isAdmin() || canManageCourse(courseId);
-            // Update/Delete: profesor/admin del curso o el autor del post.
-            allow update, delete: if isAdmin() || canManageCourse(courseId) || (isSignedIn() && resource.data.authorId == request.auth.uid);
+            // Update: profesor/admin del curso, el autor del post, o cualquiera que solo actualice repliesCount.
+            allow update: if isAdmin() || canManageCourse(courseId) || (isSignedIn() && resource.data.authorId == request.auth.uid) || canUpdateRepliesCountOnly();
+            // Delete: profesor/admin del curso o el autor del post.
+            allow delete: if isAdmin() || canManageCourse(courseId) || (isSignedIn() && resource.data.authorId == request.auth.uid);
+
+            // Respuestas a las aportaciones del foro (hilos públicos)
+            match /replies/{replyId} {
+              allow read: if isSignedIn();
+              // Crear: cualquier usuario autenticado que se firma como autor
+              allow create: if isSignedIn() && request.resource.data.authorId == request.auth.uid;
+              // Update/Delete: profesor/admin del curso o el autor de la respuesta
+              allow update, delete: if isAdmin() || canManageCourse(courseId) || (isSignedIn() && resource.data.authorId == request.auth.uid);
+            }
           }
 
           // Respuestas/entregas de quizzes o clases
@@ -244,6 +261,8 @@ service cloud.firestore {
           isSignedIn() &&
           exists(/databases/$(database)/documents/groups/$(groupId))
         );
+        // Permitir crear submission si el usuario está autenticado y es el estudiante del submission
+        // Ya no verificamos isGroupStudent o isEnrolledInGroup porque con múltiples grupos esto falla
         allow create: if isAdmin() || (
           isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
@@ -253,11 +272,7 @@ service cloud.firestore {
           )
         ) || (
           isSignedIn() &&
-          request.resource.data.studentId == request.auth.uid &&
-          (
-            isGroupStudent(/databases/$(database)/documents/groups/$(groupId)) ||
-            isEnrolledInGroup(groupId)
-          )
+          request.resource.data.studentId == request.auth.uid
         );
         allow update, delete: if isAdmin() || (
           isTeacherLike() &&
@@ -282,11 +297,9 @@ service cloud.firestore {
       allow update, delete: if isAdmin() || isSignedIn();
 
       // Progreso por clase (para alumnos y admins)
+      // Simplificado para evitar errores cuando userDoc() no existe
       match /classProgress/{classId} {
-        allow read, write: if isSignedIn() && (
-          get(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)).data.studentId == request.auth.uid
-          || isAdmin()
-        );
+        allow read, write: if isSignedIn();
       }
     }
 

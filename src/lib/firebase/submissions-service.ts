@@ -10,6 +10,7 @@ import {
   Timestamp,
   updateDoc,
   where,
+  deleteDoc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 
@@ -121,6 +122,14 @@ export async function getStudentSubmissions(
   const q = query(ref, where("studentId", "==", studentId), orderBy("submittedAt", "desc"));
   const snap = await getDocs(q);
   return snap.docs.map((d) => toSubmission(d.id, d.data()));
+}
+
+export async function deleteSubmission(
+  groupId: string,
+  submissionId: string,
+): Promise<void> {
+  const ref = doc(db, "groups", groupId, "submissions", submissionId);
+  await deleteDoc(ref);
 }
 
 type SubmissionData = {

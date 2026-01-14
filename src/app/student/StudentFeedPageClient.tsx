@@ -27,6 +27,15 @@ import {
 } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { createSubmission } from "@/lib/firebase/submissions-service";
+import {
+  getForumPosts,
+  getForumReplies,
+  createOrUpdateForumPost,
+  addForumReply,
+  hasStudentPosted,
+  type ForumPost,
+  type ForumReply,
+} from "@/lib/firebase/forum-service";
 import { v4 as uuidv4 } from "uuid";
 import sanitizeHtml from "sanitize-html";
 
@@ -3473,13 +3482,14 @@ function ActionStack({
           onClick={onForum}
           isActive={forumDone}
         />
-      ) : null}
-      <ActionButton
-        icon="comment"
-        label={comments.toLocaleString("es-MX")}
-        onClick={handleComments}
-        disabled={commentsDisabled}
-      />
+      ) : (
+        <ActionButton
+          icon="comment"
+          label={comments.toLocaleString("es-MX")}
+          onClick={handleComments}
+          disabled={commentsDisabled}
+        />
+      )}
     </div>
   );
 }
@@ -4479,7 +4489,7 @@ function CommentsPanel({ classId, comments, onAdd, onClose, loading = false }: C
   };
 
   return (
-    <div className="fixed inset-y-0 right-0 z-40 w-full max-w-md bg-neutral-900/95 backdrop-blur-lg text-white shadow-2xl lg:top-0 lg:right-0">
+    <div className="fixed inset-y-0 right-0 z-40 w-full max-w-md bg-neutral-900/95 backdrop-blur-lg text-white shadow-2xl lg:top-0 lg:right-0 flex flex-col">
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
         <div>
           <p className="text-sm font-semibold">Comentarios</p>
@@ -4494,7 +4504,7 @@ function CommentsPanel({ classId, comments, onAdd, onClose, loading = false }: C
         </button>
       </div>
 
-      <div className="flex h-[70vh] flex-col gap-3 overflow-y-auto px-4 py-3">
+      <div className="flex-1 flex flex-col gap-3 px-4 py-3 pb-20 min-h-0">
         {loading ? (
           <p className="text-sm text-white/60">Cargando comentarios...</p>
         ) : comments.length === 0 ? (
@@ -4557,23 +4567,29 @@ type ForumPanelProps = {
 };
 
 function ForumPanel({ open, onClose, classMeta, requiredFormat, studentName, studentId, onSubmitted }: ForumPanelProps) {
+  const [view, setView] = useState<"list" | "create">("list");
+  const [posts, setPosts] = useState<ForumPost[]>([]);
+  const [loadingPosts, setLoadingPosts] = useState(false);
+  const [replies, setReplies] = useState<Record<string, ForumReply[]>>({});
+  const [showReplies, setShowReplies] = useState<Record<string, boolean>>({});
+  const [replyText, setReplyText] = useState<Record<string, string>>({});
+  const [sendingReply, setSendingReply] = useState<Record<string, boolean>>({});
+
+  // Estados para crear aportación
   const [text, setText] = useState("");
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [mediaUrl, setMediaUrl] = useState("");
   const [previewUrl, setPreviewUrl] = useState("");
   const [uploading, setUploading] = useState(false);
   const [alreadySubmitted, setAlreadySubmitted] = useState(false);
-  const [checkingExisting, setCheckingExisting] = useState(false);
   const audioFormat = requiredFormat === "audio";
   const videoFormat = requiredFormat === "video";
-  const requiresMedia = audioFormat || videoFormat;
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
   const [recording, setRecording] = useState(false);
   const [recordingError, setRecordingError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Generar previsualización
     if (mediaFile) {
       const url = URL.createObjectURL(mediaFile);
       setPreviewUrl(url);
@@ -4590,52 +4606,117 @@ function ForumPanel({ open, onClose, classMeta, requiredFormat, studentName, stu
   }, [mediaFile, mediaUrl]);
 
   useEffect(() => {
-    if (!open) {
+    if (!open || !classMeta?.courseId || !classMeta.lessonId || !classMeta.classDocId) {
       setAlreadySubmitted(false);
-      setCheckingExisting(false);
       return;
     }
-    const checkExisting = async () => {
-      if (!studentId || !classMeta?.courseId || !classMeta.lessonId || !(classMeta.classDocId ?? classMeta.id)) return;
-      setCheckingExisting(true);
+
+    const checkAndLoadPosts = async () => {
+      if (!studentId) return;
+
       try {
-        const forumDocRef = doc(
-          db,
-          "courses",
-          classMeta.courseId,
-          "lessons",
-          classMeta.lessonId,
-          "classes",
-          classMeta.classDocId ?? classMeta.id,
-          "forums",
-          studentId,
+        const hasPosted = await hasStudentPosted(
+          classMeta.courseId!,
+          classMeta.lessonId!,
+          classMeta.classDocId!,
+          studentId
         );
-        const snap = await getDoc(forumDocRef);
-        setAlreadySubmitted(snap.exists());
+        setAlreadySubmitted(hasPosted);
       } catch (err) {
-        console.warn("No se pudo verificar foro existente:", err);
+        console.warn("Error verificando aportación:", err);
+      }
+
+      setLoadingPosts(true);
+      try {
+        const allPosts = await getForumPosts(
+          classMeta.courseId!,
+          classMeta.lessonId!,
+          classMeta.classDocId!
+        );
+        setPosts(allPosts);
+      } catch (err) {
+        console.error("Error cargando aportaciones:", err);
       } finally {
-        setCheckingExisting(false);
+        setLoadingPosts(false);
       }
     };
-    checkExisting();
-  }, [open, classMeta?.courseId, classMeta?.lessonId, classMeta?.classDocId, classMeta?.id, studentId]);
 
-  if (!open || !classMeta) return null;
+    checkAndLoadPosts();
+  }, [open, classMeta?.courseId, classMeta?.lessonId, classMeta?.classDocId, studentId]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (alreadySubmitted) {
-      toast.success("Ya enviaste un aporte para este foro.");
-      onSubmitted();
-      onClose();
+  const loadReplies = async (postId: string) => {
+    if (!classMeta?.courseId || !classMeta.lessonId || !classMeta.classDocId) return;
+
+    try {
+      const postReplies = await getForumReplies(
+        classMeta.courseId,
+        classMeta.lessonId,
+        classMeta.classDocId,
+        postId
+      );
+      setReplies(prev => ({ ...prev, [postId]: postReplies }));
+    } catch (err) {
+      console.error("Error cargando respuestas:", err);
+    }
+  };
+
+  const toggleReplies = async (postId: string) => {
+    const isShowing = showReplies[postId];
+    setShowReplies(prev => ({ ...prev, [postId]: !isShowing }));
+
+    if (!isShowing && !replies[postId]) {
+      await loadReplies(postId);
+    }
+  };
+
+  const handleSendReply = async (postId: string) => {
+    const text = replyText[postId]?.trim();
+    if (!text || !studentId || !classMeta?.courseId || !classMeta.lessonId || !classMeta.classDocId) {
+      toast.error("Escribe un mensaje para responder");
       return;
     }
+
+    setSendingReply(prev => ({ ...prev, [postId]: true }));
+    try {
+      await addForumReply({
+        courseId: classMeta.courseId,
+        lessonId: classMeta.lessonId,
+        classId: classMeta.classDocId,
+        postId: postId,
+        text: text,
+        authorId: studentId,
+        authorName: studentName || "Estudiante",
+        role: "student",
+      });
+
+      setReplyText(prev => ({ ...prev, [postId]: "" }));
+      await loadReplies(postId);
+
+      setPosts(prevPosts =>
+        prevPosts.map(p =>
+          p.id === postId
+            ? { ...p, repliesCount: (p.repliesCount || 0) + 1 }
+            : p
+        )
+      );
+
+      toast.success("Respuesta enviada");
+    } catch (err) {
+      console.error("Error enviando respuesta:", err);
+      toast.error("No se pudo enviar la respuesta");
+    } finally {
+      setSendingReply(prev => ({ ...prev, [postId]: false }));
+    }
+  };
+
+  const handleSubmitPost = async (e: React.FormEvent) => {
+    e.preventDefault();
+
     if (!studentId) {
       toast.error("Inicia sesión para participar en el foro");
       return;
     }
-    if (!classMeta.courseId || !classMeta.lessonId || !(classMeta.classDocId ?? classMeta.id)) {
+    if (!classMeta?.courseId || !classMeta.lessonId || !classMeta.classDocId) {
       toast.error("No se encontró la clase para enviar el foro");
       return;
     }
@@ -4651,31 +4732,6 @@ function ForumPanel({ open, onClose, classMeta, requiredFormat, studentName, stu
       toast.error("Sube un archivo o pega un enlace");
       return;
     }
-    const targetClassId = classMeta.classDocId ?? classMeta.id;
-    const forumDocRef = doc(
-      db,
-      "courses",
-      classMeta.courseId ?? "",
-      "lessons",
-      classMeta.lessonId ?? "",
-      "classes",
-      targetClassId,
-      "forums",
-      studentId,
-    );
-
-    // Evitar envíos duplicados: si ya existe aporte del alumno, marcamos como listo y cerramos.
-    try {
-      const existing = await getDoc(forumDocRef);
-      if (existing.exists()) {
-        toast.success("Ya enviaste un aporte para este foro.");
-        onSubmitted();
-        onClose();
-        return;
-      }
-    } catch (err) {
-      console.warn("No se pudo verificar envío previo del foro:", err);
-    }
 
     setUploading(true);
     try {
@@ -4685,39 +4741,53 @@ function ForumPanel({ open, onClose, classMeta, requiredFormat, studentName, stu
         const ext = mediaFile.name.split(".").pop() || (requiredFormat === "audio" ? "aac" : "mp4");
         const storageRef = ref(
           storage,
-          `forum-posts/${studentId}/${classMeta.id}/${uuidv4()}.${ext}`,
+          `forum-posts/${studentId}/${classMeta.classDocId}/${uuidv4()}.${ext}`,
         );
         await uploadBytes(storageRef, mediaFile, { contentType: mediaFile.type || undefined });
         storedUrl = await getDownloadURL(storageRef);
       }
-      await setDoc(forumDocRef, {
+
+      await createOrUpdateForumPost({
+        courseId: classMeta.courseId,
+        lessonId: classMeta.lessonId,
+        classId: classMeta.classDocId,
+        studentId: studentId,
         text: text.trim(),
-        authorId: studentId,
         authorName: studentName || "Estudiante",
         format: requiredFormat,
         mediaUrl: storedUrl || null,
-        createdAt: serverTimestamp(),
       });
-      toast.success("Aporte enviado");
-      onSubmitted();
-      onClose();
+
+      toast.success("Aporte publicado");
       setText("");
       setMediaFile(null);
       setMediaUrl("");
+      setAlreadySubmitted(true);
+      onSubmitted();
+      setView("list");
+
+      const allPosts = await getForumPosts(
+        classMeta.courseId,
+        classMeta.lessonId,
+        classMeta.classDocId
+      );
+      setPosts(allPosts);
     } catch (err) {
-      console.error("No se pudo enviar al foro:", err);
+      console.error("Error enviando aporte:", err);
       toast.error("No se pudo enviar el aporte");
     } finally {
       setUploading(false);
     }
   };
 
+  if (!open || !classMeta) return null;
+
   return (
-    <div className="fixed inset-y-0 right-0 z-40 w-full max-w-md bg-neutral-900/95 backdrop-blur-lg text-white shadow-2xl lg:top-0 lg:right-0">
+    <div className="fixed inset-y-0 right-0 z-40 w-full max-w-md bg-neutral-900/95 backdrop-blur-lg text-white shadow-2xl lg:top-0 lg:right-0 flex flex-col overflow-hidden max-h-screen">
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
         <div>
-          <p className="text-sm font-semibold">Foro</p>
-          <p className="text-xs text-white/60">Clase {classMeta.classTitle ?? classMeta.title}</p>
+          <p className="text-sm font-semibold">Foro Público</p>
+          <p className="text-xs text-white/60">{classMeta.classTitle ?? classMeta.title}</p>
         </div>
         <button
           type="button"
@@ -4728,157 +4798,264 @@ function ForumPanel({ open, onClose, classMeta, requiredFormat, studentName, stu
         </button>
       </div>
 
-      <form onSubmit={handleSubmit} className="flex h-[70vh] flex-col">
-        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-          <div className="rounded-2xl bg-white/5 p-3 text-sm text-white/90 space-y-2">
-            <p className="text-xs uppercase tracking-wide text-white/60">Formato requerido</p>
-            <p className="text-base font-semibold">
-              {requiredFormat === "text" ? "Texto" : requiredFormat === "audio" ? "Audio" : "Video"}
-            </p>
-            <p className="text-xs text-white/60">
-              Envía al menos un aporte en este formato para desbloquear la siguiente clase.
-            </p>
-          </div>
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {view === "list" ? (
+          <div className="px-4 py-4 space-y-3">
+            {!alreadySubmitted && (
+              <div className="rounded-2xl bg-blue-600/20 border border-blue-500/30 p-3">
+                <p className="text-xs text-blue-200 mb-2">
+                  Debes hacer tu aportación ({requiredFormat === "text" ? "texto" : requiredFormat === "audio" ? "audio" : "video"}) para desbloquear la siguiente clase.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setView("create")}
+                  className="w-full rounded-lg bg-blue-600 hover:bg-blue-500 px-3 py-2 text-sm font-semibold text-white"
+                >
+                  Crear mi aportación
+                </button>
+              </div>
+            )}
 
-          {alreadySubmitted ? (
-            <div className="rounded-2xl border border-green-500/30 bg-green-500/10 px-4 py-3 text-sm text-green-100">
-              Ya enviaste un aporte para este foro. Solo se permite un envío por clase.
-            </div>
-          ) : (
-            <>
-              {!audioFormat && !videoFormat ? (
-                <div className="space-y-2 rounded-2xl bg-white/5 p-3">
-                  <label className="text-sm font-semibold text-white">
-                    {videoFormat ? "Tu aporte en texto (obligatorio)" : "Mensaje"}
-                  </label>
-                  <textarea
-                    value={text}
-                    onChange={(e) => setText(e.target.value)}
-                    disabled={alreadySubmitted || uploading}
-                    rows={3}
-                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none"
-                    placeholder="Escribe tu aporte"
-                  />
-                </div>
-              ) : null}
+            {loadingPosts ? (
+              <div className="text-center text-white/50 py-8">Cargando aportaciones...</div>
+            ) : posts.length === 0 ? (
+              <div className="text-center text-white/50 py-8">
+                <p>No hay aportaciones aún.</p>
+                <p className="text-xs mt-2">Sé el primero en participar.</p>
+              </div>
+            ) : (
+              posts.map(post => (
+                <div key={post.id} className="rounded-2xl bg-white/5 border border-white/10 p-3 space-y-2">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <p className="text-sm font-semibold text-white">{post.authorName}</p>
+                      <p className="text-xs text-white/50">
+                        {post.createdAt.toLocaleDateString("es-MX", {
+                          day: "numeric",
+                          month: "short",
+                          hour: "2-digit",
+                          minute: "2-digit"
+                        })}
+                      </p>
+                    </div>
+                    <span className="text-xs px-2 py-1 rounded-full bg-white/10 text-white/70">
+                      {post.format === "text" ? "Texto" : post.format === "audio" ? "Audio" : "Video"}
+                    </span>
+                  </div>
 
-              {audioFormat ? (
-                <div className="space-y-2 rounded-2xl bg-white/5 p-3">
-                  <label className="text-sm font-semibold text-white">
-                    Sube audio, graba o pega enlace
-                  </label>
-                  <div className="flex flex-wrap items-center gap-2">
+                  {post.text && (
+                    <p className="text-sm text-white/90 whitespace-pre-wrap">{post.text}</p>
+                  )}
+
+                  {post.mediaUrl && post.format === "audio" && (
+                    <audio controls src={post.mediaUrl} className="w-full" />
+                  )}
+
+                  {post.mediaUrl && post.format === "video" && (
+                    <video controls src={post.mediaUrl} className="w-full rounded-lg" />
+                  )}
+
+                  <div className="flex items-center gap-3 pt-2 border-t border-white/10">
                     <button
                       type="button"
-                      onClick={async () => {
-                        setRecordingError(null);
-                        if (recording) {
-                          recorderRef.current?.stop();
-                          return;
-                        }
-                        try {
-                          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                          const recorder = new MediaRecorder(stream);
-                          recorderRef.current = recorder;
-                          chunksRef.current = [];
-                          recorder.ondataavailable = (ev) => {
-                            if (ev.data.size > 0) chunksRef.current.push(ev.data);
-                          };
-                          recorder.onstop = () => {
-                            const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-                            const file = new File([blob], `grabacion-${Date.now()}.webm`, { type: "audio/webm" });
-                            setMediaFile(file);
-                            setMediaUrl("");
-                            stream.getTracks().forEach((t) => t.stop());
-                            setRecording(false);
-                          };
-                          recorder.start();
-                          setRecording(true);
-                        } catch (err: any) {
-                          console.error("No se pudo iniciar grabación:", err);
-                          setRecordingError("No se pudo acceder al micrófono");
-                          setRecording(false);
-                        }
-                      }}
-                      disabled={alreadySubmitted || uploading}
-                      className={`rounded-full px-3 py-2 text-xs font-semibold ${
-                        recording ? "bg-red-600 text-white" : "bg-white/10 text-white hover:bg-white/20"
-                      }`}
+                      onClick={() => toggleReplies(post.id)}
+                      className="text-xs text-blue-400 hover:text-blue-300 font-medium"
                     >
-                      {recording ? "Detener grabación" : "Grabar audio"}
+                      {showReplies[post.id] ? "Ocultar" : "Ver"} respuestas ({post.repliesCount || 0})
                     </button>
-                    {recordingError ? <span className="text-xs text-red-300">{recordingError}</span> : null}
                   </div>
-                  <div className="space-y-2">
-                    <input
-                      type="file"
-                      accept="audio/*"
-                      onChange={(e) => setMediaFile(e.target.files?.[0] ?? null)}
-                      disabled={alreadySubmitted || uploading}
-                      className="w-full text-sm text-white"
-                    />
-                    <input
-                      value={mediaUrl}
-                      onChange={(e) => setMediaUrl(e.target.value)}
-                      disabled={alreadySubmitted || uploading}
-                      placeholder="https://... (opcional)"
-                      className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none"
-                    />
-                    {mediaFile ? (
-                      <p className="text-xs text-white/70">Archivo seleccionado: {mediaFile.name}</p>
-                    ) : null}
-                    {previewUrl ? (
-                      <div className="rounded-lg border border-white/10 bg-white/5 p-2">
-                        <p className="text-xs text-white/60 mb-1">Previsualización</p>
-                        <audio controls src={previewUrl} className="w-full" />
+
+                  {showReplies[post.id] && (
+                    <div className="space-y-2 pl-3 border-l-2 border-white/10 mt-2">
+                      <div className="space-y-2 pr-2">
+                        {replies[post.id]?.map(reply => (
+                          <div key={reply.id} className="bg-white/5 rounded-lg p-2">
+                            <div className="flex items-center gap-2 mb-1">
+                              <p className="text-xs font-semibold text-white/90">{reply.authorName}</p>
+                              {reply.role === "professor" && (
+                                <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500/30 text-amber-200">
+                                  Profesor
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-white/80 whitespace-pre-wrap">{reply.text}</p>
+                            <p className="text-xs text-white/40 mt-1">
+                              {reply.createdAt.toLocaleDateString("es-MX", {
+                                day: "numeric",
+                                month: "short",
+                                hour: "2-digit",
+                                minute: "2-digit"
+                              })}
+                            </p>
+                          </div>
+                        ))}
                       </div>
-                    ) : null}
-                  </div>
+
+                      <div className="flex gap-2 mt-2">
+                        <input
+                          type="text"
+                          value={replyText[post.id] || ""}
+                          onChange={(e) => setReplyText(prev => ({ ...prev, [post.id]: e.target.value }))}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) {
+                              e.preventDefault();
+                              handleSendReply(post.id);
+                            }
+                          }}
+                          placeholder="Escribe una respuesta..."
+                          className="flex-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-xs text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleSendReply(post.id)}
+                          disabled={sendingReply[post.id]}
+                          className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 px-3 py-1.5 text-xs font-semibold text-white"
+                        >
+                          {sendingReply[post.id] ? "..." : "Enviar"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              ) : videoFormat ? (
-                <div className="space-y-2 rounded-2xl bg-white/5 p-3">
-                  <label className="text-sm font-semibold text-white">Sube tu video</label>
+              ))
+            )}
+          </div>
+        ) : (
+          <form onSubmit={handleSubmitPost} className="space-y-4 px-4 py-4">
+            <div className="rounded-2xl bg-white/5 p-3 text-sm text-white/90 space-y-2">
+              <p className="text-xs uppercase tracking-wide text-white/60">Formato requerido</p>
+              <p className="text-base font-semibold">
+                {requiredFormat === "text" ? "Texto" : requiredFormat === "audio" ? "Audio" : "Video"}
+              </p>
+              <p className="text-xs text-white/60">
+                Tu aportación será pública y otros estudiantes podrán responder.
+              </p>
+            </div>
+
+            {!audioFormat && !videoFormat ? (
+              <div className="space-y-2 rounded-2xl bg-white/5 p-3">
+                <label className="text-sm font-semibold text-white">Tu aportación</label>
+                <textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  disabled={uploading}
+                  rows={5}
+                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none"
+                  placeholder="Escribe tu aporte"
+                />
+              </div>
+            ) : null}
+
+            {audioFormat ? (
+              <div className="space-y-2 rounded-2xl bg-white/5 p-3">
+                <label className="text-sm font-semibold text-white">
+                  Sube audio, graba o pega enlace
+                </label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setRecordingError(null);
+                      if (recording) {
+                        recorderRef.current?.stop();
+                        return;
+                      }
+                      try {
+                        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                        const recorder = new MediaRecorder(stream);
+                        recorderRef.current = recorder;
+                        chunksRef.current = [];
+                        recorder.ondataavailable = (ev) => {
+                          if (ev.data.size > 0) chunksRef.current.push(ev.data);
+                        };
+                        recorder.onstop = () => {
+                          const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+                          const file = new File([blob], `grabacion-${Date.now()}.webm`, { type: "audio/webm" });
+                          setMediaFile(file);
+                          setMediaUrl("");
+                          stream.getTracks().forEach((t) => t.stop());
+                          setRecording(false);
+                        };
+                        recorder.start();
+                        setRecording(true);
+                      } catch (err: any) {
+                        console.error("No se pudo iniciar grabación:", err);
+                        setRecordingError("No se pudo acceder al micrófono");
+                        setRecording(false);
+                      }
+                    }}
+                    disabled={uploading}
+                    className={`rounded-full px-3 py-2 text-xs font-semibold ${
+                      recording ? "bg-red-600 text-white" : "bg-white/10 text-white hover:bg-white/20"
+                    }`}
+                  >
+                    {recording ? "Detener grabación" : "Grabar audio"}
+                  </button>
+                  {recordingError ? <span className="text-xs text-red-300">{recordingError}</span> : null}
+                </div>
+                <div className="space-y-2">
                   <input
                     type="file"
-                    accept="video/*"
+                    accept="audio/*"
                     onChange={(e) => setMediaFile(e.target.files?.[0] ?? null)}
-                    disabled={alreadySubmitted || uploading}
+                    disabled={uploading}
                     className="w-full text-sm text-white"
+                  />
+                  <input
+                    value={mediaUrl}
+                    onChange={(e) => setMediaUrl(e.target.value)}
+                    disabled={uploading}
+                    placeholder="https://... (opcional)"
+                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none"
                   />
                   {mediaFile ? (
                     <p className="text-xs text-white/70">Archivo seleccionado: {mediaFile.name}</p>
                   ) : null}
+                  {previewUrl ? (
+                    <div className="rounded-lg border border-white/10 bg-white/5 p-2">
+                      <p className="text-xs text-white/60 mb-1">Previsualización</p>
+                      <audio controls src={previewUrl} className="w-full" />
+                    </div>
+                  ) : null}
                 </div>
-              ) : null}
-            </>
-          )}
-        </div>
+              </div>
+            ) : videoFormat ? (
+              <div className="space-y-2 rounded-2xl bg-white/5 p-3">
+                <label className="text-sm font-semibold text-white">Sube tu video</label>
+                <input
+                  type="file"
+                  accept="video/*"
+                  onChange={(e) => setMediaFile(e.target.files?.[0] ?? null)}
+                  disabled={uploading}
+                  className="w-full text-sm text-white"
+                />
+                {mediaFile ? (
+                  <p className="text-xs text-white/70">Archivo seleccionado: {mediaFile.name}</p>
+                ) : null}
+              </div>
+            ) : null}
 
-        {!alreadySubmitted ? (
-          <div className="px-4 pb-4">
             <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={() => setView("list")}
                 className="rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/20"
               >
                 Cancelar
               </button>
               <button
                 type="submit"
-                disabled={uploading || alreadySubmitted}
+                disabled={uploading}
                 className={`inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold text-white ${
-                  uploading || alreadySubmitted
-                    ? "bg-green-600/60 cursor-not-allowed"
-                    : "bg-green-600 hover:bg-green-500"
+                  uploading ? "bg-green-600/60 cursor-not-allowed" : "bg-green-600 hover:bg-green-500"
                 }`}
               >
-                {alreadySubmitted ? "Aporte enviado" : uploading ? "Enviando..." : "Enviar aporte"}
+                {uploading ? "Publicando..." : "Publicar aporte"}
               </button>
             </div>
-          </div>
-        ) : null}
-      </form>
+          </form>
+        )}
+      </div>
     </div>
   );
 }
@@ -4909,7 +5086,7 @@ function AssignmentPanel({ classId, classTitle, templateUrl, note, onChangeNote,
   };
 
   return (
-    <div className="fixed inset-y-0 right-0 z-40 w-full max-w-md bg-neutral-900/95 backdrop-blur-lg text-white shadow-2xl lg:top-0 lg:right-0">
+    <div className="fixed inset-y-0 right-0 z-40 w-full max-w-md bg-neutral-900/95 backdrop-blur-lg text-white shadow-2xl lg:top-0 lg:right-0 flex flex-col">
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
         <div>
           <p className="text-sm font-semibold">Tarea</p>
@@ -4929,7 +5106,7 @@ function AssignmentPanel({ classId, classTitle, templateUrl, note, onChangeNote,
         </button>
       </div>
 
-      <div className="flex h-[70vh] flex-col gap-4 overflow-y-auto px-4 py-4">
+      <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-4 min-h-0">
         <div className="rounded-2xl bg-white/5 p-3 text-sm text-white/90">
           {templateUrl ? (
             <a

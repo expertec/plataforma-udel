@@ -3,10 +3,11 @@
 import { useEffect, useState } from "react";
 import { getDocs, collection } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
-import { getSubmissionsByClass, Submission } from "@/lib/firebase/submissions-service";
+import { getSubmissionsByClass, Submission, deleteSubmission } from "@/lib/firebase/submissions-service";
 import { gradeSubmission } from "@/lib/firebase/submissions-service";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { GradeModal } from "./GradeModal";
+import toast from "react-hot-toast";
 
 type Props = {
   groupId: string;
@@ -41,6 +42,7 @@ export function SubmissionsModal({
 }: Props) {
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<Row[]>([]);
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [gradeModal, setGradeModal] = useState<{
     open: boolean;
     submission?: Submission;
@@ -115,6 +117,38 @@ export function SubmissionsModal({
     });
   };
 
+  const handleResetSubmission = async (submissionId: string, studentName: string) => {
+    if (!confirm(`¿Estás seguro de que deseas resetear la tarea de ${studentName}? Esto permitirá que el alumno la vuelva a enviar.`)) {
+      return;
+    }
+
+    setDeletingIds((prev) => new Set(prev).add(submissionId));
+    try {
+      await deleteSubmission(groupId, submissionId);
+      toast.success("Tarea reseteada. El alumno puede enviarla nuevamente.");
+
+      // Recargar las submissions
+      const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
+        (s) => !courseId || !s.courseId || s.courseId === courseId,
+      );
+      setRows((prev) =>
+        prev.map((r) => ({
+          ...r,
+          submission: submissions.find((s) => s.studentId === r.student.id),
+        })),
+      );
+    } catch (err) {
+      console.error("Error al resetear la tarea:", err);
+      toast.error("No se pudo resetear la tarea");
+    } finally {
+      setDeletingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(submissionId);
+        return next;
+      });
+    }
+  };
+
   return (
     <Dialog open={isOpen} onOpenChange={(open) => (!open ? onClose() : null)}>
       <DialogContent className="max-w-4xl">
@@ -136,6 +170,7 @@ export function SubmissionsModal({
                   {classType === "forum" ? <th className="px-3 py-2 text-left">Aporte</th> : null}
                   {classType !== "forum" ? (
                     <>
+                      <th className="px-3 py-2 text-left">Archivo</th>
                       <th className="px-3 py-2 text-left">Calificación</th>
                       <th className="px-3 py-2 text-left">Acción</th>
                     </>
@@ -174,25 +209,53 @@ export function SubmissionsModal({
                       ) : (
                         <>
                           <td className="px-3 py-2 text-slate-600">
+                            {sub?.fileUrl ? (
+                              <a
+                                href={sub.fileUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-xs font-semibold text-blue-600 hover:underline"
+                              >
+                                Ver archivo
+                              </a>
+                            ) : sub?.content ? (
+                              <span className="text-xs text-slate-500">Texto/Enlace</span>
+                            ) : (
+                              "-"
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-slate-600">
                             {sub?.grade != null ? sub.grade : "-"}
                           </td>
                           <td className="px-3 py-2">
-                            <button
-                              type="button"
-                              className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-medium text-blue-600 hover:border-blue-400 disabled:opacity-60"
-                              disabled={!sub}
-                              onClick={() =>
-                                sub
-                                  ? setGradeModal({
-                                      open: true,
-                                      submission: sub,
-                                      readonly: sub?.grade != null,
-                                    })
-                                  : null
-                              }
-                            >
-                              {!sub ? "Pendiente" : sub.grade == null ? "Calificar" : "Ver"}
-                            </button>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-medium text-blue-600 hover:border-blue-400 disabled:opacity-60"
+                                disabled={!sub}
+                                onClick={() =>
+                                  sub
+                                    ? setGradeModal({
+                                        open: true,
+                                        submission: sub,
+                                        readonly: sub?.grade != null,
+                                      })
+                                    : null
+                                }
+                              >
+                                {!sub ? "Pendiente" : sub.grade == null ? "Calificar" : "Ver"}
+                              </button>
+                              {sub ? (
+                                <button
+                                  type="button"
+                                  className="rounded-lg border border-red-200 bg-red-50 px-3 py-1 text-sm font-medium text-red-600 hover:border-red-400 hover:bg-red-100 disabled:opacity-60"
+                                  disabled={deletingIds.has(sub.id)}
+                                  onClick={() => handleResetSubmission(sub.id, row.student.name)}
+                                >
+                                  {deletingIds.has(sub.id) ? "Reseteando..." : "Resetear"}
+                                </button>
+                              ) : null}
+                            </div>
                           </td>
                         </>
                       )}

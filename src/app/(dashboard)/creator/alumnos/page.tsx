@@ -15,6 +15,7 @@ import {
   checkStudentExists,
 } from "@/lib/firebase/students-service";
 import { getGroupStudents, getGroupsForTeacher } from "@/lib/firebase/groups-service";
+import { StudentAllSubmissionsModal } from "./_components/StudentAllSubmissionsModal";
 
 type ParsedStudentRow = {
   row: number;
@@ -74,6 +75,10 @@ export default function AlumnosPage() {
 
   // Estado para búsqueda
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Estado para modal de tareas
+  const [submissionsModalOpen, setSubmissionsModalOpen] = useState(false);
+  const [selectedStudentForSubmissions, setSelectedStudentForSubmissions] = useState<StudentUser | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -1077,6 +1082,16 @@ export default function AlumnosPage() {
                       </button>
                       <button
                         type="button"
+                        onClick={() => {
+                          setSelectedStudentForSubmissions(s);
+                          setSubmissionsModalOpen(true);
+                        }}
+                        className="rounded-lg border border-purple-200 px-3 py-1 text-xs font-semibold text-purple-600 transition hover:border-purple-400 hover:bg-purple-50"
+                      >
+                        Tareas
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => handleOpenChangePassword(s)}
                         className="rounded-lg border border-green-200 px-3 py-1 text-xs font-semibold text-green-600 transition hover:border-green-400 hover:bg-green-50"
                       >
@@ -1246,6 +1261,20 @@ export default function AlumnosPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Modal para ver tareas del alumno */}
+      {submissionsModalOpen && selectedStudentForSubmissions && (
+        <StudentAllSubmissionsModal
+          studentId={selectedStudentForSubmissions.id}
+          studentName={selectedStudentForSubmissions.name}
+          studentEmail={selectedStudentForSubmissions.email}
+          isOpen={submissionsModalOpen}
+          onClose={() => {
+            setSubmissionsModalOpen(false);
+            setSelectedStudentForSubmissions(null);
+          }}
+        />
       )}
     </div>
   );

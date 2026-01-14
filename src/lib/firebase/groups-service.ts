@@ -470,6 +470,47 @@ export async function linkCourseToGroup(params: {
   }
 }
 
+export async function unlinkCourseFromGroup(params: {
+  groupId: string;
+  courseId: string;
+}): Promise<void> {
+  const { groupId, courseId } = params;
+  const ref = doc(db, "groups", groupId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error("Grupo no encontrado");
+
+  const data = snap.data();
+  const courses: Array<{ courseId: string; courseName: string }> = Array.isArray(data.courses)
+    ? data.courses
+    : data.courseId
+      ? [{ courseId: data.courseId, courseName: data.courseName ?? "" }]
+      : [];
+  const courseIds: string[] = Array.isArray(data.courseIds) ? data.courseIds : [];
+
+  // Remover el curso de los arrays
+  const nextCourses = courses.filter((c) => c.courseId !== courseId);
+  const nextCourseIds = courseIds.filter((id) => id !== courseId);
+
+  // Si solo queda un curso o ninguno, actualizar courseId y courseName principales
+  const primaryCourse = nextCourses[0];
+  const updateData: any = {
+    courses: nextCourses,
+    courseIds: nextCourseIds,
+    updatedAt: serverTimestamp(),
+  };
+
+  if (primaryCourse) {
+    updateData.courseId = primaryCourse.courseId;
+    updateData.courseName = primaryCourse.courseName;
+  } else {
+    // Si no quedan cursos, limpiar campos principales
+    updateData.courseId = "";
+    updateData.courseName = "";
+  }
+
+  await updateDoc(ref, updateData);
+}
+
 export async function setAssistantTeachers(groupId: string, teachers: Array<{ id: string; name: string; email?: string }>) {
   if (!groupId) return;
   const ref = doc(db, "groups", groupId);

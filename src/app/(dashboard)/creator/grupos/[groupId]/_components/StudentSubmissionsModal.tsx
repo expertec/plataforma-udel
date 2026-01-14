@@ -1,0 +1,251 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { getStudentSubmissions, Submission, deleteSubmission } from "@/lib/firebase/submissions-service";
+import toast from "react-hot-toast";
+
+type Props = {
+  groupId: string;
+  studentId: string;
+  studentName: string;
+  isOpen: boolean;
+  onClose: () => void;
+};
+
+export function StudentSubmissionsModal({
+  groupId,
+  studentId,
+  studentName,
+  isOpen,
+  onClose,
+}: Props) {
+  const [loading, setLoading] = useState(false);
+  const [submissions, setSubmissions] = useState<Submission[]>([]);
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const load = async () => {
+      setLoading(true);
+      try {
+        const subs = await getStudentSubmissions(groupId, studentId);
+        setSubmissions(subs);
+      } catch (err) {
+        console.error("Error cargando submissions:", err);
+        toast.error("No se pudieron cargar las tareas");
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, [isOpen, groupId, studentId]);
+
+  const handleResetSubmission = async (submission: Submission) => {
+    if (
+      !confirm(
+        `¿Estás seguro de que deseas resetear la tarea "${submission.className}"? Esto permitirá que ${studentName} la vuelva a enviar.`
+      )
+    ) {
+      return;
+    }
+
+    setDeletingIds((prev) => new Set(prev).add(submission.id));
+    try {
+      await deleteSubmission(groupId, submission.id);
+      toast.success("Tarea reseteada exitosamente");
+
+      // Recargar submissions
+      const subs = await getStudentSubmissions(groupId, studentId);
+      setSubmissions(subs);
+    } catch (err) {
+      console.error("Error al resetear la tarea:", err);
+      toast.error("No se pudo resetear la tarea");
+    } finally {
+      setDeletingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(submission.id);
+        return next;
+      });
+    }
+  };
+
+  const formatDate = (date?: Date | null) => {
+    if (!date) return "-";
+    return date.toLocaleString("es-MX", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  const getClassTypeLabel = (type: string) => {
+    if (type === "quiz") return "Quiz";
+    if (type === "forum") return "Foro";
+    if (type === "assignment") return "Tarea";
+    return type;
+  };
+
+  const getStatusBadge = (submission: Submission) => {
+    if (submission.status === "graded") {
+      return (
+        <span className="rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-700">
+          Calificada: {submission.grade ?? "-"}
+        </span>
+      );
+    }
+    if (submission.status === "late") {
+      return (
+        <span className="rounded-full bg-orange-100 px-2 py-1 text-xs font-medium text-orange-700">
+          Tarde
+        </span>
+      );
+    }
+    return (
+      <span className="rounded-full bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700">
+        Pendiente
+      </span>
+    );
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={(open) => (!open ? onClose() : null)}>
+      <DialogContent className="max-w-5xl max-h-[80vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Tareas de {studentName}</DialogTitle>
+        </DialogHeader>
+
+        {loading ? (
+          <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-6 text-sm text-slate-600">
+            Cargando tareas...
+          </div>
+        ) : submissions.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-6 text-sm text-slate-600">
+            Este alumno no ha enviado ninguna tarea aún.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {submissions.map((sub) => {
+              const isExpanded = expandedId === sub.id;
+              return (
+                <div
+                  key={sub.id}
+                  className="rounded-lg border border-slate-200 bg-white shadow-sm transition hover:shadow-md"
+                >
+                  <div className="flex items-center justify-between gap-4 p-4">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3">
+                        <h3 className="font-semibold text-slate-900">{sub.className}</h3>
+                        <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">
+                          {getClassTypeLabel(sub.classType)}
+                        </span>
+                        {getStatusBadge(sub)}
+                      </div>
+                      <div className="mt-1 flex items-center gap-4 text-xs text-slate-500">
+                        {sub.courseTitle ? (
+                          <span>Curso: {sub.courseTitle}</span>
+                        ) : null}
+                        <span>Enviado: {formatDate(sub.submittedAt)}</span>
+                        {sub.gradedAt ? (
+                          <span>Calificado: {formatDate(sub.gradedAt)}</span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedId(isExpanded ? null : sub.id)}
+                        className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                      >
+                        {isExpanded ? "Ocultar" : "Ver detalles"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleResetSubmission(sub)}
+                        disabled={deletingIds.has(sub.id)}
+                        className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-sm font-medium text-red-600 hover:border-red-400 hover:bg-red-100 disabled:opacity-60"
+                      >
+                        {deletingIds.has(sub.id) ? "Reseteando..." : "Resetear"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {isExpanded ? (
+                    <div className="border-t border-slate-200 bg-slate-50 p-4">
+                      <div className="grid gap-4 md:grid-cols-2">
+                        {sub.fileUrl ? (
+                          <div>
+                            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                              Archivo adjunto
+                            </p>
+                            <a
+                              href={sub.fileUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
+                            >
+                              <svg
+                                className="h-4 w-4"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                                />
+                              </svg>
+                              Descargar archivo
+                            </a>
+                          </div>
+                        ) : null}
+
+                        {sub.content ? (
+                          <div>
+                            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                              Contenido / Enlace
+                            </p>
+                            <div className="rounded-lg bg-white p-3 text-sm text-slate-700">
+                              {sub.content.startsWith("http") ? (
+                                <a
+                                  href={sub.content}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-blue-600 hover:underline"
+                                >
+                                  {sub.content}
+                                </a>
+                              ) : (
+                                <p className="whitespace-pre-wrap">{sub.content}</p>
+                              )}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {sub.feedback ? (
+                          <div className="md:col-span-2">
+                            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                              Retroalimentación
+                            </p>
+                            <div className="rounded-lg bg-white p-3 text-sm text-slate-700">
+                              {sub.feedback}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}

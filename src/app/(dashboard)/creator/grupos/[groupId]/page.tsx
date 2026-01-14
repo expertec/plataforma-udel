@@ -17,6 +17,7 @@ import toast from "react-hot-toast";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Link from "next/link";
 import { EntregasTab } from "./_components/EntregasTab";
+import { StudentSubmissionsModal } from "./_components/StudentSubmissionsModal";
 import { Course } from "@/lib/firebase/courses-service";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
@@ -38,6 +39,12 @@ export default function GroupDetailPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [removingAssistantId, setRemovingAssistantId] = useState<string | null>(null);
+  const [unlinkingCourseId, setUnlinkingCourseId] = useState<string | null>(null);
+  const [studentSubmissionsModal, setStudentSubmissionsModal] = useState<{
+    open: boolean;
+    studentId: string;
+    studentName: string;
+  }>({ open: false, studentId: "", studentName: "" });
 
   useEffect(() => {
     const load = async () => {
@@ -202,6 +209,45 @@ export default function GroupDetailPage() {
     }
   };
 
+  const handleUnlinkCourse = async (courseId: string, courseName: string) => {
+    if (!group || !params?.groupId) return;
+
+    const coursesCount = assignedCourses.length;
+    if (coursesCount <= 1) {
+      toast.error("No puedes desvincular el único curso del grupo");
+      return;
+    }
+
+    if (!window.confirm(`¿Desvincular el curso "${courseName}" de este grupo?\n\nLos alumnos ya no verán las clases de este curso.`)) return;
+
+    setUnlinkingCourseId(courseId);
+    try {
+      const response = await fetch("/api/groups/unlink-course", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          groupId: params.groupId,
+          courseId,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Error al desvincular curso");
+      }
+
+      toast.success("Curso desvinculado correctamente");
+      const updated = await getGroup(params.groupId);
+      if (updated) setGroup(updated);
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || "No se pudo desvincular el curso");
+    } finally {
+      setUnlinkingCourseId(null);
+    }
+  };
+
   return (
     <div className="space-y-6 p-8">
       <div className="flex items-center justify-between">
@@ -287,6 +333,13 @@ export default function GroupDetailPage() {
                   }
                   onOpenModal={() => setStudentsModalOpen(true)}
                   onRemoveStudent={handleRemoveStudent}
+                  onOpenStudentSubmissions={(student) =>
+                    setStudentSubmissionsModal({
+                      open: true,
+                      studentId: student.id,
+                      studentName: student.studentName,
+                    })
+                  }
                 />
               </div>
             </TabsContent>
@@ -354,6 +407,43 @@ export default function GroupDetailPage() {
                     <p className="mt-1 text-sm text-slate-600">No hay mentores asignados.</p>
                   )}
                 </div>
+
+                {/* Sección de Cursos */}
+                <div className="mt-6 flex items-center justify-between border-t border-slate-200 pt-6">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Cursos</p>
+                    <h3 className="text-lg font-semibold text-slate-900">Cursos vinculados al grupo</h3>
+                    <p className="text-sm text-slate-600">
+                      Gestiona los cursos que los alumnos pueden ver en este grupo.
+                    </p>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-sm font-semibold text-slate-800">Cursos asignados</p>
+                  {assignedCourses.length > 0 ? (
+                    <ul className="mt-2 space-y-2 text-sm text-slate-700">
+                      {assignedCourses.map((course) => (
+                        <li key={course.courseId} className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="font-medium">{course.courseName}</p>
+                            <p className="text-xs text-slate-500">ID: {course.courseId}</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleUnlinkCourse(course.courseId, course.courseName)}
+                            disabled={unlinkingCourseId === course.courseId || assignedCourses.length === 1}
+                            className="rounded-full border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 transition hover:border-red-400 disabled:cursor-not-allowed disabled:border-red-100 disabled:text-red-300"
+                            title={assignedCourses.length === 1 ? "No puedes desvincular el único curso" : "Desvincular curso del grupo"}
+                          >
+                            {unlinkingCourseId === course.courseId ? "Desvinculando..." : "Desvincular"}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-1 text-sm text-slate-600">No hay cursos asignados a este grupo.</p>
+                  )}
+                </div>
               </div>
             </TabsContent>
           </Tabs>
@@ -378,6 +468,16 @@ export default function GroupDetailPage() {
           onAdded={(count) =>
             setGroup((prev) => (prev ? { ...prev, studentsCount: prev.studentsCount + count } : prev))
           }
+        />
+      ) : null}
+
+      {studentSubmissionsModal.open && group ? (
+        <StudentSubmissionsModal
+          groupId={group.id}
+          studentId={studentSubmissionsModal.studentId}
+          studentName={studentSubmissionsModal.studentName}
+          isOpen={studentSubmissionsModal.open}
+          onClose={() => setStudentSubmissionsModal({ open: false, studentId: "", studentName: "" })}
         />
       ) : null}
 
@@ -475,6 +575,7 @@ type AlumnosTabProps = {
   onStudentsAdded: (count: number) => void;
   onOpenModal: () => void;
   onRemoveStudent: (student: GroupStudent) => void;
+  onOpenStudentSubmissions: (student: GroupStudent) => void;
 };
 
 function AlumnosTab({
@@ -484,6 +585,7 @@ function AlumnosTab({
   loadingStudents,
   removingId,
   onRemoveStudent,
+  onOpenStudentSubmissions,
 }: AlumnosTabProps) {
   return (
     <div className="space-y-4">
@@ -529,7 +631,14 @@ function AlumnosTab({
                 <span className="text-slate-600">
                   {s.enrolledAt ? s.enrolledAt.toLocaleDateString("es-MX") : "N/D"}
                 </span>
-                <div className="flex justify-end">
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onOpenStudentSubmissions(s)}
+                    className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1 text-sm font-medium text-blue-600 hover:border-blue-400 hover:bg-blue-100"
+                  >
+                    Tareas
+                  </button>
                   <button
                     type="button"
                     onClick={() => onRemoveStudent(s)}
