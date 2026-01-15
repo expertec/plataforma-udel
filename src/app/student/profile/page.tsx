@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { auth } from "@/lib/firebase/client";
-import { onAuthStateChanged, updatePassword, User } from "firebase/auth";
+import { onAuthStateChanged, signOut, updatePassword, User } from "firebase/auth";
 import { collection, getDocs, limit, orderBy, query, where } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { getStudentSubmissions, Submission } from "@/lib/firebase/submissions-service";
@@ -112,6 +112,17 @@ export default function StudentProfilePage() {
   const handleSave = () => {
     // Aquí se guardaría en Firestore el perfil; por ahora solo avisamos.
     toast.success("Perfil actualizado");
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      toast.success("Sesión cerrada");
+      window.location.href = "/";
+    } catch (err) {
+      console.error("Error al cerrar sesión:", err);
+      toast.error("No se pudo cerrar sesión");
+    }
   };
 
   const handleChangePassword = async () => {
@@ -233,6 +244,13 @@ export default function StudentProfilePage() {
                 className="inline-flex items-center justify-center rounded-full border border-white/20 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
               >
                 Restablecer
+              </button>
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="inline-flex items-center justify-center rounded-full bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-red-500"
+              >
+                Cerrar sesión
               </button>
             </div>
             </div>

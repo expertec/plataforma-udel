@@ -176,6 +176,9 @@ export default function StudentFeedPageClient() {
   const [forumDoneMap, setForumDoneMap] = useState<Record<string, boolean>>({});
   const [forumsReady, setForumsReady] = useState(false);
   const [forumPanel, setForumPanel] = useState<{ open: boolean; classId?: string }>({ open: false });
+  const [quizWarningModal, setQuizWarningModal] = useState<{ open: boolean; pendingIndex?: number }>({ open: false });
+  const [activeQuizState, setActiveQuizState] = useState<{ classId: string; answered: number; total: number; submitted: boolean; onSubmit?: () => Promise<void> } | null>(null);
+  const [quizModalSubmitting, setQuizModalSubmitting] = useState(false);
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [forcePassword, setForcePassword] = useState("");
   const [forceConfirmPassword, setForceConfirmPassword] = useState("");
@@ -1576,10 +1579,15 @@ export default function StudentFeedPageClient() {
   }, [progressReady, classes, progressMap, completedMap, seenMap, activeIndex, loading, autoReposition]);
 
   const jumpToIndex = useCallback(
-    (idx: number) => {
+    (idx: number, forceSkipQuizCheck = false) => {
       setAutoReposition(false);
       if (previewMode) {
         scrollToIndex(idx, true);
+        return;
+      }
+      // Verificar si hay un quiz activo sin enviar
+      if (!forceSkipQuizCheck && activeQuizState && !activeQuizState.submitted && activeQuizState.answered > 0) {
+        setQuizWarningModal({ open: true, pendingIndex: idx });
         return;
       }
       const prevSameCourse = getPrevSameCourse(idx);
@@ -1601,7 +1609,7 @@ export default function StudentFeedPageClient() {
       }
       scrollToIndex(idx, true);
     },
-    [getPrevSameCourse, isClassComplete, scrollToIndex, progressMap, completedMap, seenMap, isForumSatisfied, previewMode],
+    [getPrevSameCourse, isClassComplete, scrollToIndex, progressMap, completedMap, seenMap, isForumSatisfied, previewMode, activeQuizState],
   );
 
   const handleTextReachEnd = useCallback(
@@ -1614,6 +1622,12 @@ export default function StudentFeedPageClient() {
     },
     [classes.length, getPrevSameCourse, isClassComplete],
   );
+
+  // Ref para acceder al estado actual del quiz desde el handler de wheel
+  const activeQuizStateRef = useRef(activeQuizState);
+  useEffect(() => {
+    activeQuizStateRef.current = activeQuizState;
+  }, [activeQuizState]);
 
   // Bloquear scroll múltiple: solo una clase por gesto de wheel/touchpad
   useEffect(() => {
@@ -1641,6 +1655,16 @@ export default function StudentFeedPageClient() {
         wheelLockRef.current = true;
         const direction = wheelAccumRef.current > 0 ? 1 : -1;
         const nextIdx = (activeIndex ?? 0) + direction;
+
+        // Verificar si hay un quiz activo sin enviar
+        const quizState = activeQuizStateRef.current;
+        if (quizState && !quizState.submitted && quizState.answered > 0) {
+          setQuizWarningModal({ open: true, pendingIndex: nextIdx });
+          wheelLockRef.current = false;
+          wheelAccumRef.current = 0;
+          return;
+        }
+
         // Gate solo si es mismo curso
         const prevSameCourse = getPrevSameCourse(nextIdx);
         if (prevSameCourse && !isClassComplete(prevSameCourse)) {
@@ -1950,7 +1974,6 @@ export default function StudentFeedPageClient() {
           contentHtml={sanitizedText}
           isActive={activeId === cls.id}
           onProgress={(pct) => handleProgress(cls.id, pct, cls.type, cls.hasAssignment || false, cls.assignmentTemplateUrl)}
-          onReachEnd={() => handleTextReachEnd(idx)}
         />
       );
     }
@@ -1970,6 +1993,7 @@ export default function StudentFeedPageClient() {
           studentId={currentUser?.uid}
           isActive={activeId === cls.id}
           onProgress={(pct) => handleProgress(cls.id, pct, cls.type, cls.hasAssignment || false, cls.assignmentTemplateUrl)}
+          onQuizStateChange={setActiveQuizState}
         />
       );
     }
@@ -2408,7 +2432,7 @@ export default function StudentFeedPageClient() {
               type="button"
               onClick={() => jumpToIndex(activeIndex - 1)}
               disabled={activeIndex === 0}
-              className="flex h-12 w-12 items-center justify-center rounded-full text-white shadow-lg backdrop-blur transition hover:opacity-80 disabled:opacity-40"
+              className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-white/60 text-white shadow-lg backdrop-blur transition hover:border-white hover:opacity-80 disabled:opacity-40"
               style={{ backgroundColor: '#400106' }}
             >
               <ControlIcon name="arrowUp" />
@@ -2417,7 +2441,7 @@ export default function StudentFeedPageClient() {
               type="button"
               onClick={() => jumpToIndex(activeIndex + 1)}
               disabled={activeIndex >= classes.length - 1}
-              className="flex h-12 w-12 items-center justify-center rounded-full text-white shadow-lg backdrop-blur transition hover:opacity-80 disabled:opacity-40"
+              className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-white/60 text-white shadow-lg backdrop-blur transition hover:border-white hover:opacity-80 disabled:opacity-40"
               style={{ backgroundColor: '#400106' }}
             >
               <ControlIcon name="arrowDown" />
@@ -2557,6 +2581,73 @@ export default function StudentFeedPageClient() {
                       Ve al icono de tarea para descargar la plantilla y enviarla.
                     </p>
                   </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {/* Modal de advertencia de quiz sin enviar */}
+          {quizWarningModal.open ? (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+              onClick={() => setQuizWarningModal({ open: false })}
+            >
+              <div
+                className="w-full max-w-md rounded-2xl bg-neutral-900 p-6 shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-start gap-3">
+                  <div className="flex-shrink-0 rounded-full bg-amber-600/20 p-2">
+                    <svg className="h-5 w-5 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-base font-semibold text-white">Quiz sin enviar</h3>
+                    <p className="mt-1 text-sm text-neutral-300">
+                      Tienes respuestas sin enviar. Da clic en <span className="font-semibold text-blue-400">&quot;Enviar quiz&quot;</span> para guardar tu progreso antes de avanzar.
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-5 flex items-center justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const pendingIdx = quizWarningModal.pendingIndex;
+                      setQuizWarningModal({ open: false });
+                      if (pendingIdx !== undefined) {
+                        jumpToIndex(pendingIdx, true);
+                      }
+                    }}
+                    className="rounded-full border border-white/20 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                  >
+                    Salir sin enviar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={quizModalSubmitting || !activeQuizState?.onSubmit || activeQuizState.answered !== activeQuizState.total}
+                    onClick={async () => {
+                      if (!activeQuizState?.onSubmit) return;
+                      setQuizModalSubmitting(true);
+                      try {
+                        await activeQuizState.onSubmit();
+                        toast.success("Quiz enviado correctamente");
+                        const pendingIdx = quizWarningModal.pendingIndex;
+                        setQuizWarningModal({ open: false });
+                        if (pendingIdx !== undefined) {
+                          setTimeout(() => jumpToIndex(pendingIdx, true), 300);
+                        }
+                      } catch (err) {
+                        console.error("Error enviando quiz:", err);
+                        toast.error("No se pudo enviar el quiz");
+                      } finally {
+                        setQuizModalSubmitting(false);
+                      }
+                    }}
+                    className="rounded-full bg-gradient-to-r from-blue-500 via-blue-600 to-blue-500 bg-[length:200%_100%] animate-pulse ring-2 ring-blue-400/50 ring-offset-2 ring-offset-neutral-900 px-4 py-2 text-sm font-semibold text-white shadow hover:ring-blue-300 disabled:opacity-50 disabled:animate-none disabled:ring-0"
+                  >
+                    {quizModalSubmitting ? "Enviando..." : "Enviar quiz"}
+                  </button>
                 </div>
               </div>
             </div>
@@ -3852,9 +3943,10 @@ type QuizContentProps = {
   studentId?: string;
   isActive?: boolean;
   onProgress?: (pct: number) => void;
+  onQuizStateChange?: (state: { classId: string; answered: number; total: number; submitted: boolean; onSubmit?: () => Promise<void> } | null) => void;
 };
 
-function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enrollmentId, groupId, classTitle, studentName, studentId, isActive = true, onProgress }: QuizContentProps) {
+function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enrollmentId, groupId, classTitle, studentName, studentId, isActive = true, onProgress, onQuizStateChange }: QuizContentProps) {
   const [questions, setQuestions] = useState<
     Array<{
       id: string;
@@ -3950,6 +4042,24 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
     onProgressRef.current(Math.min(100, Math.max(0, pct)));
   }, [answeredCount, questions.length, submitted]);
 
+  // Notificar el estado del quiz al componente padre (incluyendo función de envío)
+  const handleSubmitRef = useRef<(() => Promise<void>) | null>(null);
+
+  useEffect(() => {
+    if (!onQuizStateChange) return;
+    if (questions.length > 0 && isActive) {
+      onQuizStateChange({
+        classId,
+        answered: answeredCount,
+        total: questions.length,
+        submitted,
+        onSubmit: handleSubmitRef.current ?? undefined,
+      });
+    } else if (!isActive) {
+      onQuizStateChange(null);
+    }
+  }, [classId, answeredCount, questions.length, submitted, isActive, onQuizStateChange]);
+
   useEffect(() => {
     setCurrentIdx((prev) => Math.min(prev, Math.max(questions.length - 1, 0)));
   }, [questions.length]);
@@ -3979,6 +4089,12 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
       }));
     }
 
+    // Auto-avance a la siguiente pregunta después de seleccionar (solo para opciones múltiples)
+    if ((question?.options ?? []).length > 0 && idx < questions.length - 1) {
+      setTimeout(() => {
+        setCurrentIdx(idx + 1);
+      }, 800);
+    }
   };
 
   const currentQuestion = questions[currentIdx];
@@ -4137,6 +4253,11 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
     }
   }, [allAnswered, enrollmentId, studentId, groupId, submitting, questions, answers, classId, classTitle, studentName, courseId, classDocId, courseTitle]);
 
+  // Actualizar la referencia para que el padre pueda llamar handleSubmit
+  useEffect(() => {
+    handleSubmitRef.current = handleSubmit;
+  }, [handleSubmit]);
+
   return (
     <div className="flex h-full w-full items-center justify-center px-0 lg:px-10">
       <div
@@ -4281,7 +4402,11 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
                 type="button"
                 disabled={!allAnswered || submitting || submitted}
                 onClick={handleSubmit}
-                className="relative z-10 rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow disabled:opacity-50"
+                className={`relative z-10 rounded-full px-4 py-2 text-sm font-semibold text-white shadow transition-all disabled:opacity-50 ${
+                  allAnswered && !submitted && !submitting
+                    ? "bg-gradient-to-r from-blue-500 via-blue-600 to-blue-500 bg-[length:200%_100%] animate-pulse ring-2 ring-blue-400/50 ring-offset-2 ring-offset-neutral-900 hover:ring-blue-300"
+                    : "bg-blue-600"
+                }`}
               >
                 {submitted ? "Ya enviado" : submitting ? "Enviando..." : allAnswered ? "Enviar quiz" : "Contesta todas las preguntas"}
               </button>
@@ -4299,7 +4424,6 @@ type TextContentProps = {
   contentHtml?: string;
   onProgress?: (pct: number) => void;
   isActive?: boolean;
-  onReachEnd?: () => void;
 };
 
 function TextContent({
@@ -4308,77 +4432,16 @@ function TextContent({
   contentHtml,
   onProgress,
   isActive = true,
-  onReachEnd,
 }: TextContentProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const onProgressRef = useRef(onProgress);
-  const onReachEndRef = useRef(onReachEnd);
-  const endNotifiedRef = useRef(false);
-  const hasInteractedRef = useRef(false);
-  const reachedEndRef = useRef(false);
-  const lastScrollTopRef = useRef(0);
-  const contentKey = contentHtml ?? content;
+  const completedRef = useRef(false);
 
+  // Auto-completar la clase de texto al visualizarla (sin requerir scroll ni auto-avance)
   useEffect(() => {
-    onProgressRef.current = onProgress;
-  }, [onProgress]);
-
-  useEffect(() => {
-    onReachEndRef.current = onReachEnd;
-  }, [onReachEnd]);
-
-  useEffect(() => {
-    endNotifiedRef.current = false;
-    hasInteractedRef.current = false;
-    reachedEndRef.current = false;
-  }, [contentKey, isActive]);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el || !onProgressRef.current || !isActive) return;
-
-    lastScrollTopRef.current = el.scrollTop;
-
-    const report = (allowReachEnd: boolean) => {
-      const cb = onProgressRef.current;
-      if (!el || !cb) return;
-      const scrollable = el.scrollHeight - el.clientHeight;
-      const pct = scrollable > 0 ? (el.scrollTop / scrollable) * 100 : 100;
-      cb(Math.min(100, Math.max(0, pct)));
-      if (pct < 95) {
-        reachedEndRef.current = false;
-      }
-
-      if (
-        allowReachEnd &&
-        pct >= 99 &&
-        hasInteractedRef.current &&
-        el.scrollTop >= lastScrollTopRef.current
-      ) {
-        if (reachedEndRef.current && !endNotifiedRef.current) {
-          endNotifiedRef.current = true;
-          onReachEndRef.current?.();
-        } else if (!reachedEndRef.current) {
-          reachedEndRef.current = true;
-        }
-      }
-    };
-
-    // Primer reporte: solo progreso, sin disparar avance
-    report(false);
-
-    const handleScroll = () => {
-      if (!el) return;
-      hasInteractedRef.current = true;
-      const nextTop = el.scrollTop;
-      const isScrollingDown = nextTop >= lastScrollTopRef.current;
-      lastScrollTopRef.current = nextTop;
-      report(isScrollingDown);
-    };
-
-    el.addEventListener("scroll", handleScroll);
-    return () => el.removeEventListener("scroll", handleScroll);
-  }, [content, isActive]);
+    if (!isActive || completedRef.current) return;
+    completedRef.current = true;
+    onProgress?.(100);
+  }, [isActive, onProgress]);
 
   return (
     <div className="flex h-full w-full items-stretch justify-center px-4 lg:px-10 lg:pr-[140px]">
@@ -4504,7 +4567,7 @@ function CommentsPanel({ classId, comments, onAdd, onClose, loading = false }: C
         </button>
       </div>
 
-      <div className="flex-1 flex flex-col gap-3 px-4 py-3 pb-20 min-h-0">
+      <div className="flex-1 flex flex-col gap-3 px-4 py-3 pb-20 min-h-0 overflow-y-auto" data-scrollable="true">
         {loading ? (
           <p className="text-sm text-white/60">Cargando comentarios...</p>
         ) : comments.length === 0 ? (
@@ -4798,9 +4861,9 @@ function ForumPanel({ open, onClose, classMeta, requiredFormat, studentName, stu
         </button>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto" data-scrollable="true">
         {view === "list" ? (
-          <div className="px-4 py-4 space-y-3">
+          <div className="px-4 py-4 space-y-3 pb-4">
             {!alreadySubmitted && (
               <div className="rounded-2xl bg-blue-600/20 border border-blue-500/30 p-3">
                 <p className="text-xs text-blue-200 mb-2">
