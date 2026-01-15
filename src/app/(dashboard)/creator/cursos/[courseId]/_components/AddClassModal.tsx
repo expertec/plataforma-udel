@@ -262,6 +262,19 @@ export function AddClassModal({
       toast.error("El título es obligatorio");
       return;
     }
+    // Validar contenido según el tipo de clase
+    if (type === "video" && !url.trim()) {
+      toast.error("Debes agregar un video o enlace de video");
+      return;
+    }
+    if (type === "audio" && !url.trim()) {
+      toast.error("Debes agregar un archivo de audio");
+      return;
+    }
+    if (type === "image" && imageUrls.length === 0) {
+      toast.error("Debes agregar al menos una imagen");
+      return;
+    }
     if (type === "quiz") {
       const hasQuestions = questions.length > 0;
       const everyQuestionValid = questions.every((q) => {

@@ -44,6 +44,14 @@ const iconMap: Record<ClassData["type"], string> = {
   image: "M4 7.5A1.5 1.5 0 015.5 6h13A1.5 1.5 0 0120 7.5v9a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 16.5v-9zm0 8l4-4 3 3 4-4 5 5",
 };
 
+// Detecta si la clase tiene contenido incompleto según su tipo
+function hasContentError(item: ClassData): boolean {
+  if (item.type === "video" && !item.videoUrl?.trim()) return true;
+  if (item.type === "audio" && !item.audioUrl?.trim()) return true;
+  if (item.type === "image" && (!item.imageUrls || item.imageUrls.length === 0)) return true;
+  return false;
+}
+
 export function ClassItem({
   item,
   onDelete,
@@ -51,6 +59,8 @@ export function ClassItem({
   onOpenComments,
   dragProps,
 }: ClassItemProps) {
+  const hasError = hasContentError(item);
+
   const dragStyles = [
     dragProps?.isDragging ? "opacity-70" : "",
     dragProps?.isDragOver ? "bg-slate-100" : "",
@@ -73,6 +83,11 @@ export function ClassItem({
         <div>
           <div className="flex items-center gap-2">
             <p className="font-medium text-slate-900">{item.title}</p>
+            {hasError ? (
+              <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">
+                Error
+              </span>
+            ) : null}
             {item.hasAssignment ? (
               <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
                 Tarea
