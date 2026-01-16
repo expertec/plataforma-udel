@@ -62,6 +62,16 @@ export function GradeModal({ submission, readonly, onClose, onSave }: GradeModal
               <p className="text-slate-500">Sin archivo</p>
             )}
           </div>
+          {submission.audioUrl ? (
+            <div className="space-y-1">
+              <p className="text-xs text-slate-500">Audio adjunto</p>
+              <audio
+                controls
+                src={submission.audioUrl}
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 p-1"
+              />
+            </div>
+          ) : null}
           {submission.content ? (
             <div className="space-y-1">
               <p className="text-xs text-slate-500">Contenido</p>

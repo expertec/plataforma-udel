@@ -90,10 +90,16 @@ export function StudentSubmissionsModal({
   };
 
   const getStatusBadge = (submission: Submission) => {
-    if (submission.status === "graded") {
+    // Si tiene calificación (incluyendo quizzes auto-calificados), mostrar como calificada
+    if (submission.status === "graded" || submission.grade != null) {
+      const gradeColor = submission.grade != null
+        ? submission.grade >= 80 ? "bg-emerald-100 text-emerald-700"
+          : submission.grade >= 60 ? "bg-amber-100 text-amber-700"
+          : "bg-red-100 text-red-700"
+        : "bg-green-100 text-green-700";
       return (
-        <span className="rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-700">
-          Calificada: {submission.grade ?? "-"}
+        <span className={`rounded-full px-2 py-1 text-xs font-medium ${gradeColor}`}>
+          {submission.grade != null ? `${submission.grade}/100` : "Calificada"}
         </span>
       );
     }
@@ -205,7 +211,35 @@ export function StudentSubmissionsModal({
                           </div>
                         ) : null}
 
-                        {sub.content ? (
+                        {sub.audioUrl ? (
+                          <div>
+                            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                              Audio
+                            </p>
+                            <audio
+                              controls
+                              src={sub.audioUrl}
+                              className="w-full rounded-lg border border-slate-200 bg-white/80 p-1"
+                            />
+                          </div>
+                        ) : null}
+
+                        {sub.classType === "quiz" ? (
+                          <div>
+                            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                              Calificación
+                            </p>
+                            <div className={`rounded-lg p-3 text-sm font-semibold ${
+                              sub.grade != null
+                                ? sub.grade >= 80 ? "bg-emerald-50 text-emerald-700"
+                                  : sub.grade >= 60 ? "bg-amber-50 text-amber-700"
+                                  : "bg-red-50 text-red-700"
+                                : "bg-white text-slate-900"
+                            }`}>
+                              {sub.grade != null ? `${sub.grade}/100` : "Pendiente de calificación"}
+                            </div>
+                          </div>
+                        ) : sub.content ? (
                           <div>
                             <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
                               Contenido / Enlace

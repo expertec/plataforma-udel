@@ -71,6 +71,7 @@ export function StudentAllSubmissionsModal({
               studentName: data.studentName ?? "",
               submittedAt: data.submittedAt?.toDate?.() ?? null,
               fileUrl: data.fileUrl ?? "",
+              audioUrl: data.audioUrl ?? "",
               content: data.content ?? "",
               status: (["pending", "graded", "late"].includes(data.status) ? data.status : "pending") as "pending" | "graded" | "late",
               grade: data.grade,
@@ -145,10 +146,16 @@ export function StudentAllSubmissionsModal({
   };
 
   const getStatusBadge = (submission: Submission) => {
-    if (submission.status === "graded") {
+    // Si tiene calificación (incluyendo quizzes auto-calificados), mostrar como calificada
+    if (submission.status === "graded" || submission.grade != null) {
+      const gradeColor = submission.grade != null
+        ? submission.grade >= 80 ? "bg-emerald-100 text-emerald-700"
+          : submission.grade >= 60 ? "bg-amber-100 text-amber-700"
+          : "bg-red-100 text-red-700"
+        : "bg-green-100 text-green-700";
       return (
-        <span className="rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-700">
-          Calificada: {submission.grade ?? "-"}
+        <span className={`rounded-full px-2 py-1 text-xs font-medium ${gradeColor}`}>
+          {submission.grade != null ? `${submission.grade}/100` : "Calificada"}
         </span>
       );
     }
@@ -269,27 +276,55 @@ export function StudentAllSubmissionsModal({
                           </div>
                         ) : null}
 
-                        {sub.content ? (
+                        {sub.audioUrl ? (
                           <div>
                             <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                              Contenido / Enlace
+                              Audio
                             </p>
-                            <div className="rounded-lg bg-white p-3 text-sm text-slate-700">
-                              {sub.content.startsWith("http") ? (
-                                <a
-                                  href={sub.content}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-blue-600 hover:underline"
-                                >
-                                  {sub.content}
-                                </a>
-                              ) : (
-                                <p className="whitespace-pre-wrap">{sub.content}</p>
-                              )}
-                            </div>
+                            <audio
+                              controls
+                              src={sub.audioUrl}
+                              className="w-full rounded-lg border border-slate-200 bg-white p-1"
+                            />
                           </div>
                         ) : null}
+
+                    {sub.classType === "quiz" ? (
+                      <div>
+                        <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                          Calificación
+                        </p>
+                        <div className={`rounded-lg p-3 text-sm font-semibold ${
+                          sub.grade != null
+                            ? sub.grade >= 80 ? "bg-emerald-50 text-emerald-700"
+                              : sub.grade >= 60 ? "bg-amber-50 text-amber-700"
+                              : "bg-red-50 text-red-700"
+                            : "bg-white text-slate-900"
+                        }`}>
+                          {sub.grade != null ? `${sub.grade}/100` : "Pendiente de calificación"}
+                        </div>
+                      </div>
+                    ) : sub.content ? (
+                      <div>
+                        <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                          Contenido / Enlace
+                        </p>
+                        <div className="rounded-lg bg-white p-3 text-sm text-slate-700">
+                          {sub.content.startsWith("http") ? (
+                            <a
+                              href={sub.content}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-blue-600 hover:underline"
+                            >
+                              {sub.content}
+                            </a>
+                          ) : (
+                            <p className="whitespace-pre-wrap">{sub.content}</p>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
 
                         {sub.feedback ? (
                           <div className="md:col-span-2">

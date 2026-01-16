@@ -139,8 +139,8 @@ export default function StudentFeedPageClient() {
   const [commentsCountMap, setCommentsCountMap] = useState<Record<string, number>>({});
   const [descriptionExpanded, setDescriptionExpanded] = useState<Record<string, boolean>>({});
   const [assignmentPanel, setAssignmentPanel] = useState<{ open: boolean; classId?: string | null }>({ open: false });
-  const [assignmentNoteMap, setAssignmentNoteMap] = useState<Record<string, string>>({});
   const [assignmentFileMap, setAssignmentFileMap] = useState<Record<string, File | null>>({});
+  const [assignmentAudioMap, setAssignmentAudioMap] = useState<Record<string, File | null>>({});
   const [assignmentUploadingMap, setAssignmentUploadingMap] = useState<Record<string, boolean>>({});
   const [assignmentStatusMap, setAssignmentStatusMap] = useState<Record<string, "submitted">>({});
   const authorNameCacheRef = useRef<Record<string, string>>({});
@@ -1600,10 +1600,18 @@ export default function StudentFeedPageClient() {
           ),
         );
         const needsForum = prevSameCourse.forumEnabled && !isForumSatisfied(prevSameCourse);
+        const prevType =
+          typeof prevSameCourse.type === "string" ? prevSameCourse.type.toLowerCase() : "";
+        const isMediaClass = ["video", "text", "image", "audio"].includes(prevType);
+        const completionMessage = isMediaClass
+          ? `Completa esta clase para continuar (progreso ${pct}%).`
+          : prevType === "quiz"
+            ? `Completa el quiz para continuar (progreso ${pct}%).`
+            : `Completa esta clase para continuar (progreso ${pct}%).`;
         toast.error(
           needsForum
             ? "Participa en el foro requerido para avanzar."
-            : `Completa la clase anterior de esta materia (progreso ${pct}%).`,
+            : completionMessage,
         );
         return;
       }
@@ -2657,18 +2665,18 @@ export default function StudentFeedPageClient() {
           {assignmentPanel.open && assignmentPanel.classId && !previewMode ? (() => {
             const cls = findClassById(assignmentPanel.classId);
             if (!cls) return null;
-            return (
-              <AssignmentPanel
-                classId={cls.id}
-                classTitle={cls.title}
-                templateUrl={cls.assignmentTemplateUrl}
-                note={assignmentNoteMap[cls.id] ?? ""}
-                onChangeNote={(val) => setAssignmentNoteMap((prev) => ({ ...prev, [cls.id]: val }))}
-                selectedFile={assignmentFileMap[cls.id] ?? null}
-                uploading={assignmentUploadingMap[cls.id] ?? false}
-                onFileChange={(file) => setAssignmentFileMap((prev) => ({ ...prev, [cls.id]: file }))}
-                submitted={assignmentStatusMap[cls.id] === "submitted"}
-                onClose={() => setAssignmentPanel({ open: false })}
+                return (
+                  <AssignmentPanel
+                    classId={cls.id}
+                    classTitle={cls.title}
+                    templateUrl={cls.assignmentTemplateUrl}
+                    selectedFile={assignmentFileMap[cls.id] ?? null}
+                    audioFile={assignmentAudioMap[cls.id] ?? null}
+                    uploading={assignmentUploadingMap[cls.id] ?? false}
+                    onFileChange={(file) => setAssignmentFileMap((prev) => ({ ...prev, [cls.id]: file }))}
+                    onAudioChange={(file) => setAssignmentAudioMap((prev) => ({ ...prev, [cls.id]: file }))}
+                    submitted={assignmentStatusMap[cls.id] === "submitted"}
+                    onClose={() => setAssignmentPanel({ open: false })}
                 onSubmit={async () => {
                   if (!currentUser?.uid || !enrollmentId || !cls.groupId) {
                     toast.error("Faltan datos para enviar la tarea");
@@ -2693,39 +2701,63 @@ export default function StudentFeedPageClient() {
                     return;
                   }
                   const file = assignmentFileMap[cls.id] ?? null;
-                  let attachmentUrl = "";
-                  if (file) {
+                  const audioFile = assignmentAudioMap[cls.id] ?? null;
+                  const shouldUploadAssets = Boolean(file || audioFile);
+                  const toggleUploading = (value: boolean) =>
+                    setAssignmentUploadingMap((prev) => ({ ...prev, [cls.id]: value }));
+
+                  const uploadAsset = async (media: File, label: string, prefix: string) => {
                     try {
-                      setAssignmentUploadingMap((prev) => ({ ...prev, [cls.id]: true }));
                       const storage = getStorage();
-                      const storageRef = ref(storage, `assignments/${currentUser.uid}/${cls.id}/${Date.now()}-${file.name}`);
-                      await uploadBytes(storageRef, file, { contentType: file.type || "application/octet-stream" });
-                      attachmentUrl = await getDownloadURL(storageRef);
+                      const storageRef = ref(
+                        storage,
+                        `assignments/${currentUser.uid}/${cls.id}/${prefix}-${Date.now()}-${media.name}`,
+                      );
+                      await uploadBytes(storageRef, media, { contentType: media.type || "application/octet-stream" });
+                      return await getDownloadURL(storageRef);
                     } catch (err) {
-                      console.error("No se pudo subir el archivo:", err);
-                      toast.error("No se pudo subir el archivo");
-                      setAssignmentUploadingMap((prev) => ({ ...prev, [cls.id]: false }));
-                      return;
-                    } finally {
-                      setAssignmentUploadingMap((prev) => ({ ...prev, [cls.id]: false }));
+                      console.error(`No se pudo subir el ${label}:`, err);
+                      toast.error(`No se pudo subir el ${label}`);
+                      throw err;
+                    }
+                  };
+
+                  let fileUrl = "";
+                  let audioUrl = "";
+                  if (shouldUploadAssets) {
+                    toggleUploading(true);
+                  }
+                  try {
+                    if (file) {
+                      fileUrl = await uploadAsset(file, "archivo", "archivo");
+                    }
+                    if (audioFile) {
+                      audioUrl = await uploadAsset(audioFile, "audio", "audio");
+                    }
+                  } catch (err) {
+                    return;
+                  } finally {
+                    if (shouldUploadAssets) {
+                      toggleUploading(false);
                     }
                   }
-                  const content = attachmentUrl || assignmentNoteMap[cls.id] || "";
-                const payload = {
-                  classId: baseClassId,
-                  classDocId: baseClassId,
-                  className: cls.title ?? "Tarea",
-                  courseId: cls.courseId ?? "",
-                  courseTitle: cls.courseTitle ?? "",
-                  classType: cls.type,
-                  studentId: currentUser.uid,
-                  studentName: studentName ?? currentUser.displayName ?? "Estudiante",
+
+                  const payload = {
+                    classId: baseClassId,
+                    classDocId: baseClassId,
+                    className: cls.title ?? "Tarea",
+                    courseId: cls.courseId ?? "",
+                    courseTitle: cls.courseTitle ?? "",
+                    classType: cls.type,
+                    studentId: currentUser.uid,
+                    studentName: studentName ?? currentUser.displayName ?? "Estudiante",
                     submittedAt: new Date(),
-                    content,
-                    attachmentUrl,
+                    content: "",
+                    fileUrl,
+                    audioUrl,
                     enrollmentId,
                     groupId: cls.groupId,
-                    status: "submitted",
+                    status: "pending" as const,
                   };
                   try {
                     await createSubmission(cls.groupId, payload);
@@ -2737,6 +2769,7 @@ export default function StudentFeedPageClient() {
                     setAssignmentStatusMap((prev) => ({ ...prev, [cls.id]: "submitted" }));
                     toast.success("Tarea enviada");
                     setAssignmentFileMap((prev) => ({ ...prev, [cls.id]: null }));
+                    setAssignmentAudioMap((prev) => ({ ...prev, [cls.id]: null }));
                     setAssignmentPanel({ open: false, classId: null });
                   } catch (err) {
                     console.error("No se pudo enviar la tarea:", err);
@@ -3607,6 +3640,7 @@ type ControlIconName =
   | "muted"
   | "sound"
   | "play"
+  | "pause"
   | "heart"
   | "comment"
   | "plus"
@@ -3640,6 +3674,13 @@ function ControlIcon({ name }: { name: ControlIconName }) {
       return (
         <svg viewBox="0 0 24 24" className={common}>
           <path d="M8 5v14l11-7z" />
+        </svg>
+      );
+    case "pause":
+      return (
+        <svg viewBox="0 0 24 24" className={common}>
+          <rect x="7" y="5" width="4" height="14" />
+          <rect x="13" y="5" width="4" height="14" />
         </svg>
       );
     case "heart":
@@ -3927,6 +3968,112 @@ function AudioPlayer({ src, title, onProgress, onComplete, coverUrl }: AudioPlay
       </div>
       <audio ref={audioRef} src={src} preload="metadata" className="sr-only" />
     </div>
+);
+}
+
+type StyledAudioPreviewProps = {
+  src: string;
+  label?: string;
+  className?: string;
+};
+
+function StyledAudioPreview({ src, label, className }: StyledAudioPreviewProps) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const handleTimeUpdate = () => setCurrentTime(audio.currentTime);
+    const handleLoaded = () => setDuration(audio.duration || 0);
+    const handleEnded = () => setPlaying(false);
+    audio.addEventListener("timeupdate", handleTimeUpdate);
+    audio.addEventListener("loadedmetadata", handleLoaded);
+    audio.addEventListener("ended", handleEnded);
+    return () => {
+      audio.removeEventListener("timeupdate", handleTimeUpdate);
+      audio.removeEventListener("loadedmetadata", handleLoaded);
+      audio.removeEventListener("ended", handleEnded);
+    };
+  }, [src]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.pause();
+    audio.currentTime = 0;
+    setPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+  }, [src]);
+
+  const togglePlay = async () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playing) {
+      audio.pause();
+      return;
+    }
+    try {
+      await audio.play();
+      setPlaying(true);
+    } catch {
+      setPlaying(false);
+    }
+  };
+
+  const handleSeek = (value: number) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.currentTime = value;
+    setCurrentTime(value);
+  };
+
+  const containerClass = [
+    "space-y-2 rounded-2xl border border-white/10 bg-white/5 p-3",
+    className,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const progressPercent = duration ? Math.min(Math.max((currentTime / duration) * 100, 0), 100) : 0;
+
+  return (
+    <div className={containerClass}>
+      {label ? (
+        <p className="text-xs font-semibold uppercase tracking-[0.3em] text-white/60">{label}</p>
+      ) : null}
+      <div className="flex flex-wrap items-center gap-3 text-sm text-white">
+        <button
+          type="button"
+          onClick={togglePlay}
+          aria-label={playing ? "Pausar audio" : "Reproducir audio"}
+          className={`inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/10 text-white transition ${
+            playing ? "bg-green-500 text-black" : "bg-white/10 text-white hover:border-white/50 hover:bg-white/20"
+          }`}
+        >
+          <ControlIcon name={playing ? "pause" : "play"} />
+        </button>
+        <div className="flex-1">
+          <input
+            type="range"
+            min={0}
+            max={duration || 0}
+            step={0.01}
+            value={currentTime}
+            onChange={(e) => handleSeek(Number(e.target.value))}
+            className="h-1 w-full cursor-pointer accent-emerald-500"
+          />
+          <div className="mt-1 flex items-center justify-between text-[11px] text-white/60">
+            <span>{formatTime(currentTime)}</span>
+            <span>{formatTime(duration)}</span>
+          </div>
+        </div>
+      </div>
+      <audio ref={audioRef} src={src} preload="metadata" className="hidden" />
+    </div>
   );
 }
 
@@ -4192,7 +4339,7 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
       : 0;
     const total = Math.max(questions.length, 1);
     const gradeValue = autogradable ? Math.round((correctCount / total) * 100) : null;
-    const statusValue = autogradable ? "graded" : "pending";
+    const statusValue: "graded" | "pending" = autogradable ? "graded" : "pending";
     try {
       const progressDoc = doc(db, "studentEnrollments", enrollmentId, "classProgress", classId);
       await setDoc(
@@ -4244,6 +4391,12 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
 
       savedRef.current = true;
       setSubmitted(true);
+      if (gradeValue !== null) {
+        setSubmissionGrade(gradeValue);
+        setSubmissionStatus("Calificado");
+      } else {
+        setSubmissionStatus(statusValue === "graded" ? "Calificado" : "En revisión");
+      }
       onProgressRef.current?.(100);
     } catch (err) {
       console.warn("No se pudo enviar el quiz:", err);
@@ -4257,6 +4410,68 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
   useEffect(() => {
     handleSubmitRef.current = handleSubmit;
   }, [handleSubmit]);
+
+  // Si el quiz ya fue enviado y tiene calificación, solo mostrar la tarjeta de calificación
+  if (submitted && typeof submissionGrade === "number") {
+    return (
+      <div className="flex h-full w-full items-center justify-center px-0 lg:px-10">
+        <div className="w-[90%] lg:w-full lg:max-w-md px-4 sm:px-6">
+          <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-neutral-800/90 to-neutral-900/90 p-6 shadow-xl">
+            <div className="flex flex-col items-center gap-4 text-center">
+              <div className={`flex h-20 w-20 items-center justify-center rounded-full ${
+                submissionGrade >= 80 ? "bg-emerald-500/20 text-emerald-400" :
+                submissionGrade >= 60 ? "bg-amber-500/20 text-amber-400" :
+                "bg-red-500/20 text-red-400"
+              }`}>
+                <span className="text-3xl font-bold">{submissionGrade}</span>
+              </div>
+              <div>
+                <p className="text-lg font-semibold text-white">Tu calificación</p>
+                <p className="text-sm text-neutral-400">
+                  {submissionGrade >= 80 ? "¡Excelente trabajo!" :
+                   submissionGrade >= 60 ? "Buen intento, puedes mejorar" :
+                   "Necesitas repasar el material"}
+                </p>
+              </div>
+              <div className="mt-2 rounded-lg bg-white/5 px-4 py-2">
+                <p className="text-xs text-neutral-500">Respondidas correctamente</p>
+                <p className="text-lg font-semibold text-white">
+                  {Math.round((submissionGrade / 100) * questions.length)} de {questions.length}
+                </p>
+              </div>
+              <p className="mt-2 text-xs text-neutral-500">Quiz completado</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Si el quiz fue enviado pero no tiene calificación numérica (pendiente de revisión manual)
+  if (submitted) {
+    return (
+      <div className="flex h-full w-full items-center justify-center px-0 lg:px-10">
+        <div className="w-[90%] lg:w-full lg:max-w-md px-4 sm:px-6">
+          <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-neutral-800/90 to-neutral-900/90 p-6 shadow-xl">
+            <div className="flex flex-col items-center gap-4 text-center">
+              <div className="flex h-20 w-20 items-center justify-center rounded-full bg-blue-500/20 text-blue-400">
+                <svg className="h-10 w-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-lg font-semibold text-white">Quiz enviado</p>
+                <p className="text-sm text-neutral-400">
+                  {submissionStatus ?? "En revisión"}
+                </p>
+              </div>
+              <p className="mt-2 text-xs text-neutral-500">Tu profesor revisará tus respuestas</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full w-full items-center justify-center px-0 lg:px-10">
@@ -4381,34 +4596,19 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
         ) : null}
 
         {questions.length > 0 ? (
-          <div className="relative z-10 flex flex-wrap items-center justify-between gap-2 pt-2">
-            {submitted ? (
-              <div className="relative z-10 inline-flex items-center gap-2 rounded-full bg-green-600/20 px-4 py-2 text-sm font-semibold text-green-200">
-                <span>Quiz enviado</span>
-                {submissionStatus ? (
-                  <span className="rounded-full bg-white/10 px-2 py-[2px] text-[11px] text-white/90">
-                    {submissionStatus}
-                  </span>
-                ) : null}
-                {typeof submissionGrade === "number" ? (
-                  <span className="rounded-full bg-white/10 px-2 py-[2px] text-[11px] text-white/90">
-                    Calificación: {submissionGrade}
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
+          <div className="relative z-10 flex flex-col gap-4 pt-2">
             <div className="relative z-10 flex items-center gap-2">
               <button
                 type="button"
-                disabled={!allAnswered || submitting || submitted}
+                disabled={!allAnswered || submitting}
                 onClick={handleSubmit}
                 className={`relative z-10 rounded-full px-4 py-2 text-sm font-semibold text-white shadow transition-all disabled:opacity-50 ${
-                  allAnswered && !submitted && !submitting
+                  allAnswered && !submitting
                     ? "bg-gradient-to-r from-blue-500 via-blue-600 to-blue-500 bg-[length:200%_100%] animate-pulse ring-2 ring-blue-400/50 ring-offset-2 ring-offset-neutral-900 hover:ring-blue-300"
                     : "bg-blue-600"
                 }`}
               >
-                {submitted ? "Ya enviado" : submitting ? "Enviando..." : allAnswered ? "Enviar quiz" : "Contesta todas las preguntas"}
+                {submitting ? "Enviando..." : allAnswered ? "Enviar quiz" : "Contesta todas las preguntas"}
               </button>
             </div>
           </div>
@@ -5127,18 +5327,99 @@ type AssignmentPanelProps = {
   classId: string;
   classTitle?: string;
   templateUrl?: string;
-  note: string;
-  onChangeNote: (val: string) => void;
   onSubmit: () => void | Promise<void>;
   onClose: () => void;
   selectedFile: File | null;
+  audioFile: File | null;
   onFileChange: (file: File | null) => void;
+  onAudioChange: (file: File | null) => void;
   uploading: boolean;
   submitted: boolean;
 };
 
-function AssignmentPanel({ classId, classTitle, templateUrl, note, onChangeNote, onSubmit, onClose, selectedFile, onFileChange, uploading, submitted }: AssignmentPanelProps) {
+function AssignmentPanel({
+  classId,
+  classTitle,
+  templateUrl,
+  onSubmit,
+  onClose,
+  selectedFile,
+  audioFile,
+  onFileChange,
+  onAudioChange,
+  uploading,
+  submitted,
+}: AssignmentPanelProps) {
   const [dragOver, setDragOver] = useState(false);
+  const [audioPreviewUrl, setAudioPreviewUrl] = useState("");
+  const [recording, setRecording] = useState(false);
+  const [recordingError, setRecordingError] = useState<string | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<BlobPart[]>([]);
+
+  useEffect(() => {
+    if (!audioFile) {
+      setAudioPreviewUrl("");
+      return undefined;
+    }
+    const url = URL.createObjectURL(audioFile);
+    setAudioPreviewUrl(url);
+    return () => {
+      URL.revokeObjectURL(url);
+      setAudioPreviewUrl("");
+    };
+  }, [audioFile]);
+
+  useEffect(() => {
+    return () => {
+      if (recorderRef.current && recorderRef.current.state !== "inactive") {
+        recorderRef.current.stop();
+      }
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  const handleAudioRecording = async () => {
+    if (recording) {
+      recorderRef.current?.stop();
+      return;
+    }
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setRecordingError("Tu navegador no permite grabar audio");
+      return;
+    }
+    if (typeof MediaRecorder === "undefined") {
+      setRecordingError("Tu navegador no permite grabar audio");
+      return;
+    }
+    try {
+      setRecordingError(null);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const recorder = new MediaRecorder(stream);
+      recorderRef.current = recorder;
+      chunksRef.current = [];
+      recorder.addEventListener("dataavailable", (event) => {
+        if (event.data && event.data.size > 0) {
+          chunksRef.current.push(event.data);
+        }
+      });
+      recorder.addEventListener("stop", () => {
+        stream.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        const file = new File([blob], `grabacion-${Date.now()}.webm`, { type: "audio/webm" });
+        onAudioChange(file);
+        setRecording(false);
+      });
+      recorder.start();
+      setRecording(true);
+    } catch (err) {
+      console.error("Error grabando audio:", err);
+      setRecordingError("No se pudo iniciar la grabación");
+    }
+  };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -5196,13 +5477,6 @@ function AssignmentPanel({ classId, classTitle, templateUrl, note, onChangeNote,
           </div>
         ) : (
           <div className="rounded-2xl bg-white/5 p-3">
-            <p className="mb-2 text-sm font-semibold text-white">Enlace o notas de la tarea</p>
-            <textarea
-              value={note}
-              onChange={(e) => onChangeNote(e.target.value)}
-              placeholder="Pega aquí el enlace de tu entrega o notas para el profesor"
-              className="h-32 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none"
-            />
             <div className="mt-3 space-y-2 text-sm text-white/90">
               <p className="font-semibold text-white">Adjuntar archivo (PDF o DOC)</p>
               <div
@@ -5228,6 +5502,53 @@ function AssignmentPanel({ classId, classTitle, templateUrl, note, onChangeNote,
                   <p className="mt-2 text-xs text-white/80">Seleccionado: {selectedFile.name}</p>
                 ) : (
                   <p className="mt-2 text-xs text-white/50">Máx. 1 archivo</p>
+                )}
+              </div>
+            </div>
+            <div className="mt-3 space-y-2 text-sm text-white/90">
+              <p className="font-semibold text-white">Enviar un audio</p>
+              <div className="space-y-3 rounded-2xl border border-dashed border-white/20 bg-white/5 p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleAudioRecording}
+                    disabled={uploading}
+                    className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold ${
+                      recording ? "bg-red-600 text-white" : "bg-white/10 text-white hover:bg-white/20"
+                    }`}
+                  >
+                    <ControlIcon name="audio" />
+                    {recording ? "Detener grabación" : "Grabar audio"}
+                  </button>
+                  <input
+                    type="file"
+                    accept="audio/*"
+                    disabled={uploading}
+                    onChange={(e) => onAudioChange(e.target.files?.[0] ?? null)}
+                    className="w-full cursor-pointer rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white placeholder:text-white/50 transition hover:border-blue-400 focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+                {recordingError ? <p className="text-xs text-red-300">{recordingError}</p> : null}
+                {audioFile ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs text-white/70">
+                      <span className="truncate">{audioFile.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => onAudioChange(null)}
+                        className="text-xs font-semibold text-red-300 hover:text-red-200"
+                      >
+                        Quitar
+                      </button>
+                    </div>
+                    {audioPreviewUrl ? (
+                      <StyledAudioPreview src={audioPreviewUrl} label="Audio grabado" />
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="text-xs text-white/60">
+                    Sube un archivo o graba tu voz para acompañar la entrega.
+                  </p>
                 )}
               </div>
             </div>

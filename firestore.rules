@@ -242,14 +242,14 @@ service cloud.firestore {
       allow delete: if isAdmin() || isAdminTeacher();
 
       match /students/{studentId} {
-        allow read: if isAdmin() ||
+        allow read: if isAdmin() || isAdminTeacher() ||
           (isSignedIn() &&
             (
               isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId)) ||
               studentId == request.auth.uid
             )
           );
-        allow create, update, delete: if isAdmin() || (
+        allow create, update, delete: if isAdmin() || isAdminTeacher() || (
           isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
           isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId))
@@ -274,7 +274,8 @@ service cloud.firestore {
           isSignedIn() &&
           request.resource.data.studentId == request.auth.uid
         );
-        allow update, delete: if isAdmin() || (
+        // AdminTeacher puede modificar/eliminar cualquier submission
+        allow update, delete: if isAdmin() || isAdminTeacher() || (
           isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
           isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId))
@@ -282,7 +283,7 @@ service cloud.firestore {
       }
 
       match /grades/{studentId} {
-        allow read, create, update, delete: if isAdmin() || (
+        allow read, create, update, delete: if isAdmin() || isAdminTeacher() || (
           isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
           isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId))

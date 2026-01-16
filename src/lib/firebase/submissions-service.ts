@@ -28,6 +28,7 @@ export type Submission = {
   studentName: string;
   submittedAt?: Date | null;
   fileUrl?: string;
+  audioUrl?: string;
   content?: string;
   status: SubmissionStatus;
   grade?: number;
@@ -46,7 +47,11 @@ type CreateSubmissionInput = {
   studentName: string;
   submittedAt?: Date;
   fileUrl?: string;
+  audioUrl?: string;
   content?: string;
+  status?: SubmissionStatus;
+  grade?: number;
+  answers?: unknown[];
 };
 
 export async function createSubmission(
@@ -76,8 +81,11 @@ export async function createSubmission(
     studentName: data.studentName,
     submittedAt: data.submittedAt ? Timestamp.fromDate(data.submittedAt) : serverTimestamp(),
     fileUrl: data.fileUrl ?? "",
+    audioUrl: data.audioUrl ?? "",
     content: data.content ?? "",
-    status: "pending",
+    status: data.status ?? "pending",
+    ...(typeof data.grade === "number" ? { grade: data.grade, gradedAt: serverTimestamp() } : {}),
+    ...(data.answers ? { answers: data.answers } : {}),
   });
   return docRef.id;
 }
@@ -143,6 +151,7 @@ type SubmissionData = {
   studentName?: string;
   submittedAt?: { toDate?: () => Date };
   fileUrl?: string;
+  audioUrl?: string;
   content?: string;
   status?: SubmissionStatus | string;
   grade?: number;
@@ -166,6 +175,7 @@ function toSubmission(id: string, data: SubmissionData): Submission {
     studentName: data.studentName ?? "",
     submittedAt: data.submittedAt?.toDate?.() ?? null,
     fileUrl: data.fileUrl ?? "",
+    audioUrl: data.audioUrl ?? "",
     content: data.content ?? "",
     status,
     grade: data.grade ?? undefined,
