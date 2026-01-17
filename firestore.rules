@@ -304,6 +304,11 @@ service cloud.firestore {
       }
     }
 
+    // Regla para collectionGroup queries en forums (necesaria para consultas globales)
+    match /{path=**}/forums/{postId} {
+      allow read: if isSignedIn();
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

@@ -1760,6 +1760,70 @@ export default function StudentFeedPageClient() {
     [saveProgressToFirestore, findClassById, isForumSatisfied, previewMode],
   );
 
+  // Handler para marcar manualmente una clase como completada al 100%
+  const handleManualComplete = useCallback(
+    async (classId: string, classType: string) => {
+      if (previewMode) {
+        toast.error("No puedes completar clases en vista previa.");
+        return;
+      }
+      if (!currentUser?.uid) {
+        toast.error("Inicia sesión para completar la clase.");
+        return;
+      }
+
+      const cls = classes.find((c) => c.id === classId);
+      const targetEnrollmentId = cls?.enrollmentId || enrollmentId;
+      if (!targetEnrollmentId) {
+        toast.error("No se encontró la inscripción.");
+        return;
+      }
+
+      try {
+        // Actualizar refs y estado local inmediatamente
+        progressRef.current[classId] = 100;
+        completedRef.current[classId] = true;
+        seenRef.current[classId] = true;
+
+        setProgressMap((prev) => ({ ...prev, [classId]: 100 }));
+        setCompletedMap((prev) => ({ ...prev, [classId]: true }));
+        setSeenMap((prev) => ({ ...prev, [classId]: true }));
+
+        // Guardar en Firestore
+        const progressDoc = doc(db, "studentEnrollments", targetEnrollmentId, "classProgress", classId);
+        await setDoc(
+          progressDoc,
+          {
+            progress: 100,
+            lastUpdated: new Date(),
+            completed: true,
+            seen: true,
+            completedAt: new Date(),
+            manuallyCompleted: true,
+          },
+          { merge: true },
+        );
+
+        // Actualizar localStorage
+        const local = loadLocalProgress(currentUser.uid);
+        saveLocalProgress(currentUser.uid, {
+          progress: { ...local.progress, [classId]: 100 },
+          completed: { ...local.completed, [classId]: true },
+          seen: { ...local.seen, [classId]: true },
+        });
+
+        // Guardar en seenClasses como backup
+        await saveSeenForUser(classId, 100, true);
+
+        toast.success("Clase marcada como completada");
+      } catch (error) {
+        console.error("Error al completar clase manualmente:", error);
+        toast.error("No se pudo completar la clase. Intenta de nuevo.");
+      }
+    },
+    [currentUser?.uid, enrollmentId, classes, previewMode, saveSeenForUser],
+  );
+
   const handleForceChangePassword = useCallback(async () => {
     if (!currentUser) {
       setForceError("Inicia sesión para cambiar la contraseña.");
@@ -2374,6 +2438,42 @@ export default function StudentFeedPageClient() {
                             <span className="inline-flex items-center rounded-full bg-yellow-500/20 px-3 py-1 text-yellow-200">
                               Progreso: {progressPct}%
                             </span>
+                          );
+                        })()}
+                        {/* Botón para marcar clase como completada manualmente */}
+                        {(() => {
+                          const currentProgress = Math.max(
+                            progressRef.current[cls.id] ?? 0,
+                            progressMap[cls.id] ?? 0
+                          );
+                          const requiredPct = getRequiredPct(cls.type);
+                          const isCompleted = completedMap[cls.id] || seenMap[cls.id] || currentProgress >= requiredPct;
+
+                          // Solo mostrar si NO está completada y el tipo no es quiz
+                          if (isCompleted || cls.type === "quiz") {
+                            return null;
+                          }
+
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => handleManualComplete(cls.id, cls.type)}
+                              className="inline-flex items-center gap-1.5 rounded-full bg-green-600 px-3 py-1 text-[11px] font-semibold text-white shadow-md transition-all hover:bg-green-500 hover:shadow-lg active:scale-95"
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                viewBox="0 0 20 20"
+                                fill="currentColor"
+                                className="h-3.5 w-3.5"
+                              >
+                                <path
+                                  fillRule="evenodd"
+                                  d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z"
+                                  clipRule="evenodd"
+                                />
+                              </svg>
+                              Completar
+                            </button>
                           );
                         })()}
                         {cls.hasAssignment ? (

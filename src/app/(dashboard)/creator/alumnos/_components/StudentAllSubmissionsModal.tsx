@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Submission, deleteSubmission } from "@/lib/firebase/submissions-service";
-import { collection, query, where, getDocs, orderBy } from "firebase/firestore";
+import { collection, collectionGroup, query, where, getDocs, orderBy } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import toast from "react-hot-toast";
 
@@ -31,22 +31,43 @@ export function StudentAllSubmissionsModal({
   const [submissions, setSubmissions] = useState<SubmissionWithGroup[]>([]);
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [selectedCourseId, setSelectedCourseId] = useState("all");
+  const [selectedType, setSelectedType] = useState("all");
 
   useEffect(() => {
     if (!isOpen) return;
+    // Reset filters when modal opens
+    setSelectedCourseId("all");
+    setSelectedType("all");
     const load = async () => {
       setLoading(true);
       try {
-        // Obtener todos los grupos
+        // 1. Obtener todos los grupos en paralelo con sus submissions
         const groupsSnap = await getDocs(collection(db, "groups"));
-        const allSubmissions: SubmissionWithGroup[] = [];
 
-        // Para cada grupo, buscar submissions del estudiante
-        for (const groupDoc of groupsSnap.docs) {
-          const groupId = groupDoc.id;
+        // Crear mapa de grupos para referencia rápida
+        const groupsMap = new Map<string, { groupName: string; courseNameMap: Map<string, string> }>();
+        groupsSnap.docs.forEach((groupDoc) => {
           const groupData = groupDoc.data();
-          const groupName = groupData.groupName || "Sin nombre";
+          const courseNameMap = new Map<string, string>();
+          const coursesArray = Array.isArray(groupData.courses) ? groupData.courses : [];
+          coursesArray.forEach((course: { courseId?: string; courseName?: string }) => {
+            if (course?.courseId) {
+              courseNameMap.set(course.courseId, course.courseName ?? "");
+            }
+          });
+          if (groupData.courseId && groupData.courseName) {
+            courseNameMap.set(groupData.courseId, groupData.courseName);
+          }
+          groupsMap.set(groupDoc.id, {
+            groupName: groupData.groupName || "Sin nombre",
+            courseNameMap,
+          });
+        });
 
+        // 2. Consultar submissions del estudiante en TODOS los grupos en paralelo
+        const submissionPromises = groupsSnap.docs.map(async (groupDoc) => {
+          const groupId = groupDoc.id;
           const submissionsRef = collection(db, "groups", groupId, "submissions");
           const q = query(
             submissionsRef,
@@ -54,13 +75,21 @@ export function StudentAllSubmissionsModal({
             orderBy("submittedAt", "desc")
           );
           const subsSnap = await getDocs(q);
+          return { groupId, docs: subsSnap.docs };
+        });
 
-          subsSnap.docs.forEach((doc) => {
+        const submissionResults = await Promise.all(submissionPromises);
+
+        const allSubmissions: SubmissionWithGroup[] = [];
+
+        submissionResults.forEach(({ groupId, docs }) => {
+          const groupInfo = groupsMap.get(groupId);
+          docs.forEach((doc) => {
             const data = doc.data();
             allSubmissions.push({
               id: doc.id,
               groupId,
-              groupName,
+              groupName: groupInfo?.groupName ?? "Sin nombre",
               classId: data.classId ?? "",
               classDocId: data.classDocId,
               courseId: data.courseId,
@@ -79,6 +108,68 @@ export function StudentAllSubmissionsModal({
               gradedAt: data.gradedAt?.toDate?.() ?? null,
             });
           });
+        });
+
+        // 3. Consultar foros usando collectionGroup (una sola consulta para todos los foros)
+        try {
+          const forumsQuery = query(
+            collectionGroup(db, "forums"),
+            where("authorId", "==", studentId)
+          );
+          const forumsSnap = await getDocs(forumsQuery);
+
+          // Usar Set para evitar duplicados de foros
+          const seenForumIds = new Set<string>();
+          forumsSnap.docs.forEach((forumDoc) => {
+            // Evitar duplicados usando el path completo como identificador único
+            const uniqueForumKey = forumDoc.ref.path;
+            if (seenForumIds.has(uniqueForumKey)) return;
+            seenForumIds.add(uniqueForumKey);
+
+            const forumData = forumDoc.data();
+            // Extraer courseId y classId del path: courses/{courseId}/lessons/{lessonId}/classes/{classId}/forums/{forumId}
+            const pathParts = forumDoc.ref.path.split("/");
+            const courseId = pathParts[1] ?? "";
+            const lessonId = pathParts[3] ?? "";
+            const classId = pathParts[5] ?? "";
+
+            // Buscar el grupo que tiene este curso
+            let groupId = "";
+            let groupName = "Sin nombre";
+            let courseTitle = "";
+            for (const [gId, gInfo] of groupsMap.entries()) {
+              if (gInfo.courseNameMap.has(courseId)) {
+                groupId = gId;
+                groupName = gInfo.groupName;
+                courseTitle = gInfo.courseNameMap.get(courseId) ?? "";
+                break;
+              }
+            }
+
+            allSubmissions.push({
+              id: `forum-${courseId}-${lessonId}-${classId}-${forumDoc.id}`,
+              groupId,
+              groupName,
+              classId,
+              classDocId: classId,
+              courseId,
+              courseTitle,
+              className: forumData.classTitle ?? "Foro",
+              classType: "forum",
+              studentId: forumData.authorId ?? "",
+              studentName: forumData.authorName ?? "",
+              submittedAt: forumData.createdAt?.toDate?.() ?? null,
+              fileUrl: forumData.mediaUrl ?? "",
+              audioUrl: "",
+              content: forumData.text ?? "",
+              status: "pending",
+              grade: undefined,
+              feedback: "",
+              gradedAt: null,
+            });
+          });
+        } catch (forumErr) {
+          console.error("Error cargando foros:", forumErr);
         }
 
         // Ordenar por fecha de entrega (más reciente primero)
@@ -99,10 +190,27 @@ export function StudentAllSubmissionsModal({
     load();
   }, [isOpen, studentId]);
 
+  function normalizeSubmissionType(value: string) {
+    const normalized = (value || "").toLowerCase().trim();
+    if (["quiz", "quizz", "cuestionario"].includes(normalized)) return "quiz";
+    if (["forum", "foro", "post", "discussion"].includes(normalized)) return "forum";
+    if (["assignment", "tarea", "homework"].includes(normalized)) return "assignment";
+    if (["video", "text", "texto", "audio", "image", "imagen", "document", "doc"].includes(normalized)) {
+      return "assignment";
+    }
+    return normalized || "assignment";
+  }
+
   const handleResetSubmission = async (submission: SubmissionWithGroup) => {
+    const normalizedType = normalizeSubmissionType(submission.classType);
+    const submissionLabel = normalizedType === "forum"
+      ? { label: "aporte", article: "el", pronoun: "lo" }
+      : normalizedType === "quiz"
+        ? { label: "quiz", article: "el", pronoun: "lo" }
+        : { label: "tarea", article: "la", pronoun: "la" };
     if (
       !confirm(
-        `¿Estás seguro de que deseas resetear la tarea "${submission.className}" del grupo "${submission.groupName}"? Esto permitirá que ${studentName} la vuelva a enviar.`
+        `¿Estás seguro de que deseas resetear ${submissionLabel.article} ${submissionLabel.label} "${submission.className}" del grupo "${submission.groupName}"? Esto permitirá que ${studentName} vuelva a enviar${submissionLabel.pronoun}.`
       )
     ) {
       return;
@@ -111,7 +219,12 @@ export function StudentAllSubmissionsModal({
     setDeletingIds((prev) => new Set(prev).add(submission.id));
     try {
       await deleteSubmission(submission.groupId, submission.id);
-      toast.success("Tarea reseteada exitosamente");
+      const resetMessage = submissionLabel.label === "tarea"
+        ? "Tarea reseteada exitosamente"
+        : submissionLabel.label === "quiz"
+          ? "Quiz reseteado exitosamente"
+          : "Aporte reseteado exitosamente";
+      toast.success(resetMessage);
 
       // Remover de la lista
       setSubmissions((prev) => prev.filter((s) => s.id !== submission.id));
@@ -139,10 +252,11 @@ export function StudentAllSubmissionsModal({
   };
 
   const getClassTypeLabel = (type: string) => {
-    if (type === "quiz") return "Quiz";
-    if (type === "forum") return "Foro";
-    if (type === "assignment") return "Tarea";
-    return type;
+    const normalized = normalizeSubmissionType(type);
+    if (normalized === "quiz") return "Quiz";
+    if (normalized === "forum") return "Foro";
+    if (normalized === "assignment") return "Tarea";
+    return "Tarea";
   };
 
   const getStatusBadge = (submission: Submission) => {
@@ -173,6 +287,50 @@ export function StudentAllSubmissionsModal({
     );
   };
 
+  const courseOptions = useMemo(() => {
+    const options = new Map<string, string>();
+    let hasNoCourse = false;
+    submissions.forEach((sub) => {
+      if (!sub.courseId) {
+        hasNoCourse = true;
+        return;
+      }
+      if (!options.has(sub.courseId)) {
+        options.set(sub.courseId, sub.courseTitle || "Curso sin titulo");
+      }
+    });
+    const list = Array.from(options.entries()).map(([id, label]) => ({ id, label }));
+    if (hasNoCourse) {
+      list.push({ id: "no-course", label: "Sin curso" });
+    }
+    return list.sort((a, b) => a.label.localeCompare(b.label, "es"));
+  }, [submissions]);
+
+  const visibleSubmissions = useMemo(() => {
+    return submissions.filter((sub) => {
+      const courseMatch = selectedCourseId === "all"
+        ? true
+        : (sub.courseId ?? "no-course") === selectedCourseId;
+      const normalizedType = normalizeSubmissionType(sub.classType);
+      const typeMatch = selectedType === "all"
+        ? true
+        : normalizedType === selectedType;
+      return courseMatch && typeMatch;
+    });
+  }, [submissions, selectedCourseId, selectedType]);
+
+  useEffect(() => {
+    if (selectedCourseId === "all") return;
+    const isValid = courseOptions.some((opt) => opt.id === selectedCourseId);
+    if (!isValid) setSelectedCourseId("all");
+  }, [courseOptions, selectedCourseId]);
+
+  useEffect(() => {
+    if (selectedType === "all") return;
+    const hasType = submissions.some((sub) => normalizeSubmissionType(sub.classType) === selectedType);
+    if (!hasType) setSelectedType("all");
+  }, [selectedType, submissions]);
+
   return (
     <Dialog open={isOpen} onOpenChange={(open) => (!open ? onClose() : null)}>
       <DialogContent className="max-w-5xl max-h-[80vh] overflow-y-auto">
@@ -191,12 +349,51 @@ export function StudentAllSubmissionsModal({
           <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-6 text-sm text-slate-600">
             Este alumno no ha enviado ninguna tarea en ningún grupo.
           </div>
+        ) : visibleSubmissions.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-6 text-sm text-slate-600">
+            No hay entregas para los filtros seleccionados.
+          </div>
         ) : (
           <div className="space-y-3">
-            <p className="text-sm text-slate-600">
-              Total de entregas: <span className="font-semibold">{submissions.length}</span>
-            </p>
-            {submissions.map((sub) => {
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-slate-600">
+                Total de entregas: <span className="font-semibold">{visibleSubmissions.length}</span>
+                {selectedCourseId !== "all" ? (
+                  <span className="text-slate-400"> de {submissions.length}</span>
+                ) : null}
+              </p>
+              <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
+                <label className="flex items-center gap-2">
+                  <span>Filtrar por curso</span>
+                  <select
+                    value={selectedCourseId}
+                    onChange={(e) => setSelectedCourseId(e.target.value)}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700"
+                  >
+                    <option value="all">Todos los cursos</option>
+                    {courseOptions.map((opt) => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex items-center gap-2">
+                  <span>Filtrar por tipo</span>
+                  <select
+                    value={selectedType}
+                    onChange={(e) => setSelectedType(e.target.value)}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700"
+                  >
+                    <option value="all">Todos</option>
+                    <option value="assignment">Tarea</option>
+                    <option value="forum">Foro</option>
+                    <option value="quiz">Quiz</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            {visibleSubmissions.map((sub) => {
               const isExpanded = expandedId === sub.id;
               return (
                 <div
@@ -219,6 +416,7 @@ export function StudentAllSubmissionsModal({
                         {sub.courseTitle ? (
                           <span>Curso: {sub.courseTitle}</span>
                         ) : null}
+                        <span>Tipo: {getClassTypeLabel(sub.classType)}</span>
                         <span>Enviado: {formatDate(sub.submittedAt)}</span>
                         {sub.gradedAt ? (
                           <span>Calificado: {formatDate(sub.gradedAt)}</span>

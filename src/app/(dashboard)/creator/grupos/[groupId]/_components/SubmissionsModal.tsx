@@ -271,15 +271,20 @@ export function SubmissionsModal({
     });
   };
 
-  const handleResetSubmission = async (submissionId: string, studentName: string) => {
-    if (!confirm(`¿Estás seguro de que deseas resetear la tarea de ${studentName}? Esto permitirá que el alumno la vuelva a enviar.`)) {
+  const handleResetSubmission = async (
+    submissionId: string,
+    studentName: string,
+    label: "tarea" | "aporte" = "tarea",
+  ) => {
+    const pronoun = label === "tarea" ? "la" : "lo";
+    if (!confirm(`¿Estás seguro de que deseas resetear el ${label} de ${studentName}? Esto permitirá que el alumno vuelva a enviar${pronoun}.`)) {
       return;
     }
 
     setDeletingIds((prev) => new Set(prev).add(submissionId));
     try {
       await deleteSubmission(groupId, submissionId);
-      toast.success("Tarea reseteada. El alumno puede enviarla nuevamente.");
+      toast.success(`${label === "tarea" ? "Tarea" : "Aporte"} reseteado. El alumno puede enviar${pronoun} nuevamente.`);
 
       // Recargar las submissions
       const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
@@ -322,7 +327,10 @@ export function SubmissionsModal({
                   <th className="px-3 py-2 text-left">Nombre</th>
                   <th className="px-3 py-2 text-left">Fecha entrega</th>
                   {isForumClass ? (
-                    <th className="px-3 py-2 text-left">Aporte</th>
+                    <>
+                      <th className="px-3 py-2 text-left">Aporte</th>
+                      <th className="px-3 py-2 text-left">Acción</th>
+                    </>
                   ) : isQuizClass ? (
                     <>
                       <th className="px-3 py-2 text-left">Calificación</th>
@@ -348,25 +356,41 @@ export function SubmissionsModal({
                         {sub ? formatDate(sub.submittedAt) : "-"}
                       </td>
                       {isForumClass ? (
-                        <td className="px-3 py-2 text-slate-600">
-                          {sub ? (
-                            <div className="space-y-1">
-                              {sub.content ? <p className="text-sm text-slate-800">{sub.content}</p> : null}
-                              {sub.fileUrl ? (
-                                <a
-                                  href={sub.fileUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-xs font-semibold text-blue-600 hover:underline"
-                                >
-                                  Ver adjunto
-                                </a>
-                              ) : null}
-                            </div>
-                          ) : (
-                            "-"
-                          )}
+                        <>
+                          <td className="px-3 py-2 text-slate-600">
+                            {sub ? (
+                              <div className="space-y-1">
+                                {sub.content ? <p className="text-sm text-slate-800">{sub.content}</p> : null}
+                                {sub.fileUrl ? (
+                                  <a
+                                    href={sub.fileUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-xs font-semibold text-blue-600 hover:underline"
+                                  >
+                                    Ver adjunto
+                                  </a>
+                                ) : null}
+                              </div>
+                            ) : (
+                              "-"
+                            )}
                           </td>
+                          <td className="px-3 py-2">
+                            {sub ? (
+                              <button
+                                type="button"
+                                className="rounded-lg border border-red-200 bg-red-50 px-3 py-1 text-sm font-medium text-red-600 hover:border-red-400 hover:bg-red-100 disabled:opacity-60"
+                                disabled={deletingIds.has(sub.id)}
+                                onClick={() => handleResetSubmission(sub.id, row.student.name, "aporte")}
+                              >
+                                {deletingIds.has(sub.id) ? "Reseteando..." : "Resetear"}
+                              </button>
+                            ) : (
+                              <span className="text-slate-400">-</span>
+                            )}
+                          </td>
+                        </>
                         ) : isQuizClass ? (
                           <>
                             <td className="px-3 py-2">
