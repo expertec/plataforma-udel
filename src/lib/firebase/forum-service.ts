@@ -25,6 +25,10 @@ export type ForumPost = {
   mediaUrl?: string | null;
   createdAt: Date;
   repliesCount?: number;
+  status?: "pending" | "graded";
+  grade?: number;
+  feedback?: string;
+  gradedAt?: Date | null;
 };
 
 /**
@@ -73,6 +77,10 @@ export async function getForumPosts(
       mediaUrl: data.mediaUrl ?? null,
       createdAt: data.createdAt?.toDate?.() ?? new Date(),
       repliesCount: data.repliesCount ?? 0,
+      status: data.status ?? undefined,
+      grade: typeof data.grade === "number" ? data.grade : undefined,
+      feedback: data.feedback ?? "",
+      gradedAt: data.gradedAt?.toDate?.() ?? null,
     };
   });
 }
@@ -111,6 +119,10 @@ export async function getStudentForumPost(
     mediaUrl: data.mediaUrl ?? null,
     createdAt: data.createdAt?.toDate?.() ?? new Date(),
     repliesCount: data.repliesCount ?? 0,
+    status: data.status ?? undefined,
+    grade: typeof data.grade === "number" ? data.grade : undefined,
+    feedback: data.feedback ?? "",
+    gradedAt: data.gradedAt?.toDate?.() ?? null,
   };
 }
 
@@ -141,6 +153,20 @@ export async function createOrUpdateForumPost(params: {
     studentId
   );
 
+  const existingSnap = await getDoc(postRef);
+  const existingRepliesCount = existingSnap.exists()
+    ? (existingSnap.data()?.repliesCount ?? 0)
+    : 0;
+  if (existingSnap.exists()) {
+    const data = existingSnap.data();
+    const isGraded = data?.status === "graded"
+      || typeof data?.grade === "number"
+      || data?.gradedAt;
+    if (isGraded) {
+      throw new Error("FORUM_GRADED");
+    }
+  }
+
   await setDoc(postRef, {
     text: text.trim(),
     authorId: studentId,
@@ -148,8 +174,8 @@ export async function createOrUpdateForumPost(params: {
     format: format,
     mediaUrl: mediaUrl ?? null,
     createdAt: serverTimestamp(),
-    repliesCount: 0,
-  });
+    repliesCount: existingRepliesCount,
+  }, { merge: true });
 }
 
 /**
@@ -357,4 +383,56 @@ export async function getForumPostRepliesCount(
   if (!snap.exists()) return 0;
 
   return snap.data()?.repliesCount ?? 0;
+}
+
+/**
+ * Elimina la aportación principal de un estudiante si aún no está evaluada
+ */
+export async function deleteStudentForumPostIfNotEvaluated(params: {
+  courseId: string;
+  lessonId: string;
+  classId: string;
+  studentId: string;
+}): Promise<void> {
+  const { courseId, lessonId, classId, studentId } = params;
+
+  const postRef = doc(
+    db,
+    "courses",
+    courseId,
+    "lessons",
+    lessonId,
+    "classes",
+    classId,
+    "forums",
+    studentId
+  );
+
+  const postSnap = await getDoc(postRef);
+  if (!postSnap.exists()) return;
+
+  const data = postSnap.data();
+  const isGraded = data?.status === "graded"
+    || typeof data?.grade === "number"
+    || data?.gradedAt;
+  if (isGraded) {
+    throw new Error("FORUM_GRADED");
+  }
+
+  const repliesRef = collection(
+    db,
+    "courses",
+    courseId,
+    "lessons",
+    lessonId,
+    "classes",
+    classId,
+    "forums",
+    studentId,
+    "replies"
+  );
+  const repliesSnap = await getDocs(repliesRef);
+  await Promise.all(repliesSnap.docs.map((reply) => deleteDoc(reply.ref)));
+
+  await deleteDoc(postRef);
 }

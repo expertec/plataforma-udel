@@ -30,9 +30,10 @@ import { createSubmission } from "@/lib/firebase/submissions-service";
 import {
   getForumPosts,
   getForumReplies,
+  getStudentForumPost,
   createOrUpdateForumPost,
   addForumReply,
-  hasStudentPosted,
+  deleteStudentForumPostIfNotEvaluated,
   type ForumPost,
   type ForumReply,
 } from "@/lib/firebase/forum-service";
@@ -2652,6 +2653,12 @@ export default function StudentFeedPageClient() {
                   handleProgress(cls.id, pct, cls.type, cls.hasAssignment || false, cls.assignmentTemplateUrl);
                 }
               }}
+              onDeleted={() => {
+                const cls = findClassById(forumPanel.classId ?? null);
+                if (cls?.id) {
+                  setForumDoneMap((prev) => ({ ...prev, [cls.id]: false }));
+                }
+              }}
             />
           ) : null}
 
@@ -4927,9 +4934,19 @@ type ForumPanelProps = {
   studentName: string;
   studentId?: string;
   onSubmitted: () => void;
+  onDeleted: () => void;
 };
 
-function ForumPanel({ open, onClose, classMeta, requiredFormat, studentName, studentId, onSubmitted }: ForumPanelProps) {
+function ForumPanel({
+  open,
+  onClose,
+  classMeta,
+  requiredFormat,
+  studentName,
+  studentId,
+  onSubmitted,
+  onDeleted,
+}: ForumPanelProps) {
   const [view, setView] = useState<"list" | "create">("list");
   const [posts, setPosts] = useState<ForumPost[]>([]);
   const [loadingPosts, setLoadingPosts] = useState(false);
@@ -4937,6 +4954,8 @@ function ForumPanel({ open, onClose, classMeta, requiredFormat, studentName, stu
   const [showReplies, setShowReplies] = useState<Record<string, boolean>>({});
   const [replyText, setReplyText] = useState<Record<string, string>>({});
   const [sendingReply, setSendingReply] = useState<Record<string, boolean>>({});
+  const [studentPost, setStudentPost] = useState<ForumPost | null>(null);
+  const [deletingPost, setDeletingPost] = useState(false);
 
   // Estados para crear aportación
   const [text, setText] = useState("");
@@ -4971,6 +4990,7 @@ function ForumPanel({ open, onClose, classMeta, requiredFormat, studentName, stu
   useEffect(() => {
     if (!open || !classMeta?.courseId || !classMeta.lessonId || !classMeta.classDocId) {
       setAlreadySubmitted(false);
+      setStudentPost(null);
       return;
     }
 
@@ -4978,13 +4998,14 @@ function ForumPanel({ open, onClose, classMeta, requiredFormat, studentName, stu
       if (!studentId) return;
 
       try {
-        const hasPosted = await hasStudentPosted(
+        const post = await getStudentForumPost(
           classMeta.courseId!,
           classMeta.lessonId!,
           classMeta.classDocId!,
           studentId
         );
-        setAlreadySubmitted(hasPosted);
+        setAlreadySubmitted(!!post);
+        setStudentPost(post);
       } catch (err) {
         console.warn("Error verificando aportación:", err);
       }
@@ -5006,6 +5027,12 @@ function ForumPanel({ open, onClose, classMeta, requiredFormat, studentName, stu
 
     checkAndLoadPosts();
   }, [open, classMeta?.courseId, classMeta?.lessonId, classMeta?.classDocId, studentId]);
+
+  const postEvaluated = !!(
+    studentPost?.status === "graded"
+    || studentPost?.gradedAt
+    || typeof studentPost?.grade === "number"
+  );
 
   const loadReplies = async (postId: string) => {
     if (!classMeta?.courseId || !classMeta.lessonId || !classMeta.classDocId) return;
@@ -5125,6 +5152,17 @@ function ForumPanel({ open, onClose, classMeta, requiredFormat, studentName, stu
       setText("");
       setMediaFile(null);
       setMediaUrl("");
+      setStudentPost({
+        id: studentId,
+        text: text.trim(),
+        authorId: studentId,
+        authorName: studentName || "Estudiante",
+        format: requiredFormat,
+        mediaUrl: storedUrl || null,
+        createdAt: new Date(),
+        repliesCount: 0,
+        status: "pending",
+      });
       setAlreadySubmitted(true);
       onSubmitted();
       setView("list");
@@ -5135,11 +5173,71 @@ function ForumPanel({ open, onClose, classMeta, requiredFormat, studentName, stu
         classMeta.classDocId
       );
       setPosts(allPosts);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error enviando aporte:", err);
-      toast.error("No se pudo enviar el aporte");
+      if (err?.message === "FORUM_GRADED") {
+        toast.error("No puedes editar tu aporte porque ya fue evaluado.");
+      } else {
+        toast.error("No se pudo enviar el aporte");
+      }
     } finally {
       setUploading(false);
+    }
+  };
+
+  const handleDeletePost = async () => {
+    if (!studentId || !classMeta?.courseId || !classMeta.lessonId || !classMeta.classDocId) {
+      toast.error("No se encontró el foro para eliminar el aporte");
+      return;
+    }
+    if (
+      !confirm("¿Seguro que deseas eliminar tu aporte? Podrás enviarlo nuevamente si aún no fue evaluado.")
+    ) {
+      return;
+    }
+
+    setDeletingPost(true);
+    try {
+      await deleteStudentForumPostIfNotEvaluated({
+        courseId: classMeta.courseId,
+        lessonId: classMeta.lessonId,
+        classId: classMeta.classDocId,
+        studentId,
+      });
+      toast.success("Aporte eliminado");
+      setAlreadySubmitted(false);
+      setStudentPost(null);
+      setText("");
+      setMediaFile(null);
+      setMediaUrl("");
+      setPreviewUrl("");
+      setPosts((prev) => prev.filter((post) => post.id !== studentId));
+      setReplies((prev) => {
+        const next = { ...prev };
+        delete next[studentId];
+        return next;
+      });
+      setShowReplies((prev) => {
+        const next = { ...prev };
+        delete next[studentId];
+        return next;
+      });
+      setReplyText((prev) => {
+        const next = { ...prev };
+        delete next[studentId];
+        return next;
+      });
+      setView("list");
+      onDeleted();
+    } catch (err: any) {
+      console.error("Error eliminando aporte:", err);
+      if (err?.message === "FORUM_GRADED") {
+        toast.error("No puedes eliminar tu aporte porque ya fue evaluado.");
+      } else {
+        toast.error("No se pudo eliminar el aporte");
+      }
+    } finally {
+      setDeletingPost(false);
     }
   };
 
@@ -5164,7 +5262,27 @@ function ForumPanel({ open, onClose, classMeta, requiredFormat, studentName, stu
       <div className="flex-1 min-h-0 overflow-y-auto" data-scrollable="true">
         {view === "list" ? (
           <div className="px-4 py-4 space-y-3 pb-4">
-            {!alreadySubmitted && (
+            {alreadySubmitted ? (
+              <div className="rounded-2xl bg-white/5 border border-white/10 p-3 space-y-2">
+                <p className="text-sm text-white/90">
+                  Ya enviaste tu aportación.
+                </p>
+                {postEvaluated ? (
+                  <p className="text-xs text-amber-200">
+                    Tu aporte ya fue evaluado. No puedes eliminarlo.
+                  </p>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleDeletePost}
+                    disabled={deletingPost}
+                    className="w-full rounded-lg bg-red-600/80 hover:bg-red-500 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                  >
+                    {deletingPost ? "Eliminando..." : "Eliminar mi aporte"}
+                  </button>
+                )}
+              </div>
+            ) : (
               <div className="rounded-2xl bg-blue-600/20 border border-blue-500/30 p-3">
                 <p className="text-xs text-blue-200 mb-2">
                   Debes hacer tu aportación ({requiredFormat === "text" ? "texto" : requiredFormat === "audio" ? "audio" : "video"}) para desbloquear la siguiente clase.

@@ -76,6 +76,11 @@ service cloud.firestore {
         request.resource.data.repliesCount is int &&
         request.resource.data.repliesCount >= 0;
     }
+    function forumPostIsGraded() {
+      return (resource.data.status == "graded") ||
+        (resource.data.grade is number) ||
+        (resource.data.gradedAt is timestamp);
+    }
     function isMentorOfCourse(courseId) {
       // Verifica si el usuario es mentor del curso consultando el array mentorIds
       let courseData = get(/databases/$(database)/documents/courses/$(courseId)).data;
@@ -203,9 +208,14 @@ service cloud.firestore {
             // Crear: alumno autenticado que se firma como autor, o profesor/admin del curso.
             allow create: if (isSignedIn() && request.resource.data.authorId == request.auth.uid) || isAdmin() || canManageCourse(courseId);
             // Update: profesor/admin del curso, el autor del post, o cualquiera que solo actualice repliesCount.
-            allow update: if isAdmin() || canManageCourse(courseId) || (isSignedIn() && resource.data.authorId == request.auth.uid) || canUpdateRepliesCountOnly();
+            allow update: if isAdmin() ||
+              canManageCourse(courseId) ||
+              (isSignedIn() && resource.data.authorId == request.auth.uid && !forumPostIsGraded()) ||
+              canUpdateRepliesCountOnly();
             // Delete: profesor/admin del curso o el autor del post.
-            allow delete: if isAdmin() || canManageCourse(courseId) || (isSignedIn() && resource.data.authorId == request.auth.uid);
+            allow delete: if isAdmin() ||
+              canManageCourse(courseId) ||
+              (isSignedIn() && resource.data.authorId == request.auth.uid && !forumPostIsGraded());
 
             // Respuestas a las aportaciones del foro (hilos públicos)
             match /replies/{replyId} {

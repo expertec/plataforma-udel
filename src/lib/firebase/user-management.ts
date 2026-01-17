@@ -81,32 +81,47 @@ export async function createAccountWithRole(input: CreateAccountInput): Promise<
       throw err;
     }
     // Intentar iniciar sesión con el password proporcionado para obtener el uid y actualizar el rol.
-    const existingCred = await signInWithEmailAndPassword(auth, email, password);
-    if (displayName) {
-      await updateProfile(existingCred.user, { displayName });
-    }
-    await setDoc(
-      doc(db, "users", existingCred.user.uid),
-      {
-        email,
-        displayName,
-        name: displayName,
-        role,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        updatedBy: createdBy ?? null,
-        status: "active",
-        provider: "password",
-        phone: phone ?? null,
-      },
-      { merge: true },
-    );
     try {
-      await signOut(auth);
-    } catch {
-      // ignore
+      const existingCred = await signInWithEmailAndPassword(auth, email, password);
+      if (displayName) {
+        await updateProfile(existingCred.user, { displayName });
+      }
+      await setDoc(
+        doc(db, "users", existingCred.user.uid),
+        {
+          email,
+          displayName,
+          name: displayName,
+          role,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          updatedBy: createdBy ?? null,
+          status: "active",
+          provider: "password",
+          phone: phone ?? null,
+        },
+        { merge: true },
+      );
+      try {
+        await signOut(auth);
+      } catch {
+        // ignore
+      }
+      return { uid: existingCred.user.uid };
+    } catch (signInErr: unknown) {
+      const signInCode = (signInErr as { code?: string })?.code ?? "";
+      if (
+        signInCode === "auth/invalid-credential" ||
+        signInCode === "auth/wrong-password" ||
+        signInCode === "auth/user-mismatch" ||
+        signInCode === "auth/user-disabled"
+      ) {
+        const mapped = new Error("El correo ya está registrado con otra credencial.");
+        (mapped as { code?: string }).code = "auth/email-already-in-use";
+        throw mapped;
+      }
+      throw signInErr;
     }
-    return { uid: existingCred.user.uid };
   }
 }
 
