@@ -2665,7 +2665,7 @@ export default function StudentFeedPageClient() {
           {/* Modal de tarea */}
           {assignmentModal.open && !previewMode ? (
             <div
-              className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+              className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 px-4 py-6"
               onClick={() => {
                 if (assignmentModal.classId) {
                   setAssignmentAck((prev) => {
@@ -2681,7 +2681,7 @@ export default function StudentFeedPageClient() {
               }}
             >
               <div
-                className="w-full max-w-md rounded-2xl bg-neutral-900 p-6 shadow-2xl"
+                className="w-full max-w-md max-h-[calc(100vh-3rem)] overflow-y-auto rounded-2xl bg-neutral-900 p-6 shadow-2xl"
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="flex items-start gap-3">
@@ -2704,11 +2704,11 @@ export default function StudentFeedPageClient() {
           {/* Modal de advertencia de quiz sin enviar */}
           {quizWarningModal.open ? (
             <div
-              className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+              className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 px-4 py-6"
               onClick={() => setQuizWarningModal({ open: false })}
             >
               <div
-                className="w-full max-w-md rounded-2xl bg-neutral-900 p-6 shadow-2xl"
+                className="w-full max-w-md max-h-[calc(100vh-3rem)] overflow-y-auto rounded-2xl bg-neutral-900 p-6 shadow-2xl"
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="flex items-start gap-3">
@@ -2888,8 +2888,8 @@ export default function StudentFeedPageClient() {
           })() : null}
         </div>
         {mustChangePassword && (
-          <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/80 px-4 py-6">
-            <div className="w-full max-w-md rounded-3xl border border-white/10 bg-neutral-950/90 p-6 text-white shadow-2xl">
+          <div className="fixed inset-0 z-[110] flex items-start justify-center overflow-y-auto bg-black/80 px-4 py-6">
+            <div className="w-full max-w-md max-h-[calc(100vh-3rem)] overflow-y-auto rounded-3xl border border-white/10 bg-neutral-950/90 p-6 text-white shadow-2xl">
               <div className="mb-2 flex items-center justify-between">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/60">Seguridad</p>

@@ -1120,8 +1120,8 @@ export default function AlumnosPage() {
 
       {/* Modal para editar perfil del alumno */}
       {editProfileModalOpen && selectedStudent && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black bg-opacity-50 px-4 py-6">
+          <div className="w-full max-w-md max-h-[calc(100vh-3rem)] overflow-y-auto rounded-xl bg-white p-6 shadow-2xl">
             <div className="mb-4">
               <h2 className="text-xl font-semibold text-slate-900">
                 Editar Perfil
@@ -1205,8 +1205,8 @@ export default function AlumnosPage() {
 
       {/* Modal para cambiar contraseña */}
       {changePasswordModalOpen && selectedStudent && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black bg-opacity-50 px-4 py-6">
+          <div className="w-full max-w-md max-h-[calc(100vh-3rem)] overflow-y-auto rounded-xl bg-white p-6 shadow-2xl">
             <div className="mb-4">
               <h2 className="text-xl font-semibold text-slate-900">
                 Cambiar Contraseña
