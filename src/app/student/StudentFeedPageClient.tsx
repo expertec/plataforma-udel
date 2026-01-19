@@ -145,7 +145,10 @@ export default function StudentFeedPageClient() {
   const [assignmentUploadingMap, setAssignmentUploadingMap] = useState<Record<string, boolean>>({});
   const [assignmentStatusMap, setAssignmentStatusMap] = useState<Record<string, "submitted">>({});
   const [assignmentSubmissionMap, setAssignmentSubmissionMap] = useState<
-    Record<string, { id: string; status: SubmissionStatus; grade: number | null }>
+    Record<
+      string,
+      { id: string; status: SubmissionStatus; grade: number | null; fileUrl?: string; audioUrl?: string }
+    >
   >({});
   const authorNameCacheRef = useRef<Record<string, string>>({});
   const lastActiveRef = useRef<number>(0);
@@ -936,7 +939,12 @@ export default function StudentFeedPageClient() {
           ),
         );
         if (!existing.empty) {
-          const docData = existing.docs[0].data() as { status?: string; grade?: number };
+          const docData = existing.docs[0].data() as {
+            status?: string;
+            grade?: number;
+            fileUrl?: string;
+            audioUrl?: string;
+          };
           const normalizedStatus: SubmissionStatus =
             docData.status === "graded" || typeof docData.grade === "number"
               ? "graded"
@@ -950,6 +958,8 @@ export default function StudentFeedPageClient() {
               id: existing.docs[0].id,
               status: normalizedStatus,
               grade: typeof docData.grade === "number" ? docData.grade : null,
+              fileUrl: docData.fileUrl ?? "",
+              audioUrl: docData.audioUrl ?? "",
             },
           }));
           assignmentAckRef.current = { ...assignmentAckRef.current, [cls.id]: true };
@@ -2807,6 +2817,8 @@ export default function StudentFeedPageClient() {
                     submitted={assignmentStatusMap[cls.id] === "submitted"}
                     submissionStatus={submissionInfo?.status ?? null}
                     submissionGrade={submissionInfo?.grade ?? null}
+                    submissionFileUrl={submissionInfo?.fileUrl}
+                    submissionAudioUrl={submissionInfo?.audioUrl}
                     canDeleteSubmission={canDeleteSubmission}
                     onDeleteSubmission={async () => {
                       if (!currentUser?.uid || !cls.groupId) {
@@ -2863,7 +2875,12 @@ export default function StudentFeedPageClient() {
                     ),
                   );
                   if (!existing.empty) {
-                    const docData = existing.docs[0].data() as { status?: string; grade?: number };
+                    const docData = existing.docs[0].data() as {
+                      status?: string;
+                      grade?: number;
+                      fileUrl?: string;
+                      audioUrl?: string;
+                    };
                     const isGraded = docData.status === "graded" || typeof docData.grade === "number";
                     setAssignmentStatusMap((prev) => ({ ...prev, [cls.id]: "submitted" }));
                     setAssignmentSubmissionMap((prev) => ({
@@ -2872,6 +2889,8 @@ export default function StudentFeedPageClient() {
                         id: existing.docs[0].id,
                         status: isGraded ? "graded" : docData.status === "late" ? "late" : "pending",
                         grade: typeof docData.grade === "number" ? docData.grade : null,
+                        fileUrl: docData.fileUrl ?? "",
+                        audioUrl: docData.audioUrl ?? "",
                       },
                     }));
                     assignmentAckRef.current = { ...assignmentAckRef.current, [cls.id]: true };
@@ -2896,7 +2915,10 @@ export default function StudentFeedPageClient() {
                         storage,
                         `assignments/${currentUser.uid}/${cls.id}/${prefix}-${Date.now()}-${media.name}`,
                       );
-                      await uploadBytes(storageRef, media, { contentType: media.type || "application/octet-stream" });
+                      await uploadBytes(storageRef, media, {
+                        contentType: media.type || "application/octet-stream",
+                        contentDisposition: "inline",
+                      });
                       return await getDownloadURL(storageRef);
                     } catch (err) {
                       console.error(`No se pudo subir el ${label}:`, err);
@@ -2956,6 +2978,8 @@ export default function StudentFeedPageClient() {
                         id: submissionId,
                         status: payload.status,
                         grade: null,
+                        fileUrl,
+                        audioUrl,
                       },
                     }));
                     toast.success("Tarea enviada");
@@ -5639,6 +5663,8 @@ type AssignmentPanelProps = {
   submitted: boolean;
   submissionStatus: SubmissionStatus | null;
   submissionGrade: number | null;
+  submissionFileUrl?: string;
+  submissionAudioUrl?: string;
   canDeleteSubmission: boolean;
   onDeleteSubmission: () => void | Promise<void>;
 };
@@ -5657,6 +5683,8 @@ function AssignmentPanel({
   submitted,
   submissionStatus,
   submissionGrade,
+  submissionFileUrl,
+  submissionAudioUrl,
   canDeleteSubmission,
   onDeleteSubmission,
 }: AssignmentPanelProps) {
@@ -5788,6 +5816,30 @@ function AssignmentPanel({
                 ? "Tu entrega ya fue evaluada."
                 : "Tu entrega está en revisión."}
             </p>
+            {submissionFileUrl || submissionAudioUrl ? (
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                {submissionFileUrl ? (
+                  <a
+                    href={submissionFileUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-center rounded-full bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500"
+                  >
+                    Ver archivo
+                  </a>
+                ) : null}
+                {submissionAudioUrl ? (
+                  <a
+                    href={submissionAudioUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-center rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/20"
+                  >
+                    Escuchar audio
+                  </a>
+                ) : null}
+              </div>
+            ) : null}
             {canDeleteSubmission ? (
               <button
                 type="button"
