@@ -81,6 +81,18 @@ service cloud.firestore {
         (resource.data.grade is number) ||
         (resource.data.gradedAt is timestamp);
     }
+    function submissionIsGraded() {
+      // Verificar existencia de campos antes de accederlos para evitar errores
+      return ("status" in resource.data && resource.data.status == "graded") ||
+        ("grade" in resource.data && resource.data.grade is number) ||
+        ("gradedAt" in resource.data && resource.data.gradedAt is timestamp);
+    }
+    function isSubmissionOwner() {
+      // Verificar que studentId existe y coincide con el usuario actual
+      return "studentId" in resource.data &&
+        resource.data.studentId is string &&
+        request.auth.uid == resource.data.studentId;
+    }
     function isMentorOfCourse(courseId) {
       // Verifica si el usuario es mentor del curso consultando el array mentorIds
       let courseData = get(/databases/$(database)/documents/courses/$(courseId)).data;
@@ -284,8 +296,14 @@ service cloud.firestore {
           isSignedIn() &&
           request.resource.data.studentId == request.auth.uid
         );
-        // AdminTeacher puede modificar/eliminar cualquier submission
-        allow update, delete: if isAdmin() || isAdminTeacher() || (
+        // Estudiante puede eliminar/actualizar su propia entrega si NO está calificada
+        // Se evalúa primero para evitar llamadas innecesarias a get()
+        allow update, delete: if (
+          request.auth != null &&
+          "studentId" in resource.data &&
+          resource.data.studentId == request.auth.uid &&
+          !submissionIsGraded()
+        ) || isAdmin() || isAdminTeacher() || (
           isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
           isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId))

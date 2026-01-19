@@ -26,7 +26,7 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
-import { createSubmission } from "@/lib/firebase/submissions-service";
+import { createSubmission, deleteSubmission, type SubmissionStatus } from "@/lib/firebase/submissions-service";
 import {
   getForumPosts,
   getForumReplies,
@@ -144,6 +144,9 @@ export default function StudentFeedPageClient() {
   const [assignmentAudioMap, setAssignmentAudioMap] = useState<Record<string, File | null>>({});
   const [assignmentUploadingMap, setAssignmentUploadingMap] = useState<Record<string, boolean>>({});
   const [assignmentStatusMap, setAssignmentStatusMap] = useState<Record<string, "submitted">>({});
+  const [assignmentSubmissionMap, setAssignmentSubmissionMap] = useState<
+    Record<string, { id: string; status: SubmissionStatus; grade: number | null }>
+  >({});
   const authorNameCacheRef = useRef<Record<string, string>>({});
   const lastActiveRef = useRef<number>(0);
   const activeIdRef = useRef<string | null>(null);
@@ -933,7 +936,22 @@ export default function StudentFeedPageClient() {
           ),
         );
         if (!existing.empty) {
+          const docData = existing.docs[0].data() as { status?: string; grade?: number };
+          const normalizedStatus: SubmissionStatus =
+            docData.status === "graded" || typeof docData.grade === "number"
+              ? "graded"
+              : docData.status === "late"
+                ? "late"
+                : "pending";
           setAssignmentStatusMap((prev) => ({ ...prev, [cls.id]: "submitted" }));
+          setAssignmentSubmissionMap((prev) => ({
+            ...prev,
+            [cls.id]: {
+              id: existing.docs[0].id,
+              status: normalizedStatus,
+              grade: typeof docData.grade === "number" ? docData.grade : null,
+            },
+          }));
           assignmentAckRef.current = { ...assignmentAckRef.current, [cls.id]: true };
           setAssignmentAck((prev) => ({ ...prev, [cls.id]: true }));
         }
@@ -2772,6 +2790,10 @@ export default function StudentFeedPageClient() {
           {assignmentPanel.open && assignmentPanel.classId && !previewMode ? (() => {
             const cls = findClassById(assignmentPanel.classId);
             if (!cls) return null;
+            const submissionInfo = assignmentSubmissionMap[cls.id];
+            const submissionIsGraded =
+              submissionInfo?.status === "graded" || typeof submissionInfo?.grade === "number";
+            const canDeleteSubmission = assignmentStatusMap[cls.id] === "submitted" && !submissionIsGraded;
                 return (
                   <AssignmentPanel
                     classId={cls.id}
@@ -2783,6 +2805,46 @@ export default function StudentFeedPageClient() {
                     onFileChange={(file) => setAssignmentFileMap((prev) => ({ ...prev, [cls.id]: file }))}
                     onAudioChange={(file) => setAssignmentAudioMap((prev) => ({ ...prev, [cls.id]: file }))}
                     submitted={assignmentStatusMap[cls.id] === "submitted"}
+                    submissionStatus={submissionInfo?.status ?? null}
+                    submissionGrade={submissionInfo?.grade ?? null}
+                    canDeleteSubmission={canDeleteSubmission}
+                    onDeleteSubmission={async () => {
+                      if (!currentUser?.uid || !cls.groupId) {
+                        toast.error("No se pudo validar tu cuenta.");
+                        return;
+                      }
+                      if (!submissionInfo?.id) {
+                        toast.error("No se encontró la entrega.");
+                        return;
+                      }
+                      if (submissionIsGraded) {
+                        toast.error("Esta tarea ya fue evaluada; no se puede eliminar.");
+                        return;
+                      }
+                      const confirmed = window.confirm(
+                        "¿Deseas eliminar tu entrega? Podrás volver a enviarla si aún no ha sido evaluada.",
+                      );
+                      if (!confirmed) return;
+                      try {
+                        await deleteSubmission(cls.groupId, submissionInfo.id);
+                        setAssignmentStatusMap((prev) => {
+                          const next = { ...prev };
+                          delete next[cls.id];
+                          return next;
+                        });
+                        setAssignmentSubmissionMap((prev) => {
+                          const next = { ...prev };
+                          delete next[cls.id];
+                          return next;
+                        });
+                        setAssignmentFileMap((prev) => ({ ...prev, [cls.id]: null }));
+                        setAssignmentAudioMap((prev) => ({ ...prev, [cls.id]: null }));
+                        toast.success("Entrega eliminada. Ya puedes volver a enviarla.");
+                      } catch (err) {
+                        console.error("No se pudo eliminar la entrega:", err);
+                        toast.error("No se pudo eliminar la entrega.");
+                      }
+                    }}
                     onClose={() => setAssignmentPanel({ open: false })}
                 onSubmit={async () => {
                   if (!currentUser?.uid || !enrollmentId || !cls.groupId) {
@@ -2801,10 +2863,24 @@ export default function StudentFeedPageClient() {
                     ),
                   );
                   if (!existing.empty) {
+                    const docData = existing.docs[0].data() as { status?: string; grade?: number };
+                    const isGraded = docData.status === "graded" || typeof docData.grade === "number";
                     setAssignmentStatusMap((prev) => ({ ...prev, [cls.id]: "submitted" }));
+                    setAssignmentSubmissionMap((prev) => ({
+                      ...prev,
+                      [cls.id]: {
+                        id: existing.docs[0].id,
+                        status: isGraded ? "graded" : docData.status === "late" ? "late" : "pending",
+                        grade: typeof docData.grade === "number" ? docData.grade : null,
+                      },
+                    }));
                     assignmentAckRef.current = { ...assignmentAckRef.current, [cls.id]: true };
                     setAssignmentAck((prev) => ({ ...prev, [cls.id]: true }));
-                    toast.success("Ya habías enviado esta tarea.");
+                    toast.error(
+                      isGraded
+                        ? "Esta tarea ya fue evaluada; no puedes reenviarla."
+                        : "Ya enviaste esta tarea. Puedes eliminarla para volver a enviarla.",
+                    );
                     return;
                   }
                   const file = assignmentFileMap[cls.id] ?? null;
@@ -2867,13 +2943,21 @@ export default function StudentFeedPageClient() {
                     status: "pending" as const,
                   };
                   try {
-                    await createSubmission(cls.groupId, payload);
+                    const submissionId = await createSubmission(cls.groupId, payload);
                     setAssignmentAck((prev) => {
                       const next = { ...prev, [cls.id]: true };
                       assignmentAckRef.current = next;
                       return next;
                     });
                     setAssignmentStatusMap((prev) => ({ ...prev, [cls.id]: "submitted" }));
+                    setAssignmentSubmissionMap((prev) => ({
+                      ...prev,
+                      [cls.id]: {
+                        id: submissionId,
+                        status: payload.status,
+                        grade: null,
+                      },
+                    }));
                     toast.success("Tarea enviada");
                     setAssignmentFileMap((prev) => ({ ...prev, [cls.id]: null }));
                     setAssignmentAudioMap((prev) => ({ ...prev, [cls.id]: null }));
@@ -5553,6 +5637,10 @@ type AssignmentPanelProps = {
   onAudioChange: (file: File | null) => void;
   uploading: boolean;
   submitted: boolean;
+  submissionStatus: SubmissionStatus | null;
+  submissionGrade: number | null;
+  canDeleteSubmission: boolean;
+  onDeleteSubmission: () => void | Promise<void>;
 };
 
 function AssignmentPanel({
@@ -5567,6 +5655,10 @@ function AssignmentPanel({
   onAudioChange,
   uploading,
   submitted,
+  submissionStatus,
+  submissionGrade,
+  canDeleteSubmission,
+  onDeleteSubmission,
 }: AssignmentPanelProps) {
   const [dragOver, setDragOver] = useState(false);
   const [audioPreviewUrl, setAudioPreviewUrl] = useState("");
@@ -5691,7 +5783,25 @@ function AssignmentPanel({
               <ControlIcon name="check" />
             </div>
             <p className="text-sm font-semibold text-white">Tarea enviada</p>
-            <p className="text-xs text-white/60">Ya registramos tu entrega para esta clase.</p>
+            <p className="text-xs text-white/60">
+              {submissionStatus === "graded" || typeof submissionGrade === "number"
+                ? "Tu entrega ya fue evaluada."
+                : "Tu entrega está en revisión."}
+            </p>
+            {canDeleteSubmission ? (
+              <button
+                type="button"
+                onClick={onDeleteSubmission}
+                className="mt-2 inline-flex items-center justify-center rounded-full border border-red-400 px-4 py-2 text-xs font-semibold text-red-300 transition hover:border-red-200 hover:text-red-200"
+              >
+                Eliminar entrega
+              </button>
+            ) : null}
+            {!canDeleteSubmission && submissionStatus === "graded" ? (
+              <p className="text-[11px] text-white/40">
+                La entrega fue evaluada y no se puede eliminar.
+              </p>
+            ) : null}
           </div>
         ) : (
           <div className="rounded-2xl bg-white/5 p-3">
