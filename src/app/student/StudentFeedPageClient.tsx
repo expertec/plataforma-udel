@@ -2904,6 +2904,10 @@ export default function StudentFeedPageClient() {
                   }
                   const file = assignmentFileMap[cls.id] ?? null;
                   const audioFile = assignmentAudioMap[cls.id] ?? null;
+                  if (!file && !audioFile) {
+                    toast.error("Adjunta un archivo o audio antes de enviar la tarea.");
+                    return;
+                  }
                   const shouldUploadAssets = Boolean(file || audioFile);
                   const toggleUploading = (value: boolean) =>
                     setAssignmentUploadingMap((prev) => ({ ...prev, [cls.id]: value }));

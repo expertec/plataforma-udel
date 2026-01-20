@@ -70,6 +70,7 @@ export default function CourseBuilderPage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loadingLessons, setLoadingLessons] = useState(true);
   const [loadingClasses, setLoadingClasses] = useState<Record<string, boolean>>({});
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [addLessonOpen, setAddLessonOpen] = useState(false);
   const [addClassOpen, setAddClassOpen] = useState(false);
   const [classModalMode, setClassModalMode] = useState<"create" | "edit">("create");
@@ -175,20 +176,28 @@ export default function CourseBuilderPage() {
       }
     });
     const courseRef = doc(db, "courses", courseId);
-    const unsubCourse = onSnapshot(courseRef, (snap) => {
-      const d = snap.data();
-      if (d) {
-        setCourseInfo({
-          id: snap.id,
-          title: d.title ?? "",
-          description: d.description ?? "",
-          introVideoUrl: d.introVideoUrl ?? "",
-          category: d.category ?? "",
-          thumbnail: d.thumbnail ?? "",
-          isPublished: d.isPublished ?? false,
-        });
-      }
-    });
+    const unsubCourse = onSnapshot(
+      courseRef,
+      (snap) => {
+        const d = snap.data();
+        if (d) {
+          setCourseInfo({
+            id: snap.id,
+            title: d.title ?? "",
+            description: d.description ?? "",
+            introVideoUrl: d.introVideoUrl ?? "",
+            category: d.category ?? "",
+            thumbnail: d.thumbnail ?? "",
+            isPublished: d.isPublished ?? false,
+          });
+          setLoadError(null);
+        }
+      },
+      (err) => {
+        console.error("Listener de curso falló:", err);
+        setLoadError("No se pudo mantener sincronizado el curso. Revisa tu conexión.");
+      },
+    );
     setLoadingLessons(true);
     const lessonsRef = collection(db, "courses", courseId, "lessons");
     const q = query(lessonsRef, orderBy("order", "asc"));
@@ -207,8 +216,11 @@ export default function CourseBuilderPage() {
         });
         setLessons(data);
         setLoadingLessons(false);
+        setLoadError(null);
       },
-      () => {
+      (err) => {
+        console.error("Listener de lecciones falló:", err);
+        setLoadError("No se pudieron cargar las lecciones. Verifica la conexión.");
         setLoadingLessons(false);
       },
     );
@@ -252,8 +264,13 @@ export default function CourseBuilderPage() {
         });
         setClassesMap((prev) => ({ ...prev, [lessonId]: data }));
         setLoadingClasses((prev) => ({ ...prev, [lessonId]: false }));
+        setLoadError(null);
       },
-      () => setLoadingClasses((prev) => ({ ...prev, [lessonId]: false })),
+      (err) => {
+        console.error("Listener de clases falló:", err);
+        setLoadError("No se pudieron cargar las clases de esta lección.");
+        setLoadingClasses((prev) => ({ ...prev, [lessonId]: false }));
+      },
     );
     classListeners.current[lessonId] = unsub;
   };
@@ -271,6 +288,7 @@ export default function CourseBuilderPage() {
   const refreshGroups = async () => {
     if (!courseId || !currentUser) return;
     setLoadingGroups(true);
+    setLoadError(null);
     try {
       const [groups, activeGroups] = await Promise.all([
         getGroupsByCourse(courseId, userRole === "adminTeacher" ? undefined : currentUser.uid),
@@ -287,6 +305,9 @@ export default function CourseBuilderPage() {
         })),
       );
       setAllGroups(activeGroups);
+    } catch (err) {
+      console.error("No se pudieron cargar grupos de curso:", err);
+      setLoadError("No pudimos cargar los grupos asociados. Verifica tu conexión e intenta de nuevo.");
     } finally {
       setLoadingGroups(false);
     }
@@ -610,6 +631,12 @@ export default function CourseBuilderPage() {
           </p>
         </div>
       </div>
+
+      {loadError ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 shadow-sm">
+          {loadError}
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap gap-2">
         {[

@@ -22,6 +22,7 @@ export default function CoursesPage() {
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const PAGE_SIZE = 9;
 
   const loadCourses = useCallback(
@@ -29,13 +30,18 @@ export default function CoursesPage() {
       if (!uid) {
         setCourses([]);
         setLoading(false);
+        setLoadError(null);
         return;
       }
       setLoading(true);
+      setLoadError(null);
       try {
         const teacherId = role === "adminTeacher" ? undefined : uid;
         const data = await getCourses(teacherId);
         setCourses(data);
+      } catch (err) {
+        console.error("No se pudieron cargar cursos:", err);
+        setLoadError("No pudimos cargar los cursos. Verifica la conexión y vuelve a intentar.");
       } finally {
         setLoading(false);
       }
@@ -53,12 +59,19 @@ export default function CoursesPage() {
       if (!user) {
         setCourses([]);
         setUserRole(null);
+        setLoadError(null);
         setLoading(false);
         return;
       }
-      const role = await resolveUserRole(user);
-      setUserRole(role);
-      await loadCourses(user.uid, role);
+      try {
+        const role = await resolveUserRole(user);
+        setUserRole(role);
+        await loadCourses(user.uid, role);
+      } catch (err) {
+        console.error("No se pudo resolver rol de profesor:", err);
+        setLoadError("No pudimos validar tu sesión. Intenta recargar.");
+        setLoading(false);
+      }
     });
     return () => unsub();
   }, [loadCourses]);
@@ -125,6 +138,11 @@ export default function CoursesPage() {
           Mostrando {filteredCourses.length} de {courses.length} cursos cargados
         </p>
       </div>
+      {loadError ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 shadow-sm">
+          {loadError}
+        </div>
+      ) : null}
 
       {loading ? (
         <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">

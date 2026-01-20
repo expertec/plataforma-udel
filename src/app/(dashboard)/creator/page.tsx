@@ -14,6 +14,7 @@ export default function CreatorPage() {
   const [courses, setCourses] = useState<Course[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -22,10 +23,12 @@ export default function CreatorPage() {
         setCourses([]);
         setGroups([]);
         setUserRole(null);
+        setLoadError(null);
         setLoading(false);
         return;
       }
       setLoading(true);
+      setLoadError(null);
       try {
         const role = await resolveUserRole(user);
         setUserRole(role);
@@ -36,6 +39,9 @@ export default function CreatorPage() {
         ]);
         setCourses(coursesData);
         setGroups(groupsData);
+      } catch (err) {
+        console.error("No se pudo cargar dashboard profesor:", err);
+        setLoadError("No se pudieron cargar tus datos. Revisa tu conexión e intenta de nuevo.");
       } finally {
         setLoading(false);
       }
@@ -119,6 +125,11 @@ export default function CreatorPage() {
           ) : null}
         </div>
       </header>
+      {loadError ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 shadow-sm">
+          {loadError}
+        </div>
+      ) : null}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <KpiCard
