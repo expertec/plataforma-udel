@@ -226,6 +226,24 @@ export default function StudentFeedPageClient() {
         img: ["src", "alt", "title", "width", "height", "style"],
         span: ["style"],
         div: ["style"],
+        p: ["style"],
+        h1: ["style"],
+        h2: ["style"],
+        h3: ["style"],
+        h4: ["style"],
+        h5: ["style"],
+        h6: ["style"],
+      },
+      allowedStyles: {
+        "*": {
+          "text-align": [/^left$|^right$|^center$|^justify$/],
+          "margin-left": [/^auto$|^[0-9.]+(px|%|rem|em)$/],
+          "margin-right": [/^auto$|^[0-9.]+(px|%|rem|em)$/],
+          width: [/^(auto|[0-9.]+(px|%|rem|em))$/],
+          height: [/^(auto|[0-9.]+(px|%|rem|em))$/],
+          display: [/^block$|^inline-block$|^inline$|^flex$/],
+          "object-fit": [/^contain$|^cover$|^fill$|^none$/],
+        },
       },
       allowedSchemes: ["http", "https", "data", "mailto"],
       transformTags: {
@@ -2026,7 +2044,7 @@ export default function StudentFeedPageClient() {
 
     if (cls.type === "audio" && cls.audioUrl) {
       return (
-        <div className="flex h-full w-full items-center justify-center px-4 lg:px-10 lg:pr-[140px]">
+    <div className="flex h-full w-full items-center justify-center px-4 lg:px-10 lg:pr-4">
           <div className="w-full max-w-3xl px-4 lg:px-6">
             <AudioPlayer
               src={cls.audioUrl}
@@ -4863,10 +4881,10 @@ function TextContent({
   }, [isActive, onProgress]);
 
   return (
-    <div className="flex h-full w-full items-stretch justify-center px-4 lg:px-10 lg:pr-[140px]">
+    <div className="flex h-full w-full items-stretch justify-center px-4 lg:px-10 lg:pr-4 pt-6 lg:pt-10">
       <div
         ref={containerRef}
-        className="w-[80%] lg:w-[80%] max-w-4xl h-full max-h-[88vh] overflow-y-auto overscroll-contain px-2 sm:px-4 lg:px-4 py-8 pb-[calc(env(safe-area-inset-bottom)+120px)] rounded-2xl lg:rounded-none border-0 bg-transparent shadow-none backdrop-blur-none"
+        className="w-[90%] lg:w-[88%] max-w-5xl h-full max-h-[88vh] overflow-y-auto overscroll-contain px-2 sm:px-4 lg:px-4 py-8 pb-[calc(env(safe-area-inset-bottom)+120px)] rounded-2xl lg:rounded-none border-0 bg-transparent shadow-none backdrop-blur-none"
         style={{
           WebkitOverflowScrolling: "touch",
           paddingTop: "calc(env(safe-area-inset-top) + 16px)",
@@ -4874,13 +4892,13 @@ function TextContent({
       data-scrollable="true"
     >
       {title ? (
-        <h2 className="mb-4 text-xl font-semibold text-white">
+        <h2 className="text-xl font-semibold text-white">
           {title}
         </h2>
       ) : null}
       {contentHtml ? (
         <div
-          className="prose prose-invert max-w-none text-base lg:text-lg leading-relaxed text-neutral-50 [&_img]:max-w-full [&_img]:rounded-lg [&_img]:border [&_img]:border-white/10 [&_img]:my-2"
+          className="prose prose-invert max-w-none text-base lg:text-lg leading-relaxed text-neutral-50 [&_p]:mt-2.5 [&_p]:mb-2.5 [&_p:first-of-type]:mt-0 [&_img]:max-w-full [&_img]:rounded-lg [&_img]:border [&_img]:border-white/10 [&_img]:my-2"
           dangerouslySetInnerHTML={{ __html: contentHtml }}
         />
       ) : (

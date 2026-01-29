@@ -102,6 +102,25 @@ service cloud.firestore {
         courseData.mentorIds is list &&
         request.auth.uid in courseData.mentorIds;
     }
+    // Autor de la aportación del foro (post raíz). Considera posts antiguos sin authorId usando el ID del documento.
+    function isForumPostOwner(courseId, lessonId, classId, postId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/courses/$(courseId)/lessons/$(lessonId)/classes/$(classId)/forums/$(postId)) &&
+        (
+          get(/databases/$(database)/documents/courses/$(courseId)/lessons/$(lessonId)/classes/$(classId)/forums/$(postId)).data.authorId == request.auth.uid ||
+          ("studentId" in get(/databases/$(database)/documents/courses/$(courseId)/lessons/$(lessonId)/classes/$(classId)/forums/$(postId)).data &&
+            get(/databases/$(database)/documents/courses/$(courseId)/lessons/$(lessonId)/classes/$(classId)/forums/$(postId)).data.studentId == request.auth.uid) ||
+          postId == request.auth.uid
+        );
+    }
+    function forumPostIsGradedByPath(courseId, lessonId, classId, postId) {
+      return exists(/databases/$(database)/documents/courses/$(courseId)/lessons/$(lessonId)/classes/$(classId)/forums/$(postId)) &&
+        (
+          get(/databases/$(database)/documents/courses/$(courseId)/lessons/$(lessonId)/classes/$(classId)/forums/$(postId)).data.status == "graded" ||
+          get(/databases/$(database)/documents/courses/$(courseId)/lessons/$(lessonId)/classes/$(classId)/forums/$(postId)).data.grade is number ||
+          get(/databases/$(database)/documents/courses/$(courseId)/lessons/$(lessonId)/classes/$(classId)/forums/$(postId)).data.gradedAt is timestamp
+        );
+    }
     function canManageCourse(courseId) {
       return isAdmin() ||
         isAdminTeacher() ||
@@ -224,10 +243,18 @@ service cloud.firestore {
               canManageCourse(courseId) ||
               (isSignedIn() && resource.data.authorId == request.auth.uid && !forumPostIsGraded()) ||
               canUpdateRepliesCountOnly();
-            // Delete: profesor/admin del curso o el autor del post.
+            // Delete: profesor/admin del curso o el autor del post (usa resource.data para evitar get() innecesarios).
             allow delete: if isAdmin() ||
               canManageCourse(courseId) ||
-              (isSignedIn() && resource.data.authorId == request.auth.uid && !forumPostIsGraded());
+              (
+                isSignedIn() &&
+                (
+                  resource.data.authorId == request.auth.uid ||
+                  ("studentId" in resource.data && resource.data.studentId == request.auth.uid) ||
+                  postId == request.auth.uid
+                ) &&
+                !forumPostIsGraded()
+              );
 
             // Respuestas a las aportaciones del foro (hilos públicos)
             match /replies/{replyId} {
@@ -235,7 +262,13 @@ service cloud.firestore {
               // Crear: cualquier usuario autenticado que se firma como autor
               allow create: if isSignedIn() && request.resource.data.authorId == request.auth.uid;
               // Update/Delete: profesor/admin del curso o el autor de la respuesta
-              allow update, delete: if isAdmin() || canManageCourse(courseId) || (isSignedIn() && resource.data.authorId == request.auth.uid);
+              allow update, delete: if isAdmin() ||
+                canManageCourse(courseId) ||
+                (isSignedIn() && resource.data.authorId == request.auth.uid) ||
+                (
+                  isForumPostOwner(courseId, lessonId, classId, postId) &&
+                  !forumPostIsGradedByPath(courseId, lessonId, classId, postId)
+                );
             }
           }
 

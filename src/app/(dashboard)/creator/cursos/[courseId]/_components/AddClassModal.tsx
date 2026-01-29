@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import Image from "next/image";
 import toast from "react-hot-toast";
 import {
@@ -19,6 +19,8 @@ import StarterKit from "@tiptap/starter-kit";
 import ImageExtension from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
+import TextAlign from "@tiptap/extension-text-align";
+import { NodeSelection, Plugin, PluginKey } from "prosemirror-state";
 
 const classTypes = [
   {
@@ -1541,11 +1543,65 @@ type RichTextEditorProps = {
 function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTextEditorProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [imageWidth, setImageWidth] = useState(100);
+  const [imageSelected, setImageSelected] = useState(false);
+
+  // Permite controlar el ancho de la imagen desde la toolbar / bubble menu
+  const ResizableImage = ImageExtension.extend({
+    addAttributes() {
+      return {
+        src: { default: null },
+        alt: { default: null },
+        title: { default: null },
+        style: {
+          default: null,
+          renderHTML: (attributes) => {
+            const styles: string[] = [];
+            if (attributes.style) styles.push(attributes.style);
+            const align = attributes.textAlign;
+            if (align === "center") {
+              styles.push("display:block;margin-left:auto;margin-right:auto;text-align:center;");
+            } else if (align === "right") {
+              styles.push("display:block;margin-left:auto;margin-right:0;text-align:right;");
+            } else if (align === "justify") {
+              styles.push("display:block;margin-left:auto;margin-right:auto;text-align:justify;");
+            } else {
+              styles.push("display:block;margin-left:0;margin-right:auto;text-align:left;");
+            }
+            return styles.length ? { style: styles.join(" ") } : {};
+          },
+          parseHTML: (element) => element.getAttribute("style"),
+        },
+        textAlign: {
+          default: "left",
+          parseHTML: (element) => element.style.textAlign || element.getAttribute("data-align") || "left",
+          renderHTML: () => ({}),
+        },
+      };
+    },
+    draggable: true,
+    addProseMirrorPlugins() {
+      const plugin = new Plugin({
+        key: new PluginKey("select-image-on-click"),
+        props: {
+          handleClickOn(view, pos, node) {
+            if (node.type.name !== "image") return false;
+            const tr = view.state.tr.setSelection(NodeSelection.create(view.state.doc, pos));
+            view.dispatch(tr);
+            view.focus();
+            return true;
+          },
+        },
+      });
+      return [plugin];
+    },
+  });
 
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
       StarterKit.configure({}),
+      TextAlign.configure({ types: ["heading", "paragraph", "image"] }),
       Placeholder.configure({
         placeholder: placeholder || "Escribe la descripción y agrega imágenes (arrastrar/pegar)",
       }),
@@ -1553,9 +1609,10 @@ function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTex
         openOnClick: true,
         protocols: ["http", "https", "mailto"],
       }),
-      ImageExtension.configure({
+      ResizableImage.configure({
+        inline: false,
         HTMLAttributes: {
-          class: "mt-2 max-h-64 w-auto rounded-lg border border-slate-200 object-contain shadow-sm",
+          class: "mt-2 max-w-full rounded-lg border border-slate-200 object-contain shadow-sm block cursor-pointer",
           loading: "lazy",
         },
       }),
@@ -1585,21 +1642,85 @@ function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTex
       return;
     }
     if (!editor) return;
-    setUploading(true);
     try {
+      setUploading(true);
       const url = await onUploadImage(file);
-      editor.chain().focus().setImage({ src: url, alt: file.name }).run();
+      editor.chain().focus().insertContent([
+        { type: "paragraph" },
+        { type: "image", attrs: { src: url, alt: file.name, textAlign: "left" } },
+        { type: "paragraph" },
+      ]).run();
+      // Seleccionar la imagen recién insertada para mostrar controles
+      const { doc, selection } = editor.state;
+      const pos = selection.from;
+      const imagePos = Math.max(0, pos - 1);
+      editor.commands.setNodeSelection(imagePos);
       toast.success("Imagen agregada");
     } catch (err) {
       console.error(err);
       toast.error("No se pudo subir la imagen");
     } finally {
       setUploading(false);
-      if (inputRef.current) {
-        inputRef.current.value = "";
-      }
     }
   };
+
+  const handleSetImageWidth = (percentage: number) => {
+    if (!editor || !editor.isActive("image")) return;
+    const currentAlign = editor.getAttributes("image")?.textAlign || "left";
+    const styleValue = `width: ${percentage}%; height: auto;`;
+    editor
+      .chain()
+      .focus()
+      .updateAttributes("image", { style: styleValue, textAlign: currentAlign })
+      .run();
+    setImageWidth(percentage);
+  };
+
+  const currentImageWidth = useCallback(() => {
+    if (!editor) return 100;
+    const style: string | null = editor.getAttributes("image")?.style ?? "";
+    const match = /width:\s*(\d+)%/.exec(style);
+    return match ? Number(match[1]) : 100;
+  }, [editor]);
+
+  const getCurrentImageAlign = useCallback(() => {
+    if (!editor) return "left";
+    return editor.getAttributes("image")?.textAlign || "left";
+  }, [editor]);
+
+  const setAlignment = useCallback((align: "left" | "center" | "right" | "justify") => {
+    if (!editor) return;
+    if (editor.isActive("image")) {
+      editor.chain().focus().updateAttributes("image", { textAlign: align }).run();
+    } else {
+      editor.chain().focus().setTextAlign(align).run();
+    }
+  }, [editor]);
+
+  const isAlignmentActive = useCallback((align: "left" | "center" | "right" | "justify") => {
+    if (!editor) return false;
+    if (editor.isActive("image")) {
+      return getCurrentImageAlign() === align;
+    }
+    return editor.isActive({ textAlign: align });
+  }, [editor, getCurrentImageAlign]);
+
+  useEffect(() => {
+    if (!editor) return;
+    const handler = () => {
+      const active = editor.isActive("image");
+      setImageSelected(active);
+      if (active) setImageWidth(currentImageWidth());
+    };
+    editor.on("selectionUpdate", handler);
+    editor.on("transaction", handler);
+    editor.on("update", handler);
+    return () => {
+      editor.off("selectionUpdate", handler);
+      editor.off("transaction", handler);
+      editor.off("update", handler);
+    };
+  }, [editor, currentImageWidth]);
 
   return (
     <div className="rounded-lg border border-slate-200 bg-white">
@@ -1649,6 +1770,83 @@ function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTex
         >
           1. Lista
         </button>
+        <div className="mx-1 h-4 w-px bg-slate-200" />
+        <button
+          type="button"
+          onClick={() => setAlignment("left")}
+          className={`rounded px-2 py-1 transition ${
+            isAlignmentActive("left") ? "bg-blue-100 text-blue-700" : "hover:bg-slate-100"
+          }`}
+        >
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.8}>
+            <path d="M4 6h12" />
+            <path d="M4 12h16" />
+            <path d="M4 18h10" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          onClick={() => setAlignment("center")}
+          className={`rounded px-2 py-1 transition ${
+            isAlignmentActive("center") ? "bg-blue-100 text-blue-700" : "hover:bg-slate-100"
+          }`}
+        >
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.8}>
+            <path d="M6 6h12" />
+            <path d="M4 12h16" />
+            <path d="M6 18h12" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          onClick={() => setAlignment("right")}
+          className={`rounded px-2 py-1 transition ${
+            isAlignmentActive("right") ? "bg-blue-100 text-blue-700" : "hover:bg-slate-100"
+          }`}
+        >
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.8}>
+            <path d="M8 6h12" />
+            <path d="M4 12h16" />
+            <path d="M10 18h10" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          onClick={() => setAlignment("justify")}
+          className={`rounded px-2 py-1 transition ${
+            isAlignmentActive("justify") ? "bg-blue-100 text-blue-700" : "hover:bg-slate-100"
+          }`}
+        >
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.8}>
+            <path d="M4 6h16" />
+            <path d="M4 12h16" />
+            <path d="M4 18h16" />
+          </svg>
+        </button>
+        {imageSelected ? (
+          <div className="flex items-center gap-2 pl-1">
+            <span className="text-[11px] text-slate-500">Ancho</span>
+            <input
+              type="range"
+              min={20}
+              max={120}
+              step={5}
+              value={imageWidth}
+              className="h-1 w-28 cursor-pointer accent-blue-500"
+              onChange={(e) => handleSetImageWidth(Number(e.target.value))}
+            />
+            <span className="w-10 text-right text-[11px] font-semibold text-slate-600">
+              {imageWidth}%
+            </span>
+            <button
+              type="button"
+              onClick={() => handleSetImageWidth(100)}
+              className="rounded border border-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+            >
+              Reset
+            </button>
+          </div>
+        ) : null}
         <button
           type="button"
           onClick={handleAddLink}
@@ -1671,10 +1869,21 @@ function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTex
           ref={inputRef}
           type="file"
           accept="image/*"
+          multiple
           className="hidden"
           onChange={async (e) => {
-            const file = e.target.files?.[0];
-            if (file) await handleImageFile(file);
+            const files = Array.from(e.target.files ?? []);
+            if (files.length === 0) return;
+            try {
+              setUploading(true);
+              for (const f of files) {
+                await handleImageFile(f);
+              }
+              toast.success("Imágenes agregadas");
+            } finally {
+              setUploading(false);
+              if (inputRef.current) inputRef.current.value = "";
+            }
           }}
         />
       </div>
