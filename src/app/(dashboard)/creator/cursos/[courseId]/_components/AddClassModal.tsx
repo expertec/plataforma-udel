@@ -1678,7 +1678,7 @@ function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTex
 
   const currentImageWidth = useCallback(() => {
     if (!editor) return 100;
-    const style: string | null = editor.getAttributes("image")?.style ?? "";
+    const style = (editor.getAttributes("image")?.style as string | undefined) ?? "";
     const match = /width:\s*(\d+)%/.exec(style);
     return match ? Number(match[1]) : 100;
   }, [editor]);
