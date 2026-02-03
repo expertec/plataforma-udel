@@ -1,31 +1,57 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import { createCourse } from "@/lib/firebase/courses-service";
 import { auth } from "@/lib/firebase/client";
+import { getPrograms } from "@/lib/firebase/programs-service";
 
 type CreateCourseModalProps = {
   open: boolean;
   onClose: () => void;
 };
 
-const categories = ["Tecnología", "Negocios", "Diseño", "Marketing", "Otro"];
-
 export function CreateCourseModal({ open, onClose }: CreateCourseModalProps) {
   const router = useRouter();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [introVideoUrl, setIntroVideoUrl] = useState("");
-  const [category, setCategory] = useState("");
+  const [program, setProgram] = useState("");
+  const [programOptions, setProgramOptions] = useState<string[]>([]);
+  const [programLoading, setProgramLoading] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    const loadPrograms = async () => {
+      setProgramLoading(true);
+      try {
+        const data = await getPrograms();
+        if (!active) return;
+        const names = Array.from(
+          new Set(data.map((p) => p.name).filter(Boolean)),
+        );
+        setProgramOptions(names);
+      } catch (err) {
+        console.error(err);
+        toast.error("No se pudieron cargar los programas");
+      } finally {
+        if (active) setProgramLoading(false);
+      }
+    };
+    loadPrograms();
+    return () => {
+      active = false;
+    };
+  }, [open]);
 
   const resetForm = () => {
     setTitle("");
     setDescription("");
     setIntroVideoUrl("");
-    setCategory("");
+    setProgram("");
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -45,7 +71,7 @@ export function CreateCourseModal({ open, onClose }: CreateCourseModalProps) {
         title: title.trim(),
         description: description.trim(),
         introVideoUrl: introVideoUrl.trim(),
-        category,
+        program,
         teacherId: user.uid,
         teacherName: user.displayName ?? "",
       });
@@ -118,20 +144,28 @@ export function CreateCourseModal({ open, onClose }: CreateCourseModalProps) {
 
           <div>
             <label className="text-sm font-medium text-slate-800">
-              Categoría
+              Programa / carrera
             </label>
             <select
               className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
+              value={program}
+              onChange={(e) => setProgram(e.target.value)}
             >
-              <option value="">Seleccionar</option>
-              {categories.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
+              <option value="">{programLoading ? "Cargando..." : "Seleccionar"}</option>
+              {!programLoading && programOptions.length === 0 ? (
+                <option value="" disabled>
+                  No hay programas
+                </option>
+              ) : null}
+              {programOptions.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt}
                 </option>
               ))}
             </select>
+            <p className="mt-1 text-xs text-slate-500">
+              Administra los programas en la pestaña &quot;Programas&quot;.
+            </p>
           </div>
 
           <div className="flex items-center justify-end gap-3 pt-2">

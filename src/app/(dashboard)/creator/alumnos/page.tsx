@@ -1,15 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { DocumentSnapshot } from "firebase/firestore";
 import toast from "react-hot-toast";
 import * as XLSX from "xlsx";
 import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
-import { resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import { getPrograms } from "@/lib/firebase/programs-service";
 import {
   createStudentAccount,
   deactivateStudent,
-  getStudentUsers,
+  getStudentUsersPaginated,
+  getStudentsCount,
   StudentUser,
   createStudentIfNotExists,
   checkStudentExists,
@@ -23,6 +26,8 @@ type ParsedStudentRow = {
   email: string;
   password: string;
   phone?: string;
+  program: string;
+  missingProgram?: boolean;
   exists?: boolean;
   invalidEmail?: boolean;
 };
@@ -49,7 +54,15 @@ export default function AlumnosPage() {
   const [parseError, setParseError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [newStudent, setNewStudent] = useState({ name: "", email: "", password: "", phone: "" });
+  const [newStudent, setNewStudent] = useState({
+    name: "",
+    email: "",
+    password: "",
+    phone: "",
+    program: "",
+  });
+  const [programOptions, setProgramOptions] = useState<string[]>([]);
+  const [programLoading, setProgramLoading] = useState(false);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
@@ -71,10 +84,17 @@ export default function AlumnosPage() {
   const [newEmail, setNewEmail] = useState("");
   const [newName, setNewName] = useState("");
   const [newPhone, setNewPhone] = useState("");
+  const [newProgram, setNewProgram] = useState("");
   const [changingPassword, setChangingPassword] = useState(false);
 
   // Estado para búsqueda
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Estado para paginación
+  const [lastDoc, setLastDoc] = useState<DocumentSnapshot | null>(null);
+  const [hasMoreStudents, setHasMoreStudents] = useState(false);
+  const [totalStudentsCount, setTotalStudentsCount] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   // Estado para modal de tareas
   const [submissionsModalOpen, setSubmissionsModalOpen] = useState(false);
@@ -97,16 +117,46 @@ export default function AlumnosPage() {
     return () => unsub();
   }, []);
 
-  const loadStudents = useCallback(async () => {
+  // Ref para mantener el último documento sin causar re-renders
+  const lastDocRef = useRef<DocumentSnapshot | null>(null);
+
+  const loadStudents = useCallback(async (loadMore = false) => {
     const userId = currentUser?.uid;
     if (!userId || !userRole) return;
-    setLoading(true);
+
+    if (loadMore) {
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+      lastDocRef.current = null;
+      setLastDoc(null);
+      setStudents([]);
+    }
+
     try {
-      if (userRole === "adminTeacher") {
-        const data = await getStudentUsers();
-        setStudents(data);
+      if (isAdminTeacherRole(userRole)) {
+        // Usar paginación para admins (reduce lecturas de ~10,000 a ~50 por página)
+        const result = await getStudentUsersPaginated(
+          50, // Cargar 50 estudiantes por página
+          loadMore ? lastDocRef.current : null
+        );
+
+        if (loadMore) {
+          setStudents((prev) => [...prev, ...result.students]);
+        } else {
+          setStudents(result.students);
+          // Obtener conteo total solo en la primera carga
+          const count = await getStudentsCount();
+          setTotalStudentsCount(count);
+        }
+
+        lastDocRef.current = result.lastDoc;
+        setLastDoc(result.lastDoc);
+        setHasMoreStudents(result.hasMore);
         return;
       }
+
+      // Para profesores normales, cargar estudiantes de sus grupos
       const groups = await getGroupsForTeacher(userId);
       const studentMap = new Map<string, StudentUser>();
       await Promise.all(
@@ -125,26 +175,55 @@ export default function AlumnosPage() {
         }),
       );
       setStudents(Array.from(studentMap.values()));
+      setHasMoreStudents(false);
     } catch (err) {
       console.error(err);
       toast.error(
-        userRole === "adminTeacher"
+        isAdminTeacherRole(userRole)
           ? "No se pudieron cargar los alumnos (users)"
           : "No se pudieron cargar los alumnos de tus grupos",
       );
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   }, [currentUser?.uid, userRole]);
 
   useEffect(() => {
-    loadStudents();
-  }, [loadStudents]);
+    loadStudents(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.uid, userRole]);
+
+  useEffect(() => {
+    let active = true;
+    const loadPrograms = async () => {
+      setProgramLoading(true);
+      try {
+        const data = await getPrograms();
+        if (!active) return;
+        const names = Array.from(new Set(data.map((p) => p.name).filter(Boolean)));
+        setProgramOptions(names);
+      } catch (err) {
+        console.error(err);
+        toast.error("No se pudieron cargar los programas");
+      } finally {
+        if (active) setProgramLoading(false);
+      }
+    };
+    loadPrograms();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleCreateStudent = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!newStudent.email || !newStudent.password) {
       toast.error("Completa email y contraseña");
+      return;
+    }
+    if (!newStudent.program) {
+      toast.error("Selecciona un programa");
       return;
     }
     setCreating(true);
@@ -155,9 +234,10 @@ export default function AlumnosPage() {
         password: newStudent.password.trim(),
         createdBy: currentUser?.uid ?? null,
         phone: newStudent.phone.trim(),
+        program: newStudent.program.trim(),
       });
       toast.success("Alumno creado con acceso por correo/contraseña");
-      setNewStudent({ name: "", email: "", password: "", phone: "" });
+      setNewStudent({ name: "", email: "", password: "", phone: "", program: "" });
       await loadStudents();
     } catch (err: unknown) {
       console.error(err);
@@ -198,6 +278,9 @@ export default function AlumnosPage() {
           const phone = String(
             row.Phone ?? row.Telefono ?? row.WhatsApp ?? row.phone ?? row.whatsapp ?? "",
           ).trim();
+          const program = String(
+            row.Programa ?? row.programa ?? row.Program ?? row.program ?? row.Carrera ?? row.carrera ?? "",
+          ).trim();
           if (!email) return null;
           return {
             row: idx + 2,
@@ -205,12 +288,14 @@ export default function AlumnosPage() {
             email,
             password: password || "alumno123",
             phone: phone || "",
+            program: program || "",
+            missingProgram: !program,
             exists: undefined,
           };
         })
         .filter(Boolean) as ParsedStudentRow[];
       if (!mapped.length) {
-        setParseError("No se encontraron filas válidas. Usa las columnas Nombre, Email y Password.");
+        setParseError("No se encontraron filas válidas. Usa las columnas Nombre, Email, Password y Programa.");
         return;
       }
 
@@ -225,13 +310,16 @@ export default function AlumnosPage() {
       );
 
       setParsedRows(mappedWithExists);
-      const newCount = mappedWithExists.filter((s) => !s.exists && !s.invalidEmail).length;
+      const newCount = mappedWithExists.filter(
+        (s) => !s.exists && !s.invalidEmail && !s.missingProgram,
+      ).length;
       const existingCount = mappedWithExists.filter((s) => s.exists).length;
       const invalidCount = mappedWithExists.filter((s) => s.invalidEmail).length;
+      const missingProgramCount = mappedWithExists.filter((s) => s.missingProgram).length;
 
-      if (invalidCount > 0) {
+      if (invalidCount > 0 || missingProgramCount > 0) {
         toast.error(
-          `Archivo listo: ${newCount} nuevos, ${existingCount} ya existen, ${invalidCount} emails inválidos`,
+          `Archivo listo: ${newCount} nuevos, ${existingCount} ya existen, ${invalidCount} emails inválidos, ${missingProgramCount} sin programa`,
           { duration: 5000 }
         );
       } else {
@@ -262,6 +350,15 @@ export default function AlumnosPage() {
         });
         continue;
       }
+      if (row.missingProgram) {
+        results.push({
+          row: row.row,
+          email: row.email,
+          status: "error",
+          message: "Programa requerido",
+        });
+        continue;
+      }
       try {
         const result = await createStudentIfNotExists({
           name: row.name,
@@ -269,6 +366,7 @@ export default function AlumnosPage() {
           password: row.password,
           createdBy: currentUser?.uid ?? null,
           phone: row.phone,
+          program: row.program,
         });
         results.push({
           row: row.row,
@@ -295,9 +393,9 @@ export default function AlumnosPage() {
 
   const handleDownloadTemplate = () => {
     const data = [
-      ["Nombre", "Email", "Password", "Telefono"],
-      ["Ana Ejemplo", "ana@example.com", "alumno123", "+52 5555555555"],
-      ["Juan Ejemplo", "juan@example.com", "alumno123", "+52 4444444444"],
+      ["Nombre", "Email", "Password", "Telefono", "Programa"],
+      ["Ana Ejemplo", "ana@example.com", "alumno123", "+52 5555555555", "Programa 1"],
+      ["Juan Ejemplo", "juan@example.com", "alumno123", "+52 4444444444", "Programa 2"],
     ];
     const sheet = XLSX.utils.aoa_to_sheet(data);
     const workbook = XLSX.utils.book_new();
@@ -326,7 +424,8 @@ export default function AlumnosPage() {
     return students.filter(
       (student) =>
         student.name.toLowerCase().includes(query) ||
-        student.email.toLowerCase().includes(query)
+        student.email.toLowerCase().includes(query) ||
+        (student.program ?? "").toLowerCase().includes(query)
     );
   }, [students, searchQuery]);
 
@@ -360,6 +459,8 @@ export default function AlumnosPage() {
             email,
             password: password || "alumno123",
             phone: "",
+            program: "",
+            missingProgram: false,
             exists: !invalidEmail,
             invalidEmail,
           };
@@ -460,6 +561,7 @@ export default function AlumnosPage() {
     setNewEmail(student.email);
     setNewName(student.name || "");
     setNewPhone(student.phone || "");
+    setNewProgram(student.program || "");
     setEditProfileModalOpen(true);
   };
 
@@ -472,6 +574,10 @@ export default function AlumnosPage() {
   const handleUpdateProfile = async () => {
     if (!selectedStudent || !newEmail || !newName) {
       toast.error("El nombre y el email son obligatorios");
+      return;
+    }
+    if (!newProgram) {
+      toast.error("Selecciona un programa");
       return;
     }
 
@@ -493,6 +599,7 @@ export default function AlumnosPage() {
           newEmail: newEmail !== selectedStudent.email ? newEmail : undefined,
           newName: newName !== selectedStudent.name ? newName : undefined,
           newPhone: newPhone !== selectedStudent.phone ? newPhone : undefined,
+          newProgram: newProgram !== selectedStudent.program ? newProgram : undefined,
         }),
       });
 
@@ -507,6 +614,7 @@ export default function AlumnosPage() {
         if (newName !== selectedStudent.name) changes.push("nombre");
         if (newEmail !== selectedStudent.email) changes.push("email");
         if (newPhone !== selectedStudent.phone) changes.push("teléfono");
+        if (newProgram !== selectedStudent.program) changes.push("programa");
 
         toast.success(
           changes.length > 0
@@ -518,6 +626,7 @@ export default function AlumnosPage() {
         setNewEmail("");
         setNewName("");
         setNewPhone("");
+        setNewProgram("");
         await loadStudents();
       } else {
         throw new Error(data.error || "Error al actualizar datos");
@@ -584,20 +693,20 @@ export default function AlumnosPage() {
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
-          onClick={loadStudents}
+          onClick={() => loadStudents(false)}
           className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
           disabled={loading}
         >
           {loading ? "Cargando..." : "Refrescar lista"}
         </button>
         <span className="text-sm text-slate-600">
-          {userRole === "adminTeacher"
+          {isAdminTeacherRole(userRole)
             ? 'Lista de usuarios con rol estudiante (colección "users").'
             : "Solo se muestran los alumnos de los grupos que tienes asignados."}
         </span>
       </div>
 
-      {userRole === "adminTeacher" ? (
+      {isAdminTeacherRole(userRole) ? (
         <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -671,6 +780,30 @@ export default function AlumnosPage() {
                 />
               </div>
               <div className="space-y-1">
+                <label className="text-sm font-medium text-slate-700">Programa</label>
+                <select
+                  value={newStudent.program}
+                  onChange={(e) => setNewStudent((prev) => ({ ...prev, program: e.target.value }))}
+                  required
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                >
+                  <option value="">{programLoading ? "Cargando..." : "Seleccionar"}</option>
+                  {!programLoading && programOptions.length === 0 ? (
+                    <option value="" disabled>
+                      No hay programas
+                    </option>
+                  ) : null}
+                  {programOptions.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-slate-500">
+                  Administra los programas en la pestaña &quot;Programas&quot;.
+                </p>
+              </div>
+              <div className="space-y-1">
                 <label className="text-sm font-medium text-slate-700">Contraseña</label>
                 <input
                   type="password"
@@ -695,7 +828,7 @@ export default function AlumnosPage() {
               <div className="flex items-center justify-between gap-2">
                 <div>
                   <p className="text-sm font-semibold text-slate-800">Cargar alumnos por Excel</p>
-                  <p className="text-xs text-slate-500">Columnas: Nombre, Email, Password.</p>
+                  <p className="text-xs text-slate-500">Columnas: Nombre, Email, Password, Programa.</p>
                 </div>
                 <button
                   type="button"
@@ -795,28 +928,38 @@ export default function AlumnosPage() {
                     )}
                   </div>
                   <div className="overflow-hidden rounded-lg border border-slate-200">
-                    <div className="grid grid-cols-4 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">
+                    <div className="grid grid-cols-5 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">
                       <span>Nombre</span>
                       <span>Correo</span>
+                      <span>Programa</span>
                       <span>Contraseña</span>
                       <span>Estado</span>
                     </div>
                     <div className="divide-y divide-slate-200 text-xs">
                       {parsedPreview.map((row) => (
-                        <div key={row.row} className="grid grid-cols-4 px-3 py-2 text-slate-800">
+                        <div key={row.row} className="grid grid-cols-5 px-3 py-2 text-slate-800">
                           <span>{row.name}</span>
                           <span className="truncate text-slate-600">{row.email}</span>
+                          <span className="truncate text-slate-600">
+                            {row.program || "—"}
+                          </span>
                           <span className="font-mono text-slate-700">{row.password}</span>
                           <span
                             className={
-                              row.invalidEmail
+                              row.invalidEmail || row.missingProgram
                                 ? "font-semibold text-red-600"
                                 : row.exists
                                   ? "font-semibold text-amber-600"
                                   : "font-semibold text-emerald-600"
                             }
                           >
-                            {row.invalidEmail ? "Email inválido" : row.exists ? "Ya existe" : "Nuevo"}
+                            {row.invalidEmail
+                              ? "Email inválido"
+                              : row.missingProgram
+                                ? "Programa requerido"
+                                : row.exists
+                                  ? "Ya existe"
+                                  : "Nuevo"}
                           </span>
                         </div>
                       ))}
@@ -864,7 +1007,7 @@ export default function AlumnosPage() {
         </div>
       ) : null}
 
-      {userRole === "adminTeacher" ? (
+      {isAdminTeacherRole(userRole) ? (
         <div className="space-y-4 rounded-xl border border-blue-200 bg-blue-50 p-4">
           <div>
             <p className="text-xs uppercase tracking-[0.2em] text-blue-600">Actualización Masiva</p>
@@ -994,7 +1137,7 @@ export default function AlumnosPage() {
         </div>
       ) : students.length === 0 ? (
         <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
-          {userRole === "adminTeacher"
+          {isAdminTeacherRole(userRole)
             ? "No se encontraron alumnos con rol estudiante."
             : "Aún no tienes alumnos asignados a tus grupos."}
         </div>
@@ -1040,7 +1183,10 @@ export default function AlumnosPage() {
               )}
             </div>
             <div className="text-sm text-slate-600">
-              {filteredStudents.length} de {students.length} alumno{students.length !== 1 ? "s" : ""}
+              {filteredStudents.length} de {students.length} cargado{students.length !== 1 ? "s" : ""}
+              {totalStudentsCount !== null && (
+                <span className="text-slate-400"> ({totalStudentsCount} total)</span>
+              )}
             </div>
           </div>
 
@@ -1050,10 +1196,12 @@ export default function AlumnosPage() {
               No se encontraron alumnos que coincidan con "{searchQuery}"
             </div>
           ) : (
+            <>
             <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div className="grid grid-cols-5 gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
+          <div className="grid grid-cols-6 gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
             <span>Nombre</span>
             <span>Email</span>
+            <span>Programa</span>
             <span>Inscrito</span>
             <span>Estado</span>
             <span className="text-right">Acciones</span>
@@ -1062,16 +1210,17 @@ export default function AlumnosPage() {
             {filteredStudents.map((s) => (
               <div
                 key={s.id}
-                className="grid grid-cols-5 gap-3 px-4 py-2 text-sm text-slate-800"
+                className="grid grid-cols-6 gap-3 px-4 py-2 text-sm text-slate-800"
               >
                 <span>{s.name}</span>
                 <span className="text-slate-600 truncate break-words">{s.email}</span>
+                <span className="text-slate-600 truncate">{s.program || "—"}</span>
                 <span className="text-slate-600">N/D</span>
                 <span className="font-medium capitalize text-green-600">
                   {s.estado || "Activo"}
                 </span>
                 <span className="flex justify-end gap-2">
-                  {userRole === "adminTeacher" ? (
+                  {isAdminTeacherRole(userRole) ? (
                     <>
                       <button
                         type="button"
@@ -1114,6 +1263,21 @@ export default function AlumnosPage() {
             ))}
           </div>
             </div>
+
+            {/* Botón para cargar más estudiantes */}
+            {hasMoreStudents && isAdminTeacherRole(userRole) && (
+              <div className="mt-4 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => loadStudents(true)}
+                  disabled={loadingMore}
+                  className="rounded-lg border border-blue-200 bg-blue-50 px-6 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {loadingMore ? "Cargando..." : `Cargar más estudiantes`}
+                </button>
+              </div>
+            )}
+            </>
           )}
         </div>
       )}
@@ -1172,6 +1336,32 @@ export default function AlumnosPage() {
                   placeholder="Número de teléfono (opcional)"
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Programa
+                </label>
+                <select
+                  value={newProgram}
+                  onChange={(e) => setNewProgram(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                >
+                  <option value="">{programLoading ? "Cargando..." : "Seleccionar"}</option>
+                  {!programLoading && programOptions.length === 0 ? (
+                    <option value="" disabled>
+                      No hay programas
+                    </option>
+                  ) : null}
+                  {programOptions.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-slate-500">
+                  Administra los programas en la pestaña &quot;Programas&quot;.
+                </p>
               </div>
 
               <div className="flex gap-3">

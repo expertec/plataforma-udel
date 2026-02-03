@@ -9,7 +9,8 @@ import { usePathname, useRouter } from "next/navigation";
 import { User, onAuthStateChanged, signOut } from "firebase/auth";
 import { Menu, ChevronDown } from "lucide-react";
 import { auth } from "@/lib/firebase/client";
-import { resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import { TeacherDataProvider } from "@/contexts/TeacherDataContext";
 
 export default function CreatorLayout({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
@@ -63,7 +64,12 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
 
   const displayName = currentUser?.displayName || "Profesor";
   const avatarLetter = displayName.charAt(0).toUpperCase();
-  const roleLabel = userRole === "adminTeacher" ? "AdminTeacher" : "Profesor";
+  const roleLabel =
+    userRole === "superAdminTeacher"
+      ? "SuperAdminTeacher"
+      : userRole === "adminTeacher"
+        ? "AdminTeacher"
+        : "Profesor";
 
   const isActive = (href: string) => {
     if (href === "/creator") return pathname === "/creator" || pathname === "/creator/";
@@ -77,14 +83,18 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
       { href: "/creator/grupos", label: "Grupos" },
       { href: "/creator/alumnos", label: "Alumnos" },
     ];
-    if (userRole === "adminTeacher") {
+    if (isAdminTeacherRole(userRole)) {
       items.push({ href: "/creator/profesores", label: "Profesores" });
+    }
+    if (userRole === "superAdminTeacher") {
+      items.push({ href: "/creator/programas", label: "Programas" });
     }
     return items;
   }, [userRole]);
 
   return (
-    <RoleGate allowedRole={["teacher", "adminTeacher"]}>
+    <RoleGate allowedRole={["teacher", "adminTeacher", "superAdminTeacher"]}>
+      <TeacherDataProvider>
       <div className="flex min-h-screen w-full bg-slate-100 text-slate-900">
         {/* Sidebar */}
         <aside
@@ -197,6 +207,7 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
           </div>
         </main>
       </div>
+      </TeacherDataProvider>
     </RoleGate>
   );
 }

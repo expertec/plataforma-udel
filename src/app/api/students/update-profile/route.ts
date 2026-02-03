@@ -8,13 +8,14 @@ type UpdateProfileRequest = {
   newEmail?: string;
   newName?: string;
   newPhone?: string;
+  newProgram?: string;
 };
 
 export async function POST(request: NextRequest) {
   try {
     const body: UpdateProfileRequest = await request.json();
 
-    const { studentId, currentEmail, newEmail, newName, newPhone } = body;
+    const { studentId, currentEmail, newEmail, newName, newPhone, newProgram } = body;
 
     if (!studentId || !currentEmail) {
       return NextResponse.json(
@@ -82,6 +83,10 @@ export async function POST(request: NextRequest) {
         firestoreUpdateData.phone = newPhone.trim();
       }
 
+      if (newProgram !== undefined) {
+        firestoreUpdateData.program = newProgram.trim();
+      }
+
       // Actualizar en Firestore
       await firestore.collection("users").doc(userRecord.uid).update(firestoreUpdateData);
 
@@ -92,6 +97,7 @@ export async function POST(request: NextRequest) {
           email: authUpdateData.email ? true : false,
           name: newName !== undefined,
           phone: newPhone !== undefined,
+          program: newProgram !== undefined,
         },
       });
     } catch (err: any) {

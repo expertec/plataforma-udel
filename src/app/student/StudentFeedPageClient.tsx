@@ -15,6 +15,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  getCountFromServer,
   addDoc,
   limit,
   orderBy,
@@ -110,8 +111,12 @@ const saveLocalProgress = (
   }
 };
 
+type LoadingStage = "auth" | "enrollments" | "progress" | "courses" | "classes" | "done";
+
 export default function StudentFeedPageClient() {
   const [loading, setLoading] = useState(true);
+  const [loadingStage, setLoadingStage] = useState<LoadingStage>("auth");
+  const [loadingProgress, setLoadingProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [classes, setClasses] = useState<FeedClass[]>([]);
   const [courseName, setCourseName] = useState("");
@@ -344,35 +349,54 @@ export default function StudentFeedPageClient() {
       setForumsReady(true);
       return;
     }
+
+    // Procesar en lotes pequeños para evitar sobrecargar Firestore
+    const BATCH_SIZE = 5;
     const entries: Record<string, boolean> = {};
-    await Promise.all(
-      forumClasses.map(async (cls) => {
-        try {
-          const forumSnap = await getDocs(
-            query(
-              collection(
-                db,
-                "courses",
-                cls.courseId ?? "",
-                "lessons",
-                cls.lessonId ?? "",
-                "classes",
-                cls.classDocId ?? cls.id,
-                "forums",
-              ),
-              where("authorId", "==", currentUser.uid),
-              ...(cls.forumRequiredFormat ? [where("format", "==", cls.forumRequiredFormat)] : []),
-              limit(1),
-            ),
-          );
-          entries[cls.id] = !forumSnap.empty;
-        } catch (err) {
-          console.warn("No se pudo cargar estado de foro:", err);
-          entries[cls.id] = false;
-        }
-      }),
-    );
-    setForumDoneMap((prev) => ({ ...prev, ...entries }));
+
+    for (let i = 0; i < forumClasses.length; i += BATCH_SIZE) {
+      const batch = forumClasses.slice(i, i + BATCH_SIZE);
+
+      try {
+        const batchResults = await Promise.all(
+          batch.map(async (cls) => {
+            try {
+              const forumSnap = await getDocs(
+                query(
+                  collection(
+                    db,
+                    "courses",
+                    cls.courseId ?? "",
+                    "lessons",
+                    cls.lessonId ?? "",
+                    "classes",
+                    cls.classDocId ?? cls.id,
+                    "forums",
+                  ),
+                  where("authorId", "==", currentUser.uid),
+                  ...(cls.forumRequiredFormat ? [where("format", "==", cls.forumRequiredFormat)] : []),
+                  limit(1),
+                ),
+              );
+              return [cls.id, !forumSnap.empty] as const;
+            } catch (err) {
+              console.warn("No se pudo cargar estado de foro:", err);
+              return [cls.id, false] as const;
+            }
+          }),
+        );
+
+        batchResults.forEach(([id, done]) => {
+          entries[id] = done;
+        });
+
+        // Actualizar incrementalmente
+        setForumDoneMap((prev) => ({ ...prev, ...entries }));
+      } catch (err) {
+        console.warn("Error en lote de estado de foros:", err);
+      }
+    }
+
     setForumsReady(true);
   }, [classes, currentUser?.uid, previewMode]);
 
@@ -1132,6 +1156,9 @@ export default function StudentFeedPageClient() {
         setProgressReady(false);
         initialPositionedRef.current = false;
         setError(null);
+        setLoadingStage("enrollments");
+        setLoadingProgress(10);
+
         // 1) Obtener TODOS los enrollments del alumno (no solo el primero)
         let enrSnap = await getDocs(
           query(
@@ -1205,126 +1232,153 @@ export default function StudentFeedPageClient() {
         // Guardar todos los enrollmentIds
         const allEnrollmentIds = enrSnap.docs.map(doc => doc.id);
         setEnrollmentIds(allEnrollmentIds);
+        setLoadingProgress(25);
 
         // Usar el primer enrollment para setEnrollmentId (compatibilidad con sistema de progreso actual)
         const primaryEnrollmentId = allEnrollmentIds[0];
         setEnrollmentId(primaryEnrollmentId);
 
         // Cargar progreso guardado de TODOS los enrollments
+        setLoadingStage("progress");
+        setLoadingProgress(35);
         const additionalEnrollIds = allEnrollmentIds.slice(1);
         await loadProgressFromFirestore(primaryEnrollmentId, additionalEnrollIds);
+
+        setLoadingStage("courses");
+        setLoadingProgress(50);
 
         const feed: FeedClass[] = [];
         let firstStudentName = "";
         const groupNames: string[] = [];
+        const totalEnrollments = enrSnap.docs.length;
 
-        // 2) Iterar sobre TODOS los enrollments
-        for (const enrollmentDoc of enrSnap.docs) {
-          const enrollment = enrollmentDoc.data();
-          const currentGroupId = enrollment.groupId;
-          const currentEnrollmentId = enrollmentDoc.id;
+        // 2) Iterar sobre TODOS los enrollments (con manejo de errores por enrollment)
+        for (let enrollIdx = 0; enrollIdx < enrSnap.docs.length; enrollIdx++) {
+          const enrollmentDoc = enrSnap.docs[enrollIdx];
+          // Actualizar progreso (50-85% se divide entre enrollments)
+          const enrollProgress = 50 + Math.round((enrollIdx / totalEnrollments) * 35);
+          setLoadingProgress(enrollProgress);
 
-          if (!firstStudentName) {
-            firstStudentName = enrollment.studentName ?? currentUser.displayName ?? "Estudiante";
-          }
+          try {
+            const enrollment = enrollmentDoc.data();
+            const currentGroupId = enrollment.groupId;
+            const currentEnrollmentId = enrollmentDoc.id;
 
-          // Obtener datos del grupo
-          const groupDoc = await getDoc(doc(db, "groups", currentGroupId));
-          if (!groupDoc.exists()) {
-            console.warn(`Grupo ${currentGroupId} no existe, saltando...`);
-            continue;
-          }
+            if (!firstStudentName) {
+              firstStudentName = enrollment.studentName ?? currentUser.displayName ?? "Estudiante";
+            }
 
-          const groupData = groupDoc.data();
-          const currentGroupName = groupData.groupName ?? "Grupo";
-          groupNames.push(currentGroupName);
-
-          const coursesArray: Array<{ courseId: string; courseName: string }> =
-            Array.isArray(groupData.courses) && groupData.courses.length > 0
-              ? groupData.courses
-              : groupData.courseId
-                ? [{ courseId: groupData.courseId, courseName: groupData.courseName ?? "" }]
-                : [];
-
-          // 3) Iterar sobre cursos del grupo
-          for (const courseEntry of coursesArray) {
-            const courseDoc = await getDoc(doc(db, "courses", courseEntry.courseId));
-            const courseData = courseDoc.exists() ? courseDoc.data() : null;
-            if (!courseData) {
-              // Curso eliminado: saltar
+            // Obtener datos del grupo
+            const groupDoc = await getDoc(doc(db, "groups", currentGroupId));
+            if (!groupDoc.exists()) {
+              console.warn(`Grupo ${currentGroupId} no existe, saltando...`);
               continue;
             }
 
-            const cover =
-              (Array.isArray(courseData.imageUrls) ? courseData.imageUrls.find(Boolean) : null) ??
-              courseData.imageUrl ??
-              courseData.thumbnail ??
-              "";
-            if (cover) {
-              setCourseCoverMap((prev) => ({ ...prev, [courseEntry.courseId]: cover }));
-            }
+            const groupData = groupDoc.data();
+            const currentGroupName = groupData.groupName ?? "Grupo";
+            groupNames.push(currentGroupName);
 
-            const courseTitle = courseData?.title ?? courseEntry.courseName ?? "Curso";
-            if (courseData?.isArchived) {
-              // Saltar cursos archivados
-              continue;
-            }
+            const coursesArray: Array<{ courseId: string; courseName: string }> =
+              Array.isArray(groupData.courses) && groupData.courses.length > 0
+                ? groupData.courses
+                : groupData.courseId
+                  ? [{ courseId: groupData.courseId, courseName: groupData.courseName ?? "" }]
+                  : [];
 
-            // 4) Lecciones y clases por curso
-            const lessonsSnap = await getDocs(
-              query(collection(db, "courses", courseEntry.courseId, "lessons"), orderBy("order", "asc")),
-            );
-            for (const lesson of lessonsSnap.docs) {
-              const ldata = lesson.data();
-              const lessonTitle = ldata.title ?? "Lección";
-              const classesSnap = await getDocs(
-                query(
-                  collection(db, "courses", courseEntry.courseId, "lessons", lesson.id, "classes"),
-                  orderBy("order", "asc"),
-                ),
-              );
-              classesSnap.forEach((cls) => {
-                const c = cls.data();
-                const normType = normalizeClassType(c.type);
-                const imageArray =
-                  c.images ??
-                  c.imageUrls ??
-                  (c.imageUrl ? [c.imageUrl] : []);
+            // 3) Iterar sobre cursos del grupo (con manejo de errores por curso)
+            for (const courseEntry of coursesArray) {
+              try {
+                const courseDoc = await getDoc(doc(db, "courses", courseEntry.courseId));
+                const courseData = courseDoc.exists() ? courseDoc.data() : null;
+                if (!courseData) {
+                  // Curso eliminado: saltar
+                  continue;
+                }
 
-                feed.push({
-                  id: `${currentGroupId}_${courseEntry.courseId}_${cls.id}`,
-                  classDocId: cls.id,
-                  title: c.title ?? "Clase sin título",
-                  type: normType,
-                  courseId: courseEntry.courseId,
-                  lessonId: lesson.id,
-                  enrollmentId: currentEnrollmentId,
-                  groupId: currentGroupId,
-                  groupName: currentGroupName,
-                  classTitle: c.title ?? "Clase sin título",
-                  videoUrl: (c.videoUrl ?? "").trim(),
-                  audioUrl: (c.audioUrl ?? "").trim(),
-                  content: c.content ?? "",
-                  images: Array.isArray(imageArray)
-                    ? imageArray.filter(Boolean).map((u: string) => u.trim())
-                    : [],
-                  hasAssignment: c.hasAssignment ?? false,
-                  assignmentTemplateUrl: c.assignmentTemplateUrl ?? "",
-                  lessonTitle,
-                  lessonName: lessonTitle,
-                  courseTitle,
-                  likesCount: c.likesCount ?? 0,
-                  forumEnabled: c.forumEnabled ?? false,
-                  forumRequiredFormat: c.forumRequiredFormat ?? null,
-                });
-              });
+                const cover =
+                  (Array.isArray(courseData.imageUrls) ? courseData.imageUrls.find(Boolean) : null) ??
+                  courseData.imageUrl ??
+                  courseData.thumbnail ??
+                  "";
+                if (cover) {
+                  setCourseCoverMap((prev) => ({ ...prev, [courseEntry.courseId]: cover }));
+                }
+
+                const courseTitle = courseData?.title ?? courseEntry.courseName ?? "Curso";
+                if (courseData?.isArchived) {
+                  // Saltar cursos archivados
+                  continue;
+                }
+
+                // 4) Lecciones y clases por curso
+                const lessonsSnap = await getDocs(
+                  query(collection(db, "courses", courseEntry.courseId, "lessons"), orderBy("order", "asc")),
+                );
+                for (const lesson of lessonsSnap.docs) {
+                  try {
+                    const ldata = lesson.data();
+                    const lessonTitle = ldata.title ?? "Lección";
+                    const classesSnap = await getDocs(
+                      query(
+                        collection(db, "courses", courseEntry.courseId, "lessons", lesson.id, "classes"),
+                        orderBy("order", "asc"),
+                      ),
+                    );
+                    classesSnap.forEach((cls) => {
+                      const c = cls.data();
+                      const normType = normalizeClassType(c.type);
+                      const imageArray =
+                        c.images ??
+                        c.imageUrls ??
+                        (c.imageUrl ? [c.imageUrl] : []);
+
+                      feed.push({
+                        id: `${currentGroupId}_${courseEntry.courseId}_${cls.id}`,
+                        classDocId: cls.id,
+                        title: c.title ?? "Clase sin título",
+                        type: normType,
+                        courseId: courseEntry.courseId,
+                        lessonId: lesson.id,
+                        enrollmentId: currentEnrollmentId,
+                        groupId: currentGroupId,
+                        groupName: currentGroupName,
+                        classTitle: c.title ?? "Clase sin título",
+                        videoUrl: (c.videoUrl ?? "").trim(),
+                        audioUrl: (c.audioUrl ?? "").trim(),
+                        content: c.content ?? "",
+                        images: Array.isArray(imageArray)
+                          ? imageArray.filter(Boolean).map((u: string) => u.trim())
+                          : [],
+                        hasAssignment: c.hasAssignment ?? false,
+                        assignmentTemplateUrl: c.assignmentTemplateUrl ?? "",
+                        lessonTitle,
+                        lessonName: lessonTitle,
+                        courseTitle,
+                        likesCount: c.likesCount ?? 0,
+                        forumEnabled: c.forumEnabled ?? false,
+                        forumRequiredFormat: c.forumRequiredFormat ?? null,
+                      });
+                    });
+                  } catch (lessonErr) {
+                    console.warn(`Error cargando lección ${lesson.id}, continuando...`, lessonErr);
+                  }
+                }
+                setCourseTitleMap((prev) => ({
+                  ...prev,
+                  [courseEntry.courseId]: courseTitle,
+                }));
+              } catch (courseErr) {
+                console.warn(`Error cargando curso ${courseEntry.courseId}, continuando...`, courseErr);
+              }
             }
-            setCourseTitleMap((prev) => ({
-              ...prev,
-              [courseEntry.courseId]: courseTitle,
-            }));
+          } catch (enrollErr) {
+            console.warn(`Error cargando enrollment ${enrollmentDoc.id}, continuando...`, enrollErr);
           }
         }
+
+        setLoadingStage("classes");
+        setLoadingProgress(85);
 
         if (feed.length === 0) {
           setError(
@@ -1347,6 +1401,8 @@ export default function StudentFeedPageClient() {
           initialLikes[item.id] = item.likesCount ?? 0;
         });
 
+        setLoadingStage("done");
+        setLoadingProgress(100);
         setClasses(feed);
         setLikesMap(initialLikes);
         setLikedMap({});
@@ -1365,45 +1421,63 @@ export default function StudentFeedPageClient() {
     }
   }, [authLoading, currentUser?.uid, previewCourseId, previewMode]);
 
-  // Cargar likes propios por clase
+  // Cargar likes propios por clase (en lotes pequeños para evitar sobrecarga)
   useEffect(() => {
     let cancelled = false;
     const loadLikes = async () => {
       if (previewMode) return;
       if (!currentUser?.uid) return;
       if (!classes.length) return;
-      try {
-        const pairs = await Promise.all(
-          classes.map(async (cls) => {
-            if (!cls.courseId || !cls.lessonId || !cls.classDocId) return [cls.id, false] as const;
-            try {
-              const likeRef = doc(
-                db,
-                "courses",
-                cls.courseId,
-                "lessons",
-                cls.lessonId,
-                "classes",
-                cls.classDocId,
-                "likes",
-                currentUser.uid,
-              );
-              const likeSnap = await getDoc(likeRef);
-              return [cls.id, likeSnap.exists()] as const;
-            } catch (err) {
-              console.warn("No se pudo leer el like de una clase:", err);
-              return [cls.id, false] as const;
-            }
-          }),
-        );
+
+      // Filtrar clases válidas
+      const validClasses = classes.filter(
+        (cls) => cls.courseId && cls.lessonId && cls.classDocId
+      );
+      if (!validClasses.length) return;
+
+      // Procesar en lotes pequeños para evitar sobrecargar Firestore
+      const BATCH_SIZE = 5;
+      const nextLiked: Record<string, boolean> = {};
+
+      for (let i = 0; i < validClasses.length; i += BATCH_SIZE) {
         if (cancelled) return;
-        const nextLiked: Record<string, boolean> = {};
-        pairs.forEach(([id, liked]) => {
-          nextLiked[id] = liked;
-        });
-        setLikedMap((prev) => ({ ...prev, ...nextLiked }));
-      } catch (err) {
-        console.warn("No se pudieron cargar los likes del alumno:", err);
+        const batch = validClasses.slice(i, i + BATCH_SIZE);
+
+        try {
+          const batchResults = await Promise.all(
+            batch.map(async (cls) => {
+              try {
+                const likeRef = doc(
+                  db,
+                  "courses",
+                  cls.courseId!,
+                  "lessons",
+                  cls.lessonId!,
+                  "classes",
+                  cls.classDocId!,
+                  "likes",
+                  currentUser.uid,
+                );
+                const likeSnap = await getDoc(likeRef);
+                return [cls.id, likeSnap.exists()] as const;
+              } catch (err) {
+                console.warn("No se pudo leer el like de una clase:", err);
+                return [cls.id, false] as const;
+              }
+            }),
+          );
+
+          batchResults.forEach(([id, liked]) => {
+            nextLiked[id] = liked;
+          });
+
+          // Actualizar incrementalmente
+          if (!cancelled) {
+            setLikedMap((prev) => ({ ...prev, ...nextLiked }));
+          }
+        } catch (err) {
+          console.warn("Error en lote de likes:", err);
+        }
       }
     };
     loadLikes();
@@ -1412,43 +1486,62 @@ export default function StudentFeedPageClient() {
     };
   }, [classes, currentUser?.uid, previewMode]);
 
-  // Cargar contador de comentarios para todas las clases al inicio
+  // Cargar contador de comentarios de forma optimizada (en lotes pequeños)
   useEffect(() => {
     let cancelled = false;
     const loadCommentsCount = async () => {
       if (previewMode) return;
       if (!classes.length) return;
-      try {
-        const counts = await Promise.all(
-          classes.map(async (cls) => {
-            if (!cls.courseId || !cls.lessonId || !cls.classDocId) return [cls.id, 0] as const;
-            try {
-              const commentsRef = collection(
-                db,
-                "courses",
-                cls.courseId,
-                "lessons",
-                cls.lessonId,
-                "classes",
-                cls.classDocId,
-                "comments",
-              );
-              const snap = await getDocs(commentsRef);
-              return [cls.id, snap.size] as const;
-            } catch (err) {
-              console.warn("No se pudo leer el conteo de comentarios de una clase:", err);
-              return [cls.id, 0] as const;
-            }
-          }),
-        );
+
+      // Filtrar clases que tienen los IDs necesarios
+      const validClasses = classes.filter(
+        (cls) => cls.courseId && cls.lessonId && cls.classDocId
+      );
+      if (!validClasses.length) return;
+
+      // Procesar en lotes pequeños para evitar sobrecargar Firestore
+      const BATCH_SIZE = 5;
+      const nextCounts: Record<string, number> = {};
+
+      for (let i = 0; i < validClasses.length; i += BATCH_SIZE) {
         if (cancelled) return;
-        const nextCounts: Record<string, number> = {};
-        counts.forEach(([id, count]) => {
-          nextCounts[id] = count;
-        });
-        setCommentsCountMap((prev) => ({ ...prev, ...nextCounts }));
-      } catch (err) {
-        console.warn("No se pudieron cargar los conteos de comentarios:", err);
+        const batch = validClasses.slice(i, i + BATCH_SIZE);
+
+        try {
+          const batchResults = await Promise.all(
+            batch.map(async (cls) => {
+              try {
+                const commentsRef = collection(
+                  db,
+                  "courses",
+                  cls.courseId!,
+                  "lessons",
+                  cls.lessonId!,
+                  "classes",
+                  cls.classDocId!,
+                  "comments",
+                );
+                // Usar getCountFromServer en lugar de getDocs para evitar cargar todos los documentos
+                const countSnap = await getCountFromServer(commentsRef);
+                return [cls.id, countSnap.data().count] as const;
+              } catch (err) {
+                console.warn("No se pudo leer el conteo de comentarios de una clase:", err);
+                return [cls.id, 0] as const;
+              }
+            }),
+          );
+
+          batchResults.forEach(([id, count]) => {
+            nextCounts[id] = count;
+          });
+
+          // Actualizar incrementalmente para mostrar progreso
+          if (!cancelled) {
+            setCommentsCountMap((prev) => ({ ...prev, ...nextCounts }));
+          }
+        } catch (err) {
+          console.warn("Error en lote de conteo de comentarios:", err);
+        }
       }
     };
     loadCommentsCount();
@@ -2133,9 +2226,55 @@ export default function StudentFeedPageClient() {
   };
 
   if (loading) {
+    const stageMessages: Record<LoadingStage, string> = {
+      auth: "Verificando sesión...",
+      enrollments: "Buscando tus inscripciones...",
+      progress: "Cargando tu progreso...",
+      courses: "Cargando tus cursos...",
+      classes: "Preparando tus clases...",
+      done: "¡Listo!",
+    };
+
     return (
-      <div className="flex min-h-screen items-center justify-center text-slate-600">
-        Cargando tu feed...
+      <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#0b0708]">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(110,45,45,0.28),_transparent_60%)]" />
+        <div className="pointer-events-none absolute -bottom-32 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-[#6e2d2d]/20 blur-3xl" />
+
+        <div className="relative flex flex-col items-center space-y-6 px-6 text-center">
+          <div className="flex h-20 w-20 items-center justify-center rounded-3xl border border-[#6e2d2d]/40 bg-white/5 p-2 shadow-[0_0_24px_rgba(110,45,45,0.35)]">
+            <Image
+              src={UNIVERSITY_LOGO_SRC}
+              alt="Logo UDEL Universidad"
+              width={64}
+              height={64}
+              className="h-12 w-12 object-contain"
+              priority
+            />
+          </div>
+
+          <div>
+            <p className="text-xs uppercase tracking-[0.35em] text-[#d6b3b3]/70">
+              UDEL Universidad
+            </p>
+            <p className="mt-2 text-lg font-semibold text-white">
+              {stageMessages[loadingStage]}
+            </p>
+            <p className="mt-1 text-sm text-[#d6b3b3]/80">
+              Esto solo tomará un momento
+            </p>
+          </div>
+
+          <div className="w-64 h-2 rounded-full bg-white/10 overflow-hidden">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-[#6e2d2d] via-[#7a3232] to-[#9b4a4a] transition-all duration-500 ease-out"
+              style={{ width: `${loadingProgress}%` }}
+            />
+          </div>
+
+          <p className="text-xs tabular-nums text-[#d6b3b3]/70">
+            {loadingProgress}%
+          </p>
+        </div>
       </div>
     );
   }

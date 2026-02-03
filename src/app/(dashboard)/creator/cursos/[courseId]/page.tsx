@@ -30,8 +30,9 @@ import {
   Group,
 } from "@/lib/firebase/groups-service";
 import { getAlumnos } from "@/lib/firebase/alumnos-service";
-import { resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/roles";
 import { EntregasTab } from "@/app/(dashboard)/creator/grupos/[groupId]/_components/EntregasTab";
+import { getPrograms } from "@/lib/firebase/programs-service";
 
 type ConfirmState =
   | { open: false }
@@ -90,6 +91,8 @@ export default function CourseBuilderPage() {
   const [savingInfo, setSavingInfo] = useState(false);
   const [uploadingThumb, setUploadingThumb] = useState(false);
   const [thumbDragOver, setThumbDragOver] = useState(false);
+  const [programOptions, setProgramOptions] = useState<string[]>([]);
+  const [programLoading, setProgramLoading] = useState(false);
   const [courseGroups, setCourseGroups] = useState<
     Array<{
       id: string;
@@ -129,8 +132,8 @@ export default function CourseBuilderPage() {
     lessons.forEach((l) => map.set(l.id, l));
     return Array.from(map.values());
   }, [lessons]);
-  const canManageGroups = userRole === "adminTeacher";
-  const canLinkGroups = userRole === "adminTeacher" || userRole === "teacher";
+  const canManageGroups = isAdminTeacherRole(userRole);
+  const canLinkGroups = isAdminTeacherRole(userRole) || userRole === "teacher";
 
   const handleThumbnailFile = async (file: File) => {
     if (!courseId) return;
@@ -186,7 +189,8 @@ export default function CourseBuilderPage() {
             title: d.title ?? "",
             description: d.description ?? "",
             introVideoUrl: d.introVideoUrl ?? "",
-            category: d.category ?? "",
+            category: d.category ?? d.program ?? "",
+            program: d.program ?? d.category ?? "",
             thumbnail: d.thumbnail ?? "",
             isPublished: d.isPublished ?? false,
           });
@@ -234,6 +238,28 @@ export default function CourseBuilderPage() {
       unsubAuth();
     };
   }, [courseId]);
+
+  useEffect(() => {
+    let active = true;
+    const loadPrograms = async () => {
+      setProgramLoading(true);
+      try {
+        const data = await getPrograms();
+        if (!active) return;
+        const names = Array.from(new Set(data.map((p) => p.name).filter(Boolean)));
+        setProgramOptions(names);
+      } catch (err) {
+        console.error(err);
+        toast.error("No se pudieron cargar los programas");
+      } finally {
+        if (active) setProgramLoading(false);
+      }
+    };
+    loadPrograms();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const ensureClassListener = (lessonId: string) => {
     if (!courseId) return;
@@ -291,8 +317,8 @@ export default function CourseBuilderPage() {
     setLoadError(null);
     try {
       const [groups, activeGroups] = await Promise.all([
-        getGroupsByCourse(courseId, userRole === "adminTeacher" ? undefined : currentUser.uid),
-        getActiveGroups(userRole === "adminTeacher" ? undefined : currentUser.uid),
+        getGroupsByCourse(courseId, isAdminTeacherRole(userRole) ? undefined : currentUser.uid),
+        getActiveGroups(isAdminTeacherRole(userRole) ? undefined : currentUser.uid),
       ]);
       setCourseGroups(
         groups.map((g) => ({
@@ -673,7 +699,7 @@ export default function CourseBuilderPage() {
                     title: courseInfo.title,
                     description: courseInfo.description,
                     introVideoUrl: courseInfo.introVideoUrl,
-                    category: courseInfo.category,
+                    program: courseInfo.program ?? courseInfo.category,
                     thumbnail: courseInfo.thumbnail,
                   });
                   toast.success("Información actualizada");
@@ -719,14 +745,29 @@ export default function CourseBuilderPage() {
                 />
               </div>
               <div>
-                <label className="text-sm font-medium text-slate-800">Categoría</label>
-                <input
-                  value={courseInfo.category ?? ""}
+                <label className="text-sm font-medium text-slate-800">Programa / carrera</label>
+                <select
+                  value={courseInfo.program ?? courseInfo.category ?? ""}
                   onChange={(e) =>
-                    setCourseInfo((prev) => ({ ...prev, category: e.target.value }))
+                    setCourseInfo((prev) => ({ ...prev, program: e.target.value }))
                   }
-                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                />
+                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                >
+                  <option value="">{programLoading ? "Cargando..." : "Seleccionar"}</option>
+                  {!programLoading && programOptions.length === 0 ? (
+                    <option value="" disabled>
+                      No hay programas
+                    </option>
+                  ) : null}
+                  {programOptions.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-slate-500">
+                  Administra los programas en la pestaña &quot;Programas&quot;.
+                </p>
               </div>
               <div className="sm:col-span-2">
                 <label className="text-sm font-medium text-slate-800">Thumbnail (URL)</label>

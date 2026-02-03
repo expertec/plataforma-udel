@@ -1,10 +1,13 @@
 import { Suspense } from "react";
 import StudentFeedPageClient from "./StudentFeedPageClient";
+import StudentFeedErrorBoundary from "./StudentFeedErrorBoundary";
 
 export default function StudentPage() {
   return (
-    <Suspense fallback={null}>
-      <StudentFeedPageClient />
-    </Suspense>
+    <StudentFeedErrorBoundary>
+      <Suspense fallback={null}>
+        <StudentFeedPageClient />
+      </Suspense>
+    </StudentFeedErrorBoundary>
   );
 }

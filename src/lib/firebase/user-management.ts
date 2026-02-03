@@ -19,6 +19,7 @@ type CreateAccountInput = {
   role: UserRole;
   createdBy?: string | null;
   phone?: string;
+  program?: string;
 };
 
 let managementAuth: Auth | null = null;
@@ -42,7 +43,7 @@ function getManagementAuth(): Auth {
 }
 
 export async function createAccountWithRole(input: CreateAccountInput): Promise<{ uid: string }> {
-  const { email, password, displayName, role, createdBy, phone } = input;
+  const { email, password, displayName, role, createdBy, phone, program } = input;
   const auth = getManagementAuth();
   try {
     const cred = await createUserWithEmailAndPassword(auth, email, password);
@@ -50,22 +51,22 @@ export async function createAccountWithRole(input: CreateAccountInput): Promise<
       await updateProfile(cred.user, { displayName });
     }
 
-    await setDoc(
-      doc(db, "users", cred.user.uid),
-      {
-        email,
-        displayName,
-        name: displayName,
-        role,
-        mustChangePassword: role === "student",
-        createdAt: serverTimestamp(),
-        createdBy: createdBy ?? null,
-        status: "active",
-        provider: "password",
-        phone: phone ?? null,
-      },
-      { merge: true },
-    );
+    const baseData: Record<string, unknown> = {
+      email,
+      displayName,
+      name: displayName,
+      role,
+      mustChangePassword: role === "student",
+      createdAt: serverTimestamp(),
+      createdBy: createdBy ?? null,
+      status: "active",
+      provider: "password",
+      phone: phone ?? null,
+    };
+    if (role === "student") {
+      baseData.program = program ?? "";
+    }
+    await setDoc(doc(db, "users", cred.user.uid), baseData, { merge: true });
 
     // Evitamos que el usuario creado quede firmado en la app secundaria.
     try {
@@ -86,22 +87,22 @@ export async function createAccountWithRole(input: CreateAccountInput): Promise<
       if (displayName) {
         await updateProfile(existingCred.user, { displayName });
       }
-      await setDoc(
-        doc(db, "users", existingCred.user.uid),
-        {
-          email,
-          displayName,
-          name: displayName,
-          role,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-          updatedBy: createdBy ?? null,
-          status: "active",
-          provider: "password",
-          phone: phone ?? null,
-        },
-        { merge: true },
-      );
+      const updateData: Record<string, unknown> = {
+        email,
+        displayName,
+        name: displayName,
+        role,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        updatedBy: createdBy ?? null,
+        status: "active",
+        provider: "password",
+        phone: phone ?? null,
+      };
+      if (role === "student") {
+        updateData.program = program ?? "";
+      }
+      await setDoc(doc(db, "users", existingCred.user.uid), updateData, { merge: true });
       try {
         await signOut(auth);
       } catch {

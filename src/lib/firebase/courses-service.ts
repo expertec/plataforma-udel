@@ -5,6 +5,7 @@ import {
   doc,
   increment,
   getDocs,
+  limit,
   orderBy,
   query,
   serverTimestamp,
@@ -13,8 +14,10 @@ import {
   setDoc,
   getDoc,
   writeBatch,
+  QueryConstraint,
 } from "firebase/firestore";
 import { db } from "./firestore";
+import { syncCourseProgram } from "./programs-service";
 
 export type Course = {
   id: string;
@@ -26,18 +29,29 @@ export type Course = {
   lessonsCount: number;
   studentsCount: number;
   introVideoUrl?: string;
+  // Usamos program como campo principal; mantenemos category como alias legacy
+  program?: string;
   category?: string;
   createdAt?: Date;
   isMentorCourse?: boolean; // Indica si el curso pertenece a un grupo donde el usuario es mentor
   teacherId?: string; // ID del profesor creador del curso
 };
 
-export async function getCourses(teacherId?: string): Promise<Course[]> {
+/**
+ * Obtiene los cursos con límite opcional para reducir lecturas de Firestore
+ * @param teacherId - ID del profesor (opcional, si no se pasa devuelve todos)
+ * @param maxResults - Límite de resultados (opcional)
+ */
+export async function getCourses(teacherId?: string, maxResults?: number): Promise<Course[]> {
   const coursesRef = collection(db, "courses");
 
   if (!teacherId) {
-    // Sin teacherId, devolver todos los cursos
-    const q = query(coursesRef, orderBy("createdAt", "desc"));
+    // Sin teacherId, devolver todos los cursos (con límite opcional)
+    const constraints: QueryConstraint[] = [orderBy("createdAt", "desc")];
+    if (typeof maxResults === "number" && maxResults > 0) {
+      constraints.push(limit(maxResults));
+    }
+    const q = query(coursesRef, ...constraints);
     const snap = await getDocs(q);
     return snap.docs.map((doc) => {
       const data = doc.data();
@@ -51,7 +65,8 @@ export async function getCourses(teacherId?: string): Promise<Course[]> {
         lessonsCount: data.lessonsCount ?? 0,
         studentsCount: data.studentsCount ?? 0,
         introVideoUrl: data.introVideoUrl ?? "",
-        category: data.category ?? "",
+        program: data.program ?? data.category ?? "",
+        category: data.category ?? data.program ?? "",
         createdAt: data.createdAt?.toDate?.() ?? undefined,
         teacherId: data.teacherId,
         isMentorCourse: false,
@@ -60,11 +75,14 @@ export async function getCourses(teacherId?: string): Promise<Course[]> {
   }
 
   // Con teacherId: obtener cursos propios + cursos de grupos donde es mentor
-  const q = query(
-    coursesRef,
+  const constraints: QueryConstraint[] = [
     where("teacherId", "==", teacherId),
     orderBy("createdAt", "desc"),
-  );
+  ];
+  if (typeof maxResults === "number" && maxResults > 0) {
+    constraints.push(limit(maxResults));
+  }
+  const q = query(coursesRef, ...constraints);
 
   const snap = await getDocs(q);
   const ownCourses = snap.docs.map((doc) => {
@@ -79,7 +97,8 @@ export async function getCourses(teacherId?: string): Promise<Course[]> {
       lessonsCount: data.lessonsCount ?? 0,
       studentsCount: data.studentsCount ?? 0,
       introVideoUrl: data.introVideoUrl ?? "",
-      category: data.category ?? "",
+      program: data.program ?? data.category ?? "",
+      category: data.category ?? data.program ?? "",
       createdAt: data.createdAt?.toDate?.() ?? undefined,
       teacherId: data.teacherId,
       isMentorCourse: false,
@@ -143,7 +162,8 @@ export async function getCourses(teacherId?: string): Promise<Course[]> {
         lessonsCount: data.lessonsCount ?? 0,
         studentsCount: data.studentsCount ?? 0,
         introVideoUrl: data.introVideoUrl ?? "",
-        category: data.category ?? "",
+        program: data.program ?? data.category ?? "",
+        category: data.category ?? data.program ?? "",
         createdAt: data.createdAt?.toDate?.() ?? undefined,
         teacherId: data.teacherId,
         isMentorCourse: true,
@@ -159,6 +179,11 @@ export async function getCourses(teacherId?: string): Promise<Course[]> {
     return dateB - dateA; // Orden descendente (más reciente primero)
   });
 
+  // Aplicar límite si se especifica
+  if (typeof maxResults === "number" && maxResults > 0) {
+    return allCourses.slice(0, maxResults);
+  }
+
   return allCourses;
 }
 
@@ -166,18 +191,21 @@ type CreateCourseInput = {
   title: string;
   description?: string;
   introVideoUrl?: string;
-  category?: string;
+  program?: string;
+  category?: string; // alias legacy
   teacherId: string;
   teacherName?: string;
 };
 
 export async function createCourse(input: CreateCourseInput): Promise<string> {
   const coursesRef = collection(db, "courses");
+  const program = input.program ?? input.category ?? "";
   const docRef = await addDoc(coursesRef, {
     title: input.title,
     description: input.description ?? "",
     introVideoUrl: input.introVideoUrl ?? "",
-    category: input.category ?? "",
+    program,
+    category: program, // mantener espejo para clientes antiguos
     teacherId: input.teacherId,
     teacherName: input.teacherName ?? "",
     isArchived: false,
@@ -187,6 +215,10 @@ export async function createCourse(input: CreateCourseInput): Promise<string> {
     studentsCount: 0,
   });
 
+  if (program) {
+    await syncCourseProgram(docRef.id, program);
+  }
+
   return docRef.id;
 }
 
@@ -194,7 +226,8 @@ type UpdateCourseInput = {
   title?: string;
   description?: string;
     introVideoUrl?: string;
-    category?: string;
+    program?: string;
+    category?: string; // alias legacy
     thumbnail?: string;
   isArchived?: boolean;
     isPublished?: boolean;
@@ -202,7 +235,12 @@ type UpdateCourseInput = {
 
 export async function updateCourse(courseId: string, data: UpdateCourseInput): Promise<void> {
   const courseRef = doc(db, "courses", courseId);
-  await updateDoc(courseRef, data);
+  const program = data.program ?? data.category;
+  const payload = program !== undefined ? { ...data, program, category: program } : data;
+  await updateDoc(courseRef, payload);
+  if (program !== undefined) {
+    await syncCourseProgram(courseId, program);
+  }
 }
 
 /**

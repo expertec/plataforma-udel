@@ -19,7 +19,7 @@ type ParsedRow = {
   courseTitle: string;
   courseDescription: string;
   introVideoUrl: string;
-  category: string;
+  program: string;
   lessonTitle: string;
   classTitle: string;
   classType: "video" | "text" | "audio" | "quiz" | "image";
@@ -44,7 +44,7 @@ const fieldKeys = {
   courseTitle: ["Curso", "Course", "TítuloCurso", "TituloCurso", "CourseTitle"],
   courseDescription: ["DescripciónCurso", "DescripcionCurso", "CourseDescription", "Descripción"],
   introVideoUrl: ["IntroVideoUrl", "VideoIntro", "Intro Video", "Intro"],
-  category: ["Categoría", "Categoria", "Category"],
+  program: ["Programa", "programa", "Program", "Categoría", "Categoria", "Category"],
   lessonTitle: ["Lección", "Leccion", "Lesson", "LessonTitle"],
   classTitle: ["TítuloClase", "TituloClase", "ClassTitle", "Clase"],
   classType: ["Tipo", "ClassType"],
@@ -61,7 +61,7 @@ const sampleData = [
     "Curso",
     "DescripciónCurso",
     "IntroVideoUrl",
-    "Categoría",
+    "Programa",
     "Lección",
     "Tipo",
     "TítuloClase",
@@ -194,7 +194,7 @@ export function BulkUploadCoursesModal({
           if (!courseTitle.trim() || !lessonTitle.trim() || !classTitle.trim()) return null;
           const courseDescription = getField(row, fieldKeys.courseDescription);
           const introVideoUrl = getField(row, fieldKeys.introVideoUrl);
-          const category = getField(row, fieldKeys.category);
+          const program = getField(row, fieldKeys.program);
           const classType = normalizeType(getField(row, fieldKeys.classType));
           const content = getField(row, fieldKeys.content);
           const duration = parseNumber(getField(row, fieldKeys.duration));
@@ -208,7 +208,7 @@ export function BulkUploadCoursesModal({
             courseTitle,
             courseDescription,
             introVideoUrl,
-            category,
+            program,
             lessonTitle,
             classTitle,
             classType,
@@ -273,7 +273,7 @@ export function BulkUploadCoursesModal({
           title: row.courseTitle,
           description: row.courseDescription,
           introVideoUrl: row.introVideoUrl,
-          category: row.category,
+          program: row.program,
           teacherId,
           teacherName: teacherName ?? auth.currentUser?.displayName ?? "",
         });
@@ -389,7 +389,7 @@ export function BulkUploadCoursesModal({
             </h2>
             <p className="text-sm text-slate-600">
               Usa un Excel/CSV con encabezados. Cada fila representa una clase. Columnas
-              esperadas: Curso, DescripciónCurso, IntroVideoUrl, Categoría, Lección, Tipo
+              esperadas: Curso, DescripciónCurso, IntroVideoUrl, Programa, Lección, Tipo
               (video/text/audio/image/quiz), TítuloClase, Contenido/URL, Duración (opcional),
               Orden (opcional), ImageUrls (opcional, separadas por | o ;), HasAssignment (sí/no),
               AssignmentTemplateUrl.
@@ -477,7 +477,7 @@ export function BulkUploadCoursesModal({
                           </p>
                         )}
                         <div className="flex flex-wrap gap-2 text-xs text-slate-500">
-                          {row.category && <span>#{row.category}</span>}
+                          {row.program && <span>#{row.program}</span>}
                           {row.introVideoUrl && <span>{row.introVideoUrl}</span>}
                         </div>
                         <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700">

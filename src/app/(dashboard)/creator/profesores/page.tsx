@@ -5,7 +5,7 @@ import toast from "react-hot-toast";
 import { User, onAuthStateChanged } from "firebase/auth";
 import { useRouter } from "next/navigation";
 import { auth } from "@/lib/firebase/client";
-import { resolveUserRole } from "@/lib/firebase/roles";
+import { isAdminTeacherRole, resolveUserRole } from "@/lib/firebase/roles";
 import {
   createTeacherAccount,
   deactivateTeacher,
@@ -71,7 +71,7 @@ export default function ProfesoresPage() {
           setIsAdminTeacher(false);
           return;
         }
-        if (role !== "adminTeacher") {
+        if (!isAdminTeacherRole(role)) {
           router.replace("/creator");
           setIsAdminTeacher(false);
           return;
@@ -358,7 +358,11 @@ export default function ProfesoresPage() {
                 <span className="text-slate-600 break-words">{teacher.email}</span>
                 <span className="text-slate-600">{teacher.phone || "—"}</span>
                 <span className="font-medium capitalize text-blue-700">
-                  {teacher.role === "adminTeacher" ? "AdminTeacher" : "Profesor"}
+                  {teacher.role === "superAdminTeacher"
+                    ? "SuperAdminTeacher"
+                    : teacher.role === "adminTeacher"
+                      ? "AdminTeacher"
+                      : "Profesor"}
                 </span>
                 <span className="font-medium text-green-600">Activo</span>
                 <span className="flex justify-end gap-2">

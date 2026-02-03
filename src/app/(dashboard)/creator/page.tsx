@@ -6,7 +6,7 @@ import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import { Course, getCourses } from "@/lib/firebase/courses-service";
 import { Group, getGroupsForTeacher } from "@/lib/firebase/groups-service";
-import { resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/roles";
 
 export default function CreatorPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
@@ -32,10 +32,13 @@ export default function CreatorPage() {
       try {
         const role = await resolveUserRole(user);
         setUserRole(role);
-        const teacherId = role === "adminTeacher" ? undefined : user.uid;
+        const teacherId = isAdminTeacherRole(role) ? undefined : user.uid;
+        // Limitar la carga inicial para reducir lecturas de Firestore
+        // Dashboard solo necesita mostrar resumen, no todos los datos
+        const DASHBOARD_LIMIT = 20; // Suficiente para estadísticas y preview
         const [coursesData, groupsData] = await Promise.all([
-          getCourses(teacherId),
-          getGroupsForTeacher(user.uid),
+          getCourses(teacherId, DASHBOARD_LIMIT),
+          getGroupsForTeacher(user.uid, DASHBOARD_LIMIT),
         ]);
         setCourses(coursesData);
         setGroups(groupsData);
@@ -115,7 +118,7 @@ export default function CreatorPage() {
               Resumen de tu actividad docente, alumnos inscritos y rendimiento de tus cohortes.
             </p>
           </div>
-          {userRole === "adminTeacher" ? (
+          {isAdminTeacherRole(userRole) ? (
             <Link
               href="/creator/grupos"
               className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-800 shadow-sm transition hover:border-blue-500 hover:text-blue-700"

@@ -2,9 +2,13 @@ import { User } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { db } from "./firestore";
 
-export type UserRole = "teacher" | "student" | "adminTeacher";
+export type UserRole = "teacher" | "student" | "adminTeacher" | "superAdminTeacher";
 
-const allowedRoles: UserRole[] = ["teacher", "student", "adminTeacher"];
+const allowedRoles: UserRole[] = ["teacher", "student", "adminTeacher", "superAdminTeacher"];
+
+export function isAdminTeacherRole(role: UserRole | null | undefined): boolean {
+  return role === "adminTeacher" || role === "superAdminTeacher";
+}
 
 export async function resolveUserRole(user: User): Promise<UserRole | null> {
   try {

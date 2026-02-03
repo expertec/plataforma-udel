@@ -14,7 +14,7 @@ export async function getTeacherUsers(max = 100): Promise<TeacherUser[]> {
   const usersRef = collection(db, "users");
   const q = query(
     usersRef,
-    where("role", "in", ["teacher", "adminTeacher"]),
+    where("role", "in", ["teacher", "adminTeacher", "superAdminTeacher"]),
     orderBy("createdAt", "desc"),
     fbLimit(max),
   );
@@ -35,7 +35,7 @@ export async function createTeacherAccount(params: {
   name: string;
   email: string;
   password: string;
-  role?: "teacher" | "adminTeacher";
+  role?: "teacher" | "adminTeacher" | "superAdminTeacher";
   asAdminTeacher?: boolean;
   phone?: string;
   createdBy?: string | null;

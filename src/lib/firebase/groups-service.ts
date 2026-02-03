@@ -5,6 +5,7 @@ import {
   doc,
   getDocs,
   increment,
+  limit,
   orderBy,
   QueryConstraint,
   query,
@@ -344,15 +345,33 @@ export async function getGroupStudents(groupId: string): Promise<GroupStudent[]>
   });
 }
 
-export async function getGroupsForTeacher(teacherId: string): Promise<Group[]> {
+/**
+ * Obtiene los grupos de un profesor con límite opcional para reducir lecturas
+ * @param teacherId - ID del profesor
+ * @param maxResults - Límite de resultados (opcional, default: sin límite)
+ */
+export async function getGroupsForTeacher(teacherId: string, maxResults?: number): Promise<Group[]> {
   if (!teacherId) return [];
   const ref = collection(db, "groups");
-  const mainQuery = query(ref, where("teacherId", "==", teacherId), orderBy("createdAt", "desc"));
-  const assistantQuery = query(
-    ref,
+
+  const mainConstraints: QueryConstraint[] = [
+    where("teacherId", "==", teacherId),
+    orderBy("createdAt", "desc"),
+  ];
+  const assistantConstraints: QueryConstraint[] = [
     where("assistantTeacherIds", "array-contains", teacherId),
     orderBy("createdAt", "desc"),
-  );
+  ];
+
+  // Aplicar límite si se especifica
+  if (typeof maxResults === "number" && maxResults > 0) {
+    mainConstraints.push(limit(maxResults));
+    assistantConstraints.push(limit(maxResults));
+  }
+
+  const mainQuery = query(ref, ...mainConstraints);
+  const assistantQuery = query(ref, ...assistantConstraints);
+
   const [mainSnap, assistantSnap] = await Promise.all([getDocs(mainQuery), getDocs(assistantQuery)]);
   const map = new Map<string, Group>();
   const consume = (snap: QuerySnapshot<DocumentData>) => {
@@ -391,7 +410,13 @@ export async function getGroupsForTeacher(teacherId: string): Promise<Group[]> {
   };
   consume(mainSnap);
   consume(assistantSnap);
-  return Array.from(map.values());
+
+  // Si hay límite, asegurar que no excedemos el total
+  const groups = Array.from(map.values());
+  if (typeof maxResults === "number" && maxResults > 0) {
+    return groups.slice(0, maxResults);
+  }
+  return groups;
 }
 
 export async function deleteGroup(groupId: string): Promise<void> {

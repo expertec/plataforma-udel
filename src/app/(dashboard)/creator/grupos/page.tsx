@@ -10,7 +10,7 @@ import { BulkCreateGroupsModal } from "./_components/BulkCreateGroupsModal";
 import { getGroupsForTeacher, Group, deleteGroup, getGroupsWhereAssistant } from "@/lib/firebase/groups-service";
 import toast from "react-hot-toast";
 import { RoleGate } from "@/components/auth/RoleGate";
-import { resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/roles";
 
 export default function GroupsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
@@ -55,7 +55,7 @@ export default function GroupsPage() {
     setLoading(true);
     try {
       const [myGroups, myAssistantGroups, myCourses] = await Promise.all([
-        userRole === "adminTeacher" ? getGroupsForTeacher(currentUser.uid) : Promise.resolve([]),
+        isAdminTeacherRole(userRole) ? getGroupsForTeacher(currentUser.uid) : Promise.resolve([]),
         getGroupsWhereAssistant(currentUser.uid),
         getCourses(),
       ]);
@@ -116,10 +116,10 @@ export default function GroupsPage() {
   };
 
   const totalGroups = groups.length + assistantGroups.length;
-  const isAdminTeacher = userRole === "adminTeacher";
+  const isAdminTeacher = isAdminTeacherRole(userRole);
 
   return (
-    <RoleGate allowedRole={["teacher", "adminTeacher"]}>
+    <RoleGate allowedRole={["teacher", "adminTeacher", "superAdminTeacher"]}>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>

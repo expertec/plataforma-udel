@@ -21,7 +21,7 @@ import { StudentSubmissionsModal } from "./_components/StudentSubmissionsModal";
 import { Course } from "@/lib/firebase/courses-service";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
-import { resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/roles";
 
 export default function GroupDetailPage() {
   const params = useParams<{ groupId: string }>();
@@ -368,7 +368,7 @@ export default function GroupDetailPage() {
                       El profesor principal es {group.teacherName || "—"}. Puedes añadir mentores.
                     </p>
                   </div>
-                  {userRole === "adminTeacher" ? (
+                  {isAdminTeacherRole(userRole) ? (
                     <button
                       type="button"
                       className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"

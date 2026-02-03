@@ -6,7 +6,7 @@ import { onAuthStateChanged, User } from "firebase/auth";
 import { Settings2 } from "lucide-react";
 import { auth } from "@/lib/firebase/client";
 import { Course, getCourses } from "@/lib/firebase/courses-service";
-import { resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/roles";
 import { EditCourseModal } from "./_components/EditCourseModal";
 import { CreateCourseModal } from "./_components/CreateCourseModal";
 import { BulkUploadCoursesModal } from "./_components/BulkUploadCoursesModal";
@@ -36,7 +36,7 @@ export default function CoursesPage() {
       setLoading(true);
       setLoadError(null);
       try {
-        const teacherId = role === "adminTeacher" ? undefined : uid;
+        const teacherId = isAdminTeacherRole(role) ? undefined : uid;
         const data = await getCourses(teacherId);
         setCourses(data);
       } catch (err) {
@@ -80,7 +80,7 @@ export default function CoursesPage() {
     const normalizedSearch = searchTerm.trim().toLowerCase();
     if (!normalizedSearch) return courses;
     return courses.filter((course) => {
-      const haystack = `${course.title} ${course.description ?? ""} ${course.category ?? ""}`.toLowerCase();
+      const haystack = `${course.title} ${course.description ?? ""} ${course.program ?? course.category ?? ""}`.toLowerCase();
       return haystack.includes(normalizedSearch);
     });
   }, [courses, searchTerm]);
@@ -105,7 +105,7 @@ export default function CoursesPage() {
             Cursos
           </p>
           <h1 className="text-2xl font-semibold text-slate-900">
-            {userRole === "adminTeacher" ? "Cursos de la plataforma" : "Mis Cursos"}
+            {isAdminTeacherRole(userRole) ? "Cursos de la plataforma" : "Mis Cursos"}
           </h1>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -130,7 +130,7 @@ export default function CoursesPage() {
           <input
             value={searchTerm}
             onChange={(event) => setSearchTerm(event.target.value)}
-            placeholder="Título, descripción, categoría..."
+            placeholder="Título, descripción, programa..."
             className="w-full rounded-lg border border-slate-200 p-2 text-sm text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
         </label>
