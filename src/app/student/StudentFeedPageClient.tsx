@@ -4612,8 +4612,17 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
       }));
     }
 
-    // Auto-avance a la siguiente pregunta después de seleccionar (solo para opciones múltiples)
-    if ((question?.options ?? []).length > 0 && idx < questions.length - 1) {
+    // Verificar si esta es la última pregunta sin responder
+    const unansweredQuestions = questions.filter(q => !answers[q.id]);
+    const isLastQuestion = unansweredQuestions.length === 1 && unansweredQuestions[0].id === questionId;
+
+    if (isLastQuestion) {
+      // Enviar automáticamente el quiz después de un breve delay para mostrar feedback
+      setTimeout(() => {
+        handleSubmitRef.current?.();
+      }, 1000);
+    } else if ((question?.options ?? []).length > 0 && idx < questions.length - 1) {
+      // Auto-avance a la siguiente pregunta después de seleccionar (solo para opciones múltiples)
       setTimeout(() => {
         setCurrentIdx(idx + 1);
       }, 800);

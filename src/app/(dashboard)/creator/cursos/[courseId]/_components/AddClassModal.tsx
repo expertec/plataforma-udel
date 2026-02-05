@@ -1631,9 +1631,25 @@ function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTex
 
   const handleAddLink = () => {
     if (!editor) return;
-    const url = window.prompt("Pega el enlace");
-    if (!url) return;
-    editor.chain().focus().setLink({ href: url, target: "_blank", rel: "noopener noreferrer" }).run();
+    const rawUrl = window.prompt("Pega el enlace");
+    if (!rawUrl) return;
+    const trimmedUrl = rawUrl.trim();
+    if (!trimmedUrl) return;
+    const url = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmedUrl) ? trimmedUrl : `https://${trimmedUrl}`;
+    const linkAttrs = { href: url, target: "_blank", rel: "noopener noreferrer" };
+    if (editor.state.selection.empty) {
+      editor
+        .chain()
+        .focus()
+        .insertContent({
+          type: "text",
+          text: url,
+          marks: [{ type: "link", attrs: linkAttrs }],
+        })
+        .run();
+      return;
+    }
+    editor.chain().focus().extendMarkRange("link").setLink(linkAttrs).run();
   };
 
   const handleImageFile = async (file: File) => {

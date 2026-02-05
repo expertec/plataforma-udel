@@ -17,11 +17,13 @@ type GradeItem = {
 };
 
 type TaskItem = {
+  id: string;
   title: string;
   course?: string;
   status?: string;
   grade?: number;
   submittedAt?: string;
+  feedback?: string;
 };
 
 export default function StudentProfilePage() {
@@ -37,6 +39,7 @@ export default function StudentProfilePage() {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [groupId, setGroupId] = useState<string | null>(null);
   const [loadingSubs, setLoadingSubs] = useState(false);
+  const [expandedFeedback, setExpandedFeedback] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (usr) => {
@@ -82,11 +85,13 @@ export default function StudentProfilePage() {
         });
         setTasks(
           ordered.map((s) => ({
+            id: s.id,
             title: s.className || "Entrega",
             course: s.courseTitle ?? "",
             status: s.status === "graded" ? "Calificado" : s.status === "late" ? "Fuera de tiempo" : "En revisión",
             grade: s.grade,
             submittedAt: s.submittedAt ? new Intl.DateTimeFormat("es-MX").format(s.submittedAt) : undefined,
+            feedback: s.feedback ?? "",
           })),
         );
         setGrades(
@@ -361,7 +366,7 @@ export default function StudentProfilePage() {
           ) : (
             <div className="grid gap-3 md:grid-cols-2">
               {tasks.map((task) => (
-                <div key={task.title + task.submittedAt} className="rounded-xl border border-white/5 bg-white/5 p-4">
+                <div key={task.id} className="rounded-xl border border-white/5 bg-white/5 p-4">
                   <div className="flex items-center justify-between">
                     <p className="text-sm font-semibold">{task.title}</p>
                     <span
@@ -384,6 +389,35 @@ export default function StudentProfilePage() {
                   </p>
                   {typeof task.grade === "number" ? (
                     <p className="mt-1 text-sm font-semibold text-white">Calificación: {task.grade}</p>
+                  ) : null}
+                  <div className="mt-2 flex items-center justify-between">
+                    <span className="text-[11px] uppercase tracking-[0.12em] text-white/50">
+                      Retroalimentación
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExpandedFeedback((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(task.id)) {
+                            next.delete(task.id);
+                          } else {
+                            next.add(task.id);
+                          }
+                          return next;
+                        });
+                      }}
+                      className="text-xs font-semibold text-emerald-200 hover:text-emerald-100"
+                    >
+                      {expandedFeedback.has(task.id) ? "Ocultar" : "Ver"}
+                    </button>
+                  </div>
+                  {expandedFeedback.has(task.id) ? (
+                    <div className="mt-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2">
+                      <p className="text-xs text-white/80 whitespace-pre-wrap">
+                        {task.feedback?.trim() ? task.feedback : "No hay retroalimentación registrada."}
+                      </p>
+                    </div>
                   ) : null}
                 </div>
               ))}
