@@ -89,6 +89,9 @@ export default function AlumnosPage() {
 
   // Estado para búsqueda
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<StudentUser[]>([]);
+  const [searching, setSearching] = useState(false);
+  const searchTokenRef = useRef(0);
 
   // Estado para paginación
   const [lastDoc, setLastDoc] = useState<DocumentSnapshot | null>(null);
@@ -415,19 +418,79 @@ export default function AlumnosPage() {
     return filtered.slice(0, 10);
   }, [parsedRows, previewFilter]);
 
+  const isSearchActive = searchQuery.trim().length > 0;
+
+  // Búsqueda global para super admin teacher (escanea páginas automáticamente)
+  useEffect(() => {
+    if (!isAdminTeacherRole(userRole)) return;
+    const rawQuery = searchQuery.trim();
+    if (!rawQuery) {
+      setSearchResults([]);
+      setSearching(false);
+      return;
+    }
+
+    const token = ++searchTokenRef.current;
+    const timer = setTimeout(async () => {
+      setSearching(true);
+      setSearchResults([]);
+      try {
+        const normalized = rawQuery.toLowerCase();
+        const results = new Map<string, StudentUser>();
+        let last: DocumentSnapshot | null = null;
+        let hasMore = true;
+        let pageCount = 0;
+        const MAX_PAGES = 60; // Limitar lecturas en búsquedas muy amplias
+        const PAGE_SIZE = 50;
+
+        while (hasMore && pageCount < MAX_PAGES) {
+          const page = await getStudentUsersPaginated(PAGE_SIZE, last, normalized);
+          if (searchTokenRef.current !== token) return;
+
+          page.students.forEach((s) => {
+            results.set(s.id, s);
+          });
+
+          last = page.lastDoc;
+          hasMore = page.hasMore;
+          pageCount += 1;
+
+          if (results.size >= 50) break;
+        }
+
+        if (searchTokenRef.current !== token) return;
+        setSearchResults(Array.from(results.values()));
+      } catch (err) {
+        console.error(err);
+        if (searchTokenRef.current === token) {
+          toast.error("No se pudo buscar alumnos");
+        }
+      } finally {
+        if (searchTokenRef.current === token) {
+          setSearching(false);
+        }
+      }
+    }, 350);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [searchQuery, userRole]);
+
   // Filtrar alumnos según búsqueda
   const filteredStudents = useMemo(() => {
+    const base = isSearchActive && isAdminTeacherRole(userRole) ? searchResults : students;
     if (!searchQuery.trim()) {
-      return students;
+      return base;
     }
     const query = searchQuery.toLowerCase().trim();
-    return students.filter(
+    return base.filter(
       (student) =>
         student.name.toLowerCase().includes(query) ||
         student.email.toLowerCase().includes(query) ||
         (student.program ?? "").toLowerCase().includes(query)
     );
-  }, [students, searchQuery]);
+  }, [students, searchResults, searchQuery, userRole, isSearchActive]);
 
   const parsePasswordFile = async (file: File) => {
     setPasswordResults([]);
@@ -1183,9 +1246,19 @@ export default function AlumnosPage() {
               )}
             </div>
             <div className="text-sm text-slate-600">
-              {filteredStudents.length} de {students.length} cargado{students.length !== 1 ? "s" : ""}
-              {totalStudentsCount !== null && (
-                <span className="text-slate-400"> ({totalStudentsCount} total)</span>
+              {isSearchActive && isAdminTeacherRole(userRole) ? (
+                <span>
+                  {searching
+                    ? "Buscando..."
+                    : `${filteredStudents.length} resultado${filteredStudents.length !== 1 ? "s" : ""}`}
+                </span>
+              ) : (
+                <span>
+                  {filteredStudents.length} de {students.length} cargado{students.length !== 1 ? "s" : ""}
+                  {totalStudentsCount !== null && (
+                    <span className="text-slate-400"> ({totalStudentsCount} total)</span>
+                  )}
+                </span>
               )}
             </div>
           </div>
@@ -1193,7 +1266,9 @@ export default function AlumnosPage() {
           {/* Tabla de alumnos */}
           {filteredStudents.length === 0 ? (
             <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-600">
-              No se encontraron alumnos que coincidan con "{searchQuery}"
+              {searching && isSearchActive && isAdminTeacherRole(userRole)
+                ? "Buscando alumnos en todos los registros..."
+                : `No se encontraron alumnos que coincidan con "${searchQuery}"`}
             </div>
           ) : (
             <>
@@ -1265,7 +1340,7 @@ export default function AlumnosPage() {
             </div>
 
             {/* Botón para cargar más estudiantes */}
-            {hasMoreStudents && isAdminTeacherRole(userRole) && (
+            {hasMoreStudents && isAdminTeacherRole(userRole) && !isSearchActive && (
               <div className="mt-4 flex justify-center">
                 <button
                   type="button"
