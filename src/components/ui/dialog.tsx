@@ -30,19 +30,18 @@ export function Dialog({ open, onOpenChange, children }: DialogProps) {
   );
 }
 
-export function DialogContent({
-  children,
-  className,
-}: {
+type DialogContentProps = React.HTMLAttributes<HTMLDivElement> & {
   children: React.ReactNode;
-  className?: string;
-}) {
+};
+
+export function DialogContent({ children, className, ...rest }: DialogContentProps) {
   return (
     <div
       className={cn(
         "max-h-[calc(100vh-3rem)] overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl mx-auto",
         className
       )}
+      {...rest}
     >
       {children}
     </div>
