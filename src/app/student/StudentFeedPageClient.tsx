@@ -4864,25 +4864,23 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
         ref={containerRef}
         className="w-[90%] lg:w-full lg:max-w-3xl max-h-[88vh] overflow-auto px-4 sm:px-6 py-8 space-y-4"
       >
-        <div className="flex flex-col gap-1 text-xs text-neutral-300">
+        <div className="flex items-center gap-3 text-xs text-neutral-300">
           <span>
             Pregunta {currentIdx + 1} de {Math.max(questions.length, 1)}
           </span>
           <span>{answeredCount}/{questions.length} respondidas</span>
         </div>
-        {questionTitle ? (
-          <p className="text-sm text-neutral-300">{questionTitle}</p>
+        {currentQuestion ? (
+          <p className="text-sm text-neutral-300">
+            {questionTitle || `Pregunta ${currentIdx + 1}`}
+          </p>
         ) : null}
-
         {questions.length === 0 ? (
           <p className="text-sm text-neutral-300">No hay preguntas cargadas para este quiz.</p>
         ) : questions.length > 0 && currentQuestion ? (
           <div className="space-y-3 rounded-lg border border-white/10 bg-white/5 p-4">
             <div className="flex items-start gap-2 text-neutral-100">
               <span className="mt-[2px] inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/10 text-xs font-semibold">{currentIdx + 1}</span>
-              <p className="text-sm font-semibold leading-snug">
-                {questionTitle || `Pregunta ${currentIdx + 1}`}
-              </p>
             </div>
             <div className="space-y-2 pl-8">
               {(currentQuestion.options ?? []).length > 0 ? (
