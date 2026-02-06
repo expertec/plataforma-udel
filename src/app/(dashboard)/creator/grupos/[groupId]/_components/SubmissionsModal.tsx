@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
+import { ArrowLeft } from "lucide-react";
 import { getDocs, collection, doc, getDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { auth } from "@/lib/firebase/client";
@@ -645,6 +646,7 @@ export function SubmissionsModal({
 }: Props) {
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<Row[]>([]);
+  const [searchTerm, setSearchTerm] = useState("");
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const isQuizClass = classType === "quiz";
   const isForumClass = classType === "forum";
@@ -799,11 +801,56 @@ export function SubmissionsModal({
     }
   };
 
+  const filteredRows = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) return rows;
+    return rows.filter((r) => r.student.name.toLowerCase().includes(term));
+  }, [rows, searchTerm]);
+
+  const columnsCount = isForumClass ? 3 : isQuizClass ? 4 : 5;
+
   return (
     <Dialog open={isOpen} onOpenChange={(open) => (!open ? onClose() : null)}>
-      <DialogContent className="max-w-4xl">
-        <DialogHeader>
-          <DialogTitle>Entregas: {className}</DialogTitle>
+      <DialogContent className="w-full max-w-6xl sm:w-[1200px]">
+        <DialogHeader className="space-y-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+                aria-label="Volver a tareas por lección"
+              >
+                <ArrowLeft size={16} />
+                <span>Volver</span>
+              </button>
+              <DialogTitle>Entregas: {className}</DialogTitle>
+            </div>
+            <div className="relative w-full sm:w-72">
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Buscar alumno..."
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
+              />
+              <svg
+                className="pointer-events-none absolute right-3 top-2.5 h-4 w-4 text-slate-400"
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M12.9 14.32a7 7 0 111.414-1.414l3.387 3.387a1 1 0 01-1.414 1.414l-3.387-3.387zM14 9a5 5 0 11-10 0 5 5 0 0110 0z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            </div>
+          </div>
+          <span className="text-xs text-slate-500">
+            Mostrando {filteredRows.length} de {rows.length} alumnos
+          </span>
         </DialogHeader>
 
         {loading ? (
@@ -812,35 +859,42 @@ export function SubmissionsModal({
           </div>
         ) : (
           <div className="overflow-auto rounded-lg border border-slate-200">
-            <table className="min-w-full text-sm">
+            <table className="min-w-full table-auto text-sm">
               <thead className="bg-slate-50 text-slate-600">
                 <tr>
-                  <th className="px-3 py-2 text-left">Nombre</th>
-                  <th className="px-3 py-2 text-left">Fecha entrega</th>
+                  <th className="px-3 py-2 text-left align-middle">Nombre</th>
+                  <th className="px-3 py-2 text-left align-middle">Fecha entrega</th>
                   {isForumClass ? (
-                    <th className="px-3 py-2 text-left">Acción</th>
+                    <th className="px-3 py-2 text-left align-middle">Acción</th>
                   ) : isQuizClass ? (
                     <>
-                      <th className="px-3 py-2 text-left">Calificación</th>
-                      <th className="px-3 py-2 text-left">Acción</th>
+                      <th className="px-3 py-2 text-left align-middle">Calificación</th>
+                      <th className="px-3 py-2 text-left align-middle">Acción</th>
                     </>
                   ) : (
                     <>
-                      <th className="px-3 py-2 text-left">Archivo</th>
-                      <th className="px-3 py-2 text-left">Calificación</th>
-                      <th className="px-3 py-2 text-left">Acción</th>
+                      <th className="px-3 py-2 text-left align-middle min-w-[160px]">Archivo</th>
+                      <th className="px-3 py-2 text-left align-middle">Calificación</th>
+                      <th className="px-3 py-2 text-left align-middle">Acción</th>
                     </>
                   )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {rows.map((row) => {
+                {filteredRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={columnsCount} className="px-3 py-6 text-center text-sm text-slate-500">
+                      No se encontraron alumnos con ese nombre.
+                    </td>
+                  </tr>
+                ) : null}
+                {filteredRows.map((row) => {
                   const sub = row.submission;
                   const gradeValue = sub?.grade != null ? sub.grade : "-";
                   return (
                     <tr key={row.student.id} className="hover:bg-slate-50">
-                      <td className="px-3 py-2 text-slate-900">{row.student.name}</td>
-                      <td className="px-3 py-2 text-slate-600">
+                      <td className="px-3 py-2 align-middle text-slate-900">{row.student.name}</td>
+                      <td className="px-3 py-2 align-middle text-slate-600">
                         {sub ? formatDate(sub.submittedAt) : "-"}
                       </td>
                       {isForumClass ? (
@@ -946,7 +1000,7 @@ export function SubmissionsModal({
                                     <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
                                       Audio
                                     </p>
-                                    <audio controls src={sub.audioUrl} className="w-full" />
+                                    <audio controls src={sub.audioUrl} className="w-[260px] max-w-full" />
                                   </div>
                                 ) : null}
                                 {sub?.fileUrl ? (

@@ -5753,7 +5753,7 @@ function ForumPanel({
                 <div className="space-y-2">
                   <input
                     type="file"
-                    accept="audio/*"
+                    accept="audio/*,.wav,.wave,.mp3,.m4a,.aac,.ogg,.oga,.flac,.opus,.weba,.mpeg"
                     onChange={(e) => setMediaFile(e.target.files?.[0] ?? null)}
                     disabled={uploading}
                     className="w-full text-sm text-white"
@@ -6070,7 +6070,7 @@ function AssignmentPanel({
                   </button>
                   <input
                     type="file"
-                    accept="audio/*"
+                    accept="audio/*,.wav,.wave,.mp3,.m4a,.aac,.ogg,.oga,.flac,.opus,.weba,.mpeg"
                     disabled={uploading}
                     onChange={(e) => onAudioChange(e.target.files?.[0] ?? null)}
                     className="w-full cursor-pointer rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white placeholder:text-white/50 transition hover:border-blue-400 focus:border-blue-500 focus:outline-none"

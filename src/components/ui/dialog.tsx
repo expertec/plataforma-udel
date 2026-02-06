@@ -17,12 +17,12 @@ export function Dialog({ open, onOpenChange, children }: DialogProps) {
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 px-4 py-6"
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/40 px-4 py-8"
       onClick={() => onOpenChange?.(false)}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-xl"
+        className="w-full max-w-[calc(100vw-2rem)] sm:max-w-6xl mx-auto"
       >
         {children}
       </div>
@@ -40,7 +40,7 @@ export function DialogContent({
   return (
     <div
       className={cn(
-        "max-h-[calc(100vh-3rem)] overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl",
+        "max-h-[calc(100vh-3rem)] overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl mx-auto",
         className
       )}
     >
