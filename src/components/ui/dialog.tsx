@@ -48,10 +48,29 @@ export function DialogContent({ children, className, ...rest }: DialogContentPro
   );
 }
 
-export function DialogHeader({ children }: { children: React.ReactNode }) {
-  return <div className="mb-4">{children}</div>;
+export function DialogHeader({
+  children,
+  className,
+  ...rest
+}: React.HTMLAttributes<HTMLDivElement>) {
+  return (
+    <div className={cn("mb-4", className)} {...rest}>
+      {children}
+    </div>
+  );
 }
 
-export function DialogTitle({ children }: { children: React.ReactNode }) {
-  return <h2 className="text-lg font-semibold text-slate-900">{children}</h2>;
+export function DialogTitle({
+  children,
+  className,
+  ...rest
+}: React.HTMLAttributes<HTMLHeadingElement>) {
+  return (
+    <h2
+      className={cn("text-lg font-semibold text-slate-900", className)}
+      {...rest}
+    >
+      {children}
+    </h2>
+  );
 }
