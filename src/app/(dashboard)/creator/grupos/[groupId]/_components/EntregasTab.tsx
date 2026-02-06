@@ -61,6 +61,9 @@ export function EntregasTab({ groupId, courseIds, studentsCount }: EntregasTabPr
           classType: string;
           courseId: string;
           forumEnabled?: boolean;
+          lessonTitle: string;
+          lessonOrder?: number;
+          classOrder?: number;
         }> = [];
         const courseTitles = new Map<string, string>();
 
