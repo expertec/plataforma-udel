@@ -1,11 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { auth } from "@/lib/firebase/client";
 import { onAuthStateChanged, signOut, updatePassword, User } from "firebase/auth";
-import { collection, getDocs, limit, orderBy, query, where } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, limit, orderBy, query, where } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { getStudentSubmissions, Submission } from "@/lib/firebase/submissions-service";
 
@@ -35,11 +35,24 @@ export default function StudentProfilePage() {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [changingPassword, setChangingPassword] = useState(false);
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [programCourses, setProgramCourses] = useState<{ id: string; title: string; coverUrl?: string }[]>([]);
   const [grades, setGrades] = useState<GradeItem[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [groupId, setGroupId] = useState<string | null>(null);
   const [loadingSubs, setLoadingSubs] = useState(false);
   const [expandedFeedback, setExpandedFeedback] = useState<Set<string>>(new Set());
+
+  const coursesForMap = useMemo(() => {
+    if (programCourses.length) return programCourses;
+    const unique = Array.from(new Set(tasks.map((t) => t.course || "Curso"))).map((title, idx) => ({
+      id: `fallback-${idx}`,
+      title: title || "Curso",
+      coverUrl: "",
+    }));
+    return unique;
+  }, [programCourses, tasks]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (usr) => {
@@ -49,6 +62,77 @@ export default function StudentProfilePage() {
     });
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchProfile = async () => {
+      if (!user?.uid) return;
+      try {
+        const snap = await getDoc(doc(db, "users", user.uid));
+        if (!snap.exists()) return;
+        const d = snap.data();
+        if (cancelled) return;
+        setName((prev) => prev || (d.displayName ?? d.name ?? ""));
+        setEmail((prev) => prev || (d.email ?? ""));
+        setPhone(d.phone ?? "");
+        setDegree(d.program ?? d.degree ?? "");
+      } catch (err) {
+        console.error("No se pudo cargar el perfil de usuario:", err);
+      }
+    };
+    fetchProfile();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchProgramCourses = async () => {
+      if (!degree) {
+        setProgramCourses([]);
+        return;
+      }
+      const degreeValue = degree.trim();
+      const fields = ["program", "category", "programName"];
+      const collected: { id: string; title: string; coverUrl?: string }[] = [];
+      try {
+        for (const field of fields) {
+          const snap = await getDocs(
+            query(collection(db, "courses"), where(field, "==", degreeValue))
+          );
+          if (snap.empty) continue;
+          snap.docs.forEach((d) => {
+            const data = d.data();
+            const cover =
+              data.coverUrl ||
+              data.cover ||
+              data.banner ||
+              data.thumbnail ||
+              data.image ||
+              data.imageUrl ||
+              data.hero ||
+              "";
+            collected.push({
+              id: d.id,
+              title: data.title ?? "Curso",
+              coverUrl: cover,
+            });
+          });
+          if (collected.length) break;
+        }
+        if (cancelled) return;
+        setProgramCourses(collected);
+      } catch (err) {
+        console.error("No se pudieron cargar los cursos del programa:", err);
+        if (!cancelled) setProgramCourses([]);
+      }
+    };
+    fetchProgramCourses();
+    return () => {
+      cancelled = true;
+    };
+  }, [degree]);
 
   useEffect(() => {
     if (!user?.uid) return;
@@ -162,6 +246,13 @@ export default function StudentProfilePage() {
     }
   };
 
+  const tabs: { key: "perfil" | "plan" | "seguridad"; label: string }[] = [
+    { key: "perfil", label: "Perfil" },
+    { key: "plan", label: "Plan de estudio" },
+    { key: "seguridad", label: "Seguridad" },
+  ];
+  const [activeTab, setActiveTab] = useState<"perfil" | "plan" | "seguridad">("perfil");
+
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
       <header className="sticky top-0 z-20 flex items-center justify-between border-b border-white/10 bg-neutral-900/80 px-4 py-3 backdrop-blur">
@@ -182,83 +273,343 @@ export default function StudentProfilePage() {
         </Link>
       </header>
 
-      <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-6">
-        <section className="grid gap-6 lg:grid-cols-[1.4fr,1fr]">
-          <div className="space-y-6">
+      <main className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 py-6">
+        <div className="flex flex-wrap gap-2">
+          {tabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setActiveTab(tab.key)}
+              className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                activeTab === tab.key
+                  ? "bg-white text-neutral-900 shadow"
+                  : "border border-white/20 text-white hover:bg-white/10"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === "perfil" ? (
+          <section className="space-y-4">
             <div className="rounded-2xl border border-white/10 bg-neutral-900/70 p-5 shadow-lg">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Información personal</h2>
-                <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-white/80">
-                  {user ? "Editable" : "Inicia sesión para editar"}
-                </span>
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-14 w-14 items-center justify-center rounded-full bg-white/10 text-lg font-bold text-white">
+                    {(name || email || "UD").slice(0, 2).toUpperCase()}
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.16em] text-white/60">Estudiante</p>
+                    <h2 className="text-xl font-semibold text-white">{name || "Tu nombre"}</h2>
+                    <p className="text-sm text-white/60">{email || "correo@institucional.com"}</p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-white/80">
+                    {user ? "Sesión activa" : "Inicia sesión"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setEditingProfile((prev) => !prev)}
+                    className="rounded-full border border-white/20 px-3 py-1 text-xs font-semibold text-white hover:bg-white/10"
+                  >
+                    {editingProfile ? "Ver vista" : "Editar perfil"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("seguridad")}
+                    className="rounded-full bg-blue-600 px-3 py-1 text-xs font-semibold text-white shadow hover:bg-blue-500"
+                  >
+                    Ir a seguridad
+                  </button>
+                </div>
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-              <label className="space-y-1 text-sm text-white/80">
-                <span>Nombre completo</span>
-                <input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/30 focus:outline-none"
-                />
-              </label>
-              <label className="space-y-1 text-sm text-white/80">
-                <span>Correo institucional</span>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/30 focus:outline-none"
-                  disabled
-                />
-              </label>
-              <label className="space-y-1 text-sm text-white/80">
-                <span>Teléfono</span>
-                <input
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/30 focus:outline-none"
-                />
-              </label>
-              <label className="space-y-1 text-sm text-white/80">
-                <span>Programa</span>
-                <input
-                  value={degree}
-                  onChange={(e) => setDegree(e.target.value)}
-                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/30 focus:outline-none"
-                />
-              </label>
+
+              {!editingProfile ? (
+                <div className="mt-5 grid gap-4 md:grid-cols-2">
+                  <ProfileField label="Nombre completo" value={name || "Agrega tu nombre"} />
+                  <ProfileField label="Correo institucional" value={email || "—"} />
+                  <ProfileField label="Teléfono" value={phone || "No registrado"} />
+                  <ProfileField label="Programa" value={degree || "Sin programa"} />
+                </div>
+              ) : (
+                <>
+                  <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                    <label className="space-y-1 text-sm text-white/80">
+                      <span>Nombre completo</span>
+                      <input
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/30 focus:outline-none"
+                      />
+                    </label>
+                    <label className="space-y-1 text-sm text-white/80">
+                      <span>Correo institucional</span>
+                      <input
+                        type="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/30 focus:outline-none"
+                        disabled
+                      />
+                    </label>
+                    <label className="space-y-1 text-sm text-white/80">
+                      <span>Teléfono</span>
+                      <input
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/30 focus:outline-none"
+                      />
+                    </label>
+                    <label className="space-y-1 text-sm text-white/80">
+                      <span>Programa</span>
+                      <input
+                        value={degree}
+                        onChange={(e) => setDegree(e.target.value)}
+                        className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 focus:border-white/30 focus:outline-none"
+                      />
+                    </label>
+                  </div>
+                  <div className="mt-5 flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleSave();
+                        setEditingProfile(false);
+                      }}
+                      className="inline-flex items-center justify-center rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-emerald-500"
+                      disabled={!user}
+                    >
+                      Guardar cambios
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setName(user?.displayName ?? "");
+                        setEmail(user?.email ?? "");
+                        setPhone("");
+                        setDegree("");
+                        toast("Datos restablecidos", { icon: "↺" });
+                      }}
+                      className="inline-flex items-center justify-center rounded-full border border-white/20 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                    >
+                      Restablecer
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingProfile(false);
+                      }}
+                      className="inline-flex items-center justify-center rounded-full bg-neutral-800 px-4 py-2 text-sm font-semibold text-white border border-white/15 hover:bg-neutral-700"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSignOut}
+                      className="inline-flex items-center justify-center rounded-full bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-red-500"
+                    >
+                      Cerrar sesión
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
-            <div className="mt-5 flex flex-wrap gap-3">
-              <button
-                type="button"
-                onClick={handleSave}
-                className="inline-flex items-center justify-center rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-emerald-500"
-                disabled={!user}
-              >
-                Guardar cambios
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setName(user?.displayName ?? "");
-                  setEmail(user?.email ?? "");
-                  setPhone("");
-                  setDegree("");
-                  toast("Datos restablecidos", { icon: "↺" });
-                }}
-                className="inline-flex items-center justify-center rounded-full border border-white/20 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
-              >
-                Restablecer
-              </button>
-              <button
-                type="button"
-                onClick={handleSignOut}
-                className="inline-flex items-center justify-center rounded-full bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-red-500"
-              >
-                Cerrar sesión
-              </button>
+          </section>
+        ) : null}
+
+        {activeTab === "plan" ? (
+          <section className="space-y-4">
+            <div className="rounded-2xl border border-white/10 bg-neutral-900/70 p-5 shadow-lg">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.16em] text-white/60">Plan de estudio</p>
+                  <h3 className="text-xl font-semibold text-white">{degree || "Sin programa asignado"}</h3>
+                  <p className="text-sm text-white/70">
+                    Tu programa y las materias asociadas que has visto en tus entregas.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("seguridad")}
+                    className="rounded-full bg-blue-600 px-3 py-1 text-xs font-semibold text-white shadow hover:bg-blue-500"
+                  >
+                    Seguridad
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                  <p className="text-xs uppercase tracking-[0.14em] text-white/50">Programa</p>
+                  <p className="mt-1 text-lg font-semibold text-white">
+                    {degree || "Aún no asignado"}
+                  </p>
+                  <p className="text-xs text-white/60 mt-1">
+                    Si no ves tu programa, contácta a tu coordinador para asignarlo.
+                  </p>
+                  {degree ? (
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setMapOpen(true)}
+                        className="rounded-full border border-blue-300/40 bg-blue-500/15 px-3 py-1 text-xs font-semibold text-blue-100 hover:bg-blue-500/25"
+                      >
+                        Ver mapa
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                  <p className="text-xs uppercase tracking-[0.14em] text-white/50">Estado</p>
+                  <p className="mt-1 inline-flex items-center gap-2 rounded-full bg-emerald-500/15 px-3 py-1 text-sm font-semibold text-emerald-100">
+                    Activo
+                  </p>
+                  <p className="text-xs text-white/60 mt-1">
+                    Última sincronización: {tasks.length ? "reciente" : "sin datos"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <StatCard label="Clases completadas" value="-" hint="Sin datos aún" />
+                <StatCard label="Tareas entregadas" value={tasks.length ? tasks.length.toString() : "-"} hint="Últimas entregas" />
+                <StatCard label="Promedio general" value="-" hint="En cálculo" />
+                <StatCard label="Asistencia" value="-" hint="Sin datos aún" />
+              </div>
+
+              <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-semibold text-white">Materias / cursos del programa</p>
+                  <span className="text-xs text-white/60">
+                    {grades.length
+                      ? `${new Set(grades.map((g) => g.course || "Curso")).size} materias`
+                      : tasks.length
+                        ? `${new Set(tasks.map((t) => t.course || "Curso")).size} materias`
+                        : "Sin materias registradas"}
+                  </span>
+                </div>
+                {grades.length === 0 && tasks.length === 0 ? (
+                  <p className="mt-2 text-sm text-white/70">
+                    Aún no hay materias asociadas a tus entregas. Revisa más tarde.
+                  </p>
+                ) : grades.length > 0 ? (
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {grades.map((g) => (
+                      <div
+                        key={`${g.course}-${g.lesson}-${g.grade}`}
+                        className="flex items-center justify-between rounded-lg border border-white/10 bg-neutral-900/60 px-3 py-2"
+                      >
+                        <div>
+                          <p className="text-sm font-semibold text-white">{g.course || "Curso"}</p>
+                          <p className="text-[11px] text-white/60">{g.lesson || "Materia"}</p>
+                        </div>
+                        <span className="inline-flex items-center rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-semibold text-emerald-100">
+                          {g.grade}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {Array.from(new Set(tasks.map((t) => t.course || "Curso"))).map((course) => (
+                      <div
+                        key={course}
+                        className="flex items-center justify-between rounded-lg border border-white/10 bg-neutral-900/60 px-3 py-2"
+                      >
+                        <div>
+                          <p className="text-sm font-semibold text-white">{course || "Curso"}</p>
+                          <p className="text-[11px] text-white/60">Entregas registradas</p>
+                        </div>
+                        <span className="text-xs font-semibold text-emerald-200">
+                          {tasks.filter((t) => (t.course || "Curso") === course).length} tareas
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-5 shadow-lg">
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-base font-semibold text-white">Tareas y entregas</h3>
+                  <span className="text-xs text-white/70">
+                    {groupId ? "Estado de tus entregas" : "Sin grupo asignado"}
+                  </span>
+                </div>
+                {loadingSubs ? (
+                  <p className="text-sm text-white/70">Cargando entregas...</p>
+                ) : tasks.length === 0 ? (
+                  <p className="text-sm text-white/70">No hay tareas registradas todavía.</p>
+                ) : (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {tasks.map((task) => (
+                      <div key={task.id} className="rounded-xl border border-white/5 bg-neutral-900/60 p-4">
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm font-semibold">{task.title}</p>
+                          <span
+                            className={`rounded-full px-3 py-1 text-[11px] font-semibold ${
+                              task.status === "Calificado"
+                                ? "bg-emerald-500/20 text-emerald-100"
+                                : task.status === "Fuera de tiempo"
+                                  ? "bg-red-500/20 text-red-100"
+                                  : "bg-amber-500/20 text-amber-100"
+                            }`}
+                          >
+                            {task.status ?? "Sin estado"}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-xs text-white/70">
+                          {task.course ? `${task.course}` : "Curso no disponible"}
+                        </p>
+                        <p className="text-xs text-white/60">
+                          {task.submittedAt ? `Enviado: ${task.submittedAt}` : "Fecha de envío no disponible"}
+                        </p>
+                        {typeof task.grade === "number" ? (
+                          <p className="mt-1 text-sm font-semibold text-white">Calificación: {task.grade}</p>
+                        ) : null}
+                        <div className="mt-2 flex items-center justify-between">
+                          <span className="text-[11px] uppercase tracking-[0.12em] text-white/50">
+                            Retroalimentación
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setExpandedFeedback((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(task.id)) {
+                                  next.delete(task.id);
+                                } else {
+                                  next.add(task.id);
+                                }
+                                return next;
+                              });
+                            }}
+                            className="text-xs font-semibold text-emerald-200 hover:text-emerald-100"
+                          >
+                            {expandedFeedback.has(task.id) ? "Ocultar" : "Ver"}
+                          </button>
+                        </div>
+                        {expandedFeedback.has(task.id) ? (
+                          <div className="mt-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2">
+                            <p className="text-xs text-white/80 whitespace-pre-wrap">
+                              {task.feedback?.trim() ? task.feedback : "No hay retroalimentación registrada."}
+                            </p>
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-            </div>
+          </section>
+        ) : null}
+
+        {activeTab === "seguridad" ? (
+          <section className="space-y-4">
             <div className="rounded-2xl border border-white/10 bg-neutral-900/70 p-5 shadow-lg">
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-lg font-semibold">Cambiar contraseña</h2>
@@ -266,7 +617,7 @@ export default function StudentProfilePage() {
                   {user ? "Seguro" : "Inicia sesión"}
                 </span>
               </div>
-              <div className="space-y-3">
+              <div className="grid gap-3 sm:grid-cols-2">
                 <label className="space-y-1 text-sm text-white/80">
                   <span>Nueva contraseña</span>
                   <input
@@ -313,118 +664,71 @@ export default function StudentProfilePage() {
                 </button>
               </div>
             </div>
-          </div>
+          </section>
+        ) : null}
+      </main>
 
-          <div className="space-y-4">
-            <div className="rounded-2xl border border-white/10 bg-neutral-900/70 p-5 shadow-lg">
-              <h3 className="text-base font-semibold text-white">Estado general</h3>
-              <div className="mt-3 grid grid-cols-2 gap-3">
-                <StatCard label="Clases completadas" value="-" hint="Sin datos aún" />
-                <StatCard label="Tareas entregadas" value="-" hint="Sin datos aún" />
-                <StatCard label="Promedio general" value="-" hint="Sin datos aún" />
-                <StatCard label="Asistencia" value="-" hint="Sin datos aún" />
+      {mapOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur">
+          <div className="relative h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-b from-neutral-900 via-neutral-950 to-neutral-900 shadow-2xl">
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.08),transparent_45%),radial-gradient(circle_at_20%_30%,rgba(255,255,255,0.05),transparent_30%),radial-gradient(circle_at_80%_40%,rgba(255,255,255,0.04),transparent_30%)]" />
+            <div className="relative flex items-center justify-between px-4 py-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.18em] text-white/60">Mapa de programa</p>
+                <h3 className="text-lg font-semibold text-white">{degree || "Programa"}</h3>
+                <p className="text-xs text-white/60">Ruta visual de tus cursos asignados</p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMapOpen(false)}
+                  className="rounded-full border border-white/20 px-3 py-1 text-xs font-semibold text-white hover:bg-white/10"
+                >
+                  Cerrar
+                </button>
               </div>
             </div>
-            <div className="rounded-2xl border border-white/10 bg-neutral-900/70 p-5 shadow-lg">
-              <h3 className="text-base font-semibold text-white">Calificaciones</h3>
-              {grades.length === 0 ? (
-                <p className="mt-3 text-sm text-white/70">Aún no hay calificaciones disponibles.</p>
-              ) : (
-                <div className="mt-3 space-y-3">
-                  {grades.map((item) => (
-                    <div
-                      key={`${item.course}-${item.lesson}`}
-                      className="flex items-center justify-between rounded-xl border border-white/5 bg-white/5 px-3 py-3"
-                    >
-                      <div>
-                        <p className="text-sm font-semibold">{item.course}</p>
-                        <p className="text-xs text-white/70">{item.lesson}</p>
+            <div className="relative h-full overflow-y-auto px-6 pb-10">
+              <div className="mx-auto flex max-w-3xl flex-col items-center gap-3 py-4">
+                {coursesForMap.length === 0 ? (
+                  <p className="text-sm text-white/70">No hay cursos asignados al programa todavía.</p>
+                ) : (
+                  coursesForMap.map((course, idx) => (
+                    <div key={course.id} className="flex w-full flex-col items-center gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xl font-black text-white/30">{idx + 1}</span>
+                        <div className="h-2 w-2 rounded-full border border-blue-300 bg-blue-500 shadow-[0_0_0_3px_rgba(59,130,246,0.2)]" />
                       </div>
-                      <div className="text-right">
-                        <span className="text-lg font-bold">{item.grade}</span>
-                        <p className="text-xs text-white/70">{item.status ?? ""}</p>
+                      <div className="w-full rounded-2xl border border-white/10 bg-white/5 p-3 shadow-xl">
+                        <p className="text-sm font-semibold text-white">{course.title}</p>
+                        <p className="text-xs text-white/60">Parte {idx + 1} del programa</p>
+                        {course.coverUrl ? (
+                          <img
+                            src={course.coverUrl}
+                            alt={course.title}
+                            className="mt-3 h-40 w-full rounded-xl object-cover"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="mt-3 flex h-40 items-center justify-center rounded-xl border border-dashed border-white/10 bg-white/5 text-xs text-white/40">
+                            Sin portada
+                          </div>
+                        )}
                       </div>
+                      {idx < coursesForMap.length - 1 ? (
+                        <div className="flex flex-col items-center gap-0.5">
+                          <div className="h-4 w-px bg-white/12" />
+                          <div className="h-4 w-px bg-white/12" />
+                        </div>
+                      ) : null}
                     </div>
-                  ))}
-                </div>
-              )}
+                  ))
+                )}
+              </div>
             </div>
           </div>
-        </section>
-
-        <section className="rounded-2xl border border-white/10 bg-neutral-900/70 p-5 shadow-lg">
-          <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-base font-semibold text-white">Tareas y entregas</h3>
-            <span className="text-xs text-white/70">
-              {groupId ? "Estado de tus entregas" : "Sin grupo asignado"}
-            </span>
-          </div>
-          {loadingSubs ? (
-            <p className="text-sm text-white/70">Cargando entregas...</p>
-          ) : tasks.length === 0 ? (
-            <p className="text-sm text-white/70">No hay tareas registradas todavía.</p>
-          ) : (
-            <div className="grid gap-3 md:grid-cols-2">
-              {tasks.map((task) => (
-                <div key={task.id} className="rounded-xl border border-white/5 bg-white/5 p-4">
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm font-semibold">{task.title}</p>
-                    <span
-                      className={`rounded-full px-3 py-1 text-[11px] font-semibold ${
-                        task.status === "Calificado"
-                          ? "bg-emerald-500/20 text-emerald-100"
-                          : task.status === "Fuera de tiempo"
-                            ? "bg-red-500/20 text-red-100"
-                            : "bg-amber-500/20 text-amber-100"
-                      }`}
-                    >
-                      {task.status ?? "Sin estado"}
-                    </span>
-                  </div>
-                  <p className="mt-2 text-xs text-white/70">
-                    {task.course ? `${task.course}` : "Curso no disponible"}
-                  </p>
-                  <p className="text-xs text-white/60">
-                    {task.submittedAt ? `Enviado: ${task.submittedAt}` : "Fecha de envío no disponible"}
-                  </p>
-                  {typeof task.grade === "number" ? (
-                    <p className="mt-1 text-sm font-semibold text-white">Calificación: {task.grade}</p>
-                  ) : null}
-                  <div className="mt-2 flex items-center justify-between">
-                    <span className="text-[11px] uppercase tracking-[0.12em] text-white/50">
-                      Retroalimentación
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setExpandedFeedback((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(task.id)) {
-                            next.delete(task.id);
-                          } else {
-                            next.add(task.id);
-                          }
-                          return next;
-                        });
-                      }}
-                      className="text-xs font-semibold text-emerald-200 hover:text-emerald-100"
-                    >
-                      {expandedFeedback.has(task.id) ? "Ocultar" : "Ver"}
-                    </button>
-                  </div>
-                  {expandedFeedback.has(task.id) ? (
-                    <div className="mt-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2">
-                      <p className="text-xs text-white/80 whitespace-pre-wrap">
-                        {task.feedback?.trim() ? task.feedback : "No hay retroalimentación registrada."}
-                      </p>
-                    </div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-      </main>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -435,6 +739,15 @@ function StatCard({ label, value, hint }: { label: string; value: string; hint?:
       <p className="text-xs uppercase tracking-[0.12em] text-white/60">{label}</p>
       <p className="text-xl font-semibold text-white">{value}</p>
       {hint ? <p className="text-xs text-white/60">{hint}</p> : null}
+    </div>
+  );
+}
+
+function ProfileField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-3">
+      <p className="text-xs uppercase tracking-[0.14em] text-white/50">{label}</p>
+      <p className="mt-1 text-sm font-semibold text-white">{value}</p>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MoreVertical } from "lucide-react";
 import type { DocumentSnapshot } from "firebase/firestore";
 import toast from "react-hot-toast";
 import * as XLSX from "xlsx";
@@ -54,6 +55,7 @@ export default function AlumnosPage() {
   const [parseError, setParseError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [activeTab, setActiveTab] = useState<"gestion" | "altas" | "passwords">("gestion");
   const [newStudent, setNewStudent] = useState({
     name: "",
     email: "",
@@ -63,6 +65,8 @@ export default function AlumnosPage() {
   });
   const [programOptions, setProgramOptions] = useState<string[]>([]);
   const [programLoading, setProgramLoading] = useState(false);
+  const [programUpdatingId, setProgramUpdatingId] = useState<string | null>(null);
+  const [openActionId, setOpenActionId] = useState<string | null>(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
@@ -119,6 +123,17 @@ export default function AlumnosPage() {
     });
     return () => unsub();
   }, []);
+
+  useEffect(() => {
+    if (!isAdminTeacherRole(userRole)) {
+      setActiveTab("gestion");
+    }
+    setOpenActionId(null);
+  }, [userRole]);
+
+  useEffect(() => {
+    setOpenActionId(null);
+  }, [searchQuery, activeTab]);
 
   // Ref para mantener el último documento sin causar re-renders
   const lastDocRef = useRef<DocumentSnapshot | null>(null);
@@ -252,6 +267,41 @@ export default function AlumnosPage() {
       toast.error(message);
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleUpdateProgramInline = async (student: StudentUser, programName: string) => {
+    if (student.program === programName) return;
+    if (!programName) {
+      toast.error("Selecciona un programa");
+      return;
+    }
+    setProgramUpdatingId(student.id);
+    try {
+      const response = await fetch("/api/students/update-profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          studentId: student.id,
+          currentEmail: student.email,
+          newProgram: programName,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "No se pudo actualizar el programa");
+      }
+
+      setStudents((prev) =>
+        prev.map((s) => (s.id === student.id ? { ...s, program: programName } : s)),
+      );
+      toast.success("Programa actualizado");
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || "No se pudo actualizar el programa");
+    } finally {
+      setProgramUpdatingId(null);
     }
   };
 
@@ -491,6 +541,15 @@ export default function AlumnosPage() {
         (student.program ?? "").toLowerCase().includes(query)
     );
   }, [students, searchResults, searchQuery, userRole, isSearchActive]);
+
+  const isAdmin = isAdminTeacherRole(userRole);
+  const adminTabs: { key: "gestion" | "altas" | "passwords"; label: string; helper?: string }[] = isAdmin
+    ? [
+        { key: "gestion", label: "Listado y acciones" },
+        { key: "altas", label: "Altas e importación" },
+        { key: "passwords", label: "Contraseñas" },
+      ]
+    : [];
 
   const parsePasswordFile = async (file: File) => {
     setPasswordResults([]);
@@ -753,23 +812,44 @@ export default function AlumnosPage() {
         </p>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          onClick={() => loadStudents(false)}
-          className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-          disabled={loading}
-        >
-          {loading ? "Cargando..." : "Refrescar lista"}
-        </button>
-        <span className="text-sm text-slate-600">
-          {isAdminTeacherRole(userRole)
-            ? 'Lista de usuarios con rol estudiante (colección "users").'
-            : "Solo se muestran los alumnos de los grupos que tienes asignados."}
-        </span>
-      </div>
+      {isAdmin ? (
+        <div className="flex flex-wrap gap-2 rounded-xl border border-slate-200 bg-white p-2 text-sm shadow-sm">
+          {adminTabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setActiveTab(tab.key)}
+              className={`rounded-lg px-4 py-2 font-semibold transition ${
+                activeTab === tab.key
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "text-slate-700 hover:bg-slate-100"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
-      {isAdminTeacherRole(userRole) ? (
+      {(activeTab === "gestion" || !isAdmin) && (
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => loadStudents(false)}
+            className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            disabled={loading}
+          >
+            {loading ? "Cargando..." : "Refrescar lista"}
+          </button>
+          <span className="text-sm text-slate-600">
+            {isAdmin
+              ? 'Lista de usuarios con rol estudiante (colección "users").'
+              : "Solo se muestran los alumnos de los grupos que tienes asignados."}
+          </span>
+        </div>
+      )}
+
+      {isAdmin && activeTab === "altas" ? (
         <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -1070,7 +1150,7 @@ export default function AlumnosPage() {
         </div>
       ) : null}
 
-      {isAdminTeacherRole(userRole) ? (
+      {isAdmin && activeTab === "passwords" ? (
         <div className="space-y-4 rounded-xl border border-blue-200 bg-blue-50 p-4">
           <div>
             <p className="text-xs uppercase tracking-[0.2em] text-blue-600">Actualización Masiva</p>
@@ -1194,167 +1274,219 @@ export default function AlumnosPage() {
         </div>
       ) : null}
 
-      {loading ? (
-        <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
-          Cargando alumnos...
-        </div>
-      ) : students.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
-          {isAdminTeacherRole(userRole)
-            ? "No se encontraron alumnos con rol estudiante."
-            : "Aún no tienes alumnos asignados a tus grupos."}
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {/* Buscador de alumnos */}
-          <div className="flex items-center gap-3">
-            <div className="relative flex-1">
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Buscar por nombre o email..."
-                className="w-full rounded-lg border border-slate-300 px-4 py-2 pl-10 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
-              />
-              <svg
-                className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-                />
-              </svg>
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery("")}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                >
-                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      {(activeTab === "gestion" || !isAdmin) && (
+        <>
+          {loading ? (
+            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
+              Cargando alumnos...
+            </div>
+          ) : students.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
+              {isAdminTeacherRole(userRole)
+                ? "No se encontraron alumnos con rol estudiante."
+                : "Aún no tienes alumnos asignados a tus grupos."}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {/* Buscador de alumnos */}
+              <div className="flex items-center gap-3">
+                <div className="relative flex-1">
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Buscar por nombre o email..."
+                    className="w-full rounded-lg border border-slate-300 px-4 py-2 pl-10 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                  />
+                  <svg
+                    className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
                     <path
                       strokeLinecap="round"
                       strokeLinejoin="round"
                       strokeWidth={2}
-                      d="M6 18L18 6M6 6l12 12"
+                      d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
                     />
                   </svg>
-                </button>
-              )}
-            </div>
-            <div className="text-sm text-slate-600">
-              {isSearchActive && isAdminTeacherRole(userRole) ? (
-                <span>
-                  {searching
-                    ? "Buscando..."
-                    : `${filteredStudents.length} resultado${filteredStudents.length !== 1 ? "s" : ""}`}
-                </span>
-              ) : (
-                <span>
-                  {filteredStudents.length} de {students.length} cargado{students.length !== 1 ? "s" : ""}
-                  {totalStudentsCount !== null && (
-                    <span className="text-slate-400"> ({totalStudentsCount} total)</span>
+                  {searchQuery && (
+                    <button
+                      onClick={() => setSearchQuery("")}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    >
+                      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M6 18L18 6M6 6l12 12"
+                        />
+                      </svg>
+                    </button>
                   )}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Tabla de alumnos */}
-          {filteredStudents.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-600">
-              {searching && isSearchActive && isAdminTeacherRole(userRole)
-                ? "Buscando alumnos en todos los registros..."
-                : `No se encontraron alumnos que coincidan con "${searchQuery}"`}
-            </div>
-          ) : (
-            <>
-            <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div className="grid grid-cols-6 gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
-            <span>Nombre</span>
-            <span>Email</span>
-            <span>Programa</span>
-            <span>Inscrito</span>
-            <span>Estado</span>
-            <span className="text-right">Acciones</span>
-          </div>
-          <div className="divide-y divide-slate-200">
-            {filteredStudents.map((s) => (
-              <div
-                key={s.id}
-                className="grid grid-cols-6 gap-3 px-4 py-2 text-sm text-slate-800"
-              >
-                <span>{s.name}</span>
-                <span className="text-slate-600 truncate break-words">{s.email}</span>
-                <span className="text-slate-600 truncate">{s.program || "—"}</span>
-                <span className="text-slate-600">N/D</span>
-                <span className="font-medium capitalize text-green-600">
-                  {s.estado || "Activo"}
-                </span>
-                <span className="flex justify-end gap-2">
-                  {isAdminTeacherRole(userRole) ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => handleOpenEditProfile(s)}
-                        className="rounded-lg border border-blue-200 px-3 py-1 text-xs font-semibold text-blue-600 transition hover:border-blue-400 hover:bg-blue-50"
-                      >
-                        Editar
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedStudentForSubmissions(s);
-                          setSubmissionsModalOpen(true);
-                        }}
-                        className="rounded-lg border border-purple-200 px-3 py-1 text-xs font-semibold text-purple-600 transition hover:border-purple-400 hover:bg-purple-50"
-                      >
-                        Tareas
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleOpenChangePassword(s)}
-                        className="rounded-lg border border-green-200 px-3 py-1 text-xs font-semibold text-green-600 transition hover:border-green-400 hover:bg-green-50"
-                      >
-                        Contraseña
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteStudent(s)}
-                        disabled={deletingStudentId === s.id}
-                        className="rounded-lg border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 transition hover:border-red-400 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-300"
-                      >
-                        {deletingStudentId === s.id ? "Eliminando..." : "Eliminar"}
-                      </button>
-                    </>
+                </div>
+                <div className="text-sm text-slate-600">
+                  {isSearchActive && isAdminTeacherRole(userRole) ? (
+                    <span>
+                      {searching
+                        ? "Buscando..."
+                        : `${filteredStudents.length} resultado${filteredStudents.length !== 1 ? "s" : ""}`}
+                    </span>
                   ) : (
-                    <span className="text-xs text-slate-500">—</span>
+                    <span>
+                      {filteredStudents.length} de {students.length} cargado{students.length !== 1 ? "s" : ""}
+                      {totalStudentsCount !== null && (
+                        <span className="text-slate-400"> ({totalStudentsCount} total)</span>
+                      )}
+                    </span>
                   )}
-                </span>
+                </div>
               </div>
-            ))}
-          </div>
-            </div>
 
-            {/* Botón para cargar más estudiantes */}
-            {hasMoreStudents && isAdminTeacherRole(userRole) && !isSearchActive && (
-              <div className="mt-4 flex justify-center">
-                <button
-                  type="button"
-                  onClick={() => loadStudents(true)}
-                  disabled={loadingMore}
-                  className="rounded-lg border border-blue-200 bg-blue-50 px-6 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {loadingMore ? "Cargando..." : `Cargar más estudiantes`}
-                </button>
-              </div>
-            )}
-            </>
+              {/* Tabla de alumnos */}
+              {filteredStudents.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-600">
+                  {searching && isSearchActive && isAdminTeacherRole(userRole)
+                    ? "Buscando alumnos en todos los registros..."
+                    : `No se encontraron alumnos que coincidan con "${searchQuery}"`}
+                </div>
+              ) : (
+                <>
+                  <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
+                    <table className="min-w-full text-sm text-slate-800">
+                      <thead className="bg-slate-50 text-xs font-semibold text-slate-600">
+                        <tr className="border-b border-slate-200">
+                          <th className="w-[20%] px-4 py-2 text-left">Nombre</th>
+                          <th className="w-[22%] px-4 py-2 text-left">Email</th>
+                          <th className="w-[18%] px-4 py-2 text-left">Programa</th>
+                          <th className="w-[10%] px-4 py-2 text-left">Inscrito</th>
+                          <th className="w-[10%] px-4 py-2 text-left">Estado</th>
+                          <th className="w-[14%] px-4 py-2 text-right">Acciones</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {filteredStudents.map((s) => (
+                          <tr key={s.id} className="align-middle">
+                            <td className="px-4 py-3 text-sm font-medium text-slate-900">{s.name}</td>
+                            <td className="px-4 py-3 text-sm text-slate-600">
+                              <span className="block truncate max-w-[240px]">{s.email}</span>
+                            </td>
+                            <td className="px-4 py-3 text-sm text-slate-700">
+                              {isAdminTeacherRole(userRole) ? (
+                                <select
+                                  value={s.program ?? ""}
+                                  onChange={(e) => handleUpdateProgramInline(s, e.target.value)}
+                                  disabled={programLoading || programUpdatingId === s.id}
+                                  className="w-full min-w-[160px] rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+                                >
+                                  <option value="">Seleccionar</option>
+                                  {programOptions.includes(s.program ?? "") || !s.program ? null : (
+                                    <option value={s.program ?? ""}>{s.program}</option>
+                                  )}
+                                  {programOptions.map((opt) => (
+                                    <option key={opt} value={opt}>
+                                      {opt}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                s.program || "—"
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-slate-600">N/D</td>
+                            <td className="px-4 py-3 text-sm font-semibold text-emerald-600">
+                              {s.estado || "Activo"}
+                            </td>
+                            <td className="px-4 py-3">
+                              {isAdminTeacherRole(userRole) ? (
+                                <div className="relative flex justify-end">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setOpenActionId((prev) => (prev === s.id ? null : s.id))
+                                    }
+                                    className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700 shadow-sm transition hover:border-blue-300 hover:text-blue-600"
+                                  >
+                                    Acciones
+                                    <MoreVertical size={14} />
+                                  </button>
+                                  {openActionId === s.id ? (
+                                    <div className="absolute right-0 top-10 z-20 w-44 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenActionId(null);
+                                          handleOpenEditProfile(s);
+                                        }}
+                                        className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                      >
+                                        Editar
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenActionId(null);
+                                          setSelectedStudentForSubmissions(s);
+                                          setSubmissionsModalOpen(true);
+                                        }}
+                                        className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-purple-700 hover:bg-purple-50"
+                                      >
+                                        Tareas
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenActionId(null);
+                                          handleOpenChangePassword(s);
+                                        }}
+                                        className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+                                      >
+                                        Contraseña
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenActionId(null);
+                                          handleDeleteStudent(s);
+                                        }}
+                                        disabled={deletingStudentId === s.id}
+                                        className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        {deletingStudentId === s.id ? "Eliminando..." : "Eliminar"}
+                                      </button>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ) : (
+                                <span className="text-xs text-slate-500">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Botón para cargar más estudiantes */}
+                  {hasMoreStudents && isAdminTeacherRole(userRole) && !isSearchActive && (
+                    <div className="mt-4 flex justify-center">
+                      <button
+                        type="button"
+                        onClick={() => loadStudents(true)}
+                        disabled={loadingMore}
+                        className="rounded-lg border border-blue-200 bg-blue-50 px-6 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {loadingMore ? "Cargando..." : `Cargar más estudiantes`}
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
           )}
-        </div>
+        </>
       )}
 
       {/* Modal para editar perfil del alumno */}

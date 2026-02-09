@@ -86,7 +86,7 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
     if (isAdminTeacherRole(userRole)) {
       items.push({ href: "/creator/profesores", label: "Profesores" });
     }
-    if (userRole === "superAdminTeacher") {
+    if (isAdminTeacherRole(userRole)) {
       items.push({ href: "/creator/programas", label: "Programas" });
     }
     return items;
