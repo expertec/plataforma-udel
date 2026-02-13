@@ -132,6 +132,26 @@ export async function GET(request: NextRequest) {
             }
           }
 
+          // En algunos planteles la API responde 404 cuando el telefono no existe en ese punto de venta.
+          // Eso NO debe bloquear acceso: se interpreta como "sin adeudo en este plantel".
+          if (resp.status === 404) {
+            return {
+              campus,
+              ok: true,
+              statusCode: resp.status,
+              data: {
+                phone,
+                hasOverduePayments: false,
+                totalOverdueAmount: 0,
+                overdueCount: 0,
+                overduePaymentsCount: 0,
+                overdueReceivablesCount: 0,
+                overdueDetails: [],
+              },
+              error: "NOT_FOUND",
+            };
+          }
+
           if (!resp.ok) {
             return {
               campus,
@@ -235,6 +255,9 @@ export async function GET(request: NextRequest) {
           overdueReceivablesCount,
           overdueDetails: aggregatedDetails,
           campusesChecked: successful.map((item) => item.campus),
+          notFoundCampuses: successful
+            .filter((item) => item.error === "NOT_FOUND")
+            .map((item) => item.campus),
           failedCampuses: results
             .filter((item) => !item.ok)
             .map((item) => ({ campus: item.campus, error: item.error || "Error desconocido" })),
