@@ -66,11 +66,137 @@ type FeedClass = {
   forumRequiredFormat?: "text" | "audio" | "video" | null;
 };
 
+type FinanceStatus = {
+  success: boolean;
+  data?: {
+    phone?: string;
+    name?: string;
+    email?: string;
+    clabe?: {
+      clabe?: string;
+      bank?: string;
+    };
+    hasOverduePayments?: boolean;
+    totalOverdueAmount?: number;
+    overdueCount?: number;
+    overduePaymentsCount?: number;
+    overdueReceivablesCount?: number;
+    overdueDetails?:
+      | Array<{
+          type?: string;
+          concept?: string;
+          paymentNumber?: number;
+          totalPayments?: number;
+          amount?: number;
+          dueDate?: string;
+          daysOverdue?: number;
+          campus?: string;
+        }>
+      | string;
+    overdueDetailsText?: string;
+    details?: string;
+  };
+};
+
 const VIDEO_COMPLETION_THRESHOLD = 80;
 const ENFORCE_VIDEO_GATE = true;
 const getRequiredPct = (type?: string) => (type === "image" ? 100 : VIDEO_COMPLETION_THRESHOLD);
 const localProgressKey = (uid: string) => `classProgress:${uid}`;
 const UNIVERSITY_LOGO_SRC = "/university-logo.jpg";
+const FINANCE_STATUS_ENDPOINT = "/api/finance/customer-status";
+
+const normalizePhone = (raw?: string | null) => {
+  const digits = (raw ?? "").replace(/\D/g, "");
+  if (!digits) return "";
+  return digits.length > 10 ? digits.slice(-10) : digits;
+};
+
+const currencyFormatter = new Intl.NumberFormat("es-MX", {
+  style: "currency",
+  currency: "MXN",
+  maximumFractionDigits: 2,
+});
+
+const formatCurrency = (value?: number | null) => {
+  const numeric = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return currencyFormatter.format(numeric);
+};
+
+const parseAmountFromText = (raw?: string) => {
+  if (!raw) return undefined;
+  const normalized = raw.replace(/[^\d.,-]/g, "").replace(/,/g, "");
+  if (!normalized) return undefined;
+  const value = Number(normalized);
+  return Number.isFinite(value) ? value : undefined;
+};
+
+const parseOverdueRowsFromText = (raw: string) => {
+  return raw
+    .split("|")
+    .map((chunk) => chunk.trim())
+    .filter(Boolean)
+    .map((chunk) => {
+      const parts = chunk
+        .split("•")
+        .map((p) => p.trim())
+        .filter(Boolean);
+      const concept = parts[0] || "Pago pendiente";
+      const dueToken = parts.find((p) => /^venci[oó]:/i.test(p));
+      const dueDateText = dueToken ? dueToken.replace(/^venci[oó]:/i, "").trim() : undefined;
+      const amountToken = [...parts].reverse().find((p) => p.includes("$"));
+      return {
+        campus: "Sin plantel",
+        concept,
+        dueDate: dueDateText,
+        amount: parseAmountFromText(amountToken),
+      };
+    });
+};
+
+const copyTextToClipboard = async (value: string) => {
+  if (!value) return false;
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return true;
+  }
+  if (typeof document === "undefined") return false;
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "absolute";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  return copied;
+};
+
+const dueDateToLocal = (dateStr?: string | null) => {
+  if (!dateStr) return new Date();
+  const normalized = dateStr.trim();
+  if (!normalized) return new Date();
+
+  const isoMatch = normalized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (isoMatch) {
+    const year = Number(isoMatch[1]);
+    const month = Number(isoMatch[2]);
+    const day = Number(isoMatch[3]);
+    return new Date(year, month - 1, day);
+  }
+
+  const slashMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (slashMatch) {
+    const day = Number(slashMatch[1]);
+    const month = Number(slashMatch[2]);
+    const year = Number(slashMatch[3]);
+    return new Date(year, month - 1, day);
+  }
+
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return new Date();
+  return parsed;
+};
 
 // Normaliza los tipos de clase para evitar variantes como "texto" o "imagen"
 const normalizeClassType = (rawType: unknown) => {
@@ -111,13 +237,27 @@ const saveLocalProgress = (
   }
 };
 
-type LoadingStage = "auth" | "enrollments" | "progress" | "courses" | "classes" | "done";
+type LoadingStage = "auth" | "billing" | "enrollments" | "progress" | "courses" | "classes" | "done";
 
 export default function StudentFeedPageClient() {
   const [loading, setLoading] = useState(true);
   const [loadingStage, setLoadingStage] = useState<LoadingStage>("auth");
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [billingBlocked, setBillingBlocked] = useState<{
+    reason: string;
+    amount?: number;
+    overdueRows?: Array<{
+      campus?: string;
+      concept: string;
+      dueDate?: string;
+      amount?: number;
+      daysOverdue?: number;
+    }>;
+    clabe?: string;
+    bank?: string;
+  } | null>(null);
+  const [clabeCopied, setClabeCopied] = useState(false);
   const [classes, setClasses] = useState<FeedClass[]>([]);
   const [courseName, setCourseName] = useState("");
   const [groupName, setGroupName] = useState("");
@@ -1152,12 +1292,97 @@ export default function StudentFeedPageClient() {
         setLoading(false);
         return;
       }
+
+      // 0) Validar estado financiero antes de cargar inscripciones
+      try {
+        setLoadingStage("billing");
+        setLoadingProgress(10);
+
+        const userSnap = await getDoc(doc(db, "users", currentUser.uid));
+        const userData = userSnap.data() ?? {};
+        const phone = normalizePhone(userData.phone ?? currentUser.phoneNumber ?? "");
+
+        if (!phone) {
+          setClabeCopied(false);
+          setBillingBlocked({
+            reason: "No hay teléfono registrado para validar tus pagos. Contacta a administración.",
+          });
+          setLoading(false);
+          return;
+        }
+
+        const financeResp = await fetch(`${FINANCE_STATUS_ENDPOINT}?phone=${encodeURIComponent(phone)}`, {
+          cache: "no-store",
+        });
+        const financeJson: FinanceStatus = await financeResp.json().catch(() => ({ success: false }));
+
+        if (!financeResp.ok || !financeJson?.success || !financeJson?.data) {
+          setError("No se pudo validar tu estado de pagos. Intenta nuevamente en unos minutos.");
+          setLoading(false);
+          return;
+        }
+
+        const overdue =
+          financeJson.data.hasOverduePayments ||
+          (financeJson.data.totalOverdueAmount ?? 0) > 0 ||
+          (financeJson.data.overdueCount ?? 0) > 0 ||
+          (financeJson.data.overduePaymentsCount ?? 0) > 0 ||
+          (financeJson.data.overdueReceivablesCount ?? 0) > 0;
+
+        if (overdue) {
+          const accountClabe = (financeJson.data.clabe?.clabe ?? "").trim();
+          const accountBank = (financeJson.data.clabe?.bank ?? "").trim();
+          const overdueSource = financeJson.data.overdueDetails;
+          let overdueRows: Array<{
+            campus?: string;
+            concept: string;
+            dueDate?: string;
+            amount?: number;
+            daysOverdue?: number;
+          }> = [];
+
+          if (Array.isArray(overdueSource)) {
+            overdueRows = overdueSource.map((d) => ({
+              campus: (d.campus ?? "").trim() || undefined,
+              concept: (d.concept ?? "").trim() || "Pago pendiente",
+              dueDate: d.dueDate,
+              amount: typeof d.amount === "number" ? d.amount : undefined,
+              daysOverdue: typeof d.daysOverdue === "number" ? d.daysOverdue : undefined,
+            }));
+          } else {
+            const legacyText =
+              (typeof overdueSource === "string" ? overdueSource : "") ||
+              financeJson.data.overdueDetailsText ||
+              financeJson.data.details ||
+              "";
+            if (legacyText) {
+              overdueRows = parseOverdueRowsFromText(legacyText);
+            }
+          }
+
+          setBillingBlocked({
+            reason: "Tienes pagos vencidos. Regulariza tu cuenta para continuar.",
+            amount: financeJson.data.totalOverdueAmount,
+            overdueRows: overdueRows.length ? overdueRows : undefined,
+            clabe: accountClabe || undefined,
+            bank: accountBank || undefined,
+          });
+          setClabeCopied(false);
+          setLoading(false);
+          return;
+        }
+      } catch (billingErr) {
+        console.error("Error validando estado financiero:", billingErr);
+        setError("No se pudo validar tu estado de pagos.");
+        setLoading(false);
+        return;
+      }
       try {
         setProgressReady(false);
         initialPositionedRef.current = false;
         setError(null);
         setLoadingStage("enrollments");
-        setLoadingProgress(10);
+        setLoadingProgress(20);
 
         // 1) Obtener TODOS los enrollments del alumno (no solo el primero)
         let enrSnap = await getDocs(
@@ -2228,6 +2453,7 @@ export default function StudentFeedPageClient() {
   if (loading) {
     const stageMessages: Record<LoadingStage, string> = {
       auth: "Verificando sesión...",
+      billing: "Verificando pagos pendientes...",
       enrollments: "Buscando tus inscripciones...",
       progress: "Cargando tu progreso...",
       courses: "Cargando tus cursos...",
@@ -2274,6 +2500,114 @@ export default function StudentFeedPageClient() {
           <p className="text-xs tabular-nums text-[#d6b3b3]/70">
             {loadingProgress}%
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (billingBlocked) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-[#0b0708] px-6 text-center text-white">
+        <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-3xl border border-[#6e2d2d]/40 bg-white/5 p-3 shadow-[0_0_24px_rgba(110,45,45,0.35)]">
+          <Image
+            src={UNIVERSITY_LOGO_SRC}
+            alt="Logo UDEL Universidad"
+            width={64}
+            height={64}
+            className="h-12 w-12 object-contain"
+            priority
+          />
+        </div>
+        <p className="text-xs uppercase tracking-[0.35em] text-[#d6b3b3]/70">UDEL Universidad</p>
+        <h2 className="mt-3 text-2xl font-semibold">Acceso bloqueado por pagos vencidos</h2>
+        <p className="mt-3 max-w-xl text-sm text-[#d6b3b3]/85">
+          {billingBlocked.reason}
+        </p>
+        {typeof billingBlocked.amount === "number" ? (
+          <p className="mt-2 text-lg font-semibold text-[#ffb4b4]">
+            Saldo vencido: {formatCurrency(billingBlocked.amount)}
+          </p>
+        ) : null}
+        {billingBlocked.overdueRows?.length ? (
+          <div className="mt-4 w-full max-w-5xl overflow-hidden rounded-xl border border-white/10 bg-white/5 text-left">
+            <div className="max-h-72 overflow-auto">
+              <table className="min-w-full text-sm">
+                <thead className="sticky top-0 z-10 bg-[#1a1214] text-[11px] uppercase tracking-[0.12em] text-[#d6b3b3]/70">
+                  <tr>
+                    <th className="px-4 py-3 font-medium">Plantel</th>
+                    <th className="px-4 py-3 font-medium">Concepto</th>
+                    <th className="px-4 py-3 font-medium">Vencimiento</th>
+                    <th className="px-4 py-3 font-medium">Monto</th>
+                    <th className="px-4 py-3 font-medium">Dias vencidos</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/10 text-[#f3dede]">
+                  {billingBlocked.overdueRows.map((row, idx) => (
+                    <tr key={`${row.concept}-${idx}`} className="align-top">
+                      <td className="px-4 py-3 text-[#d6b3b3]">{row.campus || "-"}</td>
+                      <td className="px-4 py-3">{row.concept}</td>
+                      <td className="px-4 py-3 text-[#d6b3b3]">
+                        {row.dueDate ? dueDateToLocal(row.dueDate).toLocaleDateString("es-MX") : "Sin fecha"}
+                      </td>
+                      <td className="px-4 py-3 font-medium">{formatCurrency(row.amount)}</td>
+                      <td className="px-4 py-3 text-[#d6b3b3]">{row.daysOverdue ?? "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : null}
+        {billingBlocked.clabe ? (
+          <div className="mt-4 w-full max-w-xl rounded-xl border border-white/15 bg-white/5 p-4 text-left">
+            <p className="text-[11px] uppercase tracking-[0.18em] text-[#d6b3b3]/70">Cuenta para depositar</p>
+            <p className="mt-1 text-xs text-[#d6b3b3]/80">
+              Deposita a esta cuenta para regularizar y activar tu acceso automaticamente.
+            </p>
+            <p className="mt-2 text-xs text-[#d6b3b3]/80">{billingBlocked.bank || "Banco no disponible"}</p>
+            <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <code className="rounded-md bg-black/35 px-3 py-2 text-sm font-semibold tracking-[0.08em] text-[#ffe2e2]">
+                {billingBlocked.clabe}
+              </code>
+              <button
+                className="rounded-lg border border-[#6e2d2d]/70 bg-[#6e2d2d]/20 px-4 py-2 text-xs font-semibold text-[#ffd5d5] transition-colors hover:bg-[#6e2d2d]/35"
+                onClick={async () => {
+                  if (!billingBlocked.clabe) return;
+                  try {
+                    const copied = await copyTextToClipboard(billingBlocked.clabe);
+                    if (!copied) throw new Error("copy-failed");
+                    setClabeCopied(true);
+                    toast.success("CLABE copiada");
+                    window.setTimeout(() => setClabeCopied(false), 1800);
+                  } catch {
+                    toast.error("No se pudo copiar la CLABE");
+                  }
+                }}
+              >
+                {clabeCopied ? "Copiada" : "Copiar CLABE"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+        <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+          <button
+            className="rounded-lg bg-white/10 px-5 py-3 text-sm font-semibold text-white hover:bg-white/15 transition-colors"
+            onClick={() => window.location.reload()}
+          >
+            Reintentar validación
+          </button>
+          <button
+            className="rounded-lg bg-[#6e2d2d] px-5 py-3 text-sm font-semibold text-white hover:bg-[#7f3535] transition-colors"
+            onClick={async () => {
+              try {
+                await signOut(auth);
+              } finally {
+                window.location.replace("/auth/login");
+              }
+            }}
+          >
+            Cerrar sesión
+          </button>
         </div>
       </div>
     );
