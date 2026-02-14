@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import {
   addStudentsToGroup,
@@ -11,17 +11,17 @@ import {
   removeStudentFromGroup,
   setAssistantTeachers,
 } from "@/lib/firebase/groups-service";
-import { getStudentUsers, StudentUser } from "@/lib/firebase/students-service";
+import { getStudentUsersPaginated, StudentUser } from "@/lib/firebase/students-service";
 import { getTeacherUsers, TeacherUser } from "@/lib/firebase/teachers-service";
 import toast from "react-hot-toast";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Link from "next/link";
 import { EntregasTab } from "./_components/EntregasTab";
 import { StudentSubmissionsModal } from "./_components/StudentSubmissionsModal";
-import { Course } from "@/lib/firebase/courses-service";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import type { DocumentSnapshot } from "firebase/firestore";
 
 export default function GroupDetailPage() {
   const params = useParams<{ groupId: string }>();
@@ -240,9 +240,10 @@ export default function GroupDetailPage() {
       toast.success("Curso desvinculado correctamente");
       const updated = await getGroup(params.groupId);
       if (updated) setGroup(updated);
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
-      toast.error(err.message || "No se pudo desvincular el curso");
+      const message = err instanceof Error ? err.message : "No se pudo desvincular el curso";
+      toast.error(message);
     } finally {
       setUnlinkingCourseId(null);
     }
@@ -322,7 +323,6 @@ export default function GroupDetailPage() {
               <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                 <AlumnosTab
                   groupId={group.id}
-                  studentsCount={group.studentsCount}
                   students={groupStudents}
                   loadingStudents={loadingStudents}
                   removingId={removingId}
@@ -568,7 +568,6 @@ export default function GroupDetailPage() {
 
 type AlumnosTabProps = {
   groupId: string;
-  studentsCount: number;
   students: GroupStudent[];
   loadingStudents: boolean;
   removingId: string | null;
@@ -580,7 +579,6 @@ type AlumnosTabProps = {
 
 function AlumnosTab({
   onOpenModal,
-  studentsCount,
   students,
   loadingStudents,
   removingId,
@@ -680,22 +678,100 @@ function SelectStudentsModal({
   existingIds,
 }: SelectStudentsModalProps) {
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [saving, setSaving] = useState(false);
   const [students, setStudents] = useState<StudentUser[]>([]);
+  const [searchResults, setSearchResults] = useState<StudentUser[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
+  const [hasMore, setHasMore] = useState(false);
+  const lastDocRef = useRef<DocumentSnapshot | null>(null);
+  const searchTokenRef = useRef(0);
+
+  const loadInitialStudents = async () => {
+    setLoading(true);
+    try {
+      const result = await getStudentUsersPaginated(50);
+      setStudents(result.students);
+      lastDocRef.current = result.lastDoc;
+      setHasMore(result.hasMore);
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudieron cargar los alumnos (users)");
+      setStudents([]);
+      setHasMore(false);
+      lastDocRef.current = null;
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (!open) return;
-    setLoading(true);
-    getStudentUsers()
-      .then((res) => setStudents(res))
-      .catch((err) => {
-        console.error(err);
-        toast.error("No se pudieron cargar los alumnos (users)");
-      })
-      .finally(() => setLoading(false));
+    setSelected(new Set());
+    setSearch("");
+    setSearchResults([]);
+    setSearching(false);
+    searchTokenRef.current += 1;
+    void loadInitialStudents();
   }, [open]);
+
+  const isSearchActive = search.trim().length > 0;
+
+  useEffect(() => {
+    if (!open) return;
+    if (!isSearchActive) {
+      setSearchResults([]);
+      setSearching(false);
+      return;
+    }
+
+    const token = ++searchTokenRef.current;
+    const normalized = search.trim().toLowerCase();
+    setSearchResults([]);
+    setSearching(true);
+    const timer = setTimeout(async () => {
+      try {
+        const results = new Map<string, StudentUser>();
+        let last: DocumentSnapshot | null = null;
+        let hasMorePages = true;
+        let pageCount = 0;
+
+        const MAX_PAGES = 60;
+        const PAGE_SIZE = 50;
+
+        while (hasMorePages && pageCount < MAX_PAGES) {
+          const page = await getStudentUsersPaginated(PAGE_SIZE, last, normalized);
+          if (searchTokenRef.current !== token) return;
+
+          page.students.forEach((student) => {
+            results.set(student.id, student);
+          });
+
+          last = page.lastDoc;
+          hasMorePages = page.hasMore;
+          pageCount += 1;
+
+          if (results.size >= 100) break;
+        }
+
+        if (searchTokenRef.current !== token) return;
+        setSearchResults(Array.from(results.values()));
+      } catch (err) {
+        console.error(err);
+        if (searchTokenRef.current === token) {
+          toast.error("No se pudo buscar alumnos");
+        }
+      } finally {
+        if (searchTokenRef.current === token) {
+          setSearching(false);
+        }
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [open, search, isSearchActive]);
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -706,11 +782,29 @@ function SelectStudentsModal({
     });
   };
 
-  const filtered = students.filter(
-    (s) =>
-      s.name.toLowerCase().includes(search.toLowerCase()) ||
-      s.email.toLowerCase().includes(search.toLowerCase()),
-  );
+  const visibleStudents = isSearchActive ? searchResults : students;
+  const studentsById = useMemo(() => {
+    const map = new Map<string, StudentUser>();
+    students.forEach((s) => map.set(s.id, s));
+    searchResults.forEach((s) => map.set(s.id, s));
+    return map;
+  }, [students, searchResults]);
+
+  const handleLoadMore = async () => {
+    if (loadingMore || !hasMore || isSearchActive) return;
+    setLoadingMore(true);
+    try {
+      const result = await getStudentUsersPaginated(50, lastDocRef.current);
+      setStudents((prev) => [...prev, ...result.students]);
+      lastDocRef.current = result.lastDoc;
+      setHasMore(result.hasMore);
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudieron cargar más alumnos");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const handleSave = async () => {
     if (selected.size === 0) {
@@ -719,7 +813,11 @@ function SelectStudentsModal({
     }
     setSaving(true);
     try {
-      const toAdd = students.filter((s) => selected.has(s.id) && !existingIds.includes(s.id));
+      const toAdd = Array.from(selected)
+        .map((id) => studentsById.get(id))
+        .filter((student): student is StudentUser => Boolean(student))
+        .filter((student) => !existingIds.includes(student.id));
+
       if (toAdd.length === 0) {
         toast.error("Los alumnos seleccionados ya están en el grupo");
         setSaving(false);
@@ -778,9 +876,15 @@ function SelectStudentsModal({
             <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
               Cargando alumnos...
             </div>
-          ) : filtered.length === 0 ? (
+          ) : searching ? (
             <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-              No hay alumnos para mostrar. Crea algunos en la colección &quot;alumnos&quot;.
+              Buscando alumnos...
+            </div>
+          ) : visibleStudents.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+              {isSearchActive
+                ? "No se encontraron alumnos que coincidan con la búsqueda."
+                : "No hay alumnos para mostrar."}
             </div>
           ) : (
             <div className="max-h-[50vh] overflow-auto rounded-lg border border-slate-200">
@@ -794,7 +898,7 @@ function SelectStudentsModal({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filtered.map((s) => (
+                  {visibleStudents.map((s) => (
                     <tr key={s.id} className="hover:bg-slate-50">
                       <td className="px-3 py-2">
                         <input
@@ -813,6 +917,18 @@ function SelectStudentsModal({
               </table>
             </div>
           )}
+          {!isSearchActive && hasMore ? (
+            <div className="flex justify-center">
+              <button
+                type="button"
+                onClick={handleLoadMore}
+                disabled={loadingMore}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {loadingMore ? "Cargando..." : "Cargar más alumnos"}
+              </button>
+            </div>
+          ) : null}
 
           <div className="flex items-center justify-end gap-3 pt-2">
             <button
