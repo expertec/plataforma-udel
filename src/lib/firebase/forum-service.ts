@@ -9,9 +9,109 @@ import {
   orderBy,
   serverTimestamp,
   setDoc,
-  where,
 } from "firebase/firestore";
 import { db } from "./firestore";
+
+const isValidDate = (value: Date): boolean => !Number.isNaN(value.getTime());
+
+const normalizeDate = (value: unknown): Date => {
+  if (value instanceof Date && isValidDate(value)) {
+    return value;
+  }
+
+  if (value && typeof value === "object") {
+    const timestampLike = value as {
+      toDate?: () => Date;
+      seconds?: number;
+    };
+
+    if (typeof timestampLike.toDate === "function") {
+      const parsed = timestampLike.toDate();
+      if (parsed instanceof Date && isValidDate(parsed)) {
+        return parsed;
+      }
+    }
+
+    if (typeof timestampLike.seconds === "number") {
+      const parsed = new Date(timestampLike.seconds * 1000);
+      if (isValidDate(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  if (typeof value === "string" || typeof value === "number") {
+    const parsed = new Date(value);
+    if (isValidDate(parsed)) {
+      return parsed;
+    }
+  }
+
+  return new Date();
+};
+
+const normalizeText = (value: unknown, fallback: string): string => {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  if (value && typeof value === "object") {
+    const withCommonFields = value as {
+      displayName?: unknown;
+      name?: unknown;
+      firstName?: unknown;
+      lastName?: unknown;
+    };
+
+    if (typeof withCommonFields.displayName === "string") {
+      return withCommonFields.displayName;
+    }
+
+    if (typeof withCommonFields.name === "string") {
+      return withCommonFields.name;
+    }
+
+    if (
+      typeof withCommonFields.firstName === "string" ||
+      typeof withCommonFields.lastName === "string"
+    ) {
+      return `${typeof withCommonFields.firstName === "string" ? withCommonFields.firstName : ""} ${typeof withCommonFields.lastName === "string" ? withCommonFields.lastName : ""}`.trim();
+    }
+  }
+
+  return fallback;
+};
+
+const normalizeFormat = (value: unknown): ForumPost["format"] => {
+  if (value === "audio" || value === "video" || value === "text") {
+    return value;
+  }
+  return "text";
+};
+
+const normalizeRole = (value: unknown): ForumReply["role"] => {
+  if (value === "professor" || value === "student" || value === "mentor") {
+    return value;
+  }
+  return undefined;
+};
+
+const normalizeNumber = (value: unknown, fallback = 0): number => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  return fallback;
+};
+
+const normalizeOptionalString = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
 
 /**
  * Aportación principal del foro (post raíz de cada estudiante)
@@ -70,17 +170,17 @@ export async function getForumPosts(
     const data = doc.data();
     return {
       id: doc.id,
-      text: data.text ?? "",
-      authorId: data.authorId ?? "",
-      authorName: data.authorName ?? "Usuario",
-      format: data.format ?? "text",
-      mediaUrl: data.mediaUrl ?? null,
-      createdAt: data.createdAt?.toDate?.() ?? new Date(),
-      repliesCount: data.repliesCount ?? 0,
+      text: normalizeText(data.text, ""),
+      authorId: normalizeText(data.authorId, ""),
+      authorName: normalizeText(data.authorName, "Usuario"),
+      format: normalizeFormat(data.format),
+      mediaUrl: normalizeOptionalString(data.mediaUrl),
+      createdAt: normalizeDate(data.createdAt),
+      repliesCount: normalizeNumber(data.repliesCount, 0),
       status: data.status ?? undefined,
-      grade: typeof data.grade === "number" ? data.grade : undefined,
-      feedback: data.feedback ?? "",
-      gradedAt: data.gradedAt?.toDate?.() ?? null,
+      grade: typeof data.grade === "number" && Number.isFinite(data.grade) ? data.grade : undefined,
+      feedback: normalizeText(data.feedback, ""),
+      gradedAt: data.gradedAt ? normalizeDate(data.gradedAt) : null,
     };
   });
 }
@@ -112,17 +212,17 @@ export async function getStudentForumPost(
   const data = snap.data();
   return {
     id: snap.id,
-    text: data.text ?? "",
-    authorId: data.authorId ?? "",
-    authorName: data.authorName ?? "Usuario",
-    format: data.format ?? "text",
-    mediaUrl: data.mediaUrl ?? null,
-    createdAt: data.createdAt?.toDate?.() ?? new Date(),
-    repliesCount: data.repliesCount ?? 0,
+    text: normalizeText(data.text, ""),
+    authorId: normalizeText(data.authorId, ""),
+    authorName: normalizeText(data.authorName, "Usuario"),
+    format: normalizeFormat(data.format),
+    mediaUrl: normalizeOptionalString(data.mediaUrl),
+    createdAt: normalizeDate(data.createdAt),
+    repliesCount: normalizeNumber(data.repliesCount, 0),
     status: data.status ?? undefined,
-    grade: typeof data.grade === "number" ? data.grade : undefined,
-    feedback: data.feedback ?? "",
-    gradedAt: data.gradedAt?.toDate?.() ?? null,
+    grade: typeof data.grade === "number" && Number.isFinite(data.grade) ? data.grade : undefined,
+    feedback: normalizeText(data.feedback, ""),
+    gradedAt: data.gradedAt ? normalizeDate(data.gradedAt) : null,
   };
 }
 
@@ -208,11 +308,11 @@ export async function getForumReplies(
     return {
       id: doc.id,
       postId: postId,
-      text: data.text ?? "",
-      authorId: data.authorId ?? "",
-      authorName: data.authorName ?? "Usuario",
-      role: data.role,
-      createdAt: data.createdAt?.toDate?.() ?? new Date(),
+      text: normalizeText(data.text, ""),
+      authorId: normalizeText(data.authorId, ""),
+      authorName: normalizeText(data.authorName, "Usuario"),
+      role: normalizeRole(data.role),
+      createdAt: normalizeDate(data.createdAt),
     };
   });
 }

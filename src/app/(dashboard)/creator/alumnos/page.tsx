@@ -5,6 +5,7 @@ import { MoreVertical } from "lucide-react";
 import type { DocumentSnapshot } from "firebase/firestore";
 import toast from "react-hot-toast";
 import * as XLSX from "xlsx";
+import { createPortal } from "react-dom";
 import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/roles";
@@ -40,6 +41,13 @@ type ImportResult = {
   message?: string;
 };
 
+type ActionMenuState = {
+  studentId: string;
+  top: number;
+  left: number;
+  openUp: boolean;
+};
+
 const isValidEmail = (email: string): boolean => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
@@ -66,7 +74,7 @@ export default function AlumnosPage() {
   const [programOptions, setProgramOptions] = useState<string[]>([]);
   const [programLoading, setProgramLoading] = useState(false);
   const [programUpdatingId, setProgramUpdatingId] = useState<string | null>(null);
-  const [openActionId, setOpenActionId] = useState<string | null>(null);
+  const [openActionMenu, setOpenActionMenu] = useState<ActionMenuState | null>(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
@@ -128,11 +136,11 @@ export default function AlumnosPage() {
     if (!isAdminTeacherRole(userRole)) {
       setActiveTab("gestion");
     }
-    setOpenActionId(null);
+    setOpenActionMenu(null);
   }, [userRole]);
 
   useEffect(() => {
-    setOpenActionId(null);
+    setOpenActionMenu(null);
   }, [searchQuery, activeTab]);
 
   // Ref para mantener el último documento sin causar re-renders
@@ -539,8 +547,59 @@ export default function AlumnosPage() {
         student.name.toLowerCase().includes(query) ||
         student.email.toLowerCase().includes(query) ||
         (student.program ?? "").toLowerCase().includes(query)
-    );
+      );
   }, [students, searchResults, searchQuery, userRole, isSearchActive]);
+
+  const actionMenuStudent = useMemo(() => {
+    if (!openActionMenu) return null;
+    return (
+      filteredStudents.find((student) => student.id === openActionMenu.studentId) ??
+      students.find((student) => student.id === openActionMenu.studentId) ??
+      null
+    );
+  }, [openActionMenu, filteredStudents, students]);
+
+  useEffect(() => {
+    if (!openActionMenu) return;
+
+    const closeMenu = () => setOpenActionMenu(null);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu();
+    };
+
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [openActionMenu]);
+
+  const handleToggleActionMenu = (studentId: string, target: HTMLElement) => {
+    if (openActionMenu?.studentId === studentId) {
+      setOpenActionMenu(null);
+      return;
+    }
+
+    const rect = target.getBoundingClientRect();
+    const menuWidth = 176; // w-44
+    const shouldOpenUp = window.innerHeight - rect.bottom < 220;
+    const nextTop = shouldOpenUp ? rect.top - 8 : rect.bottom + 8;
+    const nextLeft = Math.min(
+      window.innerWidth - menuWidth - 12,
+      Math.max(12, rect.right - menuWidth),
+    );
+
+    setOpenActionMenu({
+      studentId,
+      top: nextTop,
+      left: nextLeft,
+      openUp: shouldOpenUp,
+    });
+  };
 
   const isAdmin = isAdminTeacherRole(userRole);
   const adminTabs: { key: "gestion" | "altas" | "passwords"; label: string; helper?: string }[] = isAdmin
@@ -1354,8 +1413,9 @@ export default function AlumnosPage() {
                 </div>
               ) : (
                 <>
-                  <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
-                    <table className="min-w-full text-sm text-slate-800">
+                  <div className="relative overflow-visible rounded-lg border border-slate-200 bg-white shadow-sm">
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-sm text-slate-800">
                       <thead className="bg-slate-50 text-xs font-semibold text-slate-600">
                         <tr className="border-b border-slate-200">
                           <th className="w-[20%] px-4 py-2 text-left">Nombre</th>
@@ -1367,7 +1427,9 @@ export default function AlumnosPage() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {filteredStudents.map((s) => (
+                        {filteredStudents.map((s) => {
+                          const isMenuOpen = openActionMenu?.studentId === s.id;
+                          return (
                           <tr key={s.id} className="align-middle">
                             <td className="px-4 py-3 text-sm font-medium text-slate-900">{s.name}</td>
                             <td className="px-4 py-3 text-sm text-slate-600">
@@ -1404,69 +1466,29 @@ export default function AlumnosPage() {
                                 <div className="relative flex justify-end">
                                   <button
                                     type="button"
-                                    onClick={() =>
-                                      setOpenActionId((prev) => (prev === s.id ? null : s.id))
+                                    onClick={(event) =>
+                                      handleToggleActionMenu(s.id, event.currentTarget)
                                     }
-                                    className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700 shadow-sm transition hover:border-blue-300 hover:text-blue-600"
+                                    className={`flex items-center gap-1 rounded-md border bg-white px-2 py-1 text-xs font-semibold shadow-sm transition ${
+                                      isMenuOpen
+                                        ? "border-blue-300 text-blue-600"
+                                        : "border-slate-200 text-slate-700 hover:border-blue-300 hover:text-blue-600"
+                                    }`}
                                   >
                                     Acciones
                                     <MoreVertical size={14} />
                                   </button>
-                                  {openActionId === s.id ? (
-                                    <div className="absolute right-0 top-10 z-20 w-44 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setOpenActionId(null);
-                                          handleOpenEditProfile(s);
-                                        }}
-                                        className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                                      >
-                                        Editar
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setOpenActionId(null);
-                                          setSelectedStudentForSubmissions(s);
-                                          setSubmissionsModalOpen(true);
-                                        }}
-                                        className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-purple-700 hover:bg-purple-50"
-                                      >
-                                        Tareas
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setOpenActionId(null);
-                                          handleOpenChangePassword(s);
-                                        }}
-                                        className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
-                                      >
-                                        Contraseña
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setOpenActionId(null);
-                                          handleDeleteStudent(s);
-                                        }}
-                                        disabled={deletingStudentId === s.id}
-                                        className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
-                                      >
-                                        {deletingStudentId === s.id ? "Eliminando..." : "Eliminar"}
-                                      </button>
-                                    </div>
-                                  ) : null}
                                 </div>
                               ) : (
                                 <span className="text-xs text-slate-500">—</span>
                               )}
                             </td>
                           </tr>
-                        ))}
+                          );
+                        })}
                       </tbody>
-                    </table>
+                      </table>
+                    </div>
                   </div>
 
                   {/* Botón para cargar más estudiantes */}
@@ -1488,6 +1510,64 @@ export default function AlumnosPage() {
           )}
         </>
       )}
+
+      {openActionMenu && actionMenuStudent
+        ? createPortal(
+            <div className="fixed inset-0 z-50" onClick={() => setOpenActionMenu(null)}>
+              <div
+                className={`fixed z-[60] w-44 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg ${
+                  openActionMenu.openUp ? "-translate-y-full" : ""
+                }`}
+                style={{ top: openActionMenu.top, left: openActionMenu.left }}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenActionMenu(null);
+                    handleOpenEditProfile(actionMenuStudent);
+                  }}
+                  className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Editar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenActionMenu(null);
+                    setSelectedStudentForSubmissions(actionMenuStudent);
+                    setSubmissionsModalOpen(true);
+                  }}
+                  className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-purple-700 hover:bg-purple-50"
+                >
+                  Tareas
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenActionMenu(null);
+                    handleOpenChangePassword(actionMenuStudent);
+                  }}
+                  className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+                >
+                  Contraseña
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenActionMenu(null);
+                    handleDeleteStudent(actionMenuStudent);
+                  }}
+                  disabled={deletingStudentId === actionMenuStudent.id}
+                  className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {deletingStudentId === actionMenuStudent.id ? "Eliminando..." : "Eliminar"}
+                </button>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
 
       {/* Modal para editar perfil del alumno */}
       {editProfileModalOpen && selectedStudent && (
