@@ -4,6 +4,7 @@ import {
   doc,
   getDocs,
   getDoc,
+  limit,
   orderBy,
   query,
   serverTimestamp,
@@ -22,6 +23,8 @@ export type Submission = {
   classDocId?: string;
   courseId?: string;
   courseTitle?: string;
+  lessonId?: string;
+  lessonTitle?: string;
   className: string;
   classType: string;
   studentId: string;
@@ -41,6 +44,8 @@ type CreateSubmissionInput = {
   classDocId?: string;
   courseId?: string;
   courseTitle?: string;
+  lessonId?: string;
+  lessonTitle?: string;
   className: string;
   classType: string;
   studentId: string;
@@ -69,12 +74,44 @@ export async function createSubmission(
     throw new Error("El período de entregas ha finalizado");
   }
 
+  const courseId = (data.courseId ?? "").trim();
+  if (courseId && data.studentId) {
+    let enrollmentData: Record<string, unknown> | null = null;
+    const canonicalEnrollmentRef = doc(db, "studentEnrollments", `${groupId}_${data.studentId}`);
+    const canonicalEnrollmentSnap = await getDoc(canonicalEnrollmentRef);
+    if (canonicalEnrollmentSnap.exists()) {
+      enrollmentData = canonicalEnrollmentSnap.data() as Record<string, unknown>;
+    } else {
+      const enrollmentSnap = await getDocs(
+        query(
+          collection(db, "studentEnrollments"),
+          where("groupId", "==", groupId),
+          where("studentId", "==", data.studentId),
+          limit(1),
+        ),
+      );
+      if (!enrollmentSnap.empty) {
+        enrollmentData = enrollmentSnap.docs[0].data() as Record<string, unknown>;
+      }
+    }
+
+    if (enrollmentData) {
+      const closures = (enrollmentData.courseClosures ?? {}) as Record<string, { status?: string } | undefined>;
+      const closure = closures[courseId];
+      if (closure?.status === "closed") {
+        throw new Error("Este curso está cerrado para el alumno.");
+      }
+    }
+  }
+
   const ref = collection(db, "groups", groupId, "submissions");
   const docRef = await addDoc(ref, {
     classId: data.classId,
     ...(data.classDocId ? { classDocId: data.classDocId } : {}),
     ...(data.courseId ? { courseId: data.courseId } : {}),
     ...(data.courseTitle ? { courseTitle: data.courseTitle } : {}),
+    ...(data.lessonId ? { lessonId: data.lessonId } : {}),
+    ...(data.lessonTitle ? { lessonTitle: data.lessonTitle } : {}),
     className: data.className,
     classType: data.classType,
     studentId: data.studentId,
@@ -145,6 +182,8 @@ type SubmissionData = {
   classDocId?: string;
   courseId?: string;
   courseTitle?: string;
+  lessonId?: string;
+  lessonTitle?: string;
   className?: string;
   classType?: string;
   studentId?: string;
@@ -169,6 +208,8 @@ function toSubmission(id: string, data: SubmissionData): Submission {
     classDocId: data.classDocId,
     courseId: data.courseId,
     courseTitle: data.courseTitle,
+    lessonId: data.lessonId,
+    lessonTitle: data.lessonTitle,
     className: data.className ?? "",
     classType: data.classType ?? "",
     studentId: data.studentId ?? "",

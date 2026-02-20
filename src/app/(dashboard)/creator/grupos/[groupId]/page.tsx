@@ -17,6 +17,7 @@ import toast from "react-hot-toast";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Link from "next/link";
 import { EntregasTab } from "./_components/EntregasTab";
+import { CalificacionesTab } from "./_components/CalificacionesTab";
 import { StudentSubmissionsModal } from "./_components/StudentSubmissionsModal";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
@@ -114,7 +115,15 @@ export default function GroupDetailPage() {
     return `${group.studentsCount}/${group.maxStudents} estudiantes${range}`;
   }, [group]);
 
-  const assignedCourses = group?.courses?.filter((c) => c.courseId) ?? [];
+  const assignedCourses = useMemo(() => {
+    if (!group) return [];
+    const fromArray = (group.courses ?? []).filter((c) => c.courseId);
+    if (fromArray.length > 0) return fromArray;
+    if (group.courseId) {
+      return [{ courseId: group.courseId, courseName: group.courseName ?? "Curso" }];
+    }
+    return [];
+  }, [group]);
   const assignedCourseIds = assignedCourses.map((c) => c.courseId).filter(Boolean);
   const explicitCourseIds = (group?.courseIds ?? []).filter(Boolean);
   const courseIdsForGroup =
@@ -354,7 +363,13 @@ export default function GroupDetailPage() {
 
             <TabsContent value="calificaciones">
               <div className="rounded-lg bg-white p-6 shadow-sm">
-                <p className="text-gray-500">Próximamente</p>
+                <CalificacionesTab
+                  groupId={group.id}
+                  courses={assignedCourses}
+                  groupTeacherId={group.teacherId}
+                  currentUserId={currentUser?.uid ?? null}
+                  userRole={userRole}
+                />
               </div>
             </TabsContent>
 

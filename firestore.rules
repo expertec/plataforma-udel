@@ -96,6 +96,24 @@ service cloud.firestore {
         resource.data.studentId is string &&
         request.auth.uid == resource.data.studentId;
     }
+    function studentCourseClosedInGroup(groupId, courseId, studentId) {
+      let enrollmentPath = /databases/$(database)/documents/studentEnrollments/$(groupId + "_" + studentId);
+      return courseId is string &&
+        exists(enrollmentPath) &&
+        get(enrollmentPath).data.courseClosures is map &&
+        get(enrollmentPath).data.courseClosures.keys().hasAny([courseId]) &&
+        get(enrollmentPath).data.courseClosures[courseId] is map &&
+        ("status" in get(enrollmentPath).data.courseClosures[courseId]) &&
+        get(enrollmentPath).data.courseClosures[courseId].status == "closed";
+    }
+    function submissionDataIsClosed(groupId, data) {
+      return data is map &&
+        ("courseId" in data) &&
+        data.courseId is string &&
+        ("studentId" in data) &&
+        data.studentId is string &&
+        studentCourseClosedInGroup(groupId, data.courseId, data.studentId);
+    }
     function isMentorOfCourse(courseId) {
       // Verifica si el usuario es mentor del curso consultando el array mentorIds
       let courseData = get(/databases/$(database)/documents/courses/$(courseId)).data;
@@ -307,15 +325,31 @@ service cloud.firestore {
           )
         ) || (
           isSignedIn() &&
-          request.resource.data.studentId == request.auth.uid
+          request.resource.data.studentId == request.auth.uid &&
+          !submissionDataIsClosed(groupId, request.resource.data)
         );
-        // Estudiante puede eliminar/actualizar su propia entrega si NO está calificada
-        // Se evalúa primero para evitar llamadas innecesarias a get()
-        allow update, delete: if (
+        // Estudiante puede actualizar su propia entrega si NO está calificada
+        // y la materia no está cerrada (estado actual y estado destino).
+        allow update: if (
           request.auth != null &&
           "studentId" in resource.data &&
           resource.data.studentId == request.auth.uid &&
-          !submissionIsGraded()
+          !submissionIsGraded() &&
+          !submissionDataIsClosed(groupId, resource.data) &&
+          !submissionDataIsClosed(groupId, request.resource.data)
+        ) || isAdmin() || isAdminTeacher() || (
+          isTeacherLike() &&
+          exists(/databases/$(database)/documents/groups/$(groupId)) &&
+          isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId))
+        );
+        // Estudiante puede eliminar su propia entrega si NO está calificada
+        // y la materia no está cerrada.
+        allow delete: if (
+          request.auth != null &&
+          "studentId" in resource.data &&
+          resource.data.studentId == request.auth.uid &&
+          !submissionIsGraded() &&
+          !submissionDataIsClosed(groupId, resource.data)
         ) || isAdmin() || isAdminTeacher() || (
           isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&

@@ -238,6 +238,26 @@ const saveLocalProgress = (
 };
 
 type LoadingStage = "auth" | "billing" | "enrollments" | "progress" | "courses" | "classes" | "done";
+type ClassEvaluationState = {
+  submitted: boolean;
+  graded: boolean;
+  grade: number | null;
+};
+
+type CourseClosureState = {
+  status?: "open" | "closed";
+  finalGrade?: number;
+  autoGrade?: number | null;
+  manualOverride?: boolean;
+  pendingUngradedCount?: number;
+  closedAt?: Date | null;
+  closedById?: string;
+  closedByName?: string;
+  reopenedAt?: Date | null;
+  reopenedById?: string;
+  reopenedByName?: string;
+  updatedAt?: Date | null;
+};
 
 export default function StudentFeedPageClient() {
   const [loading, setLoading] = useState(true);
@@ -325,6 +345,15 @@ export default function StudentFeedPageClient() {
   const [likePendingMap, setLikePendingMap] = useState<Record<string, boolean>>({});
   const [loadingCommentsMap, setLoadingCommentsMap] = useState<Record<string, boolean>>({});
   const [mobileClassesOpen, setMobileClassesOpen] = useState(false);
+  const [desktopFiltersOpen, setDesktopFiltersOpen] = useState(false);
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const desktopFiltersRef = useRef<HTMLDivElement | null>(null);
+  const mobileFiltersRef = useRef<HTMLDivElement | null>(null);
+  const [showCompletedWeeks, setShowCompletedWeeks] = useState(false);
+  const [showClosedCourses, setShowClosedCourses] = useState(false);
+  const [classEvaluationMap, setClassEvaluationMap] = useState<Record<string, ClassEvaluationState>>({});
+  const [completedLessonMap, setCompletedLessonMap] = useState<Record<string, boolean>>({});
+  const [courseClosureMap, setCourseClosureMap] = useState<Record<string, CourseClosureState>>({});
   const [forumDoneMap, setForumDoneMap] = useState<Record<string, boolean>>({});
   const [forumsReady, setForumsReady] = useState(false);
   const [forumPanel, setForumPanel] = useState<{ open: boolean; classId?: string }>({ open: false });
@@ -407,24 +436,6 @@ export default function StudentFeedPageClient() {
     });
     return map;
   }, [classes, sanitizeOptions]);
-
-  const getPrevSameCourse = useCallback(
-    (targetIdx: number) => {
-      const target = classes[targetIdx];
-      if (!target || !target.courseId) return null;
-      for (let i = targetIdx - 1; i >= 0; i -= 1) {
-        if (classes[i]?.courseId === target.courseId) return classes[i];
-      }
-      return null;
-    },
-    [classes],
-  );
-
-  const activeClass = classes[activeIndex];
-  const activeImagesCount =
-    activeClass?.type === "image" && activeClass.images ? activeClass.images.length : 0;
-  const activeImageIdx = activeClass?.id ? imageIndexMap[activeClass.id] ?? 0 : 0;
-  const hasPendingImages = activeImagesCount > 0 && activeImageIdx < activeImagesCount - 1;
   const findClassById = useCallback(
     (id: string | null | undefined) => classes.find((c) => c.id === id) ?? null,
     [classes],
@@ -437,6 +448,226 @@ export default function StudentFeedPageClient() {
     },
     [forumDoneMap],
   );
+
+  const isClassEvaluable = useCallback((cls: FeedClass) => cls.type === "quiz" || cls.hasAssignment === true, []);
+
+  const lessonKeyFromClass = useCallback(
+    (cls: FeedClass) =>
+      `${cls.groupId ?? "sin-grupo"}::${cls.courseId ?? "sin-curso"}::${cls.lessonId ?? cls.lessonTitle ?? "leccion"}`,
+    [],
+  );
+
+  const courseClosureKeyFromClass = useCallback(
+    (cls: FeedClass) => `${cls.enrollmentId ?? "sin-enrollment"}::${cls.courseId ?? "sin-curso"}`,
+    [],
+  );
+
+  const isCourseClosedForClass = useCallback(
+    (cls: FeedClass) => {
+      const key = courseClosureKeyFromClass(cls);
+      return courseClosureMap[key]?.status === "closed";
+    },
+    [courseClosureKeyFromClass, courseClosureMap],
+  );
+
+  useEffect(() => {
+    const handleOutside = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (
+        desktopFiltersOpen &&
+        desktopFiltersRef.current &&
+        !desktopFiltersRef.current.contains(target)
+      ) {
+        setDesktopFiltersOpen(false);
+      }
+      if (
+        mobileFiltersOpen &&
+        mobileFiltersRef.current &&
+        !mobileFiltersRef.current.contains(target)
+      ) {
+        setMobileFiltersOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutside);
+    document.addEventListener("touchstart", handleOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleOutside);
+      document.removeEventListener("touchstart", handleOutside);
+    };
+  }, [desktopFiltersOpen, mobileFiltersOpen]);
+
+  useEffect(() => {
+    if (!mobileClassesOpen) {
+      setMobileFiltersOpen(false);
+    }
+  }, [mobileClassesOpen]);
+
+  useEffect(() => {
+    if (previewMode || !currentUser?.uid || !classes.length) {
+      setClassEvaluationMap({});
+      return;
+    }
+
+    let cancelled = false;
+    const loadClassEvaluations = async () => {
+      const groupedByClass = new Map<string, Map<string, string[]>>();
+      classes.forEach((cls) => {
+        if (!cls.groupId) return;
+        const baseClassId = cls.classDocId ?? cls.id;
+        if (!baseClassId) return;
+        if (!groupedByClass.has(cls.groupId)) {
+          groupedByClass.set(cls.groupId, new Map());
+        }
+        const byClass = groupedByClass.get(cls.groupId)!;
+        if (!byClass.has(baseClassId)) {
+          byClass.set(baseClassId, []);
+        }
+        byClass.get(baseClassId)!.push(cls.id);
+      });
+
+      const groups = Array.from(groupedByClass.keys());
+      if (!groups.length) {
+        if (!cancelled) setClassEvaluationMap({});
+        return;
+      }
+
+      const nextEvaluation: Record<string, ClassEvaluationState> = {};
+      await Promise.all(
+        groups.map(async (gid) => {
+          try {
+            const submissionsSnap = await getDocs(
+              query(
+                collection(db, "groups", gid, "submissions"),
+                where("studentId", "==", currentUser.uid),
+              ),
+            );
+            submissionsSnap.docs.forEach((subDoc) => {
+              const data = subDoc.data() as {
+                classId?: string;
+                classDocId?: string;
+                status?: string;
+                grade?: number;
+              };
+              const baseClassId = (data.classDocId ?? data.classId ?? "").trim();
+              if (!baseClassId) return;
+
+              const targetClassIds = groupedByClass.get(gid)?.get(baseClassId) ?? [];
+              if (!targetClassIds.length) return;
+              const graded = data.status === "graded" || typeof data.grade === "number";
+
+              targetClassIds.forEach((feedClassId) => {
+                const previous = nextEvaluation[feedClassId];
+                nextEvaluation[feedClassId] = {
+                  submitted: true,
+                  graded: Boolean(previous?.graded || graded),
+                  grade:
+                    typeof data.grade === "number"
+                      ? data.grade
+                      : previous?.grade ?? null,
+                };
+              });
+            });
+          } catch (err) {
+            console.warn(`No se pudieron cargar evaluaciones del grupo ${gid}:`, err);
+          }
+        }),
+      );
+
+      if (!cancelled) {
+        setClassEvaluationMap(nextEvaluation);
+      }
+    };
+
+    loadClassEvaluations();
+    return () => {
+      cancelled = true;
+    };
+  }, [classes, currentUser?.uid, previewMode]);
+
+  useEffect(() => {
+    if (previewMode || !classes.length) {
+      setCompletedLessonMap({});
+      return;
+    }
+
+    const byLesson = new Map<string, FeedClass[]>();
+    classes.forEach((cls) => {
+      const key = lessonKeyFromClass(cls);
+      if (!byLesson.has(key)) {
+        byLesson.set(key, []);
+      }
+      byLesson.get(key)!.push(cls);
+    });
+
+    const nextCompleted: Record<string, boolean> = {};
+    byLesson.forEach((lessonClasses, lessonKey) => {
+      const allCompleted = lessonClasses.every((cls) => {
+        const pct = Math.max(
+          progressMap[cls.id] ?? 0,
+          progressRef.current[cls.id] ?? 0,
+          completedMap[cls.id] || completedRef.current[cls.id] || seenMap[cls.id] || seenRef.current[cls.id] ? 100 : 0,
+        );
+        return pct >= 100;
+      });
+      nextCompleted[lessonKey] = allCompleted;
+    });
+
+    setCompletedLessonMap(nextCompleted);
+  }, [classes, progressMap, completedMap, seenMap, lessonKeyFromClass, previewMode]);
+
+  const visibleClasses = useMemo(() => {
+    if (previewMode) return classes;
+    return classes.filter((cls) => {
+      const courseClosed = isCourseClosedForClass(cls);
+      if (courseClosed) return showClosedCourses;
+      if (showCompletedWeeks) return true;
+      return !completedLessonMap[lessonKeyFromClass(cls)];
+    });
+  }, [classes, completedLessonMap, isCourseClosedForClass, lessonKeyFromClass, previewMode, showClosedCourses, showCompletedWeeks]);
+  const visibleClassSignature = useMemo(
+    () => visibleClasses.map((cls) => cls.id).join("|"),
+    [visibleClasses],
+  );
+
+  const getPrevSameCourse = useCallback(
+    (targetIdx: number) => {
+      const target = visibleClasses[targetIdx];
+      if (!target || !target.courseId) return null;
+      for (let i = targetIdx - 1; i >= 0; i -= 1) {
+        if (visibleClasses[i]?.courseId === target.courseId) return visibleClasses[i];
+      }
+      return null;
+    },
+    [visibleClasses],
+  );
+
+  const activeClass = visibleClasses[activeIndex];
+  const activeImagesCount =
+    activeClass?.type === "image" && activeClass.images ? activeClass.images.length : 0;
+  const activeImageIdx = activeClass?.id ? imageIndexMap[activeClass.id] ?? 0 : 0;
+  const hasPendingImages = activeImagesCount > 0 && activeImageIdx < activeImagesCount - 1;
+
+  useEffect(() => {
+    if (!visibleClasses.length) {
+      if (activeId !== null) setActiveId(null);
+      if (activeIndex !== 0) setActiveIndex(0);
+      return;
+    }
+
+    const matchedIndex = activeId ? visibleClasses.findIndex((cls) => cls.id === activeId) : -1;
+    if (matchedIndex >= 0 && matchedIndex !== activeIndex) {
+      setActiveIndex(matchedIndex);
+      return;
+    }
+    if (matchedIndex === -1) {
+      const nextIndex = Math.min(activeIndex, visibleClasses.length - 1);
+      const nextClass = visibleClasses[nextIndex];
+      if (!nextClass) return;
+      if (activeIndex !== nextIndex) setActiveIndex(nextIndex);
+      if (activeId !== nextClass.id) setActiveId(nextClass.id);
+    }
+  }, [activeId, activeIndex, visibleClasses]);
 
   const loadForumStatus = useCallback(
     async (classId: string) => {
@@ -549,10 +780,10 @@ export default function StudentFeedPageClient() {
 
   useEffect(() => {
     if (previewMode) return;
-    const cls = classes[activeIndex];
+    const cls = visibleClasses[activeIndex];
     if (!cls || !cls.forumEnabled) return;
     loadForumStatus(cls.id);
-  }, [activeIndex, classes, loadForumStatus, previewMode]);
+  }, [activeIndex, visibleClasses, loadForumStatus, previewMode]);
 
   const courseThreads = useMemo(() => {
     const courseMap = new Map<
@@ -566,14 +797,14 @@ export default function StudentFeedPageClient() {
         >;
       }
     >();
-    classes.forEach((cls, idx) => {
+    visibleClasses.forEach((cls, idx) => {
       const cId = cls.courseId ?? "sin-curso";
       const cTitle = courseTitleMap[cls.courseId ?? ""] || cls.courseTitle || courseName || "Curso";
       if (!courseMap.has(cId)) {
         courseMap.set(cId, { courseId: cId, courseTitle: cTitle, lessons: new Map() });
       }
       const courseEntry = courseMap.get(cId)!;
-      const lId = `${cId}-${cls.lessonId ?? cls.lessonTitle ?? "leccion"}`;
+      const lId = `${cls.groupId ?? "sin-grupo"}-${cId}-${cls.lessonId ?? cls.lessonTitle ?? "leccion"}`;
       const lTitle = cls.lessonName ?? cls.lessonTitle ?? "Lección";
       if (!courseEntry.lessons.has(lId)) {
         courseEntry.lessons.set(lId, { lessonId: lId, lessonTitle: lTitle, items: [] });
@@ -589,49 +820,78 @@ export default function StudentFeedPageClient() {
       ...c,
       lessons: Array.from(c.lessons.values()),
     }));
-  }, [classes, courseTitleMap]);
+  }, [visibleClasses, courseTitleMap, courseName]);
 
-  // Colapsar lecciones por defecto y mantener abierta la lección activa
+  // Inicializar colapso por defecto y preservar toggles manuales del alumno.
   useEffect(() => {
     const lessonsFlat = courseThreads.flatMap((c) => c.lessons);
-    if (!lessonsFlat.length) return;
+    if (!lessonsFlat.length) {
+      setCollapsedLessons({});
+      return;
+    }
 
-    const classComplete = (item: { id: string; type: string }) => {
-      const pct = Math.max(
-        progressMap[item.id] ?? 0,
-        completedMap[item.id] || seenMap[item.id] ? 100 : 0,
-      );
-      return pct >= getRequiredPct(item.type);
-    };
-
-    const activeLesson = classes.find((c) => c.id === activeId);
+    const activeLesson = visibleClasses.find((c) => c.id === activeId);
     const activeLessonKey =
       activeLesson?.courseId && activeLesson?.lessonId
-        ? `${activeLesson.courseId}-${activeLesson.lessonId}`
+        ? `${activeLesson.groupId ?? "sin-grupo"}-${activeLesson.courseId}-${activeLesson.lessonId}`
         : lessonsFlat[0]?.lessonId;
-    const firstPending = classes.find((c) => {
+    const firstPending = visibleClasses.find((c) => {
       const pct = Math.max(
         progressMap[c.id] ?? 0,
-        completedMap[c.id] || seenMap[c.id] ? 100 : 0,
+        progressRef.current[c.id] ?? 0,
+        completedMap[c.id] ||
+          completedRef.current[c.id] ||
+          seenMap[c.id] ||
+          seenRef.current[c.id]
+          ? 100
+          : 0,
       );
-      return pct < getRequiredPct(c.type);
+      const forumOk = c.forumEnabled ? forumDoneMap[c.id] === true : true;
+      const evaluationOk = isClassEvaluable(c) ? classEvaluationMap[c.id]?.graded === true : true;
+      return pct < getRequiredPct(c.type) || !forumOk || !evaluationOk;
     });
     const pendingLessonKey =
       firstPending && firstPending.courseId
-        ? `${firstPending.courseId}-${firstPending.lessonId ?? firstPending.lessonTitle}`
+        ? `${firstPending.groupId ?? "sin-grupo"}-${firstPending.courseId}-${firstPending.lessonId ?? firstPending.lessonTitle}`
         : activeLessonKey;
 
-    const nextCollapsed: Record<string, boolean> = {};
-    lessonsFlat.forEach((lesson) => {
-      const allDone = lesson.items.every((it) => classComplete(it));
-      const shouldOpen =
-        lesson.lessonId === activeLessonKey || lesson.lessonId === pendingLessonKey;
-      nextCollapsed[lesson.lessonId] = shouldOpen ? false : allDone ? true : true;
-    });
+    setCollapsedLessons((prev) => {
+      const nextCollapsed: Record<string, boolean> = {};
+      lessonsFlat.forEach((lesson) => {
+        const shouldOpen =
+          lesson.lessonId === activeLessonKey || lesson.lessonId === pendingLessonKey;
+        const hasPrev = Object.prototype.hasOwnProperty.call(prev, lesson.lessonId);
 
-    setCollapsedLessons(nextCollapsed);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, classes.length, courseThreads.length, progressMap, completedMap, seenMap]);
+        if (shouldOpen) {
+          nextCollapsed[lesson.lessonId] = false;
+          return;
+        }
+        if (hasPrev) {
+          // Mantener el estado que eligió el alumno (evita que se recoloapse al cambiar progreso).
+          nextCollapsed[lesson.lessonId] = prev[lesson.lessonId];
+          return;
+        }
+        nextCollapsed[lesson.lessonId] = true;
+      });
+
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(nextCollapsed);
+      const unchanged =
+        prevKeys.length === nextKeys.length &&
+        nextKeys.every((k) => prev[k] === nextCollapsed[k]);
+      return unchanged ? prev : nextCollapsed;
+    });
+  }, [
+    activeId,
+    classEvaluationMap,
+    completedMap,
+    courseThreads,
+    forumDoneMap,
+    isClassEvaluable,
+    progressMap,
+    seenMap,
+    visibleClasses,
+  ]);
 
   const saveSeenForUser = useCallback(
     async (classId: string, progress: number, completed: boolean) => {
@@ -966,14 +1226,14 @@ export default function StudentFeedPageClient() {
         toast.error("Los comentarios están deshabilitados en la vista previa.");
         return;
       }
-      const targetId = activeIdRef.current ?? classes[activeIndex]?.id ?? null;
+      const targetId = activeIdRef.current ?? visibleClasses[activeIndex]?.id ?? null;
       if (!targetId) return;
       setCommentsClassId(targetId);
       setCommentsOpen(true);
     };
     window.addEventListener("open-comments", handleOpenComments);
     return () => window.removeEventListener("open-comments", handleOpenComments);
-  }, [activeIndex, classes, previewMode]);
+  }, [activeIndex, visibleClasses, previewMode]);
 
   const loadCommentsForClass = useCallback(
     async (classId: string) => {
@@ -1172,6 +1432,7 @@ export default function StudentFeedPageClient() {
           setError(null);
           setEnrollmentId(null);
           setGroupId(null);
+          setCourseClosureMap({});
           const courseDoc = await getDoc(doc(db, "courses", previewCourseId));
           if (!courseDoc.exists()) {
             setError("No se encontró el curso para previsualizar.");
@@ -1451,6 +1712,7 @@ export default function StudentFeedPageClient() {
           );
           setLoading(false);
           setEnrollmentId(null);
+          setCourseClosureMap({});
           return;
         }
 
@@ -1473,6 +1735,7 @@ export default function StudentFeedPageClient() {
         setLoadingProgress(50);
 
         const feed: FeedClass[] = [];
+        const nextCourseClosures: Record<string, CourseClosureState> = {};
         let firstStudentName = "";
         const groupNames: string[] = [];
         const totalEnrollments = enrSnap.docs.length;
@@ -1488,6 +1751,38 @@ export default function StudentFeedPageClient() {
             const enrollment = enrollmentDoc.data();
             const currentGroupId = enrollment.groupId;
             const currentEnrollmentId = enrollmentDoc.id;
+
+            const rawCourseClosures = (enrollment.courseClosures ?? {}) as Record<string, unknown>;
+            Object.entries(rawCourseClosures).forEach(([courseIdKey, closureValue]) => {
+              if (!closureValue || typeof closureValue !== "object") return;
+              const normalizedCourseId = courseIdKey.trim();
+              if (!normalizedCourseId) return;
+              const closure = closureValue as Record<string, unknown>;
+              const status = closure.status === "closed" || closure.status === "open" ? closure.status : undefined;
+              if (!status) return;
+              const mapKey = `${currentEnrollmentId}::${normalizedCourseId}`;
+              nextCourseClosures[mapKey] = {
+                status,
+                finalGrade:
+                  typeof closure.finalGrade === "number" && Number.isFinite(closure.finalGrade)
+                    ? closure.finalGrade
+                    : undefined,
+                autoGrade:
+                  typeof closure.autoGrade === "number" && Number.isFinite(closure.autoGrade)
+                    ? closure.autoGrade
+                    : null,
+                manualOverride: closure.manualOverride === true,
+                pendingUngradedCount:
+                  typeof closure.pendingUngradedCount === "number" ? closure.pendingUngradedCount : undefined,
+                closedAt: (closure.closedAt as { toDate?: () => Date } | undefined)?.toDate?.() ?? null,
+                reopenedAt: (closure.reopenedAt as { toDate?: () => Date } | undefined)?.toDate?.() ?? null,
+                updatedAt: (closure.updatedAt as { toDate?: () => Date } | undefined)?.toDate?.() ?? null,
+                closedById: typeof closure.closedById === "string" ? closure.closedById : undefined,
+                closedByName: typeof closure.closedByName === "string" ? closure.closedByName : undefined,
+                reopenedById: typeof closure.reopenedById === "string" ? closure.reopenedById : undefined,
+                reopenedByName: typeof closure.reopenedByName === "string" ? closure.reopenedByName : undefined,
+              };
+            });
 
             if (!firstStudentName) {
               firstStudentName = enrollment.studentName ?? currentUser.displayName ?? "Estudiante";
@@ -1610,6 +1905,7 @@ export default function StudentFeedPageClient() {
             "Las materias asignadas a tus grupos están archivadas o sin contenido disponible.",
           );
           setClasses([]);
+          setCourseClosureMap({});
           setActiveId(null);
           setActiveIndex(0);
           setLoading(false);
@@ -1629,6 +1925,7 @@ export default function StudentFeedPageClient() {
         setLoadingStage("done");
         setLoadingProgress(100);
         setClasses(feed);
+        setCourseClosureMap(nextCourseClosures);
         setLikesMap(initialLikes);
         setLikedMap({});
         setLikePendingMap({});
@@ -1637,6 +1934,7 @@ export default function StudentFeedPageClient() {
       } catch (err) {
         console.error(err);
         setError("No se pudieron cargar tus clases");
+        setCourseClosureMap({});
       } finally {
         setLoading(false);
       }
@@ -1812,7 +2110,7 @@ export default function StudentFeedPageClient() {
     const cards = document.querySelectorAll(".feed-card");
     cards.forEach((c) => observer.observe(c));
     return () => observer.disconnect();
-  }, [classes.length]);
+  }, [visibleClassSignature, showCompletedWeeks, showClosedCourses]);
 
   // Cuando cambia la clase activa, aseguramos audio activado y reproducimos el activo
   // También guardamos el progreso de la clase anterior
@@ -1868,8 +2166,8 @@ export default function StudentFeedPageClient() {
   }, [activeId, previewMode, currentUser?.uid, enrollmentId, classes, saveProgressToFirestore]);
 
   const scrollToIndex = (idx: number, smooth = true) => {
-    const clampedIdx = Math.max(0, Math.min(classes.length - 1, idx));
-    const target = classes[clampedIdx];
+    const clampedIdx = Math.max(0, Math.min(visibleClasses.length - 1, idx));
+    const target = visibleClasses[clampedIdx];
     if (!target) return;
 
     const node = sectionRefs.current[target.id];
@@ -1897,27 +2195,34 @@ export default function StudentFeedPageClient() {
 
   const pendingPosition = useMemo(() => {
     if (previewMode) {
-      return { index: 0, id: classes[0]?.id ?? null };
+      return { index: 0, id: visibleClasses[0]?.id ?? null };
     }
-    if (!classes.length) return { index: 0, id: null as string | null };
+    if (!visibleClasses.length) return { index: 0, id: null as string | null };
     const computeComplete = (cls: FeedClass) => {
       const pct = Math.max(
         progressMap[cls.id] ?? 0,
-        completedMap[cls.id] || seenMap[cls.id] ? 100 : 0,
+        progressRef.current[cls.id] ?? 0,
+        completedMap[cls.id] ||
+          completedRef.current[cls.id] ||
+          seenMap[cls.id] ||
+          seenRef.current[cls.id]
+          ? 100
+          : 0,
       );
       const baseOk = pct >= getRequiredPct(cls.type);
       const forumOk = cls.forumEnabled ? forumDoneMap[cls.id] === true : true;
-      return baseOk && forumOk;
+      const evaluationOk = isClassEvaluable(cls) ? classEvaluationMap[cls.id]?.graded === true : true;
+      return baseOk && forumOk && evaluationOk;
     };
-    const firstPendingIdx = classes.findIndex((cls) => !computeComplete(cls));
-    const targetIndex = firstPendingIdx === -1 ? Math.max(classes.length - 1, 0) : firstPendingIdx;
-    return { index: targetIndex, id: classes[targetIndex]?.id ?? null };
-  }, [classes, progressMap, completedMap, seenMap, forumDoneMap, previewMode]);
+    const firstPendingIdx = visibleClasses.findIndex((cls) => !computeComplete(cls));
+    const targetIndex = firstPendingIdx === -1 ? Math.max(visibleClasses.length - 1, 0) : firstPendingIdx;
+    return { index: targetIndex, id: visibleClasses[targetIndex]?.id ?? null };
+  }, [visibleClasses, progressMap, completedMap, seenMap, forumDoneMap, classEvaluationMap, isClassEvaluable, previewMode]);
 
   // Al cargar, posicionar en la primera clase pendiente
   useEffect(() => {
     if (loading || !progressReady || !forumsReady) return;
-    if (!classes.length) return;
+    if (!visibleClasses.length) return;
     // Solo posicionar automático en la primera carga (o cuando forzamos autoReposition).
     if (initialPositionedRef.current === true && !autoReposition) return;
 
@@ -1936,7 +2241,7 @@ export default function StudentFeedPageClient() {
         setAutoReposition(false);
       });
     }
-  }, [pendingPosition.index, pendingPosition.id, loading, progressReady, forumsReady, autoReposition, classes.length, scrollToIndex]);
+  }, [pendingPosition.index, pendingPosition.id, loading, progressReady, forumsReady, autoReposition, visibleClasses.length, scrollToIndex]);
 
   // Reforzar ubicación si se actualiza el progreso después del montaje (desactivado auto-jump)
   useEffect(() => {
@@ -1988,12 +2293,12 @@ export default function StudentFeedPageClient() {
   const handleTextReachEnd = useCallback(
     (idx: number) => {
       const nextIdx = idx + 1;
-      if (nextIdx >= classes.length) return;
+      if (nextIdx >= visibleClasses.length) return;
       const prevSameCourse = getPrevSameCourse(nextIdx);
       if (prevSameCourse && !isClassComplete(prevSameCourse)) return;
       scrollToIndex(nextIdx, true);
     },
-    [classes.length, getPrevSameCourse, isClassComplete],
+    [visibleClasses.length, getPrevSameCourse, isClassComplete],
   );
 
   // Ref para acceder al estado actual del quiz desde el handler de wheel
@@ -2243,14 +2548,14 @@ export default function StudentFeedPageClient() {
 
   useEffect(() => {
     if (previewMode) return;
-    const cls = classes[activeIndex];
+    const cls = visibleClasses[activeIndex];
     if (!cls) return;
     if (completedRef.current[cls.id] || seenRef.current[cls.id]) return;
 
     if (cls.type === "text" && !cls.content) {
       handleProgress(cls.id, 100, cls.type, cls.hasAssignment || false, cls.assignmentTemplateUrl);
     }
-  }, [activeIndex, classes, handleProgress, previewMode]);
+  }, [activeIndex, visibleClasses, handleProgress, previewMode]);
 
   useEffect(() => {
     if (previewMode) {
@@ -2423,6 +2728,8 @@ export default function StudentFeedPageClient() {
           courseId={cls.courseId}
           courseTitle={courseTitleMap[cls.courseId ?? ""] || cls.courseTitle || courseName || "Curso"}
           lessonId={cls.lessonId}
+          lessonTitle={cls.lessonTitle ?? cls.lessonName}
+          courseClosed={isCourseClosedForClass(cls)}
           enrollmentId={enrollmentId ?? undefined}
           groupId={cls.groupId}
           classTitle={cls.classTitle ?? cls.title}
@@ -2630,10 +2937,17 @@ export default function StudentFeedPageClient() {
           l.items.filter(
             (it) =>
               (() => {
-                const classData = findClassById(it.id);
-                const forumOk = classData ? isForumSatisfied(classData) : true;
-                const pct = Math.max(progressMap[it.id] ?? 0, completedMap[it.id] || seenMap[it.id] ? 100 : 0);
-                return pct >= getRequiredPct(it.type) && forumOk;
+                const pct = Math.max(
+                  progressMap[it.id] ?? 0,
+                  progressRef.current[it.id] ?? 0,
+                  completedMap[it.id] ||
+                    completedRef.current[it.id] ||
+                    seenMap[it.id] ||
+                    seenRef.current[it.id]
+                    ? 100
+                    : 0,
+                );
+                return pct >= 100;
               })(),
           ).length,
         0,
@@ -2672,10 +2986,17 @@ export default function StudentFeedPageClient() {
               const completedItems = lesson.items.filter(
                 (it) =>
                   (() => {
-                    const classData = findClassById(it.id);
-                    const forumOk = classData ? isForumSatisfied(classData) : true;
-                    const pct = Math.max(progressMap[it.id] ?? 0, (completedMap[it.id] || seenMap[it.id]) ? 100 : 0);
-                    return pct >= getRequiredPct(it.type) && forumOk;
+                    const pct = Math.max(
+                      progressMap[it.id] ?? 0,
+                      progressRef.current[it.id] ?? 0,
+                      completedMap[it.id] ||
+                        completedRef.current[it.id] ||
+                        seenMap[it.id] ||
+                        seenRef.current[it.id]
+                        ? 100
+                        : 0,
+                    );
+                    return pct >= 100;
                   })(),
               ).length;
               const collapsed = collapsedLessons[lesson.lessonId] ?? false;
@@ -2709,14 +3030,20 @@ export default function StudentFeedPageClient() {
                     <div className="mt-2 space-y-2 pl-3">
                       {lesson.items.map((item, itemIdx) => {
                         const pct = Math.round(
-                          Math.max(progressMap[item.id] ?? 0, (completedMap[item.id] || seenMap[item.id]) ? 100 : 0),
+                          Math.max(
+                            progressMap[item.id] ?? 0,
+                            progressRef.current[item.id] ?? 0,
+                            completedMap[item.id] ||
+                              completedRef.current[item.id] ||
+                              seenMap[item.id] ||
+                              seenRef.current[item.id]
+                              ? 100
+                              : 0,
+                          ),
                         );
                         const isActive = activeId === item.id;
                         const isLast = itemIdx === lesson.items.length - 1;
-                        const requiredPct = getRequiredPct(item.type);
-                        const classData = findClassById(item.id);
-                        const forumOk = classData ? isForumSatisfied(classData) : true;
-                        const isCompleted = pct >= requiredPct && forumOk;
+                        const isCompleted = pct >= 100;
                         return (
                           <div key={item.id} className="relative pl-5">
                             <span
@@ -2776,9 +3103,62 @@ export default function StudentFeedPageClient() {
         </div>
       ) : null}
       <header className="fixed left-0 top-0 z-20 hidden h-full w-64 flex-col border-r border-white/10 bg-neutral-900/80 p-4 lg:flex">
-        <div className="space-y-1">
-          <h1 className="text-xl font-bold">Mis clases</h1>
-          <p className="text-xs text-neutral-500">{groupName}</p>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 space-y-1">
+            <h1 className="text-xl font-bold">Mis clases</h1>
+            <p className="text-xs text-neutral-500">{groupName}</p>
+          </div>
+          {!previewMode ? (
+            <div ref={desktopFiltersRef} className="relative shrink-0">
+              <button
+                type="button"
+                onClick={() => setDesktopFiltersOpen((prev) => !prev)}
+                aria-expanded={desktopFiltersOpen}
+                aria-haspopup="menu"
+                aria-label="Filtros de clases"
+                className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/5 text-white/80 transition hover:bg-white/10 hover:text-white"
+              >
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M4 6h16" />
+                  <path d="M7 12h10" />
+                  <path d="M10 18h4" />
+                </svg>
+              </button>
+              {desktopFiltersOpen ? (
+                <div className="absolute right-0 top-12 z-30 w-56 rounded-xl border border-white/10 bg-neutral-900/95 p-3 shadow-2xl backdrop-blur">
+                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
+                    Filtros
+                  </p>
+                  <div className="space-y-2">
+                    <label className="flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-neutral-200">
+                      Completadas
+                      <input
+                        type="checkbox"
+                        checked={showCompletedWeeks}
+                        onChange={(e) => {
+                          setShowCompletedWeeks(e.target.checked);
+                          setAutoReposition(true);
+                        }}
+                        className="h-4 w-4 accent-blue-500"
+                      />
+                    </label>
+                    <label className="flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-neutral-200">
+                      Cerradas
+                      <input
+                        type="checkbox"
+                        checked={showClosedCourses}
+                        onChange={(e) => {
+                          setShowClosedCourses(e.target.checked);
+                          setAutoReposition(true);
+                        }}
+                        className="h-4 w-4 accent-emerald-500"
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <div className="mt-4 flex-1 space-y-4 overflow-y-auto pr-1">
           {renderCourseTree()}
@@ -2835,10 +3215,63 @@ export default function StudentFeedPageClient() {
               mobileClassesOpen ? "translate-x-0" : "-translate-x-full"
             }`}
           >
-            <div className="flex items-center justify-between p-4">
-              <div>
+            <div className="flex items-start justify-between p-4">
+              <div className="min-w-0">
                 <p className="text-[11px] uppercase tracking-wide text-neutral-400">{groupName || "Grupo"}</p>
-                <h2 className="text-lg font-semibold leading-tight">Mis clases</h2>
+                <div className="mt-1 flex items-center gap-2">
+                  <h2 className="text-lg font-semibold leading-tight">Mis clases</h2>
+                  {!previewMode ? (
+                    <div ref={mobileFiltersRef} className="relative shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setMobileFiltersOpen((prev) => !prev)}
+                        aria-expanded={mobileFiltersOpen}
+                        aria-haspopup="menu"
+                        aria-label="Filtros de clases"
+                        className="flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-white/5 text-white/80 transition hover:bg-white/10 hover:text-white"
+                      >
+                        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M4 6h16" />
+                          <path d="M7 12h10" />
+                          <path d="M10 18h4" />
+                        </svg>
+                      </button>
+                      {mobileFiltersOpen ? (
+                        <div className="absolute left-0 top-11 z-30 w-56 rounded-xl border border-white/10 bg-neutral-900/95 p-3 shadow-2xl backdrop-blur">
+                          <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
+                            Filtros
+                          </p>
+                          <div className="space-y-2">
+                            <label className="flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-neutral-200">
+                              Completadas
+                              <input
+                                type="checkbox"
+                                checked={showCompletedWeeks}
+                                onChange={(e) => {
+                                  setShowCompletedWeeks(e.target.checked);
+                                  setAutoReposition(true);
+                                }}
+                                className="h-4 w-4 accent-blue-500"
+                              />
+                            </label>
+                            <label className="flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-neutral-200">
+                              Cerradas
+                              <input
+                                type="checkbox"
+                                checked={showClosedCourses}
+                                onChange={(e) => {
+                                  setShowClosedCourses(e.target.checked);
+                                  setAutoReposition(true);
+                                }}
+                                className="h-4 w-4 accent-emerald-500"
+                              />
+                            </label>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
               </div>
               <button
                 type="button"
@@ -2852,7 +3285,38 @@ export default function StudentFeedPageClient() {
               {renderCourseTree()}
             </div>
           </aside>
-          {classes.map((cls, idx) => {
+          {!previewMode && classes.length > 0 && visibleClasses.length === 0 ? (
+            <section className="relative flex min-h-screen w-full items-center justify-center px-4 text-center">
+              <div className="max-w-lg rounded-2xl border border-white/10 bg-neutral-900/70 p-6 shadow-xl">
+                <p className="text-sm text-white/80">
+                  No hay contenido visible con los filtros actuales.
+                </p>
+                <p className="mt-2 text-xs text-white/60">
+                  Puedes mostrar semanas completadas, mostrar materias cerradas o revisar el historial en tu perfil.
+                </p>
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowCompletedWeeks(true);
+                      setShowClosedCourses(true);
+                      setAutoReposition(true);
+                    }}
+                    className="rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-500"
+                  >
+                    Mostrar todo
+                  </button>
+                  <Link
+                    href="/student/profile"
+                    className="rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white hover:bg-white/10"
+                  >
+                    Ir a perfil
+                  </Link>
+                </div>
+              </div>
+            </section>
+          ) : null}
+          {visibleClasses.map((cls, idx) => {
             const contentBoxSizeClass =
               "h-[calc(100vh-120px)] max-h-full lg:w-[min(90vh,90vw,820px)] lg:h-[min(90vh,90vw,820px)]";
 
@@ -2892,6 +3356,10 @@ export default function StudentFeedPageClient() {
                               toast.error("Las tareas están deshabilitadas en la vista previa.");
                               return;
                             }
+                            if (isCourseClosedForClass(cls)) {
+                              toast.error("Esta materia está cerrada por calificación final.");
+                              return;
+                            }
                             setAssignmentPanel({ open: true, classId: cls.id });
                           }}
                           hasForum={cls.forumEnabled || false}
@@ -2923,6 +3391,11 @@ export default function StudentFeedPageClient() {
                         {cls.groupName && groupName.includes("grupos") ? (
                           <span className="inline-flex items-center rounded-full bg-purple-500/20 px-3 py-1 text-[11px] font-semibold text-purple-200">
                             📚 {cls.groupName}
+                          </span>
+                        ) : null}
+                        {!previewMode && isCourseClosedForClass(cls) ? (
+                          <span className="inline-flex items-center rounded-full bg-emerald-500/20 px-3 py-1 text-[11px] font-semibold text-emerald-200">
+                            Materia cerrada
                           </span>
                         ) : null}
                         {/* Validar progreso antes de mostrar "Listo para avanzar" */}
@@ -3025,6 +3498,10 @@ export default function StudentFeedPageClient() {
                           toast.error("Las tareas están deshabilitadas en la vista previa.");
                           return;
                         }
+                        if (isCourseClosedForClass(cls)) {
+                          toast.error("Esta materia está cerrada por calificación final.");
+                          return;
+                        }
                         setAssignmentPanel({ open: true, classId: cls.id });
                       }}
                       hasForum={cls.forumEnabled || false}
@@ -3068,7 +3545,7 @@ export default function StudentFeedPageClient() {
             <button
               type="button"
               onClick={() => jumpToIndex(activeIndex + 1)}
-              disabled={activeIndex >= classes.length - 1}
+              disabled={activeIndex >= visibleClasses.length - 1}
               className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-white/60 text-white shadow-lg backdrop-blur transition hover:border-white hover:opacity-80 disabled:opacity-40"
               style={{ backgroundColor: '#400106' }}
             >
@@ -3354,6 +3831,10 @@ export default function StudentFeedPageClient() {
                     toast.error("Faltan datos para enviar la tarea");
                     return;
                   }
+                  if (isCourseClosedForClass(cls)) {
+                    toast.error("Esta materia está cerrada; no se permiten nuevas entregas.");
+                    return;
+                  }
                   const baseClassId = cls.classDocId ?? cls.id;
                   // Evitar envíos duplicados
                   const subRef = collection(db, "groups", cls.groupId, "submissions");
@@ -3448,6 +3929,8 @@ export default function StudentFeedPageClient() {
                     className: cls.title ?? "Tarea",
                     courseId: cls.courseId ?? "",
                     courseTitle: cls.courseTitle ?? "",
+                    lessonId: cls.lessonId ?? "",
+                    lessonTitle: cls.lessonTitle ?? cls.lessonName ?? "",
                     classType: cls.type,
                     studentId: currentUser.uid,
                     studentName: studentName ?? currentUser.displayName ?? "Estudiante",
@@ -3483,7 +3966,13 @@ export default function StudentFeedPageClient() {
                     setAssignmentPanel({ open: false, classId: null });
                   } catch (err) {
                     console.error("No se pudo enviar la tarea:", err);
-                    toast.error("No se pudo enviar la tarea");
+                    const message =
+                      err instanceof Error ? err.message : "";
+                    if (message.toLowerCase().includes("curso está cerrado")) {
+                      toast.error("Esta materia está cerrada; no se permiten nuevas entregas.");
+                    } else {
+                      toast.error("No se pudo enviar la tarea");
+                    }
                   }
                 }}
               />
@@ -4793,6 +5282,8 @@ type QuizContentProps = {
   courseId?: string;
   courseTitle?: string;
   lessonId?: string;
+  lessonTitle?: string;
+  courseClosed?: boolean;
   enrollmentId?: string;
   groupId?: string;
   classTitle?: string;
@@ -4803,7 +5294,7 @@ type QuizContentProps = {
   onQuizStateChange?: (state: { classId: string; answered: number; total: number; submitted: boolean; onSubmit?: () => Promise<void> } | null) => void;
 };
 
-function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enrollmentId, groupId, classTitle, studentName, studentId, isActive = true, onProgress, onQuizStateChange }: QuizContentProps) {
+function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, lessonTitle, courseClosed = false, enrollmentId, groupId, classTitle, studentName, studentId, isActive = true, onProgress, onQuizStateChange }: QuizContentProps) {
   const [questions, setQuestions] = useState<
     Array<{
       id: string;
@@ -5032,6 +5523,10 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
     ) {
       return;
     }
+    if (courseClosed) {
+      toast.error("Esta materia está cerrada; no se permiten nuevos envíos.");
+      return;
+    }
     setSubmitting(true);
     const answerPayload = questions.map((q) => ({
       questionId: q.id,
@@ -5090,6 +5585,8 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
         className: classTitle ?? "Quiz",
         courseId: courseId ?? "",
         courseTitle: courseTitle ?? "",
+        lessonId: lessonId ?? "",
+        lessonTitle: lessonTitle ?? "",
         classType: "quiz",
         studentId,
         studentName: studentName ?? "Estudiante",
@@ -5123,7 +5620,7 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, enr
     } finally {
       setSubmitting(false);
     }
-  }, [allAnswered, enrollmentId, studentId, groupId, submitting, questions, answers, classId, classTitle, studentName, courseId, classDocId, courseTitle]);
+  }, [allAnswered, enrollmentId, studentId, groupId, submitting, questions, answers, classId, classTitle, studentName, courseId, courseTitle, lessonId, lessonTitle, classDocId, courseClosed]);
 
   // Actualizar la referencia para que el padre pueda llamar handleSubmit
   useEffect(() => {

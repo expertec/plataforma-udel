@@ -1,29 +1,42 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import { auth } from "@/lib/firebase/client";
 import { onAuthStateChanged, signOut, updatePassword, User } from "firebase/auth";
-import { collection, doc, getDoc, getDocs, limit, orderBy, query, where } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, orderBy, query, where } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { getStudentSubmissions, Submission } from "@/lib/firebase/submissions-service";
-
-type GradeItem = {
-  course: string;
-  lesson: string;
-  grade: string;
-  status?: string;
-};
 
 type TaskItem = {
   id: string;
   title: string;
   course?: string;
+  lesson?: string;
   status?: string;
   grade?: number;
   submittedAt?: string;
   feedback?: string;
+};
+
+type StudyRouteWeek = {
+  lesson: string;
+  status: string;
+  gradeLabel: string;
+  activitiesCount: number;
+  lastSubmittedAt?: string;
+  lastSubmittedAtTs?: number;
+};
+
+type StudyRouteCourse = {
+  courseId?: string;
+  course: string;
+  isClosed?: boolean;
+  finalGradeLabel?: string;
+  closedAt?: string;
+  closedAtTs?: number;
+  weeks: StudyRouteWeek[];
 };
 
 export default function StudentProfilePage() {
@@ -38,8 +51,8 @@ export default function StudentProfilePage() {
   const [editingProfile, setEditingProfile] = useState(false);
   const [mapOpen, setMapOpen] = useState(false);
   const [programCourses, setProgramCourses] = useState<{ id: string; title: string; coverUrl?: string }[]>([]);
-  const [grades, setGrades] = useState<GradeItem[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
+  const [studyRoute, setStudyRoute] = useState<StudyRouteCourse[]>([]);
   const [groupId, setGroupId] = useState<string | null>(null);
   const [loadingSubs, setLoadingSubs] = useState(false);
   const [expandedFeedback, setExpandedFeedback] = useState<Set<string>>(new Set());
@@ -144,53 +157,276 @@ export default function StudentProfilePage() {
             collection(db, "studentEnrollments"),
             where("studentId", "==", user.uid),
             orderBy("enrolledAt", "desc"),
-            limit(1),
           ),
         );
         if (enrSnap.empty) {
           setTasks([]);
-          setGrades([]);
+          setStudyRoute([]);
           setGroupId(null);
           return;
         }
-        const enrollment = enrSnap.docs[0].data();
-        const gid = enrollment.groupId as string | undefined;
-        setGroupId(gid ?? null);
-        if (!gid) {
+
+        const enrollmentGroupIds = Array.from(
+          new Set(
+            enrSnap.docs
+              .map((d) => d.data().groupId as string | undefined)
+              .filter((gid): gid is string => Boolean(gid)),
+          ),
+        );
+        setGroupId(enrollmentGroupIds[0] ?? null);
+
+        const toClosureDate = (value: unknown): Date | null => {
+          if (!value) return null;
+          if (value instanceof Date) return value;
+          if (typeof value === "object" && value !== null && "toDate" in value) {
+            const fn = (value as { toDate?: () => Date }).toDate;
+            if (typeof fn === "function") {
+              try {
+                return fn();
+              } catch {
+                return null;
+              }
+            }
+          }
+          return null;
+        };
+
+        const closedCourseMap = new Map<
+          string,
+          { finalGrade: number | null; closedAtTs: number; closedAt?: string }
+        >();
+        enrSnap.docs.forEach((docSnap) => {
+          const data = docSnap.data() as { courseClosures?: Record<string, unknown> };
+          const closures = (data.courseClosures ?? {}) as Record<string, unknown>;
+          Object.entries(closures).forEach(([courseId, closureRaw]) => {
+            const normalizedCourseId = courseId.trim();
+            if (!normalizedCourseId) return;
+            if (!closureRaw || typeof closureRaw !== "object") return;
+            const closure = closureRaw as Record<string, unknown>;
+            if (closure.status !== "closed") return;
+
+            const closedAtDate =
+              toClosureDate(closure.closedAt) ??
+              toClosureDate(closure.updatedAt) ??
+              toClosureDate(closure.reopenedAt);
+            const closedAtTs = closedAtDate?.getTime() ?? 0;
+            const existing = closedCourseMap.get(normalizedCourseId);
+            if (existing && existing.closedAtTs > closedAtTs) return;
+
+            closedCourseMap.set(normalizedCourseId, {
+              finalGrade:
+                typeof closure.finalGrade === "number" && Number.isFinite(closure.finalGrade)
+                  ? closure.finalGrade
+                  : null,
+              closedAtTs,
+              closedAt:
+                closedAtDate ? new Intl.DateTimeFormat("es-MX").format(closedAtDate) : undefined,
+            });
+          });
+        });
+
+        if (!enrollmentGroupIds.length) {
           setTasks([]);
-          setGrades([]);
+          setStudyRoute([]);
           return;
         }
-        const submissions: Submission[] = await getStudentSubmissions(gid, user.uid);
-        const ordered = submissions.sort((a, b) => {
+
+        const submissionsByGroup = await Promise.all(
+          enrollmentGroupIds.map(async (gid) => {
+            try {
+              const submissions = await getStudentSubmissions(gid, user.uid);
+              return submissions.map((sub) => ({ ...sub, groupId: gid }));
+            } catch (err) {
+              console.warn(`No se pudieron cargar entregas del grupo ${gid}:`, err);
+              return [];
+            }
+          }),
+        );
+
+        const allSubmissions: Array<Submission & { groupId: string }> = submissionsByGroup.flat();
+        const courseCache = new Map<
+          string,
+          {
+            lessonTitles: Map<string, string>;
+            classToLesson: Map<string, { lessonId: string; lessonTitle: string }>;
+          }
+        >();
+
+        const loadCourseIndex = async (courseId: string) => {
+          if (courseCache.has(courseId)) return courseCache.get(courseId)!;
+          const lessonTitles = new Map<string, string>();
+          const classToLesson = new Map<string, { lessonId: string; lessonTitle: string }>();
+
+          try {
+            const lessonsSnap = await getDocs(
+              query(collection(db, "courses", courseId, "lessons"), orderBy("order", "asc")),
+            );
+            for (const lessonDoc of lessonsSnap.docs) {
+              const lessonData = lessonDoc.data() as { title?: string };
+              const lessonTitle = (lessonData.title ?? "Semana").trim() || "Semana";
+              lessonTitles.set(lessonDoc.id, lessonTitle);
+
+              const classesSnap = await getDocs(
+                collection(db, "courses", courseId, "lessons", lessonDoc.id, "classes"),
+              );
+              classesSnap.docs.forEach((classDoc) => {
+                classToLesson.set(classDoc.id, {
+                  lessonId: lessonDoc.id,
+                  lessonTitle,
+                });
+              });
+            }
+          } catch (err) {
+            console.warn(`No se pudo indexar el curso ${courseId}:`, err);
+          }
+
+          const index = { lessonTitles, classToLesson };
+          courseCache.set(courseId, index);
+          return index;
+        };
+
+        const uniqueCourseIds = Array.from(
+          new Set(
+            allSubmissions
+              .map((submission) => (submission.courseId ?? "").trim())
+              .filter((courseId): courseId is string => courseId.length > 0),
+          ),
+        );
+        await Promise.all(uniqueCourseIds.map((courseId) => loadCourseIndex(courseId)));
+
+        const resolveLessonLabel = async (submission: Submission) => {
+          const directTitle = (submission.lessonTitle ?? "").trim();
+          if (directTitle) return directTitle;
+
+          const courseId = (submission.courseId ?? "").trim();
+          if (!courseId) return "Semana sin identificar";
+
+          const courseIndex = await loadCourseIndex(courseId);
+          const directLessonId = (submission.lessonId ?? "").trim();
+          if (directLessonId) {
+            const byLessonId = courseIndex.lessonTitles.get(directLessonId);
+            if (byLessonId) return byLessonId;
+          }
+
+          const byClass = courseIndex.classToLesson.get(submission.classDocId ?? submission.classId);
+          if (byClass?.lessonTitle) return byClass.lessonTitle;
+          return "Semana sin identificar";
+        };
+
+        const normalizedSubmissions = await Promise.all(
+          allSubmissions.map(async (submission) => ({
+            ...submission,
+            resolvedLesson: await resolveLessonLabel(submission),
+          })),
+        );
+
+        const ordered = normalizedSubmissions.sort((a, b) => {
           const at = a.submittedAt?.getTime?.() ?? 0;
           const bt = b.submittedAt?.getTime?.() ?? 0;
           return bt - at;
         });
+
         setTasks(
           ordered.map((s) => ({
-            id: s.id,
+            id: `${s.groupId}:${s.id}`,
             title: s.className || "Entrega",
             course: s.courseTitle ?? "",
+            lesson: s.resolvedLesson ?? "",
             status: s.status === "graded" ? "Calificado" : s.status === "late" ? "Fuera de tiempo" : "En revisión",
             grade: s.grade,
             submittedAt: s.submittedAt ? new Intl.DateTimeFormat("es-MX").format(s.submittedAt) : undefined,
             feedback: s.feedback ?? "",
           })),
         );
-        setGrades(
-          ordered
-            .filter((s) => typeof s.grade === "number")
-            .map((s) => ({
-              course: s.courseTitle ?? "Curso",
-              lesson: s.className ?? "Clase",
-              grade: (s.grade ?? "").toString(),
-              status: s.status === "graded" ? "Calificado" : s.status,
-            })),
-        );
+        const routeByCourse = new Map<
+          string,
+          {
+            course: string;
+            courseId: string;
+            weeksMap: Map<string, Array<{ grade?: number; submittedAt?: Date | null }>>;
+          }
+        >();
+        ordered.forEach((s) => {
+          const courseId = (s.courseId ?? "").trim();
+          const courseLabel = (s.courseTitle ?? "Curso").trim() || "Curso";
+          const courseKey = `${courseId || "sin-curso"}::${courseLabel}`;
+          const lessonLabel = (s.resolvedLesson ?? "Semana sin identificar").trim() || "Semana sin identificar";
+          if (!routeByCourse.has(courseKey)) {
+            routeByCourse.set(courseKey, {
+              course: courseLabel,
+              courseId,
+              weeksMap: new Map(),
+            });
+          }
+          const weeks = routeByCourse.get(courseKey)!.weeksMap;
+          if (!weeks.has(lessonLabel)) {
+            weeks.set(lessonLabel, []);
+          }
+          weeks.get(lessonLabel)!.push({
+            grade: s.grade,
+            submittedAt: s.submittedAt,
+          });
+        });
+
+        const route: StudyRouteCourse[] = Array.from(routeByCourse.values())
+          .map((courseEntry) => {
+            const closureInfo = courseEntry.courseId
+              ? closedCourseMap.get(courseEntry.courseId)
+              : undefined;
+            const isClosed = Boolean(closureInfo);
+            const weeks = Array.from(courseEntry.weeksMap.entries())
+              .map(([lesson, items]) => {
+                const graded = items.filter((i) => typeof i.grade === "number");
+                const avgGrade =
+                  graded.length > 0
+                    ? graded.reduce((acc, item) => acc + (item.grade ?? 0), 0) / graded.length
+                    : null;
+                const pendingCount = items.length - graded.length;
+                const lastTimestamp = items.reduce(
+                  (acc, item) => Math.max(acc, item.submittedAt?.getTime?.() ?? 0),
+                  0,
+                );
+                return {
+                  lesson,
+                  status:
+                    pendingCount === 0
+                      ? "Calificada"
+                      : graded.length > 0
+                        ? "Parcial"
+                        : "En revisión",
+                  gradeLabel: avgGrade === null ? "—" : avgGrade.toFixed(1),
+                  activitiesCount: items.length,
+                  lastSubmittedAtTs: lastTimestamp,
+                  lastSubmittedAt:
+                    lastTimestamp > 0
+                      ? new Intl.DateTimeFormat("es-MX").format(new Date(lastTimestamp))
+                      : undefined,
+                };
+              })
+              .sort((a, b) => (b.lastSubmittedAtTs ?? 0) - (a.lastSubmittedAtTs ?? 0));
+
+            return {
+              courseId: courseEntry.courseId || undefined,
+              course: courseEntry.course,
+              isClosed,
+              finalGradeLabel:
+                isClosed && typeof closureInfo?.finalGrade === "number"
+                  ? closureInfo.finalGrade.toFixed(1)
+                  : undefined,
+              closedAt: isClosed ? closureInfo?.closedAt : undefined,
+              closedAtTs: isClosed ? closureInfo?.closedAtTs : undefined,
+              weeks,
+            };
+          })
+          .sort((a, b) => a.course.localeCompare(b.course));
+
+        setStudyRoute(route);
       } catch (err) {
         console.error("No se pudieron cargar las entregas:", err);
         toast.error("No se pudieron cargar tus entregas");
+        setTasks([]);
+        setStudyRoute([]);
+        setGroupId(null);
       } finally {
         setLoadingSubs(false);
       }
@@ -482,50 +718,64 @@ export default function StudentProfilePage() {
 
               <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4">
                 <div className="flex items-center justify-between">
-                  <p className="text-sm font-semibold text-white">Materias / cursos del programa</p>
+                  <p className="text-sm font-semibold text-white">Ruta de materias cursadas</p>
                   <span className="text-xs text-white/60">
-                    {grades.length
-                      ? `${new Set(grades.map((g) => g.course || "Curso")).size} materias`
-                      : tasks.length
-                        ? `${new Set(tasks.map((t) => t.course || "Curso")).size} materias`
-                        : "Sin materias registradas"}
+                    {studyRoute.length ? `${studyRoute.length} materias` : "Sin materias registradas"}
                   </span>
                 </div>
-                {grades.length === 0 && tasks.length === 0 ? (
+                {studyRoute.length === 0 ? (
                   <p className="mt-2 text-sm text-white/70">
-                    Aún no hay materias asociadas a tus entregas. Revisa más tarde.
+                    Aún no hay avance histórico disponible. Revisa más tarde.
                   </p>
-                ) : grades.length > 0 ? (
-                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    {grades.map((g) => (
-                      <div
-                        key={`${g.course}-${g.lesson}-${g.grade}`}
-                        className="flex items-center justify-between rounded-lg border border-white/10 bg-neutral-900/60 px-3 py-2"
-                      >
-                        <div>
-                          <p className="text-sm font-semibold text-white">{g.course || "Curso"}</p>
-                          <p className="text-[11px] text-white/60">{g.lesson || "Materia"}</p>
-                        </div>
-                        <span className="inline-flex items-center rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-semibold text-emerald-100">
-                          {g.grade}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
                 ) : (
-                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    {Array.from(new Set(tasks.map((t) => t.course || "Curso"))).map((course) => (
+                  <div className="mt-3 space-y-3">
+                    {studyRoute.map((course) => (
                       <div
-                        key={course}
-                        className="flex items-center justify-between rounded-lg border border-white/10 bg-neutral-900/60 px-3 py-2"
+                        key={`${course.courseId ?? "sin-curso"}::${course.course}`}
+                        className="rounded-xl border border-white/10 bg-neutral-900/60 p-3"
                       >
-                        <div>
-                          <p className="text-sm font-semibold text-white">{course || "Curso"}</p>
-                          <p className="text-[11px] text-white/60">Entregas registradas</p>
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-semibold text-white">{course.course || "Curso"}</p>
+                            {course.isClosed ? (
+                              <p className="mt-1 text-[11px] text-emerald-200">
+                                Materia cerrada
+                                {course.closedAt ? ` • ${course.closedAt}` : ""}
+                              </p>
+                            ) : (
+                              <p className="mt-1 text-[11px] text-white/55">Materia abierta</p>
+                            )}
+                          </div>
+                          <div className="flex flex-col items-end gap-1">
+                            {course.isClosed && course.finalGradeLabel ? (
+                              <span className="rounded-full bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-100">
+                                Final: {course.finalGradeLabel}
+                              </span>
+                            ) : null}
+                            <span className="text-[11px] text-white/60">{course.weeks.length} semanas</span>
+                          </div>
                         </div>
-                        <span className="text-xs font-semibold text-emerald-200">
-                          {tasks.filter((t) => (t.course || "Curso") === course).length} tareas
-                        </span>
+                        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                          {course.weeks.map((week) => (
+                            <div
+                              key={`${course.course}-${week.lesson}`}
+                              className="rounded-lg border border-white/10 bg-black/30 px-3 py-2"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-xs font-semibold text-white">{week.lesson}</p>
+                                <span className="rounded-full bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-100">
+                                  {week.gradeLabel}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-[11px] text-white/70">
+                                {week.status} • {week.activitiesCount} actividades
+                              </p>
+                              {week.lastSubmittedAt ? (
+                                <p className="text-[10px] text-white/50">Última entrega: {week.lastSubmittedAt}</p>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -564,6 +814,11 @@ export default function StudentProfilePage() {
                         <p className="mt-2 text-xs text-white/70">
                           {task.course ? `${task.course}` : "Curso no disponible"}
                         </p>
+                        {task.lesson ? (
+                          <p className="text-xs text-white/60">
+                            {task.lesson}
+                          </p>
+                        ) : null}
                         <p className="text-xs text-white/60">
                           {task.submittedAt ? `Enviado: ${task.submittedAt}` : "Fecha de envío no disponible"}
                         </p>
