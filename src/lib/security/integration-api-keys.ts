@@ -19,7 +19,7 @@ type ApiKeyDoc = {
   status: KeyStatus;
   createdAt: Date;
   createdBy: string;
-  expiresAt: Date;
+  expiresAt?: Date;
   revokedAt?: Date;
   revokedBy?: string;
   revokeReason?: string;
