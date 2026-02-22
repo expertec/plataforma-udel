@@ -15,3 +15,17 @@ FINANCE_API_KEY_UDEL_VICTORIA=pk_live_801800affa1d63585c1e55da4c2bbf675d8449a79e
 FINANCE_API_KEY_UDEL_CULIACAN=pk_live_ec9c619dbb4a70bec8c36c345eda0f35a99ee2866da625baa6d8a10350ddbf93
 FINANCE_API_KEY_UDEL_LA_PAZ=pk_live_c69c27dd129b10e74515ffb0aee5d36201dd60f5d15d6ee2603781269bb02ca0
 FINANCE_API_KEY_UDEL_ZIHUATANEJO=pk_live_d2ee96aa040a53cba2d54027c6329046c3b3d327da3b016ee376509958431711
+
+# Webhook de finanzas -> alta automática de alumnos
+FINANCE_WEBHOOK_SECRET=bd1a8153ce9a0561e29434e91863fd3b15187e42ccb261e3e0586ddda4396b66
+# Opcional: si el webhook no envía contraseña, se usará esta
+FINANCE_WEBHOOK_DEFAULT_PASSWORD=ascensoUDEL
+# Opcional: programa por defecto si no llega en el payload
+FINANCE_WEBHOOK_DEFAULT_PROGRAM=
+
+# API keys dinámicas para integraciones (panel superAdminTeacher)
+API_KEY_HASH_PEPPER=c8807ef5b8ed0323970f5dc8a402f30c295d76b3dc03d06abad764e5d8ef989b
+API_KEY_DEFAULT_TTL_DAYS=0
+API_DOCS_DEFAULT_CONTACT=
+# Dominio público para documentación de webhook/API
+WEBHOOK_PUBLIC_BASE_URL=https://plataforma-udel.vercel.app
