@@ -68,7 +68,8 @@ Formato de llave emitida por panel:
     "email": "alumno@dominio.com",
     "name": "Nombre Alumno",
     "phone": "6671234567",
-    "program": "Lic. Administración"
+    "program": "Lic. Administración",
+    "groupId": "GRUPO_ABC123"
   }
 }
 \`\`\`
@@ -87,11 +88,28 @@ Nota: si no envías \`password\`, la plataforma usará la contraseña por defect
     "name": "Nombre Alumno",
     "phone": "6671234567",
     "program": "Lic. Administración",
+    "programId": "program_doc_id_001",
+    "groupId": "GRUPO_ABC123",
+    "groupName": "Grupo Matutino A",
     "studentId": "POS-1138"
   },
   "updatePasswordIfExists": false
 }
 \`\`\`
+
+Puedes enviar el grupo como \`groupId\`, \`groupIds\` (usa el primero) o \`groupName\`.
+Si \`groupName\` coincide con más de un grupo, debes enviar \`groupId\`.
+
+Si envías \`groupId\` (directo o resuelto por nombre), la plataforma además:
+
+- Inscribe al alumno en \`groups/{groupId}/students/{studentId}\`
+- Crea/actualiza \`studentEnrollments/{groupId}_{studentId}\`
+- Incrementa \`groups.studentsCount\` solo si no estaba inscrito previamente
+
+Programa de estudio:
+
+- \`program\`: nombre directo del programa.
+- \`programId\`: ID del documento en \`programs\` (tiene prioridad sobre \`program\`).
 
 ## 5) Respuestas esperadas
 
