@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { getStudentSubmissions, Submission, deleteSubmission } from "@/lib/firebase/submissions-service";
 import toast from "react-hot-toast";
@@ -9,6 +9,7 @@ type Props = {
   groupId: string;
   studentId: string;
   studentName: string;
+  allowedCourseIds?: string[];
   isOpen: boolean;
   onClose: () => void;
 };
@@ -17,6 +18,7 @@ export function StudentSubmissionsModal({
   groupId,
   studentId,
   studentName,
+  allowedCourseIds,
   isOpen,
   onClose,
 }: Props) {
@@ -25,13 +27,27 @@ export function StudentSubmissionsModal({
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
+  const filterByAllowedCourses = useCallback(
+    (items: Submission[]): Submission[] => {
+      if (!allowedCourseIds) return items;
+      const allowedSet = new Set(
+        allowedCourseIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0),
+      );
+      return items.filter((submission) => {
+        const courseId = submission.courseId ?? "";
+        return courseId ? allowedSet.has(courseId) : false;
+      });
+    },
+    [allowedCourseIds],
+  );
+
   useEffect(() => {
     if (!isOpen) return;
     const load = async () => {
       setLoading(true);
       try {
         const subs = await getStudentSubmissions(groupId, studentId);
-        setSubmissions(subs);
+        setSubmissions(filterByAllowedCourses(subs));
       } catch (err) {
         console.error("Error cargando submissions:", err);
         toast.error("No se pudieron cargar las tareas");
@@ -40,7 +56,7 @@ export function StudentSubmissionsModal({
       }
     };
     load();
-  }, [isOpen, groupId, studentId]);
+  }, [filterByAllowedCourses, groupId, isOpen, studentId]);
 
   const handleResetSubmission = async (submission: Submission) => {
     if (
@@ -58,7 +74,7 @@ export function StudentSubmissionsModal({
 
       // Recargar submissions
       const subs = await getStudentSubmissions(groupId, studentId);
-      setSubmissions(subs);
+      setSubmissions(filterByAllowedCourses(subs));
     } catch (err) {
       console.error("Error al resetear la tarea:", err);
       toast.error("No se pudo resetear la tarea");
@@ -130,7 +146,9 @@ export function StudentSubmissionsModal({
           </div>
         ) : submissions.length === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-6 text-sm text-slate-600">
-            Este alumno no ha enviado ninguna tarea aún.
+            {allowedCourseIds
+              ? "Este alumno no tiene entregas en las materias que tienes asignadas."
+              : "Este alumno no ha enviado ninguna tarea aún."}
           </div>
         ) : (
           <div className="space-y-3">

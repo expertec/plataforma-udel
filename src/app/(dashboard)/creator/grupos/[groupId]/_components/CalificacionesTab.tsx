@@ -22,6 +22,7 @@ type CalificacionesTabProps = {
   groupTeacherId: string;
   currentUserId: string | null;
   userRole: UserRole | null;
+  onCourseCompletedAndUnlinked?: (courseId: string) => Promise<void> | void;
 };
 
 type Student = { id: string; name: string };
@@ -94,6 +95,7 @@ export function CalificacionesTab({
   groupTeacherId,
   currentUserId,
   userRole,
+  onCourseCompletedAndUnlinked,
 }: CalificacionesTabProps) {
   const [students, setStudents] = useState<Student[]>([]);
   const [tasksByCourse, setTasksByCourse] = useState<Record<string, Task[]>>({});
@@ -113,8 +115,17 @@ export function CalificacionesTab({
   useEffect(() => {
     if (!selectedCourseId && courses.length > 0) {
       setSelectedCourseId(courses[0].courseId);
+      return;
+    }
+    if (selectedCourseId && courses.length > 0 && !courses.some((course) => course.courseId === selectedCourseId)) {
+      setSelectedCourseId(courses[0].courseId);
     }
   }, [courses, selectedCourseId]);
+
+  const selectedCourse = useMemo(
+    () => courses.find((course) => course.courseId === selectedCourseId) ?? null,
+    [courses, selectedCourseId],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -507,8 +518,11 @@ export function CalificacionesTab({
       if (!confirmed) return;
     }
 
+    const selectedCourseName = selectedCourse?.courseName ?? "esta materia";
     const confirmedAll = window.confirm(
-      `¿Cerrar la materia para ${openRows.length} alumno(s)? Esta acción ocultará la materia en su feed principal.`,
+      `Vas a cerrar calificaciones de "${selectedCourseName}" para ${openRows.length} alumno(s).\n\n` +
+      "Al confirmar, la materia se marcará como completada y se desvinculará automáticamente del grupo para los maestros asignados.\n\n" +
+      "¿Deseas continuar?",
     );
     if (!confirmedAll) return;
 
@@ -577,7 +591,38 @@ export function CalificacionesTab({
         return next;
       });
 
-      toast.success(`Materia cerrada para ${openRows.length} alumno(s).`);
+      let unlinked = false;
+      try {
+        const response = await fetch("/api/groups/unlink-course", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            groupId,
+            courseId: selectedCourseId,
+          }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || "No se pudo desvincular la materia del grupo");
+        }
+
+        unlinked = true;
+        await onCourseCompletedAndUnlinked?.(selectedCourseId);
+      } catch (unlinkErr) {
+        console.error(unlinkErr);
+        const message =
+          unlinkErr instanceof Error
+            ? unlinkErr.message
+            : "No se pudo desvincular la materia del grupo";
+        toast.error(`Calificaciones cerradas, pero hubo un error al desvincular: ${message}`);
+      }
+
+      if (unlinked) {
+        toast.success(`Materia cerrada y completada para ${openRows.length} alumno(s).`);
+      } else {
+        toast.success(`Materia cerrada para ${openRows.length} alumno(s).`);
+      }
     } catch (err) {
       console.error(err);
       toast.error("No se pudo cerrar la materia para todos.");
@@ -633,7 +678,7 @@ export function CalificacionesTab({
               }
               className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
             >
-              {processingAll ? "Cerrando..." : "Cerrar para todos"}
+              {processingAll ? "Cerrando..." : "Cerrar y completar"}
             </button>
           ) : null}
           <span className="text-xs text-slate-500">

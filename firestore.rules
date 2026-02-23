@@ -51,20 +51,31 @@ service cloud.firestore {
     // Permite que profesores agreguen su materia a un grupo existente sin modificar otros campos.
     function canTeacherLinkCourseToGroup() {
       return isTeacher() &&
-        request.resource.data.diff(resource.data).changedKeys().hasOnly(['courses', 'courseIds', 'updatedAt']) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['courses', 'courseIds', 'mentorCourseAccess', 'updatedAt']) &&
         request.resource.data.courses is list &&
         request.resource.data.courseIds is list &&
+        (!('mentorCourseAccess' in request.resource.data) || request.resource.data.mentorCourseAccess is map) &&
         listSize(request.resource.data.courses) >= listSize(resource.data.courses) &&
         listSize(request.resource.data.courseIds) >= listSize(resource.data.courseIds);
     }
     // Permite a un profesor quitar su curso de un grupo, incluyendo actualizar courseId/courseName cuando corresponde.
     function canTeacherUnlinkCourseFromGroup(groupPath) {
       return isTeacherAssignedToGroup(groupPath) &&
-        request.resource.data.diff(resource.data).changedKeys().hasOnly(['courses', 'courseIds', 'updatedAt', 'courseId', 'courseName']) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['courses', 'courseIds', 'mentorCourseAccess', 'updatedAt', 'courseId', 'courseName']) &&
         request.resource.data.courses is list &&
         request.resource.data.courseIds is list &&
+        (!('mentorCourseAccess' in request.resource.data) || request.resource.data.mentorCourseAccess is map) &&
         listSize(request.resource.data.courses) <= listSize(resource.data.courses) &&
         listSize(request.resource.data.courseIds) <= listSize(resource.data.courseIds);
+    }
+    function canTeacherManageMentorsInGroup(groupPath) {
+      return isSignedIn() &&
+        exists(groupPath) &&
+        get(groupPath).data.teacherId == request.auth.uid &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['assistantTeacherIds', 'assistantTeachers', 'mentorCourseAccess', 'updatedAt']) &&
+        request.resource.data.assistantTeacherIds is list &&
+        request.resource.data.assistantTeachers is list &&
+        (!('mentorCourseAccess' in request.resource.data) || request.resource.data.mentorCourseAccess is map);
     }
     function canUpdateLikesCountOnly() {
       return isSignedIn() &&
@@ -290,6 +301,7 @@ service cloud.firestore {
       allow read: if isSignedIn();
       allow create: if isAdmin() || isAdminTeacher();
       allow update: if isAdmin() || isAdminTeacher() ||
+        canTeacherManageMentorsInGroup(/databases/$(database)/documents/groups/$(groupId)) ||
         canTeacherLinkCourseToGroup() ||
         canTeacherUnlinkCourseFromGroup(/databases/$(database)/documents/groups/$(groupId));
       allow delete: if isAdmin() || isAdminTeacher();

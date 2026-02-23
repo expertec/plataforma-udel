@@ -33,6 +33,7 @@ export type Group = {
   teacherName: string;
   assistantTeacherIds?: string[];
   assistantTeachers?: Array<{ id: string; name: string; email?: string }>;
+  mentorCourseAccess?: Record<string, string[]>;
   semester: string;
   startDate?: Date | null;
   endDate?: Date | null;
@@ -58,6 +59,159 @@ type CreateGroupData = {
   maxStudents: number;
 };
 
+type MentorCourseAccessMap = Record<string, string[]>;
+
+const toUniqueStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value.filter(
+        (item): item is string => typeof item === "string" && item.trim().length > 0,
+      ),
+    ),
+  );
+};
+
+const toGroupCourses = (data: DocumentData): Array<{ courseId: string; courseName: string }> => {
+  if (Array.isArray(data.courses)) {
+    const courses = data.courses
+      .map((course) => {
+        if (!course || typeof course !== "object") return null;
+        const c = course as { courseId?: unknown; courseName?: unknown };
+        const courseId = typeof c.courseId === "string" ? c.courseId : "";
+        if (!courseId) return null;
+        return {
+          courseId,
+          courseName: typeof c.courseName === "string" ? c.courseName : "",
+        };
+      })
+      .filter((course): course is { courseId: string; courseName: string } => course !== null);
+    if (courses.length > 0) return courses;
+  }
+  const legacyCourseId = typeof data.courseId === "string" ? data.courseId : "";
+  if (legacyCourseId) {
+    return [
+      {
+        courseId: legacyCourseId,
+        courseName: typeof data.courseName === "string" ? data.courseName : "",
+      },
+    ];
+  }
+  return [];
+};
+
+const toGroupCourseIds = (
+  data: DocumentData,
+  courses: Array<{ courseId: string; courseName: string }> = toGroupCourses(data),
+): string[] => {
+  const explicitIds = toUniqueStringArray(data.courseIds);
+  if (explicitIds.length > 0) return explicitIds;
+  if (courses.length > 0) {
+    return Array.from(new Set(courses.map((course) => course.courseId)));
+  }
+  const legacyCourseId = typeof data.courseId === "string" ? data.courseId : "";
+  return legacyCourseId ? [legacyCourseId] : [];
+};
+
+const normalizeMentorCourseAccess = (
+  value: unknown,
+  validCourseIds: string[],
+): MentorCourseAccessMap => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const validIds = new Set(validCourseIds);
+  const next: MentorCourseAccessMap = {};
+  Object.entries(value as Record<string, unknown>).forEach(([mentorId, rawIds]) => {
+    if (!mentorId) return;
+    const ids = toUniqueStringArray(rawIds).filter((id) => validIds.has(id));
+    next[mentorId] = ids;
+  });
+  return next;
+};
+
+const buildMentorCourseAccess = (params: {
+  mentorIds: string[];
+  existingAccess: MentorCourseAccessMap;
+  validCourseIds: string[];
+}): MentorCourseAccessMap => {
+  const { mentorIds, existingAccess, validCourseIds } = params;
+  const validSet = new Set(validCourseIds);
+  const next: MentorCourseAccessMap = {};
+  mentorIds.forEach((mentorId) => {
+    if (!mentorId) return;
+    const hasExisting = Object.prototype.hasOwnProperty.call(existingAccess, mentorId);
+    if (hasExisting) {
+      next[mentorId] = (existingAccess[mentorId] ?? []).filter((courseId) => validSet.has(courseId));
+      return;
+    }
+    next[mentorId] = [...validCourseIds];
+  });
+  return next;
+};
+
+const mapCourseMentorsByAccess = (
+  courseIds: string[],
+  mentorIds: string[],
+  mentorCourseAccess: MentorCourseAccessMap,
+): Record<string, string[]> => {
+  const next: Record<string, string[]> = {};
+  courseIds.forEach((courseId) => {
+    next[courseId] = mentorIds.filter((mentorId) => {
+      if (!Object.prototype.hasOwnProperty.call(mentorCourseAccess, mentorId)) return true;
+      return mentorCourseAccess[mentorId]?.includes(courseId) ?? false;
+    });
+  });
+  return next;
+};
+
+const toGroup = (id: string, data: DocumentData): Group => {
+  const courses = toGroupCourses(data);
+  const courseIds = toGroupCourseIds(data, courses);
+  return {
+    id,
+    courseId: typeof data.courseId === "string" ? data.courseId : "",
+    courseName: typeof data.courseName === "string" ? data.courseName : "",
+    program: typeof data.program === "string" ? data.program : "",
+    courses,
+    courseIds,
+    groupName: typeof data.groupName === "string" ? data.groupName : "",
+    teacherId: typeof data.teacherId === "string" ? data.teacherId : "",
+    teacherName: typeof data.teacherName === "string" ? data.teacherName : "",
+    assistantTeacherIds: toUniqueStringArray(data.assistantTeacherIds),
+    assistantTeachers: Array.isArray(data.assistantTeachers)
+      ? data.assistantTeachers.reduce<Array<{ id: string; name: string; email?: string }>>(
+          (acc, teacher) => {
+            if (!teacher || typeof teacher !== "object") return acc;
+            const item = teacher as { id?: unknown; name?: unknown; email?: unknown };
+            const teacherId = typeof item.id === "string" ? item.id : "";
+            if (!teacherId) return acc;
+            const normalized: { id: string; name: string; email?: string } = {
+              id: teacherId,
+              name: typeof item.name === "string" ? item.name : "",
+            };
+            if (typeof item.email === "string" && item.email.trim().length > 0) {
+              normalized.email = item.email;
+            }
+            acc.push(normalized);
+            return acc;
+          },
+          [],
+        )
+      : [],
+    mentorCourseAccess: normalizeMentorCourseAccess(data.mentorCourseAccess, courseIds),
+    semester: typeof data.semester === "string" ? data.semester : "",
+    startDate: data.startDate?.toDate?.() ?? null,
+    endDate: data.endDate?.toDate?.() ?? null,
+    status:
+      data.status === "finished" || data.status === "archived" || data.status === "active"
+        ? data.status
+        : "active",
+    studentsCount: typeof data.studentsCount === "number" ? data.studentsCount : 0,
+    maxStudents: typeof data.maxStudents === "number" ? data.maxStudents : 0,
+    createdAt: data.createdAt?.toDate?.(),
+    updatedAt: data.updatedAt?.toDate?.(),
+  };
+};
+
 export async function createGroup(data: CreateGroupData): Promise<string> {
   const ref = collection(db, "groups");
   const coursesList = Array.isArray(data.courses) ? data.courses : [];
@@ -81,6 +235,9 @@ export async function createGroup(data: CreateGroupData): Promise<string> {
     groupName: data.groupName,
     teacherId: data.teacherId,
     teacherName: data.teacherName,
+    assistantTeacherIds: [],
+    assistantTeachers: [],
+    mentorCourseAccess: {},
     semester: data.semester ?? "",
     startDate: data.startDate ? Timestamp.fromDate(data.startDate) : null,
     endDate: data.endDate ? Timestamp.fromDate(data.endDate) : null,
@@ -97,74 +254,14 @@ export async function getGroups(teacherId: string): Promise<Group[]> {
   const ref = collection(db, "groups");
   const q = query(ref, where("teacherId", "==", teacherId), orderBy("createdAt", "desc"));
   const snap = await getDocs(q);
-  return snap.docs.map((docSnap) => {
-    const d = docSnap.data();
-        return {
-          id: docSnap.id,
-          courseId: d.courseId ?? "",
-          courseName: d.courseName ?? "",
-          program: d.program ?? "",
-          courses: Array.isArray(d.courses)
-        ? d.courses
-        : d.courseId
-          ? [{ courseId: d.courseId ?? "", courseName: d.courseName ?? "" }]
-          : [],
-      courseIds: Array.isArray(d.courseIds) && d.courseIds.length > 0
-        ? d.courseIds
-        : d.courseId
-          ? [d.courseId]
-          : [],
-      groupName: d.groupName ?? "",
-      teacherId: d.teacherId ?? "",
-      teacherName: d.teacherName ?? "",
-      assistantTeacherIds: Array.isArray(d.assistantTeacherIds) ? d.assistantTeacherIds : [],
-      assistantTeachers: Array.isArray(d.assistantTeachers) ? d.assistantTeachers : [],
-      semester: d.semester ?? "",
-      startDate: d.startDate?.toDate?.() ?? null,
-      endDate: d.endDate?.toDate?.() ?? null,
-      status: d.status ?? "active",
-      studentsCount: d.studentsCount ?? 0,
-      maxStudents: d.maxStudents ?? 0,
-      createdAt: d.createdAt?.toDate?.(),
-      updatedAt: d.updatedAt?.toDate?.(),
-    };
-  });
+  return snap.docs.map((docSnap) => toGroup(docSnap.id, docSnap.data()));
 }
 
 export async function getGroup(groupId: string): Promise<Group | null> {
   const ref = doc(db, "groups", groupId);
   const snap = await getDoc(ref);
   if (!snap.exists()) return null;
-  const d = snap.data();
-      return {
-        id: snap.id,
-        courseId: d.courseId ?? "",
-        courseName: d.courseName ?? "",
-        program: d.program ?? "",
-    courses: Array.isArray(d.courses)
-      ? d.courses
-      : d.courseId
-        ? [{ courseId: d.courseId ?? "", courseName: d.courseName ?? "" }]
-        : [],
-    courseIds: Array.isArray(d.courseIds) && d.courseIds.length > 0
-      ? d.courseIds
-      : d.courseId
-        ? [d.courseId]
-        : [],
-    groupName: d.groupName ?? "",
-    teacherId: d.teacherId ?? "",
-    teacherName: d.teacherName ?? "",
-    assistantTeacherIds: Array.isArray(d.assistantTeacherIds) ? d.assistantTeacherIds : [],
-    assistantTeachers: Array.isArray(d.assistantTeachers) ? d.assistantTeachers : [],
-    semester: d.semester ?? "",
-    startDate: d.startDate?.toDate?.() ?? null,
-    endDate: d.endDate?.toDate?.() ?? null,
-    status: d.status ?? "active",
-    studentsCount: d.studentsCount ?? 0,
-    maxStudents: d.maxStudents ?? 0,
-    createdAt: d.createdAt?.toDate?.(),
-    updatedAt: d.updatedAt?.toDate?.(),
-  };
+  return toGroup(snap.id, snap.data());
 }
 
 export async function getGroupsByCourse(courseId: string, teacherId?: string): Promise<Group[]> {
@@ -185,36 +282,7 @@ export async function getGroupsByCourse(courseId: string, teacherId?: string): P
   const map = new Map<string, Group>();
   const consume = (snap: QuerySnapshot<DocumentData>) => {
     snap.docs.forEach((docSnap: QueryDocumentSnapshot<DocumentData>) => {
-      const d = docSnap.data();
-        map.set(docSnap.id, {
-          id: docSnap.id,
-          courseId: d.courseId ?? "",
-          courseName: d.courseName ?? "",
-          program: d.program ?? "",
-        courses: Array.isArray(d.courses)
-          ? d.courses
-          : d.courseId
-            ? [{ courseId: d.courseId ?? "", courseName: d.courseName ?? "" }]
-            : [],
-        courseIds: Array.isArray(d.courseIds) && d.courseIds.length > 0
-          ? d.courseIds
-          : d.courseId
-            ? [d.courseId]
-            : [],
-        groupName: d.groupName ?? "",
-        teacherId: d.teacherId ?? "",
-        teacherName: d.teacherName ?? "",
-        assistantTeacherIds: Array.isArray(d.assistantTeacherIds) ? d.assistantTeacherIds : [],
-        assistantTeachers: Array.isArray(d.assistantTeachers) ? d.assistantTeachers : [],
-        semester: d.semester ?? "",
-        startDate: d.startDate?.toDate?.() ?? null,
-        endDate: d.endDate?.toDate?.() ?? null,
-        status: d.status ?? "active",
-        studentsCount: d.studentsCount ?? 0,
-        maxStudents: d.maxStudents ?? 0,
-        createdAt: d.createdAt?.toDate?.(),
-        updatedAt: d.updatedAt?.toDate?.(),
-      });
+      map.set(docSnap.id, toGroup(docSnap.id, docSnap.data()));
     });
   };
   consume(snapCourseId);
@@ -230,37 +298,7 @@ export async function getActiveGroups(teacherId?: string): Promise<Group[]> {
   }
   const snap = await getDocs(query(ref, ...constraints));
   return snap.docs
-    .map((docSnap) => {
-      const d = docSnap.data();
-    return {
-      id: docSnap.id,
-      courseId: d.courseId ?? "",
-      courseName: d.courseName ?? "",
-        courses: Array.isArray(d.courses)
-          ? d.courses
-          : d.courseId
-            ? [{ courseId: d.courseId ?? "", courseName: d.courseName ?? "" }]
-            : [],
-        courseIds: Array.isArray(d.courseIds) && d.courseIds.length > 0
-          ? d.courseIds
-          : d.courseId
-            ? [d.courseId]
-            : [],
-        groupName: d.groupName ?? "",
-        teacherId: d.teacherId ?? "",
-        teacherName: d.teacherName ?? "",
-        assistantTeacherIds: Array.isArray(d.assistantTeacherIds) ? d.assistantTeacherIds : [],
-        assistantTeachers: Array.isArray(d.assistantTeachers) ? d.assistantTeachers : [],
-        semester: d.semester ?? "",
-        startDate: d.startDate?.toDate?.() ?? null,
-        endDate: d.endDate?.toDate?.() ?? null,
-        status: d.status ?? "active",
-        studentsCount: d.studentsCount ?? 0,
-        maxStudents: d.maxStudents ?? 0,
-        createdAt: d.createdAt?.toDate?.(),
-        updatedAt: d.updatedAt?.toDate?.(),
-      };
-    })
+    .map((docSnap) => toGroup(docSnap.id, docSnap.data()))
     .filter((g) => g.status === "active");
 }
 
@@ -377,35 +415,7 @@ export async function getGroupsForTeacher(teacherId: string, maxResults?: number
   const consume = (snap: QuerySnapshot<DocumentData>) => {
     snap.docs.forEach((docSnap) => {
       if (map.has(docSnap.id)) return;
-      const d = docSnap.data();
-      map.set(docSnap.id, {
-        id: docSnap.id,
-        courseId: d.courseId ?? "",
-        courseName: d.courseName ?? "",
-        courses: Array.isArray(d.courses)
-          ? d.courses
-          : d.courseId
-            ? [{ courseId: d.courseId ?? "", courseName: d.courseName ?? "" }]
-            : [],
-        courseIds: Array.isArray(d.courseIds) && d.courseIds.length > 0
-          ? d.courseIds
-          : d.courseId
-            ? [d.courseId]
-            : [],
-        groupName: d.groupName ?? "",
-        teacherId: d.teacherId ?? "",
-        teacherName: d.teacherName ?? "",
-        assistantTeacherIds: Array.isArray(d.assistantTeacherIds) ? d.assistantTeacherIds : [],
-        assistantTeachers: Array.isArray(d.assistantTeachers) ? d.assistantTeachers : [],
-        semester: d.semester ?? "",
-        startDate: d.startDate?.toDate?.() ?? null,
-        endDate: d.endDate?.toDate?.() ?? null,
-        status: d.status ?? "active",
-        studentsCount: d.studentsCount ?? 0,
-        maxStudents: d.maxStudents ?? 0,
-        createdAt: d.createdAt?.toDate?.(),
-        updatedAt: d.updatedAt?.toDate?.(),
-      });
+      map.set(docSnap.id, toGroup(docSnap.id, docSnap.data()));
     });
   };
   consume(mainSnap);
@@ -470,28 +480,39 @@ export async function linkCourseToGroup(params: {
   const snap = await getDoc(ref);
   if (!snap.exists()) throw new Error("Grupo no encontrado");
   const data = snap.data();
-  const courses: Array<{ courseId: string; courseName: string }> = Array.isArray(data.courses)
-    ? data.courses
-    : data.courseId
-      ? [{ courseId: data.courseId, courseName: data.courseName ?? "" }]
-      : [];
-  const courseIds: string[] = Array.isArray(data.courseIds) ? data.courseIds : [];
+  const courses = toGroupCourses(data);
+  const courseIds = toGroupCourseIds(data, courses);
+  const mentorIds = toUniqueStringArray(data.assistantTeacherIds);
+  const existingAccess = normalizeMentorCourseAccess(data.mentorCourseAccess, courseIds);
 
   const hasCourse = courses.some((c) => c.courseId === courseId);
   const nextCourses = hasCourse ? courses : [...courses, { courseId, courseName }];
   const nextCourseIds = Array.from(new Set([...(courseIds || []), courseId]));
+  const nextMentorCourseAccess = buildMentorCourseAccess({
+    mentorIds,
+    existingAccess,
+    validCourseIds: nextCourseIds,
+  });
+
+  if (!hasCourse) {
+    mentorIds.forEach((mentorId) => {
+      nextMentorCourseAccess[mentorId] = Array.from(
+        new Set([...(nextMentorCourseAccess[mentorId] ?? []), courseId]),
+      );
+    });
+  }
 
   await updateDoc(ref, {
     courses: nextCourses,
     courseIds: nextCourseIds,
+    mentorCourseAccess: nextMentorCourseAccess,
     updatedAt: serverTimestamp(),
   });
 
-  // Si el grupo tiene mentores, agregarlos al nuevo curso
-  const mentorIds = data.assistantTeacherIds ?? [];
-  if (mentorIds.length > 0 && !hasCourse) {
-    const { addMentorsToCourse } = await import("./courses-service");
-    await addMentorsToCourse(courseId, mentorIds);
+  if (nextCourseIds.length > 0) {
+    const { syncCourseMentorsByCourse } = await import("./courses-service");
+    const courseMentors = mapCourseMentorsByAccess(nextCourseIds, mentorIds, nextMentorCourseAccess);
+    await syncCourseMentorsByCourse(courseMentors);
   }
 }
 
@@ -505,22 +526,26 @@ export async function unlinkCourseFromGroup(params: {
   if (!snap.exists()) throw new Error("Grupo no encontrado");
 
   const data = snap.data();
-  const courses: Array<{ courseId: string; courseName: string }> = Array.isArray(data.courses)
-    ? data.courses
-    : data.courseId
-      ? [{ courseId: data.courseId, courseName: data.courseName ?? "" }]
-      : [];
-  const courseIds: string[] = Array.isArray(data.courseIds) ? data.courseIds : [];
+  const courses = toGroupCourses(data);
+  const courseIds = toGroupCourseIds(data, courses);
+  const mentorIds = toUniqueStringArray(data.assistantTeacherIds);
+  const existingAccess = normalizeMentorCourseAccess(data.mentorCourseAccess, courseIds);
 
   // Remover el curso de los arrays
   const nextCourses = courses.filter((c) => c.courseId !== courseId);
   const nextCourseIds = courseIds.filter((id) => id !== courseId);
+  const nextMentorCourseAccess = buildMentorCourseAccess({
+    mentorIds,
+    existingAccess,
+    validCourseIds: nextCourseIds,
+  });
 
   // Si solo queda un curso o ninguno, actualizar courseId y courseName principales
   const primaryCourse = nextCourses[0];
-  const updateData: any = {
+  const updateData: Record<string, unknown> = {
     courses: nextCourses,
     courseIds: nextCourseIds,
+    mentorCourseAccess: nextMentorCourseAccess,
     updatedAt: serverTimestamp(),
   };
 
@@ -545,20 +570,75 @@ export async function setAssistantTeachers(groupId: string, teachers: Array<{ id
   if (!groupSnap.exists()) return;
 
   const groupData = groupSnap.data();
-  const courseIds = groupData.courseIds ?? [];
-  const mentorIds = teachers.map((t) => t.id);
+  const courseIds = toGroupCourseIds(groupData);
+  const mentorIds = toUniqueStringArray(teachers.map((t) => t.id));
+  const existingAccess = normalizeMentorCourseAccess(groupData.mentorCourseAccess, courseIds);
+  const mentorCourseAccess = buildMentorCourseAccess({
+    mentorIds,
+    existingAccess,
+    validCourseIds: courseIds,
+  });
 
   // Actualizar el grupo con los nuevos mentores
   await updateDoc(ref, {
     assistantTeacherIds: mentorIds,
     assistantTeachers: teachers,
+    mentorCourseAccess,
     updatedAt: serverTimestamp(),
   });
 
   // Sincronizar los mentorIds en los cursos asociados
   if (courseIds.length > 0) {
-    const { syncCourseMentors } = await import("./courses-service");
-    await syncCourseMentors(courseIds, mentorIds);
+    const { syncCourseMentorsByCourse } = await import("./courses-service");
+    const courseMentors = mapCourseMentorsByAccess(courseIds, mentorIds, mentorCourseAccess);
+    await syncCourseMentorsByCourse(courseMentors);
+  }
+}
+
+export async function setMentorCourseAccess(
+  groupId: string,
+  mentorId: string,
+  allowedCourseIds: string[],
+): Promise<void> {
+  if (!groupId || !mentorId) return;
+  const ref = doc(db, "groups", groupId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error("Grupo no encontrado");
+
+  const data = snap.data();
+  const courseIds = toGroupCourseIds(data);
+  const mentorIds = toUniqueStringArray(data.assistantTeacherIds);
+  if (!mentorIds.includes(mentorId)) {
+    throw new Error("El mentor no está asignado al grupo");
+  }
+
+  const validCourseIds = new Set(courseIds);
+  const normalizedRequested = Array.from(
+    new Set(
+      (allowedCourseIds ?? []).filter(
+        (courseId): courseId is string =>
+          typeof courseId === "string" && validCourseIds.has(courseId),
+      ),
+    ),
+  );
+
+  const existingAccess = normalizeMentorCourseAccess(data.mentorCourseAccess, courseIds);
+  const nextAccess = buildMentorCourseAccess({
+    mentorIds,
+    existingAccess,
+    validCourseIds: courseIds,
+  });
+  nextAccess[mentorId] = normalizedRequested;
+
+  await updateDoc(ref, {
+    mentorCourseAccess: nextAccess,
+    updatedAt: serverTimestamp(),
+  });
+
+  if (courseIds.length > 0) {
+    const { syncCourseMentorsByCourse } = await import("./courses-service");
+    const courseMentors = mapCourseMentorsByAccess(courseIds, mentorIds, nextAccess);
+    await syncCourseMentorsByCourse(courseMentors);
   }
 }
 
@@ -575,33 +655,5 @@ export async function getGroupsWhereAssistant(teacherId: string): Promise<Group[
   );
 
   const snap = await getDocs(q);
-  return snap.docs.map((doc) => {
-    const d = doc.data();
-    return {
-      id: doc.id,
-      courseId: d.courseId ?? "",
-      courseName: d.courseName ?? "",
-      program: d.program ?? undefined,
-      courses: Array.isArray(d.courses)
-        ? d.courses.map((c: any) => ({
-            courseId: c.courseId ?? "",
-            courseName: c.courseName ?? "",
-          }))
-        : [],
-      courseIds: Array.isArray(d.courseIds) ? d.courseIds : [],
-      groupName: d.groupName ?? "",
-      teacherId: d.teacherId ?? "",
-      teacherName: d.teacherName ?? "",
-      assistantTeacherIds: Array.isArray(d.assistantTeacherIds) ? d.assistantTeacherIds : [],
-      assistantTeachers: Array.isArray(d.assistantTeachers) ? d.assistantTeachers : [],
-      semester: d.semester ?? "",
-      startDate: d.startDate?.toDate?.() ?? null,
-      endDate: d.endDate?.toDate?.() ?? null,
-      status: d.status ?? "active",
-      studentsCount: d.studentsCount ?? 0,
-      maxStudents: d.maxStudents ?? 0,
-      createdAt: d.createdAt?.toDate?.() ?? new Date(),
-      updatedAt: d.updatedAt?.toDate?.() ?? new Date(),
-    };
-  });
+  return snap.docs.map((groupDoc) => toGroup(groupDoc.id, groupDoc.data()));
 }

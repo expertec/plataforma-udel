@@ -37,6 +37,41 @@ export type Course = {
   teacherId?: string; // ID del profesor creador del curso
 };
 
+const toUniqueStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value.filter(
+        (item): item is string => typeof item === "string" && item.trim().length > 0,
+      ),
+    ),
+  );
+};
+
+const getGroupCourseIds = (groupData: Record<string, unknown>): string[] => {
+  const ids = toUniqueStringArray(groupData.courseIds);
+  if (ids.length > 0) return ids;
+  const legacyCourseId = typeof groupData.courseId === "string" ? groupData.courseId : "";
+  return legacyCourseId ? [legacyCourseId] : [];
+};
+
+const getMentorAllowedCourseIds = (
+  groupData: Record<string, unknown>,
+  mentorId: string,
+): string[] => {
+  const groupCourseIds = getGroupCourseIds(groupData);
+  const mentorAccess = groupData.mentorCourseAccess;
+  if (!mentorAccess || typeof mentorAccess !== "object" || Array.isArray(mentorAccess)) {
+    return groupCourseIds;
+  }
+  if (!Object.prototype.hasOwnProperty.call(mentorAccess, mentorId)) {
+    return groupCourseIds;
+  }
+  const rawAllowed = (mentorAccess as Record<string, unknown>)[mentorId];
+  const validGroupIds = new Set(groupCourseIds);
+  return toUniqueStringArray(rawAllowed).filter((courseId) => validGroupIds.has(courseId));
+};
+
 /**
  * Obtiene los cursos con límite opcional para reducir lecturas de Firestore
  * @param teacherId - ID del profesor (opcional, si no se pasa devuelve todos)
@@ -116,16 +151,10 @@ export async function getCourses(teacherId?: string, maxResults?: number): Promi
 
   // Recolectar IDs únicos de cursos de los grupos donde es mentor
   const mentorCourseIds = new Set<string>();
-  mentorGroupsSnap.docs.forEach((doc) => {
-    const data = doc.data();
-    // Agregar courseId legacy si existe
-    if (data.courseId) {
-      mentorCourseIds.add(data.courseId);
-    }
-    // Agregar courseIds del array si existe
-    if (Array.isArray(data.courseIds)) {
-      data.courseIds.forEach((id: string) => mentorCourseIds.add(id));
-    }
+  mentorGroupsSnap.docs.forEach((groupDoc) => {
+    const data = groupDoc.data() as Record<string, unknown>;
+    const allowedCourseIds = getMentorAllowedCourseIds(data, teacherId);
+    allowedCourseIds.forEach((id) => mentorCourseIds.add(id));
   });
 
   // Si no hay cursos de mentoría, retornar solo los propios
@@ -282,23 +311,41 @@ export async function removeMentorsFromCourse(courseId: string, mentorIds: strin
 }
 
 /**
- * Sincroniza los mentorIds de los cursos cuando cambian los assistant teachers de un grupo
+ * Sincroniza mentorIds por curso cuando cambian los accesos en grupos.
+ */
+export async function syncCourseMentorsByCourse(
+  courseMentorsByCourse: Record<string, string[]>,
+): Promise<void> {
+  const entries = Object.entries(courseMentorsByCourse).filter(
+    ([courseId]) => typeof courseId === "string" && courseId.trim().length > 0,
+  );
+  if (entries.length === 0) return;
+
+  const promises = entries.map(async ([courseId, mentorIds]) => {
+    const courseRef = doc(db, "courses", courseId);
+    await updateDoc(courseRef, {
+      mentorIds: toUniqueStringArray(mentorIds),
+    });
+  });
+
+  await Promise.all(promises);
+}
+
+/**
+ * Sincroniza los mentorIds de una lista de cursos con el mismo arreglo de mentores.
+ * Se mantiene por compatibilidad con llamadas existentes.
  */
 export async function syncCourseMentors(
   courseIds: string[],
   mentorIds: string[]
 ): Promise<void> {
   if (!courseIds || courseIds.length === 0) return;
-
-  // Actualizar cada curso con los mentores actuales
-  const promises = courseIds.map(async (courseId) => {
-    const courseRef = doc(db, "courses", courseId);
-    await updateDoc(courseRef, {
-      mentorIds: mentorIds,
-    });
+  const normalizedMentors = toUniqueStringArray(mentorIds);
+  const courseMentorsByCourse: Record<string, string[]> = {};
+  toUniqueStringArray(courseIds).forEach((courseId) => {
+    courseMentorsByCourse[courseId] = normalizedMentors;
   });
-
-  await Promise.all(promises);
+  await syncCourseMentorsByCourse(courseMentorsByCourse);
 }
 
 export type Lesson = {

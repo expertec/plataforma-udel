@@ -209,6 +209,14 @@ const normalizeClassType = (rawType: unknown) => {
   return value;
 };
 
+const toSafeString = (value: unknown) => {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+};
+
+const trimSafeString = (value: unknown) => toSafeString(value).trim();
+
 const loadLocalProgress = (uid: string) => {
   if (typeof window === "undefined") return { progress: {}, completed: {}, seen: {} };
   try {
@@ -349,10 +357,8 @@ export default function StudentFeedPageClient() {
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const desktopFiltersRef = useRef<HTMLDivElement | null>(null);
   const mobileFiltersRef = useRef<HTMLDivElement | null>(null);
-  const [showCompletedWeeks, setShowCompletedWeeks] = useState(false);
   const [showClosedCourses, setShowClosedCourses] = useState(false);
   const [classEvaluationMap, setClassEvaluationMap] = useState<Record<string, ClassEvaluationState>>({});
-  const [completedLessonMap, setCompletedLessonMap] = useState<Record<string, boolean>>({});
   const [courseClosureMap, setCourseClosureMap] = useState<Record<string, CourseClosureState>>({});
   const [forumDoneMap, setForumDoneMap] = useState<Record<string, boolean>>({});
   const [forumsReady, setForumsReady] = useState(false);
@@ -450,12 +456,6 @@ export default function StudentFeedPageClient() {
   );
 
   const isClassEvaluable = useCallback((cls: FeedClass) => cls.type === "quiz" || cls.hasAssignment === true, []);
-
-  const lessonKeyFromClass = useCallback(
-    (cls: FeedClass) =>
-      `${cls.groupId ?? "sin-grupo"}::${cls.courseId ?? "sin-curso"}::${cls.lessonId ?? cls.lessonTitle ?? "leccion"}`,
-    [],
-  );
 
   const courseClosureKeyFromClass = useCallback(
     (cls: FeedClass) => `${cls.enrollmentId ?? "sin-enrollment"}::${cls.courseId ?? "sin-curso"}`,
@@ -585,46 +585,14 @@ export default function StudentFeedPageClient() {
     };
   }, [classes, currentUser?.uid, previewMode]);
 
-  useEffect(() => {
-    if (previewMode || !classes.length) {
-      setCompletedLessonMap({});
-      return;
-    }
-
-    const byLesson = new Map<string, FeedClass[]>();
-    classes.forEach((cls) => {
-      const key = lessonKeyFromClass(cls);
-      if (!byLesson.has(key)) {
-        byLesson.set(key, []);
-      }
-      byLesson.get(key)!.push(cls);
-    });
-
-    const nextCompleted: Record<string, boolean> = {};
-    byLesson.forEach((lessonClasses, lessonKey) => {
-      const allCompleted = lessonClasses.every((cls) => {
-        const pct = Math.max(
-          progressMap[cls.id] ?? 0,
-          progressRef.current[cls.id] ?? 0,
-          completedMap[cls.id] || completedRef.current[cls.id] || seenMap[cls.id] || seenRef.current[cls.id] ? 100 : 0,
-        );
-        return pct >= 100;
-      });
-      nextCompleted[lessonKey] = allCompleted;
-    });
-
-    setCompletedLessonMap(nextCompleted);
-  }, [classes, progressMap, completedMap, seenMap, lessonKeyFromClass, previewMode]);
-
   const visibleClasses = useMemo(() => {
     if (previewMode) return classes;
     return classes.filter((cls) => {
       const courseClosed = isCourseClosedForClass(cls);
       if (courseClosed) return showClosedCourses;
-      if (showCompletedWeeks) return true;
-      return !completedLessonMap[lessonKeyFromClass(cls)];
+      return true;
     });
-  }, [classes, completedLessonMap, isCourseClosedForClass, lessonKeyFromClass, previewMode, showClosedCourses, showCompletedWeeks]);
+  }, [classes, isCourseClosedForClass, previewMode, showClosedCourses]);
   const visibleClassSignature = useMemo(
     () => visibleClasses.map((cls) => cls.id).join("|"),
     [visibleClasses],
@@ -1468,10 +1436,12 @@ export default function StudentFeedPageClient() {
                 enrollmentId: undefined,
                 groupId: undefined,
                 classTitle: c.title ?? "Clase sin título",
-                videoUrl: (c.videoUrl ?? "").trim(),
-                audioUrl: (c.audioUrl ?? "").trim(),
+                videoUrl: trimSafeString(c.videoUrl),
+                audioUrl: trimSafeString(c.audioUrl),
                 content: c.content ?? "",
-                images: Array.isArray(imageArray) ? imageArray.filter(Boolean).map((u: string) => u.trim()) : [],
+                images: Array.isArray(imageArray)
+                  ? imageArray.map((u: unknown) => trimSafeString(u)).filter(Boolean)
+                  : [],
                 hasAssignment: c.hasAssignment ?? false,
                 assignmentTemplateUrl: c.assignmentTemplateUrl ?? "",
                 lessonTitle,
@@ -1864,11 +1834,11 @@ export default function StudentFeedPageClient() {
                         groupId: currentGroupId,
                         groupName: currentGroupName,
                         classTitle: c.title ?? "Clase sin título",
-                        videoUrl: (c.videoUrl ?? "").trim(),
-                        audioUrl: (c.audioUrl ?? "").trim(),
+                        videoUrl: trimSafeString(c.videoUrl),
+                        audioUrl: trimSafeString(c.audioUrl),
                         content: c.content ?? "",
                         images: Array.isArray(imageArray)
-                          ? imageArray.filter(Boolean).map((u: string) => u.trim())
+                          ? imageArray.map((u: unknown) => trimSafeString(u)).filter(Boolean)
                           : [],
                         hasAssignment: c.hasAssignment ?? false,
                         assignmentTemplateUrl: c.assignmentTemplateUrl ?? "",
@@ -2110,7 +2080,7 @@ export default function StudentFeedPageClient() {
     const cards = document.querySelectorAll(".feed-card");
     cards.forEach((c) => observer.observe(c));
     return () => observer.disconnect();
-  }, [visibleClassSignature, showCompletedWeeks, showClosedCourses]);
+  }, [visibleClassSignature, showClosedCourses]);
 
   // Cuando cambia la clase activa, aseguramos audio activado y reproducimos el activo
   // También guardamos el progreso de la clase anterior
@@ -3131,18 +3101,6 @@ export default function StudentFeedPageClient() {
                   </p>
                   <div className="space-y-2">
                     <label className="flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-neutral-200">
-                      Completadas
-                      <input
-                        type="checkbox"
-                        checked={showCompletedWeeks}
-                        onChange={(e) => {
-                          setShowCompletedWeeks(e.target.checked);
-                          setAutoReposition(true);
-                        }}
-                        className="h-4 w-4 accent-blue-500"
-                      />
-                    </label>
-                    <label className="flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-neutral-200">
                       Cerradas
                       <input
                         type="checkbox"
@@ -3243,18 +3201,6 @@ export default function StudentFeedPageClient() {
                           </p>
                           <div className="space-y-2">
                             <label className="flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-neutral-200">
-                              Completadas
-                              <input
-                                type="checkbox"
-                                checked={showCompletedWeeks}
-                                onChange={(e) => {
-                                  setShowCompletedWeeks(e.target.checked);
-                                  setAutoReposition(true);
-                                }}
-                                className="h-4 w-4 accent-blue-500"
-                              />
-                            </label>
-                            <label className="flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-neutral-200">
                               Cerradas
                               <input
                                 type="checkbox"
@@ -3289,22 +3235,21 @@ export default function StudentFeedPageClient() {
             <section className="relative flex min-h-screen w-full items-center justify-center px-4 text-center">
               <div className="max-w-lg rounded-2xl border border-white/10 bg-neutral-900/70 p-6 shadow-xl">
                 <p className="text-sm text-white/80">
-                  No hay contenido visible con los filtros actuales.
+                  No hay materias activas para mostrar.
                 </p>
                 <p className="mt-2 text-xs text-white/60">
-                  Puedes mostrar semanas completadas, mostrar materias cerradas o revisar el historial en tu perfil.
+                  Puedes mostrar materias cerradas o revisar el historial en tu perfil.
                 </p>
                 <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
                   <button
                     type="button"
                     onClick={() => {
-                      setShowCompletedWeeks(true);
                       setShowClosedCourses(true);
                       setAutoReposition(true);
                     }}
                     className="rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-500"
                   >
-                    Mostrar todo
+                    Mostrar cerradas
                   </button>
                   <Link
                     href="/student/profile"
@@ -4126,13 +4071,31 @@ const VideoPlayer = React.memo(function VideoPlayer({
     const container = containerRef.current;
     if (!container) return;
 
-    if (!document.fullscreenElement) {
-      container.requestFullscreen().catch((err) => {
+    const doc = document as Document & {
+      webkitExitFullscreen?: () => Promise<void> | void;
+      webkitFullscreenElement?: Element | null;
+    };
+    const canRequest = (container as HTMLDivElement & {
+      webkitRequestFullscreen?: () => Promise<void> | void;
+    });
+    const isInFullscreen = Boolean(doc.fullscreenElement || doc.webkitFullscreenElement);
+
+    if (!isInFullscreen) {
+      const requestFullscreen =
+        container.requestFullscreen?.bind(container) ??
+        canRequest.webkitRequestFullscreen?.bind(container);
+      if (!requestFullscreen) return;
+      Promise.resolve(requestFullscreen()).catch((err) => {
         console.error("Error intentando entrar en pantalla completa:", err);
       });
-    } else {
-      document.exitFullscreen();
+      return;
     }
+
+    const exitFullscreen = doc.exitFullscreen?.bind(doc) ?? doc.webkitExitFullscreen?.bind(doc);
+    if (!exitFullscreen) return;
+    Promise.resolve(exitFullscreen()).catch((err) => {
+      console.error("Error intentando salir de pantalla completa:", err);
+    });
   }, []);
 
   useEffect(() => {
@@ -4292,6 +4255,25 @@ const VideoPlayer = React.memo(function VideoPlayer({
         .catch(() => {});
     }
   }, [muted, isActive]);
+
+  useEffect(() => {
+    registerRef(videoRef.current);
+  }, [registerRef]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = muted;
+    if (isActive) {
+      video
+        .play()
+        .then(() => setIsPlaying(true))
+        .catch(() => setIsPlaying(false));
+    } else {
+      video.pause();
+      setIsPlaying(false);
+    }
+  }, [isActive, muted]);
 
   // Vimeo con controles nativos pero estilizados
   if (isVimeo) {
@@ -4513,25 +4495,6 @@ const VideoPlayer = React.memo(function VideoPlayer({
       </div>
     );
   }
-
-  useEffect(() => {
-    registerRef(videoRef.current);
-  }, [registerRef]);
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.muted = muted;
-    if (isActive) {
-      video
-        .play()
-        .then(() => setIsPlaying(true))
-        .catch(() => setIsPlaying(false));
-    } else {
-      video.pause();
-      setIsPlaying(false);
-    }
-  }, [isActive, muted]);
 
   const togglePlay = () => {
     const video = videoRef.current;
@@ -5351,19 +5314,26 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, les
           console.log('Question data:', { id: d.id, data: qd });
           return {
             id: d.id,
-            prompt: qd.prompt ?? qd.text ?? qd.question ?? "",
-            text: qd.text ?? qd.prompt ?? qd.question ?? "",
-            explanation: qd.explanation ?? qd.questionFeedback ?? "",
-            order: qd.order ?? 0,
+            prompt: toSafeString(qd.prompt ?? qd.text ?? qd.question),
+            text: toSafeString(qd.text ?? qd.prompt ?? qd.question),
+            explanation: toSafeString(qd.explanation ?? qd.questionFeedback),
+            order: typeof qd.order === "number" ? qd.order : 0,
             options: Array.isArray(qd.options)
-              ? qd.options.map((opt: any) => ({
-                  id: opt.id ?? opt.text ?? uuidv4(),
-                  text: opt.text ?? "",
-                  isCorrect: opt.isCorrect,
-                  feedback: opt.feedback,
-                  correctFeedback: opt.correctFeedback,
-                  incorrectFeedback: opt.incorrectFeedback,
-                }))
+              ? qd.options.map((opt: any) => {
+                  const safeOpt = opt && typeof opt === "object" ? opt : {};
+                  const optionText = toSafeString((safeOpt as { text?: unknown }).text ?? opt);
+                  const optionId = trimSafeString((safeOpt as { id?: unknown }).id) || optionText || uuidv4();
+                  return {
+                    id: optionId,
+                    text: optionText,
+                    isCorrect: typeof (safeOpt as { isCorrect?: unknown }).isCorrect === "boolean"
+                      ? (safeOpt as { isCorrect: boolean }).isCorrect
+                      : undefined,
+                    feedback: toSafeString((safeOpt as { feedback?: unknown }).feedback),
+                    correctFeedback: toSafeString((safeOpt as { correctFeedback?: unknown }).correctFeedback),
+                    incorrectFeedback: toSafeString((safeOpt as { incorrectFeedback?: unknown }).incorrectFeedback),
+                  };
+                })
               : [],
           };
         });
@@ -5423,12 +5393,12 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, les
     if (hasCorrectness && question && selectedOpt) {
       const correctOpt = (question.options ?? []).find((o) => o.isCorrect === true);
       const isCorrect = selectedOpt.isCorrect === true;
-      const correctMessage = selectedOpt.correctFeedback?.trim();
+      const correctMessage = trimSafeString(selectedOpt.correctFeedback);
       const incorrectMessage =
-        selectedOpt.feedback?.trim() ||
-        selectedOpt.incorrectFeedback?.trim() ||
+        trimSafeString(selectedOpt.feedback) ||
+        trimSafeString(selectedOpt.incorrectFeedback) ||
         (correctOpt
-          ? `No es correcto. La respuesta correcta es "${correctOpt.text ?? ""}".`
+          ? `No es correcto. La respuesta correcta es "${toSafeString(correctOpt.text)}".`
           : "Respuesta incorrecta.");
       const message = isCorrect ? correctMessage : incorrectMessage;
       setFeedbackMap((prev) => ({
@@ -5456,7 +5426,7 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, les
 
   const currentQuestion = questions[currentIdx];
   const questionTitle = currentQuestion
-    ? (currentQuestion.prompt?.trim() || currentQuestion.text?.trim() || "")
+    ? (trimSafeString(currentQuestion.prompt) || trimSafeString(currentQuestion.text) || "")
     : "";
   const allAnswered = answeredCount === questions.length && questions.length > 0;
 
@@ -5752,9 +5722,9 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, les
                   <div className="flex justify-end">
                     <button
                       type="button"
-                      disabled={!!answers[currentQuestion.id] || !(textInputs[currentQuestion.id] ?? answers[currentQuestion.id])?.trim()}
+                      disabled={!!answers[currentQuestion.id] || !trimSafeString(textInputs[currentQuestion.id] ?? answers[currentQuestion.id])}
                       onClick={() => {
-                        const val = (textInputs[currentQuestion.id] ?? answers[currentQuestion.id] ?? "").trim();
+                        const val = trimSafeString(textInputs[currentQuestion.id] ?? answers[currentQuestion.id]);
                         if (!val) return;
                         handleSelect(currentQuestion.id, val);
                       }}
@@ -7180,19 +7150,26 @@ function isEmbedUrl(url: string) {
 }
 
 function toEmbedUrl(url: string) {
-  const safe = url.trim();
+  const safe = trimSafeString(url);
+  if (!safe) return "";
+  const withProtocol = /^https?:\/\//i.test(safe) ? safe : `https://${safe.replace(/^\/+/, "")}`;
+
   if (safe.includes("youtu.be")) {
     const id = safe.split("youtu.be/")[1]?.split(/[?&]/)[0];
     return `https://www.youtube.com/embed/${id ?? ""}`;
   }
   if (safe.includes("youtube.com/watch")) {
-    const params = new URL(safe).searchParams;
-    const id = params.get("v") ?? "";
+    let id = "";
+    try {
+      id = new URL(withProtocol).searchParams.get("v") ?? "";
+    } catch {
+      id = safe.split("v=")[1]?.split("&")[0] ?? "";
+    }
     return `https://www.youtube.com/embed/${id}`;
   }
   if (safe.includes("vimeo.com")) {
     try {
-      const u = new URL(safe);
+      const u = new URL(withProtocol);
       const parts = u.pathname.split("/").filter(Boolean);
       // Para player.vimeo.com/video/123 o vimeo.com/123/abcd
       const candidateId = parts.length ? parts[parts.length - 1] : "";

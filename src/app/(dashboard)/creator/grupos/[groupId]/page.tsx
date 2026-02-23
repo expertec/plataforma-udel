@@ -10,6 +10,7 @@ import {
   GroupStudent,
   removeStudentFromGroup,
   setAssistantTeachers,
+  setMentorCourseAccess,
 } from "@/lib/firebase/groups-service";
 import { getStudentUsersPaginated, StudentUser } from "@/lib/firebase/students-service";
 import { getTeacherUsers, TeacherUser } from "@/lib/firebase/teachers-service";
@@ -40,6 +41,7 @@ export default function GroupDetailPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [removingAssistantId, setRemovingAssistantId] = useState<string | null>(null);
+  const [savingMentorAccessIds, setSavingMentorAccessIds] = useState<Set<string>>(new Set());
   const [unlinkingCourseId, setUnlinkingCourseId] = useState<string | null>(null);
   const [studentSubmissionsModal, setStudentSubmissionsModal] = useState<{
     open: boolean;
@@ -124,16 +126,71 @@ export default function GroupDetailPage() {
     }
     return [];
   }, [group]);
-  const assignedCourseIds = assignedCourses.map((c) => c.courseId).filter(Boolean);
-  const explicitCourseIds = (group?.courseIds ?? []).filter(Boolean);
-  const courseIdsForGroup =
-    explicitCourseIds.length > 0
-      ? explicitCourseIds
-      : assignedCourseIds.length > 0
-        ? assignedCourseIds
-        : group?.courseId
-          ? [group.courseId]
-          : [];
+  const assignedCourseIds = useMemo(
+    () => assignedCourses.map((c) => c.courseId).filter(Boolean),
+    [assignedCourses],
+  );
+  const explicitCourseIds = useMemo(
+    () => (group?.courseIds ?? []).filter(Boolean),
+    [group?.courseIds],
+  );
+  const courseIdsForGroup = useMemo(
+    () =>
+      explicitCourseIds.length > 0
+        ? explicitCourseIds
+        : assignedCourseIds.length > 0
+          ? assignedCourseIds
+          : group?.courseId
+            ? [group.courseId]
+            : [],
+    [assignedCourseIds, explicitCourseIds, group?.courseId],
+  );
+  const currentUserId = currentUser?.uid ?? null;
+  const canManageMentors = Boolean(
+    group &&
+      currentUserId &&
+      (currentUserId === group.teacherId || isAdminTeacherRole(userRole)),
+  );
+  const isCurrentUserAssistant = Boolean(
+    group &&
+      currentUserId &&
+      (group.assistantTeacherIds ?? []).includes(currentUserId),
+  );
+
+  const visibleCourseIdsForCurrentUser = useMemo(() => {
+    if (!group) return [];
+    if (!currentUserId) return courseIdsForGroup;
+    if (currentUserId === group.teacherId || isAdminTeacherRole(userRole)) {
+      return courseIdsForGroup;
+    }
+    if (!isCurrentUserAssistant) return courseIdsForGroup;
+
+    const explicitAccess = group.mentorCourseAccess?.[currentUserId];
+    if (!Array.isArray(explicitAccess)) return courseIdsForGroup;
+    const allowedSet = new Set(explicitAccess.filter((id): id is string => typeof id === "string"));
+    return courseIdsForGroup.filter((courseId) => allowedSet.has(courseId));
+  }, [courseIdsForGroup, currentUserId, group, isCurrentUserAssistant, userRole]);
+
+  const visibleCourseIdsSet = useMemo(
+    () => new Set(visibleCourseIdsForCurrentUser),
+    [visibleCourseIdsForCurrentUser],
+  );
+  const visibleCoursesForCurrentUser = useMemo(
+    () => assignedCourses.filter((course) => visibleCourseIdsSet.has(course.courseId)),
+    [assignedCourses, visibleCourseIdsSet],
+  );
+  const isMentorWithRestrictedCourses =
+    isCurrentUserAssistant &&
+    currentUserId !== group?.teacherId &&
+    !isAdminTeacherRole(userRole);
+
+  const getMentorAllowedCourseIds = (mentorId: string): string[] => {
+    if (!group) return [];
+    const explicitAccess = group.mentorCourseAccess?.[mentorId];
+    if (!Array.isArray(explicitAccess)) return courseIdsForGroup;
+    const allowedSet = new Set(explicitAccess.filter((id): id is string => typeof id === "string"));
+    return courseIdsForGroup.filter((courseId) => allowedSet.has(courseId));
+  };
 
   const handleRemoveStudent = async (student: GroupStudent) => {
     if (!group) return;
@@ -170,15 +227,8 @@ export default function GroupDetailPage() {
     try {
       const selected = teacherOptions.filter((t) => selectedTeachers.has(t.id));
       await setAssistantTeachers(group.id, selected.map((t) => ({ id: t.id, name: t.name, email: t.email })));
-      setGroup((prev) =>
-        prev
-          ? {
-              ...prev,
-              assistantTeacherIds: selected.map((t) => t.id),
-              assistantTeachers: selected.map((t) => ({ id: t.id, name: t.name, email: t.email })),
-            }
-          : prev,
-      );
+      const updatedGroup = await getGroup(group.id);
+      if (updatedGroup) setGroup(updatedGroup);
       toast.success("Mentores asignados al grupo");
       setAssignTeachersOpen(false);
     } catch (err) {
@@ -191,7 +241,7 @@ export default function GroupDetailPage() {
 
   const handleRemoveAssistant = async (teacherId: string, teacherName: string) => {
     if (!group) return;
-      const confirmed = window.confirm(`¿Deseas quitar a ${teacherName} como mentor?`);
+    const confirmed = window.confirm(`¿Deseas quitar a ${teacherName} como mentor?`);
     if (!confirmed) return;
     setRemovingAssistantId(teacherId);
     try {
@@ -200,21 +250,51 @@ export default function GroupDetailPage() {
         group.id,
         remaining.map((t) => ({ id: t.id, name: t.name, email: t.email })),
       );
-      setGroup((prev) =>
-        prev
-          ? {
-              ...prev,
-              assistantTeacherIds: remaining.map((t) => t.id),
-              assistantTeachers: remaining,
-            }
-          : prev,
-      );
+      const updatedGroup = await getGroup(group.id);
+      if (updatedGroup) setGroup(updatedGroup);
       toast.success(`${teacherName} fue desvinculado del grupo`);
     } catch (err) {
       console.error(err);
       toast.error("No se pudo quitar al mentor");
     } finally {
       setRemovingAssistantId(null);
+    }
+  };
+
+  const handleToggleMentorCourse = async (mentorId: string, courseId: string) => {
+    if (!group) return;
+    if (!canManageMentors) {
+      toast.error("No tienes permisos para editar accesos de mentores.");
+      return;
+    }
+
+    const currentAllowed = new Set(getMentorAllowedCourseIds(mentorId));
+    if (currentAllowed.has(courseId)) currentAllowed.delete(courseId);
+    else currentAllowed.add(courseId);
+    const nextAllowed = courseIdsForGroup.filter((id) => currentAllowed.has(id));
+
+    setSavingMentorAccessIds((prev) => new Set(prev).add(mentorId));
+    try {
+      await setMentorCourseAccess(group.id, mentorId, nextAllowed);
+      setGroup((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          mentorCourseAccess: {
+            ...(prev.mentorCourseAccess ?? {}),
+            [mentorId]: nextAllowed,
+          },
+        };
+      });
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo actualizar el acceso por materia.");
+    } finally {
+      setSavingMentorAccessIds((prev) => {
+        const next = new Set(prev);
+        next.delete(mentorId);
+        return next;
+      });
     }
   };
 
@@ -343,33 +423,51 @@ export default function GroupDetailPage() {
                   onOpenModal={() => setStudentsModalOpen(true)}
                   onRemoveStudent={handleRemoveStudent}
                   onOpenStudentSubmissions={(student) =>
-                    setStudentSubmissionsModal({
-                      open: true,
-                      studentId: student.id,
-                      studentName: student.studentName,
-                    })
+                    isMentorWithRestrictedCourses && visibleCourseIdsForCurrentUser.length === 0
+                      ? toast.error("No tienes materias asignadas para revisar tareas en este grupo.")
+                      : setStudentSubmissionsModal({
+                          open: true,
+                          studentId: student.id,
+                          studentName: student.studentName,
+                        })
                   }
                 />
               </div>
             </TabsContent>
 
             <TabsContent value="entregas">
-              <EntregasTab
-                groupId={group.id}
-                courseIds={courseIdsForGroup}
-                studentsCount={group.studentsCount}
-              />
+              {isMentorWithRestrictedCourses && visibleCourseIdsForCurrentUser.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                  No tienes materias asignadas para revisar entregas en este grupo.
+                </div>
+              ) : (
+                <EntregasTab
+                  groupId={group.id}
+                  courseIds={visibleCourseIdsForCurrentUser}
+                  studentsCount={group.studentsCount}
+                />
+              )}
             </TabsContent>
 
             <TabsContent value="calificaciones">
               <div className="rounded-lg bg-white p-6 shadow-sm">
-                <CalificacionesTab
-                  groupId={group.id}
-                  courses={assignedCourses}
-                  groupTeacherId={group.teacherId}
-                  currentUserId={currentUser?.uid ?? null}
-                  userRole={userRole}
-                />
+                {isMentorWithRestrictedCourses && visibleCoursesForCurrentUser.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                    No tienes materias asignadas para gestionar calificaciones en este grupo.
+                  </div>
+                ) : (
+                  <CalificacionesTab
+                    groupId={group.id}
+                    courses={visibleCoursesForCurrentUser}
+                    groupTeacherId={group.teacherId}
+                    currentUserId={currentUserId}
+                    userRole={userRole}
+                    onCourseCompletedAndUnlinked={async () => {
+                      const updated = await getGroup(group.id);
+                      if (updated) setGroup(updated);
+                    }}
+                  />
+                )}
               </div>
             </TabsContent>
 
@@ -380,10 +478,10 @@ export default function GroupDetailPage() {
                     <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Mentores</p>
                     <h3 className="text-lg font-semibold text-slate-900">Asignar mentores al grupo</h3>
                     <p className="text-sm text-slate-600">
-                      El profesor principal es {group.teacherName || "—"}. Puedes añadir mentores.
+                      El profesor principal es {group.teacherName || "—"}. Puedes añadir mentores y definir sus materias.
                     </p>
                   </div>
-                  {isAdminTeacherRole(userRole) ? (
+                  {canManageMentors ? (
                     <button
                       type="button"
                       className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"
@@ -397,26 +495,77 @@ export default function GroupDetailPage() {
                   <p className="text-sm font-semibold text-slate-800">Profesor principal</p>
                   <p className="text-sm text-slate-700">{group.teacherName || "Sin asignar"}</p>
                   <p className="mt-3 text-sm font-semibold text-slate-800">Mentores</p>
+                  <p className="text-xs text-slate-500">
+                    {canManageMentors
+                      ? "Activa o desactiva por mentor qué materias puede revisar y calificar."
+                      : "Solo lectura. El profesor principal define las materias de cada mentor."}
+                  </p>
                   {group.assistantTeachers && group.assistantTeachers.length > 0 ? (
                     <ul className="mt-2 space-y-2 text-sm text-slate-700">
-                      {group.assistantTeachers.map((t) => (
-                        <li key={t.id} className="flex items-center justify-between gap-3">
-                          <div>
-                            <p>{t.name}</p>
-                            <p className="text-xs text-slate-500">{t.email}</p>
-                          </div>
-                          {currentUser?.uid === group.teacherId ? (
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveAssistant(t.id, t.name)}
-                              disabled={removingAssistantId === t.id}
-                              className="rounded-full border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 transition hover:border-red-400 disabled:border-red-100 disabled:text-red-300"
-                            >
-                              {removingAssistantId === t.id ? "Desvinculando..." : "Desvincular"}
-                            </button>
-                          ) : null}
-                        </li>
-                      ))}
+                      {group.assistantTeachers.map((t) => {
+                        const mentorAllowedCourseIds = new Set(getMentorAllowedCourseIds(t.id));
+                        const isSavingMentorAccess = savingMentorAccessIds.has(t.id);
+                        return (
+                          <li key={t.id} className="rounded-lg border border-slate-200 bg-white p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p>{t.name}</p>
+                                <p className="text-xs text-slate-500">{t.email}</p>
+                              </div>
+                              {canManageMentors ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveAssistant(t.id, t.name)}
+                                  disabled={removingAssistantId === t.id}
+                                  className="rounded-full border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 transition hover:border-red-400 disabled:border-red-100 disabled:text-red-300"
+                                >
+                                  {removingAssistantId === t.id ? "Desvinculando..." : "Desvincular"}
+                                </button>
+                              ) : null}
+                            </div>
+                            <div className="mt-3">
+                              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                                Materias permitidas
+                              </p>
+                              {assignedCourses.length > 0 ? (
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  {assignedCourses.map((course) => {
+                                    const isEnabled = mentorAllowedCourseIds.has(course.courseId);
+                                    return (
+                                      <label
+                                        key={`${t.id}-${course.courseId}`}
+                                        className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs transition ${
+                                          isEnabled
+                                            ? "border-blue-300 bg-blue-50 text-blue-700"
+                                            : "border-slate-200 bg-white text-slate-600"
+                                        }`}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                          checked={isEnabled}
+                                          disabled={!canManageMentors || isSavingMentorAccess}
+                                          onChange={() => handleToggleMentorCourse(t.id, course.courseId)}
+                                        />
+                                        <span>{course.courseName}</span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <p className="mt-1 text-xs text-slate-500">No hay materias asignadas al grupo.</p>
+                              )}
+                              {isSavingMentorAccess ? (
+                                <p className="mt-2 text-xs text-blue-600">Guardando acceso por materias...</p>
+                              ) : (
+                                <p className="mt-2 text-xs text-slate-500">
+                                  {mentorAllowedCourseIds.size} de {assignedCourses.length} materias habilitadas.
+                                </p>
+                              )}
+                            </div>
+                          </li>
+                        );
+                      })}
                     </ul>
                   ) : (
                     <p className="mt-1 text-sm text-slate-600">No hay mentores asignados.</p>
@@ -491,6 +640,7 @@ export default function GroupDetailPage() {
           groupId={group.id}
           studentId={studentSubmissionsModal.studentId}
           studentName={studentSubmissionsModal.studentName}
+          allowedCourseIds={isMentorWithRestrictedCourses ? visibleCourseIdsForCurrentUser : undefined}
           isOpen={studentSubmissionsModal.open}
           onClose={() => setStudentSubmissionsModal({ open: false, studentId: "", studentName: "" })}
         />
@@ -570,7 +720,7 @@ export default function GroupDetailPage() {
                   {savingTeachers ? "Guardando..." : "Guardar asignación"}
                 </button>
                 <p className="text-xs text-slate-500">
-                  Los mentores seleccionados tendrán acceso a alumnos y entregas de este grupo.
+                  Después podrás definir por mentor qué materias específicas puede gestionar.
                 </p>
               </div>
             </div>
