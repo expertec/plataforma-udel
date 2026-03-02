@@ -7,10 +7,21 @@ import { onAuthStateChanged, User } from "firebase/auth";
 import { getCourses } from "@/lib/firebase/courses-service";
 import { CreateGroupModal } from "./_components/CreateGroupModal";
 import { BulkCreateGroupsModal } from "./_components/BulkCreateGroupsModal";
-import { getGroupsForTeacher, Group, deleteGroup, getGroupsWhereAssistant } from "@/lib/firebase/groups-service";
+import {
+  getGroupsForTeacher,
+  Group,
+  deleteGroup,
+  getGroupsWhereAssistant,
+  getAllGroups,
+} from "@/lib/firebase/groups-service";
 import toast from "react-hot-toast";
 import { RoleGate } from "@/components/auth/RoleGate";
-import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import {
+  isAdminTeacherRole,
+  isCampusCoordinatorRole,
+  resolveUserRole,
+  UserRole,
+} from "@/lib/firebase/roles";
 
 export default function GroupsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
@@ -23,6 +34,7 @@ export default function GroupsPage() {
   const [authLoading, setAuthLoading] = useState(!auth.currentUser);
   const [deletingGroupId, setDeletingGroupId] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -54,6 +66,14 @@ export default function GroupsPage() {
     }
     setLoading(true);
     try {
+      if (isCampusCoordinatorRole(userRole)) {
+        const coordinatorGroups = await getAllGroups();
+        setGroups(coordinatorGroups);
+        setAssistantGroups([]);
+        setCourses([]);
+        return;
+      }
+
       const [myGroups, myAssistantGroups, myCourses] = await Promise.all([
         isAdminTeacherRole(userRole) ? getGroupsForTeacher(currentUser.uid) : Promise.resolve([]),
         getGroupsWhereAssistant(currentUser.uid),
@@ -92,18 +112,36 @@ export default function GroupsPage() {
     }
   };
 
+  const searchTerm = search.trim().toLowerCase();
+  const hasSearch = searchTerm.length > 0;
+
   const { activeGroups, finishedGroups, activeAssistantGroups, finishedAssistantGroups } = useMemo(() => {
-    const active = groups.filter((g) => g.status !== "finished");
-    const finished = groups.filter((g) => g.status === "finished");
-    const activeAssistant = assistantGroups.filter((g) => g.status !== "finished");
-    const finishedAssistant = assistantGroups.filter((g) => g.status === "finished");
+    const matchesSearch = (group: Group) => {
+      if (!searchTerm) return true;
+      const searchableText = [
+        group.groupName,
+        group.courseName,
+        group.program,
+        group.teacherName,
+        group.semester,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return searchableText.includes(searchTerm);
+    };
+
+    const active = groups.filter((g) => g.status !== "finished" && matchesSearch(g));
+    const finished = groups.filter((g) => g.status === "finished" && matchesSearch(g));
+    const activeAssistant = assistantGroups.filter((g) => g.status !== "finished" && matchesSearch(g));
+    const finishedAssistant = assistantGroups.filter((g) => g.status === "finished" && matchesSearch(g));
     return {
       activeGroups: active,
       finishedGroups: finished,
       activeAssistantGroups: activeAssistant,
       finishedAssistantGroups: finishedAssistant,
     };
-  }, [groups, assistantGroups]);
+  }, [groups, assistantGroups, searchTerm]);
 
   const formatRange = (start?: Date | null, end?: Date | null) => {
     if (!start || !end) return "Sin fechas";
@@ -116,10 +154,13 @@ export default function GroupsPage() {
   };
 
   const totalGroups = groups.length + assistantGroups.length;
+  const filteredTotalGroups =
+    activeGroups.length + finishedGroups.length + activeAssistantGroups.length + finishedAssistantGroups.length;
   const isAdminTeacher = isAdminTeacherRole(userRole);
+  const isCampusCoordinator = isCampusCoordinatorRole(userRole);
 
   return (
-    <RoleGate allowedRole={["teacher", "adminTeacher", "superAdminTeacher"]}>
+    <RoleGate allowedRole={["teacher", "adminTeacher", "superAdminTeacher", "coordinadorPlantel"]}>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
@@ -127,7 +168,7 @@ export default function GroupsPage() {
               Grupos
             </p>
             <h1 className="text-2xl font-semibold text-slate-900">
-              {isAdminTeacher ? "Mis grupos" : "Grupos asignados"}
+              {isCampusCoordinator ? "Todos los grupos" : isAdminTeacher ? "Mis grupos" : "Grupos asignados"}
             </h1>
           </div>
           {isAdminTeacher ? (
@@ -156,14 +197,44 @@ export default function GroupsPage() {
           </div>
         ) : totalGroups === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-600 shadow-sm">
-            {isAdminTeacher
+            {isCampusCoordinator
+              ? "No hay grupos registrados todavía."
+              : isAdminTeacher
               ? "Aún no tienes grupos. Crea el primero para asignar alumnos."
               : "Aún no te han asignado como mentor de ningún grupo."}
           </div>
         ) : (
           <div className="space-y-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <label className="flex-1">
+                <span className="sr-only">Buscar grupos</span>
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Buscar por grupo, curso, programa o profesor"
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                />
+              </label>
+              {hasSearch ? (
+                <button
+                  type="button"
+                  onClick={() => setSearch("")}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                >
+                  Limpiar
+                </button>
+              ) : null}
+            </div>
+
+            {filteredTotalGroups === 0 ? (
+              <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-600 shadow-sm">
+                No encontramos grupos que coincidan con tu búsqueda.
+              </div>
+            ) : null}
+
             {/* Grupos creados por el AdminTeacher */}
-            {isAdminTeacher && activeGroups.length > 0 ? (
+            {filteredTotalGroups > 0 && isAdminTeacher && activeGroups.length > 0 ? (
               <section className="space-y-3">
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-semibold text-slate-800">Mis Grupos Activos</h2>
@@ -182,8 +253,25 @@ export default function GroupsPage() {
               </section>
             ) : null}
 
+            {filteredTotalGroups > 0 && isCampusCoordinator && activeGroups.length > 0 ? (
+              <section className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-slate-800">Grupos Activos</h2>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {activeGroups.map((group) => (
+                    <GroupCard
+                      key={group.id}
+                      group={group}
+                      formatRange={formatRange}
+                    />
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
             {/* Grupos donde es mentor */}
-            {activeAssistantGroups.length > 0 ? (
+            {filteredTotalGroups > 0 && !isCampusCoordinator && activeAssistantGroups.length > 0 ? (
               <section className="space-y-3">
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-semibold text-slate-800">
@@ -204,7 +292,7 @@ export default function GroupsPage() {
             ) : null}
 
             {/* Grupos finalizados propios */}
-            {isAdminTeacher && finishedGroups.length > 0 ? (
+            {filteredTotalGroups > 0 && isAdminTeacher && finishedGroups.length > 0 ? (
               <section className="space-y-3">
                 <h2 className="text-sm font-semibold text-slate-800">
                   Mis Grupos Finalizados
@@ -223,8 +311,25 @@ export default function GroupsPage() {
               </section>
             ) : null}
 
+            {filteredTotalGroups > 0 && isCampusCoordinator && finishedGroups.length > 0 ? (
+              <section className="space-y-3">
+                <h2 className="text-sm font-semibold text-slate-800">
+                  Grupos Finalizados
+                </h2>
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {finishedGroups.map((group) => (
+                    <GroupCard
+                      key={group.id}
+                      group={group}
+                      formatRange={formatRange}
+                    />
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
             {/* Grupos finalizados como mentor */}
-            {finishedAssistantGroups.length > 0 ? (
+            {filteredTotalGroups > 0 && !isCampusCoordinator && finishedAssistantGroups.length > 0 ? (
               <section className="space-y-3">
                 <h2 className="text-sm font-semibold text-slate-800">
                   {isAdminTeacher ? "Grupos como Mentor - Finalizados" : "Grupos Finalizados"}

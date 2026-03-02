@@ -13,6 +13,31 @@ import {
   TeacherUser,
 } from "@/lib/firebase/teachers-service";
 
+type EditableTeacherRole = "teacher" | "adminTeacher" | "coordinadorPlantel";
+
+const EDITABLE_TEACHER_ROLES: EditableTeacherRole[] = [
+  "teacher",
+  "adminTeacher",
+  "coordinadorPlantel",
+];
+
+function isEditableTeacherRole(role: TeacherUser["role"]): role is EditableTeacherRole {
+  return EDITABLE_TEACHER_ROLES.includes(role as EditableTeacherRole);
+}
+
+function getTeacherRoleLabel(role: TeacherUser["role"]): string {
+  if (role === "superAdminTeacher") return "SuperAdminTeacher";
+  if (role === "adminTeacher") return "AdminTeacher";
+  if (role === "coordinadorPlantel") return "Coordinador de plantel";
+  return "Profesor";
+}
+
+function mergeAuthHeaders(token: string, headers?: HeadersInit): Headers {
+  const merged = new Headers(headers ?? {});
+  merged.set("Authorization", `Bearer ${token}`);
+  return merged;
+}
+
 export default function ProfesoresPage() {
   const [teachers, setTeachers] = useState<TeacherUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,8 +63,23 @@ export default function ProfesoresPage() {
   const [newEmail, setNewEmail] = useState("");
   const [newName, setNewName] = useState("");
   const [newPhone, setNewPhone] = useState("");
+  const [newRole, setNewRole] = useState<EditableTeacherRole>("teacher");
   const [changingPassword, setChangingPassword] = useState(false);
   const [updatingProfile, setUpdatingProfile] = useState(false);
+
+  const fetchWithToken = useCallback(
+    async (url: string, init?: RequestInit): Promise<Response> => {
+      if (!currentUser) {
+        throw new Error("No hay sesión activa");
+      }
+      const token = await currentUser.getIdToken();
+      return fetch(url, {
+        ...init,
+        headers: mergeAuthHeaders(token, init?.headers),
+      });
+    },
+    [currentUser],
+  );
 
   const loadTeachers = useCallback(async () => {
     setLoading(true);
@@ -148,6 +188,7 @@ export default function ProfesoresPage() {
     setNewEmail(teacher.email);
     setNewName(teacher.name);
     setNewPhone(teacher.phone || "");
+    setNewRole(isEditableTeacherRole(teacher.role) ? teacher.role : "teacher");
     setEditProfileModalOpen(true);
   };
 
@@ -161,32 +202,62 @@ export default function ProfesoresPage() {
     e.preventDefault();
     if (!selectedTeacher) return;
 
+    const emailChanged = newEmail.trim().toLowerCase() !== selectedTeacher.email.toLowerCase();
+    const nameChanged = newName.trim() !== selectedTeacher.name;
+    const phoneChanged = newPhone.trim() !== (selectedTeacher.phone || "");
+    const roleChanged =
+      isEditableTeacherRole(selectedTeacher.role) && newRole !== selectedTeacher.role;
+
+    if (!emailChanged && !nameChanged && !phoneChanged && !roleChanged) {
+      toast("No hay cambios para guardar");
+      return;
+    }
+
     setUpdatingProfile(true);
     try {
-      const response = await fetch("/api/teachers/update-profile", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          teacherId: selectedTeacher.id,
-          currentEmail: selectedTeacher.email,
-          newEmail: newEmail.trim().toLowerCase() !== selectedTeacher.email.toLowerCase() ? newEmail.trim() : undefined,
-          newName: newName.trim() !== selectedTeacher.name ? newName.trim() : undefined,
-          newPhone: newPhone.trim() !== (selectedTeacher.phone || "") ? newPhone.trim() : undefined,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Error al actualizar perfil");
+      if (roleChanged) {
+        const roleResponse = await fetchWithToken("/api/admin/teachers/update-role", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            teacherId: selectedTeacher.id,
+            newRole,
+          }),
+        });
+        const roleData = (await roleResponse.json().catch(() => ({}))) as { error?: string };
+        if (!roleResponse.ok) {
+          throw new Error(roleData.error || "Error al actualizar rol");
+        }
       }
 
-      toast.success("Perfil actualizado correctamente");
+      if (emailChanged || nameChanged || phoneChanged) {
+        const profileResponse = await fetch("/api/teachers/update-profile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            teacherId: selectedTeacher.id,
+            currentEmail: selectedTeacher.email,
+            newEmail: emailChanged ? newEmail.trim() : undefined,
+            newName: nameChanged ? newName.trim() : undefined,
+            newPhone: phoneChanged ? newPhone.trim() : undefined,
+          }),
+        });
+
+        const profileData = (await profileResponse.json().catch(() => ({}))) as { error?: string };
+        if (!profileResponse.ok) {
+          throw new Error(profileData.error || "Error al actualizar perfil");
+        }
+      }
+
+      toast.success("Datos actualizados correctamente");
       setEditProfileModalOpen(false);
+      setSelectedTeacher(null);
       await loadTeachers();
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
-      toast.error(err.message || "No se pudo actualizar el perfil");
+      const message =
+        err instanceof Error ? err.message : "No se pudo actualizar el perfil";
+      toast.error(message);
     } finally {
       setUpdatingProfile(false);
     }
@@ -222,9 +293,11 @@ export default function ProfesoresPage() {
       toast.success("Contraseña actualizada correctamente");
       setChangePasswordModalOpen(false);
       setNewPassword("ascensoUDEL");
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
-      toast.error(err.message || "No se pudo cambiar la contraseña");
+      const message =
+        err instanceof Error ? err.message : "No se pudo cambiar la contraseña";
+      toast.error(message);
     } finally {
       setChangingPassword(false);
     }
@@ -242,6 +315,7 @@ export default function ProfesoresPage() {
         <h1 className="text-2xl font-semibold text-slate-900">Administrar profesores</h1>
         <p className="text-sm text-slate-600">
           Crea cuentas de profesores y AdminTeacher con acceso por correo y contraseña.
+          Desde editar perfil también puedes cambiar el rol a Coordinador de plantel.
         </p>
       </div>
 
@@ -319,7 +393,7 @@ export default function ProfesoresPage() {
       </div>
 
       <div className="flex items-center justify-between">
-        <p className="text-sm text-slate-600">Listado de profesores y AdminTeacher.</p>
+        <p className="text-sm text-slate-600">Listado de profesores, AdminTeacher y Coordinador de plantel.</p>
         <button
           type="button"
           onClick={loadTeachers}
@@ -358,11 +432,7 @@ export default function ProfesoresPage() {
                 <span className="text-slate-600 break-words">{teacher.email}</span>
                 <span className="text-slate-600">{teacher.phone || "—"}</span>
                 <span className="font-medium capitalize text-blue-700">
-                  {teacher.role === "superAdminTeacher"
-                    ? "SuperAdminTeacher"
-                    : teacher.role === "adminTeacher"
-                      ? "AdminTeacher"
-                      : "Profesor"}
+                  {getTeacherRoleLabel(teacher.role)}
                 </span>
                 <span className="font-medium text-green-600">Activo</span>
                 <span className="flex justify-end gap-2">
@@ -432,10 +502,31 @@ export default function ProfesoresPage() {
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
                 />
               </div>
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-slate-700">Rol</label>
+                <select
+                  value={newRole}
+                  onChange={(e) => setNewRole(e.target.value as EditableTeacherRole)}
+                  disabled={!isEditableTeacherRole(selectedTeacher.role)}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none disabled:bg-slate-100 disabled:text-slate-500"
+                >
+                  <option value="teacher">Profesor</option>
+                  <option value="adminTeacher">AdminTeacher</option>
+                  <option value="coordinadorPlantel">Coordinador de plantel</option>
+                </select>
+                {!isEditableTeacherRole(selectedTeacher.role) ? (
+                  <p className="text-xs text-amber-700">
+                    El rol {getTeacherRoleLabel(selectedTeacher.role)} no se puede modificar desde este panel.
+                  </p>
+                ) : null}
+              </div>
               <div className="flex gap-3">
                 <button
                   type="button"
-                  onClick={() => setEditProfileModalOpen(false)}
+                  onClick={() => {
+                    setEditProfileModalOpen(false);
+                    setSelectedTeacher(null);
+                  }}
                   className="flex-1 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                   disabled={updatingProfile}
                 >

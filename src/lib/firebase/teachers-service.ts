@@ -6,7 +6,7 @@ export type TeacherUser = {
   id: string;
   name: string;
   email: string;
-  role: string;
+  role: "teacher" | "adminTeacher" | "superAdminTeacher" | "coordinadorPlantel";
   phone?: string | null;
 };
 
@@ -14,7 +14,7 @@ export async function getTeacherUsers(max = 100): Promise<TeacherUser[]> {
   const usersRef = collection(db, "users");
   const q = query(
     usersRef,
-    where("role", "in", ["teacher", "adminTeacher", "superAdminTeacher"]),
+    where("role", "in", ["teacher", "adminTeacher", "superAdminTeacher", "coordinadorPlantel"]),
     orderBy("createdAt", "desc"),
     fbLimit(max),
   );
@@ -25,7 +25,12 @@ export async function getTeacherUsers(max = 100): Promise<TeacherUser[]> {
       id: docSnap.id,
       name: d.displayName ?? d.name ?? "Profesor",
       email: d.email ?? "",
-      role: d.role ?? "teacher",
+      role:
+        d.role === "adminTeacher" ||
+        d.role === "superAdminTeacher" ||
+        d.role === "coordinadorPlantel"
+          ? d.role
+          : "teacher",
       phone: d.phone ?? null,
     };
   });
@@ -35,7 +40,7 @@ export async function createTeacherAccount(params: {
   name: string;
   email: string;
   password: string;
-  role?: "teacher" | "adminTeacher" | "superAdminTeacher";
+  role?: "teacher" | "adminTeacher" | "superAdminTeacher" | "coordinadorPlantel";
   asAdminTeacher?: boolean;
   phone?: string;
   createdBy?: string | null;

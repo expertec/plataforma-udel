@@ -257,6 +257,16 @@ export async function getGroups(teacherId: string): Promise<Group[]> {
   return snap.docs.map((docSnap) => toGroup(docSnap.id, docSnap.data()));
 }
 
+export async function getAllGroups(maxResults?: number): Promise<Group[]> {
+  const ref = collection(db, "groups");
+  const constraints: QueryConstraint[] = [orderBy("createdAt", "desc")];
+  if (typeof maxResults === "number" && maxResults > 0) {
+    constraints.push(limit(maxResults));
+  }
+  const snap = await getDocs(query(ref, ...constraints));
+  return snap.docs.map((docSnap) => toGroup(docSnap.id, docSnap.data()));
+}
+
 export async function getGroup(groupId: string): Promise<Group | null> {
   const ref = doc(db, "groups", groupId);
   const snap = await getDoc(ref);

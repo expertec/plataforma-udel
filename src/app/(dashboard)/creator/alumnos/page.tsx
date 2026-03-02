@@ -8,7 +8,12 @@ import * as XLSX from "xlsx";
 import { createPortal } from "react-dom";
 import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
-import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import {
+  isAdminTeacherRole,
+  isCampusCoordinatorRole,
+  resolveUserRole,
+  UserRole,
+} from "@/lib/firebase/roles";
 import { getPrograms } from "@/lib/firebase/programs-service";
 import {
   createStudentAccount,
@@ -21,6 +26,7 @@ import {
 } from "@/lib/firebase/students-service";
 import { getGroupStudents, getGroupsForTeacher } from "@/lib/firebase/groups-service";
 import { StudentAllSubmissionsModal } from "./_components/StudentAllSubmissionsModal";
+import { StudentGradesModal } from "./_components/StudentGradesModal";
 
 type ParsedStudentRow = {
   row: number;
@@ -114,6 +120,8 @@ export default function AlumnosPage() {
   // Estado para modal de tareas
   const [submissionsModalOpen, setSubmissionsModalOpen] = useState(false);
   const [selectedStudentForSubmissions, setSelectedStudentForSubmissions] = useState<StudentUser | null>(null);
+  const [gradesModalOpen, setGradesModalOpen] = useState(false);
+  const [selectedStudentForGrades, setSelectedStudentForGrades] = useState<StudentUser | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -149,6 +157,7 @@ export default function AlumnosPage() {
   const loadStudents = useCallback(async (loadMore = false) => {
     const userId = currentUser?.uid;
     if (!userId || !userRole) return;
+    const canViewAllStudents = isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
 
     if (loadMore) {
       setLoadingMore(true);
@@ -160,7 +169,7 @@ export default function AlumnosPage() {
     }
 
     try {
-      if (isAdminTeacherRole(userRole)) {
+      if (canViewAllStudents) {
         // Usar paginación para admins (reduce lecturas de ~10,000 a ~50 por página)
         const result = await getStudentUsersPaginated(
           50, // Cargar 50 estudiantes por página
@@ -205,7 +214,7 @@ export default function AlumnosPage() {
     } catch (err) {
       console.error(err);
       toast.error(
-        isAdminTeacherRole(userRole)
+        canViewAllStudents
           ? "No se pudieron cargar los alumnos (users)"
           : "No se pudieron cargar los alumnos de tus grupos",
       );
@@ -477,10 +486,15 @@ export default function AlumnosPage() {
   }, [parsedRows, previewFilter]);
 
   const isSearchActive = searchQuery.trim().length > 0;
+  const canRunGlobalSearch = isAdminTeacherRole(userRole);
 
-  // Búsqueda global para super admin teacher (escanea páginas automáticamente)
+  // Búsqueda global en Firestore solo para admins.
   useEffect(() => {
-    if (!isAdminTeacherRole(userRole)) return;
+    if (!canRunGlobalSearch) {
+      setSearchResults([]);
+      setSearching(false);
+      return;
+    }
     const rawQuery = searchQuery.trim();
     if (!rawQuery) {
       setSearchResults([]);
@@ -533,11 +547,11 @@ export default function AlumnosPage() {
     return () => {
       clearTimeout(timer);
     };
-  }, [searchQuery, userRole]);
+  }, [searchQuery, canRunGlobalSearch]);
 
   // Filtrar alumnos según búsqueda
   const filteredStudents = useMemo(() => {
-    const base = isSearchActive && isAdminTeacherRole(userRole) ? searchResults : students;
+    const base = isSearchActive && canRunGlobalSearch ? searchResults : students;
     if (!searchQuery.trim()) {
       return base;
     }
@@ -548,7 +562,7 @@ export default function AlumnosPage() {
         student.email.toLowerCase().includes(query) ||
         (student.program ?? "").toLowerCase().includes(query)
       );
-  }, [students, searchResults, searchQuery, userRole, isSearchActive]);
+  }, [students, searchResults, searchQuery, isSearchActive, canRunGlobalSearch]);
 
   const actionMenuStudent = useMemo(() => {
     if (!openActionMenu) return null;
@@ -602,6 +616,8 @@ export default function AlumnosPage() {
   };
 
   const isAdmin = isAdminTeacherRole(userRole);
+  const isCoordinator = isCampusCoordinatorRole(userRole);
+  const canViewAllStudents = isAdmin || isCampusCoordinatorRole(userRole);
   const adminTabs: { key: "gestion" | "altas" | "passwords"; label: string; helper?: string }[] = isAdmin
     ? [
         { key: "gestion", label: "Listado y acciones" },
@@ -750,6 +766,11 @@ export default function AlumnosPage() {
     setSelectedStudent(student);
     setNewPassword("ascensoUDEL");
     setChangePasswordModalOpen(true);
+  };
+
+  const handleOpenGradesModal = (student: StudentUser) => {
+    setSelectedStudentForGrades(student);
+    setGradesModalOpen(true);
   };
 
   const handleUpdateProfile = async () => {
@@ -903,7 +924,9 @@ export default function AlumnosPage() {
           <span className="text-sm text-slate-600">
             {isAdmin
               ? 'Lista de usuarios con rol estudiante (colección "users").'
-              : "Solo se muestran los alumnos de los grupos que tienes asignados."}
+              : canViewAllStudents
+                ? 'Lista global de usuarios con rol estudiante (solo lectura).'
+                : "Solo se muestran los alumnos de los grupos que tienes asignados."}
           </span>
         </div>
       )}
@@ -1341,7 +1364,7 @@ export default function AlumnosPage() {
             </div>
           ) : students.length === 0 ? (
             <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
-              {isAdminTeacherRole(userRole)
+              {canViewAllStudents
                 ? "No se encontraron alumnos con rol estudiante."
                 : "Aún no tienes alumnos asignados a tus grupos."}
             </div>
@@ -1387,7 +1410,7 @@ export default function AlumnosPage() {
                   )}
                 </div>
                 <div className="text-sm text-slate-600">
-                  {isSearchActive && isAdminTeacherRole(userRole) ? (
+                  {isSearchActive && canRunGlobalSearch ? (
                     <span>
                       {searching
                         ? "Buscando..."
@@ -1407,7 +1430,7 @@ export default function AlumnosPage() {
               {/* Tabla de alumnos */}
               {filteredStudents.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-600">
-                  {searching && isSearchActive && isAdminTeacherRole(userRole)
+                  {searching && isSearchActive && canRunGlobalSearch
                     ? "Buscando alumnos en todos los registros..."
                     : `No se encontraron alumnos que coincidan con "${searchQuery}"`}
                 </div>
@@ -1479,6 +1502,16 @@ export default function AlumnosPage() {
                                     <MoreVertical size={14} />
                                   </button>
                                 </div>
+                              ) : isCoordinator ? (
+                                <div className="flex justify-end">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenGradesModal(s)}
+                                    className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700 transition hover:bg-blue-100"
+                                  >
+                                    Calificaciones
+                                  </button>
+                                </div>
                               ) : (
                                 <span className="text-xs text-slate-500">—</span>
                               )}
@@ -1492,7 +1525,7 @@ export default function AlumnosPage() {
                   </div>
 
                   {/* Botón para cargar más estudiantes */}
-                  {hasMoreStudents && isAdminTeacherRole(userRole) && !isSearchActive && (
+                  {hasMoreStudents && canViewAllStudents && (!isSearchActive || !canRunGlobalSearch) && (
                     <div className="mt-4 flex justify-center">
                       <button
                         type="button"
@@ -1530,6 +1563,16 @@ export default function AlumnosPage() {
                   className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50"
                 >
                   Editar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenActionMenu(null);
+                    handleOpenGradesModal(actionMenuStudent);
+                  }}
+                  className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-blue-700 hover:bg-blue-50"
+                >
+                  Calificaciones
                 </button>
                 <button
                   type="button"
@@ -1738,6 +1781,20 @@ export default function AlumnosPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Modal para ver calificaciones del alumno */}
+      {gradesModalOpen && selectedStudentForGrades && (
+        <StudentGradesModal
+          studentId={selectedStudentForGrades.id}
+          studentName={selectedStudentForGrades.name}
+          studentEmail={selectedStudentForGrades.email}
+          isOpen={gradesModalOpen}
+          onClose={() => {
+            setGradesModalOpen(false);
+            setSelectedStudentForGrades(null);
+          }}
+        />
       )}
 
       {/* Modal para ver tareas del alumno */}

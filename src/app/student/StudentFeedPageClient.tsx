@@ -105,6 +105,10 @@ const getRequiredPct = (type?: string) => (type === "image" ? 100 : VIDEO_COMPLE
 const localProgressKey = (uid: string) => `classProgress:${uid}`;
 const UNIVERSITY_LOGO_SRC = "/university-logo.jpg";
 const FINANCE_STATUS_ENDPOINT = "/api/finance/customer-status";
+const BILLING_SUPPORT_WHATSAPP = "527821012431";
+const BILLING_SUPPORT_WHATSAPP_URL = `https://wa.me/${BILLING_SUPPORT_WHATSAPP}?text=${encodeURIComponent(
+  "Hola, me aparece bloqueo por pagos vencidos en la plataforma UDEL y necesito ayuda para revisar mi acceso.",
+)}`;
 
 const normalizePhone = (raw?: string | null) => {
   const digits = (raw ?? "").replace(/\D/g, "");
@@ -1547,17 +1551,34 @@ export default function StudentFeedPageClient() {
         const userSnap = await getDoc(doc(db, "users", currentUser.uid));
         const userData = userSnap.data() ?? {};
         const phone = normalizePhone(userData.phone ?? currentUser.phoneNumber ?? "");
+        const financeEmail =
+          (typeof userData.email === "string" && userData.email.trim()
+            ? userData.email.trim().toLowerCase()
+            : currentUser.email?.trim().toLowerCase()) || "";
+        const whatsapp = normalizePhone(
+          userData.whatsapp ??
+            userData.WhatsApp ??
+            userData.whatsApp ??
+            userData.whatsappPhone ??
+            userData.whatsappNumber ??
+            "",
+        );
 
-        if (!phone) {
+        if (!phone && !whatsapp) {
           setClabeCopied(false);
           setBillingBlocked({
-            reason: "No hay teléfono registrado para validar tus pagos. Contacta a administración.",
+            reason: "No hay teléfono o WhatsApp registrado para validar tus pagos. Contacta a administración.",
           });
           setLoading(false);
           return;
         }
 
-        const financeResp = await fetch(`${FINANCE_STATUS_ENDPOINT}?phone=${encodeURIComponent(phone)}`, {
+        const financeQuery = new URLSearchParams();
+        if (phone) financeQuery.set("phone", phone);
+        if (whatsapp) financeQuery.set("whatsapp", whatsapp);
+        if (financeEmail) financeQuery.set("email", financeEmail);
+
+        const financeResp = await fetch(`${FINANCE_STATUS_ENDPOINT}?${financeQuery.toString()}`, {
           cache: "no-store",
         });
         const financeJson: FinanceStatus = await financeResp.json().catch(() => ({ success: false }));
@@ -2857,6 +2878,22 @@ export default function StudentFeedPageClient() {
             </div>
           </div>
         ) : null}
+        <div className="mt-4 w-full max-w-xl rounded-xl border border-emerald-300/25 bg-emerald-500/10 p-4 text-left">
+          <p className="text-sm font-semibold text-emerald-100">
+            Si crees que esto es un error o ya realizaste tu pago, contáctanos.
+          </p>
+          <p className="mt-1 text-xs text-emerald-100/90">
+            WhatsApp de soporte: +52 782 101 2431
+          </p>
+          <a
+            href={BILLING_SUPPORT_WHATSAPP_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-3 inline-flex rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-emerald-400"
+          >
+            Contactar por WhatsApp
+          </a>
+        </div>
         <div className="mt-6 flex flex-col gap-3 sm:flex-row">
           <button
             className="rounded-lg bg-white/10 px-5 py-3 text-sm font-semibold text-white hover:bg-white/15 transition-colors"

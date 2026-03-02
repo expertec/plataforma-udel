@@ -22,7 +22,12 @@ import { CalificacionesTab } from "./_components/CalificacionesTab";
 import { StudentSubmissionsModal } from "./_components/StudentSubmissionsModal";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
-import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import {
+  isAdminTeacherRole,
+  isCampusCoordinatorRole,
+  resolveUserRole,
+  UserRole,
+} from "@/lib/firebase/roles";
 import type { DocumentSnapshot } from "firebase/firestore";
 
 export default function GroupDetailPage() {
@@ -183,6 +188,7 @@ export default function GroupDetailPage() {
     isCurrentUserAssistant &&
     currentUserId !== group?.teacherId &&
     !isAdminTeacherRole(userRole);
+  const isCampusCoordinator = isCampusCoordinatorRole(userRole);
 
   const getMentorAllowedCourseIds = (mentorId: string): string[] => {
     if (!group) return [];
@@ -400,54 +406,58 @@ export default function GroupDetailPage() {
             <p className="text-sm text-slate-600">{headerInfo}</p>
           </div>
 
-          <Tabs defaultValue="estudiantes" className="w-full space-y-4">
-            <TabsList className="grid w-full grid-cols-4">
-              <TabsTrigger value="estudiantes">Estudiantes</TabsTrigger>
-              <TabsTrigger value="entregas">Entregas</TabsTrigger>
+          <Tabs defaultValue={isCampusCoordinator ? "calificaciones" : "estudiantes"} className="w-full space-y-4">
+            <TabsList className={`grid w-full ${isCampusCoordinator ? "grid-cols-1" : "grid-cols-4"}`}>
+              {!isCampusCoordinator ? <TabsTrigger value="estudiantes">Estudiantes</TabsTrigger> : null}
+              {!isCampusCoordinator ? <TabsTrigger value="entregas">Entregas</TabsTrigger> : null}
               <TabsTrigger value="calificaciones">Calificaciones</TabsTrigger>
-              <TabsTrigger value="config">Configuración</TabsTrigger>
+              {!isCampusCoordinator ? <TabsTrigger value="config">Configuración</TabsTrigger> : null}
             </TabsList>
 
-            <TabsContent value="estudiantes">
-              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                <AlumnosTab
-                  groupId={group.id}
-                  students={groupStudents}
-                  loadingStudents={loadingStudents}
-                  removingId={removingId}
-                  onStudentsAdded={(count) =>
-                    setGroup((prev) =>
-                      prev ? { ...prev, studentsCount: prev.studentsCount + count } : prev,
-                    )
-                  }
-                  onOpenModal={() => setStudentsModalOpen(true)}
-                  onRemoveStudent={handleRemoveStudent}
-                  onOpenStudentSubmissions={(student) =>
-                    isMentorWithRestrictedCourses && visibleCourseIdsForCurrentUser.length === 0
-                      ? toast.error("No tienes materias asignadas para revisar tareas en este grupo.")
-                      : setStudentSubmissionsModal({
-                          open: true,
-                          studentId: student.id,
-                          studentName: student.studentName,
-                        })
-                  }
-                />
-              </div>
-            </TabsContent>
-
-            <TabsContent value="entregas">
-              {isMentorWithRestrictedCourses && visibleCourseIdsForCurrentUser.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-                  No tienes materias asignadas para revisar entregas en este grupo.
+            {!isCampusCoordinator ? (
+              <TabsContent value="estudiantes">
+                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <AlumnosTab
+                    groupId={group.id}
+                    students={groupStudents}
+                    loadingStudents={loadingStudents}
+                    removingId={removingId}
+                    onStudentsAdded={(count) =>
+                      setGroup((prev) =>
+                        prev ? { ...prev, studentsCount: prev.studentsCount + count } : prev,
+                      )
+                    }
+                    onOpenModal={() => setStudentsModalOpen(true)}
+                    onRemoveStudent={handleRemoveStudent}
+                    onOpenStudentSubmissions={(student) =>
+                      isMentorWithRestrictedCourses && visibleCourseIdsForCurrentUser.length === 0
+                        ? toast.error("No tienes materias asignadas para revisar tareas en este grupo.")
+                        : setStudentSubmissionsModal({
+                            open: true,
+                            studentId: student.id,
+                            studentName: student.studentName,
+                          })
+                    }
+                  />
                 </div>
-              ) : (
-                <EntregasTab
-                  groupId={group.id}
-                  courseIds={visibleCourseIdsForCurrentUser}
-                  studentsCount={group.studentsCount}
-                />
-              )}
-            </TabsContent>
+              </TabsContent>
+            ) : null}
+
+            {!isCampusCoordinator ? (
+              <TabsContent value="entregas">
+                {isMentorWithRestrictedCourses && visibleCourseIdsForCurrentUser.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                    No tienes materias asignadas para revisar entregas en este grupo.
+                  </div>
+                ) : (
+                  <EntregasTab
+                    groupId={group.id}
+                    courseIds={visibleCourseIdsForCurrentUser}
+                    studentsCount={group.studentsCount}
+                  />
+                )}
+              </TabsContent>
+            ) : null}
 
             <TabsContent value="calificaciones">
               <div className="rounded-lg bg-white p-6 shadow-sm">
@@ -471,145 +481,147 @@ export default function GroupDetailPage() {
               </div>
             </TabsContent>
 
-            <TabsContent value="config">
-              <div className="rounded-lg bg-white p-6 shadow-sm space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Mentores</p>
-                    <h3 className="text-lg font-semibold text-slate-900">Asignar mentores al grupo</h3>
-                    <p className="text-sm text-slate-600">
-                      El profesor principal es {group.teacherName || "—"}. Puedes añadir mentores y definir sus materias.
-                    </p>
+            {!isCampusCoordinator ? (
+              <TabsContent value="config">
+                <div className="rounded-lg bg-white p-6 shadow-sm space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Mentores</p>
+                      <h3 className="text-lg font-semibold text-slate-900">Asignar mentores al grupo</h3>
+                      <p className="text-sm text-slate-600">
+                        El profesor principal es {group.teacherName || "—"}. Puedes añadir mentores y definir sus materias.
+                      </p>
+                    </div>
+                    {canManageMentors ? (
+                      <button
+                        type="button"
+                        className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"
+                        onClick={() => setAssignTeachersOpen(true)}
+                      >
+                        Asignar mentores
+                      </button>
+                    ) : null}
                   </div>
-                  {canManageMentors ? (
-                    <button
-                      type="button"
-                      className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"
-                      onClick={() => setAssignTeachersOpen(true)}
-                    >
-                      Asignar mentores
-                    </button>
-                  ) : null}
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                  <p className="text-sm font-semibold text-slate-800">Profesor principal</p>
-                  <p className="text-sm text-slate-700">{group.teacherName || "Sin asignar"}</p>
-                  <p className="mt-3 text-sm font-semibold text-slate-800">Mentores</p>
-                  <p className="text-xs text-slate-500">
-                    {canManageMentors
-                      ? "Activa o desactiva por mentor qué materias puede revisar y calificar."
-                      : "Solo lectura. El profesor principal define las materias de cada mentor."}
-                  </p>
-                  {group.assistantTeachers && group.assistantTeachers.length > 0 ? (
-                    <ul className="mt-2 space-y-2 text-sm text-slate-700">
-                      {group.assistantTeachers.map((t) => {
-                        const mentorAllowedCourseIds = new Set(getMentorAllowedCourseIds(t.id));
-                        const isSavingMentorAccess = savingMentorAccessIds.has(t.id);
-                        return (
-                          <li key={t.id} className="rounded-lg border border-slate-200 bg-white p-3">
-                            <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <p>{t.name}</p>
-                                <p className="text-xs text-slate-500">{t.email}</p>
-                              </div>
-                              {canManageMentors ? (
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoveAssistant(t.id, t.name)}
-                                  disabled={removingAssistantId === t.id}
-                                  className="rounded-full border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 transition hover:border-red-400 disabled:border-red-100 disabled:text-red-300"
-                                >
-                                  {removingAssistantId === t.id ? "Desvinculando..." : "Desvincular"}
-                                </button>
-                              ) : null}
-                            </div>
-                            <div className="mt-3">
-                              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                                Materias permitidas
-                              </p>
-                              {assignedCourses.length > 0 ? (
-                                <div className="mt-2 flex flex-wrap gap-2">
-                                  {assignedCourses.map((course) => {
-                                    const isEnabled = mentorAllowedCourseIds.has(course.courseId);
-                                    return (
-                                      <label
-                                        key={`${t.id}-${course.courseId}`}
-                                        className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs transition ${
-                                          isEnabled
-                                            ? "border-blue-300 bg-blue-50 text-blue-700"
-                                            : "border-slate-200 bg-white text-slate-600"
-                                        }`}
-                                      >
-                                        <input
-                                          type="checkbox"
-                                          className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                                          checked={isEnabled}
-                                          disabled={!canManageMentors || isSavingMentorAccess}
-                                          onChange={() => handleToggleMentorCourse(t.id, course.courseId)}
-                                        />
-                                        <span>{course.courseName}</span>
-                                      </label>
-                                    );
-                                  })}
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-sm font-semibold text-slate-800">Profesor principal</p>
+                    <p className="text-sm text-slate-700">{group.teacherName || "Sin asignar"}</p>
+                    <p className="mt-3 text-sm font-semibold text-slate-800">Mentores</p>
+                    <p className="text-xs text-slate-500">
+                      {canManageMentors
+                        ? "Activa o desactiva por mentor qué materias puede revisar y calificar."
+                        : "Solo lectura. El profesor principal define las materias de cada mentor."}
+                    </p>
+                    {group.assistantTeachers && group.assistantTeachers.length > 0 ? (
+                      <ul className="mt-2 space-y-2 text-sm text-slate-700">
+                        {group.assistantTeachers.map((t) => {
+                          const mentorAllowedCourseIds = new Set(getMentorAllowedCourseIds(t.id));
+                          const isSavingMentorAccess = savingMentorAccessIds.has(t.id);
+                          return (
+                            <li key={t.id} className="rounded-lg border border-slate-200 bg-white p-3">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <p>{t.name}</p>
+                                  <p className="text-xs text-slate-500">{t.email}</p>
                                 </div>
-                              ) : (
-                                <p className="mt-1 text-xs text-slate-500">No hay materias asignadas al grupo.</p>
-                              )}
-                              {isSavingMentorAccess ? (
-                                <p className="mt-2 text-xs text-blue-600">Guardando acceso por materias...</p>
-                              ) : (
-                                <p className="mt-2 text-xs text-slate-500">
-                                  {mentorAllowedCourseIds.size} de {assignedCourses.length} materias habilitadas.
+                                {canManageMentors ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveAssistant(t.id, t.name)}
+                                    disabled={removingAssistantId === t.id}
+                                    className="rounded-full border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 transition hover:border-red-400 disabled:border-red-100 disabled:text-red-300"
+                                  >
+                                    {removingAssistantId === t.id ? "Desvinculando..." : "Desvincular"}
+                                  </button>
+                                ) : null}
+                              </div>
+                              <div className="mt-3">
+                                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                                  Materias permitidas
                                 </p>
-                              )}
-                            </div>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  ) : (
-                    <p className="mt-1 text-sm text-slate-600">No hay mentores asignados.</p>
-                  )}
-                </div>
+                                {assignedCourses.length > 0 ? (
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    {assignedCourses.map((course) => {
+                                      const isEnabled = mentorAllowedCourseIds.has(course.courseId);
+                                      return (
+                                        <label
+                                          key={`${t.id}-${course.courseId}`}
+                                          className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs transition ${
+                                            isEnabled
+                                              ? "border-blue-300 bg-blue-50 text-blue-700"
+                                              : "border-slate-200 bg-white text-slate-600"
+                                          }`}
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                            checked={isEnabled}
+                                            disabled={!canManageMentors || isSavingMentorAccess}
+                                            onChange={() => handleToggleMentorCourse(t.id, course.courseId)}
+                                          />
+                                          <span>{course.courseName}</span>
+                                        </label>
+                                      );
+                                    })}
+                                  </div>
+                                ) : (
+                                  <p className="mt-1 text-xs text-slate-500">No hay materias asignadas al grupo.</p>
+                                )}
+                                {isSavingMentorAccess ? (
+                                  <p className="mt-2 text-xs text-blue-600">Guardando acceso por materias...</p>
+                                ) : (
+                                  <p className="mt-2 text-xs text-slate-500">
+                                    {mentorAllowedCourseIds.size} de {assignedCourses.length} materias habilitadas.
+                                  </p>
+                                )}
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : (
+                      <p className="mt-1 text-sm text-slate-600">No hay mentores asignados.</p>
+                    )}
+                  </div>
 
-                {/* Sección de Cursos */}
-                <div className="mt-6 flex items-center justify-between border-t border-slate-200 pt-6">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Cursos</p>
-                    <h3 className="text-lg font-semibold text-slate-900">Cursos vinculados al grupo</h3>
-                    <p className="text-sm text-slate-600">
-                      Gestiona los cursos que los alumnos pueden ver en este grupo.
-                    </p>
+                  {/* Sección de Cursos */}
+                  <div className="mt-6 flex items-center justify-between border-t border-slate-200 pt-6">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Cursos</p>
+                      <h3 className="text-lg font-semibold text-slate-900">Cursos vinculados al grupo</h3>
+                      <p className="text-sm text-slate-600">
+                        Gestiona los cursos que los alumnos pueden ver en este grupo.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-sm font-semibold text-slate-800">Cursos asignados</p>
+                    {assignedCourses.length > 0 ? (
+                      <ul className="mt-2 space-y-2 text-sm text-slate-700">
+                        {assignedCourses.map((course) => (
+                          <li key={course.courseId} className="flex items-center justify-between gap-3">
+                            <div>
+                              <p className="font-medium">{course.courseName}</p>
+                              <p className="text-xs text-slate-500">ID: {course.courseId}</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleUnlinkCourse(course.courseId, course.courseName)}
+                              disabled={unlinkingCourseId === course.courseId || assignedCourses.length === 1}
+                              className="rounded-full border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 transition hover:border-red-400 disabled:cursor-not-allowed disabled:border-red-100 disabled:text-red-300"
+                              title={assignedCourses.length === 1 ? "No puedes desvincular el único curso" : "Desvincular curso del grupo"}
+                            >
+                              {unlinkingCourseId === course.courseId ? "Desvinculando..." : "Desvincular"}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-1 text-sm text-slate-600">No hay cursos asignados a este grupo.</p>
+                    )}
                   </div>
                 </div>
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                  <p className="text-sm font-semibold text-slate-800">Cursos asignados</p>
-                  {assignedCourses.length > 0 ? (
-                    <ul className="mt-2 space-y-2 text-sm text-slate-700">
-                      {assignedCourses.map((course) => (
-                        <li key={course.courseId} className="flex items-center justify-between gap-3">
-                          <div>
-                            <p className="font-medium">{course.courseName}</p>
-                            <p className="text-xs text-slate-500">ID: {course.courseId}</p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => handleUnlinkCourse(course.courseId, course.courseName)}
-                            disabled={unlinkingCourseId === course.courseId || assignedCourses.length === 1}
-                            className="rounded-full border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 transition hover:border-red-400 disabled:cursor-not-allowed disabled:border-red-100 disabled:text-red-300"
-                            title={assignedCourses.length === 1 ? "No puedes desvincular el único curso" : "Desvincular curso del grupo"}
-                          >
-                            {unlinkingCourseId === course.courseId ? "Desvinculando..." : "Desvincular"}
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-1 text-sm text-slate-600">No hay cursos asignados a este grupo.</p>
-                  )}
-                </div>
-              </div>
-            </TabsContent>
+              </TabsContent>
+            ) : null}
           </Tabs>
         </>
       )}

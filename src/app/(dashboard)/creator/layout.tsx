@@ -9,7 +9,12 @@ import { usePathname, useRouter } from "next/navigation";
 import { User, onAuthStateChanged, signOut } from "firebase/auth";
 import { Menu, ChevronDown } from "lucide-react";
 import { auth } from "@/lib/firebase/client";
-import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import {
+  isAdminTeacherRole,
+  isCampusCoordinatorRole,
+  resolveUserRole,
+  UserRole,
+} from "@/lib/firebase/roles";
 import { TeacherDataProvider } from "@/contexts/TeacherDataContext";
 
 export default function CreatorLayout({ children }: { children: ReactNode }) {
@@ -52,6 +57,23 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("mousedown", handleClickOutside);
   }, [userMenuOpen]);
 
+  useEffect(() => {
+    if (!userRole || !isCampusCoordinatorRole(userRole)) return;
+
+    if (pathname === "/creator" || pathname === "/creator/") {
+      router.replace("/creator/grupos");
+      return;
+    }
+
+    const isAllowedPath =
+      pathname.startsWith("/creator/grupos") ||
+      pathname.startsWith("/creator/alumnos") ||
+      pathname.startsWith("/creator/perfil");
+    if (!isAllowedPath) {
+      router.replace("/creator/grupos");
+    }
+  }, [pathname, router, userRole]);
+
   const handleSignOut = async () => {
     setUserMenuOpen(false);
     try {
@@ -69,7 +91,9 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
       ? "SuperAdminTeacher"
       : userRole === "adminTeacher"
         ? "AdminTeacher"
-        : "Profesor";
+        : isCampusCoordinatorRole(userRole)
+          ? "Coordinador de plantel"
+          : "Profesor";
 
   const isActive = (href: string) => {
     if (href === "/creator") return pathname === "/creator" || pathname === "/creator/";
@@ -77,6 +101,13 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
   };
 
   const navItems = useMemo(() => {
+    if (isCampusCoordinatorRole(userRole)) {
+      return [
+        { href: "/creator/grupos", label: "Grupos" },
+        { href: "/creator/alumnos", label: "Alumnos" },
+      ];
+    }
+
     const items = [
       { href: "/creator", label: "Dashboard" },
       { href: "/creator/cursos", label: "Cursos" },
@@ -96,7 +127,7 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
   }, [userRole]);
 
   return (
-    <RoleGate allowedRole={["teacher", "adminTeacher", "superAdminTeacher"]}>
+    <RoleGate allowedRole={["teacher", "adminTeacher", "superAdminTeacher", "coordinadorPlantel"]}>
       <TeacherDataProvider>
       <div className="flex min-h-screen w-full bg-slate-100 text-slate-900">
         {/* Sidebar */}
