@@ -51,31 +51,20 @@ service cloud.firestore {
     // Permite que profesores agreguen su materia a un grupo existente sin modificar otros campos.
     function canTeacherLinkCourseToGroup() {
       return isTeacher() &&
-        request.resource.data.diff(resource.data).changedKeys().hasOnly(['courses', 'courseIds', 'mentorCourseAccess', 'updatedAt']) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['courses', 'courseIds', 'updatedAt']) &&
         request.resource.data.courses is list &&
         request.resource.data.courseIds is list &&
-        (!('mentorCourseAccess' in request.resource.data) || request.resource.data.mentorCourseAccess is map) &&
         listSize(request.resource.data.courses) >= listSize(resource.data.courses) &&
         listSize(request.resource.data.courseIds) >= listSize(resource.data.courseIds);
     }
     // Permite a un profesor quitar su curso de un grupo, incluyendo actualizar courseId/courseName cuando corresponde.
     function canTeacherUnlinkCourseFromGroup(groupPath) {
       return isTeacherAssignedToGroup(groupPath) &&
-        request.resource.data.diff(resource.data).changedKeys().hasOnly(['courses', 'courseIds', 'mentorCourseAccess', 'updatedAt', 'courseId', 'courseName']) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['courses', 'courseIds', 'updatedAt', 'courseId', 'courseName']) &&
         request.resource.data.courses is list &&
         request.resource.data.courseIds is list &&
-        (!('mentorCourseAccess' in request.resource.data) || request.resource.data.mentorCourseAccess is map) &&
         listSize(request.resource.data.courses) <= listSize(resource.data.courses) &&
         listSize(request.resource.data.courseIds) <= listSize(resource.data.courseIds);
-    }
-    function canTeacherManageMentorsInGroup(groupPath) {
-      return isSignedIn() &&
-        exists(groupPath) &&
-        get(groupPath).data.teacherId == request.auth.uid &&
-        request.resource.data.diff(resource.data).changedKeys().hasOnly(['assistantTeacherIds', 'assistantTeachers', 'mentorCourseAccess', 'updatedAt']) &&
-        request.resource.data.assistantTeacherIds is list &&
-        request.resource.data.assistantTeachers is list &&
-        (!('mentorCourseAccess' in request.resource.data) || request.resource.data.mentorCourseAccess is map);
     }
     function canUpdateLikesCountOnly() {
       return isSignedIn() &&
@@ -95,6 +84,24 @@ service cloud.firestore {
         ("grade" in resource.data && resource.data.grade is number) ||
         ("gradedAt" in resource.data && resource.data.gradedAt is timestamp);
     }
+    function forumPostData(courseId, lessonId, classId, postId) {
+      let postPath = /databases/$(database)/documents/courses/$(courseId)/lessons/$(lessonId)/classes/$(classId)/forums/$(postId);
+      return exists(postPath) ? get(postPath).data : null;
+    }
+    function canDeleteForumReplyAsPostOwner(courseId, lessonId, classId, postId) {
+      let postData = forumPostData(courseId, lessonId, classId, postId);
+      return isSignedIn() &&
+        postData != null &&
+        (
+          (postData.authorId is string && postData.authorId == request.auth.uid) ||
+          postId == request.auth.uid
+        ) &&
+        !(
+          ("status" in postData && postData.status == "graded") ||
+          ("grade" in postData && postData.grade is number) ||
+          ("gradedAt" in postData && postData.gradedAt is timestamp)
+        );
+    }
     function submissionIsGraded() {
       // Verificar existencia de campos antes de accederlos para evitar errores
       return ("status" in resource.data && resource.data.status == "graded") ||
@@ -106,24 +113,6 @@ service cloud.firestore {
       return "studentId" in resource.data &&
         resource.data.studentId is string &&
         request.auth.uid == resource.data.studentId;
-    }
-    function studentCourseClosedInGroup(groupId, courseId, studentId) {
-      let enrollmentPath = /databases/$(database)/documents/studentEnrollments/$(groupId + "_" + studentId);
-      return courseId is string &&
-        exists(enrollmentPath) &&
-        get(enrollmentPath).data.courseClosures is map &&
-        get(enrollmentPath).data.courseClosures.keys().hasAny([courseId]) &&
-        get(enrollmentPath).data.courseClosures[courseId] is map &&
-        ("status" in get(enrollmentPath).data.courseClosures[courseId]) &&
-        get(enrollmentPath).data.courseClosures[courseId].status == "closed";
-    }
-    function submissionDataIsClosed(groupId, data) {
-      return data is map &&
-        ("courseId" in data) &&
-        data.courseId is string &&
-        ("studentId" in data) &&
-        data.studentId is string &&
-        studentCourseClosedInGroup(groupId, data.courseId, data.studentId);
     }
     function isMentorOfCourse(courseId) {
       // Verifica si el usuario es mentor del curso consultando el array mentorIds
@@ -143,6 +132,15 @@ service cloud.firestore {
           get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
         ) ||
         isMentorOfCourse(courseId);
+    }
+    // Permite a mentores ajustar únicamente el contador de lecciones del curso.
+    function canMentorAdjustLessonsCount(courseId) {
+      let currentLessonsCount = resource.data.lessonsCount is int ? resource.data.lessonsCount : 0;
+      return isMentorOfCourse(courseId) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['lessonsCount']) &&
+        request.resource.data.lessonsCount is int &&
+        request.resource.data.lessonsCount >= 0 &&
+        absVal(request.resource.data.lessonsCount - currentLessonsCount) <= 1;
     }
     
     /* users */
@@ -215,7 +213,11 @@ service cloud.firestore {
       allow read: if isAdmin() || isSignedIn();
       // Permitir creación/edición al propietario aunque falte el rol en users/{uid}
       allow create: if isSignedIn() && request.resource.data.teacherId == request.auth.uid;
-      allow update, delete: if isAdmin() || isAdminTeacher() || (isSignedIn() && resource.data.teacherId == request.auth.uid);
+      allow update: if isAdmin() ||
+        isAdminTeacher() ||
+        (isSignedIn() && resource.data.teacherId == request.auth.uid) ||
+        canMentorAdjustLessonsCount(courseId);
+      allow delete: if isAdmin() || isAdminTeacher() || (isSignedIn() && resource.data.teacherId == request.auth.uid);
 
       match /lessons/{lessonId} {
         allow read: if isAdmin() || isSignedIn();
@@ -255,20 +257,39 @@ service cloud.firestore {
             // Update: profesor/admin del curso, el autor del post, o cualquiera que solo actualice repliesCount.
             allow update: if isAdmin() ||
               canManageCourse(courseId) ||
-              (isSignedIn() && resource.data.authorId == request.auth.uid && !forumPostIsGraded()) ||
+              (
+                isSignedIn() &&
+                !forumPostIsGraded() &&
+                (
+                  (resource.data.authorId is string && resource.data.authorId == request.auth.uid) ||
+                  postId == request.auth.uid
+                )
+              ) ||
               canUpdateRepliesCountOnly();
             // Delete: profesor/admin del curso o el autor del post.
             allow delete: if isAdmin() ||
               canManageCourse(courseId) ||
-              (isSignedIn() && resource.data.authorId == request.auth.uid && !forumPostIsGraded());
+              (
+                isSignedIn() &&
+                !forumPostIsGraded() &&
+                (
+                  (resource.data.authorId is string && resource.data.authorId == request.auth.uid) ||
+                  postId == request.auth.uid
+                )
+              );
 
             // Respuestas a las aportaciones del foro (hilos públicos)
             match /replies/{replyId} {
               allow read: if isSignedIn();
               // Crear: cualquier usuario autenticado que se firma como autor
               allow create: if isSignedIn() && request.resource.data.authorId == request.auth.uid;
-              // Update/Delete: profesor/admin del curso o el autor de la respuesta
-              allow update, delete: if isAdmin() || canManageCourse(courseId) || (isSignedIn() && resource.data.authorId == request.auth.uid);
+              // Update: profesor/admin del curso o el autor de la respuesta
+              allow update: if isAdmin() || canManageCourse(courseId) || (isSignedIn() && resource.data.authorId == request.auth.uid);
+              // Delete: profesor/admin del curso, autor de la respuesta, o dueño del post (si no está evaluado)
+              allow delete: if isAdmin() ||
+                canManageCourse(courseId) ||
+                (isSignedIn() && resource.data.authorId == request.auth.uid) ||
+                canDeleteForumReplyAsPostOwner(courseId, lessonId, classId, postId);
             }
           }
 
@@ -301,7 +322,6 @@ service cloud.firestore {
       allow read: if isSignedIn();
       allow create: if isAdmin() || isAdminTeacher();
       allow update: if isAdmin() || isAdminTeacher() ||
-        canTeacherManageMentorsInGroup(/databases/$(database)/documents/groups/$(groupId)) ||
         canTeacherLinkCourseToGroup() ||
         canTeacherUnlinkCourseFromGroup(/databases/$(database)/documents/groups/$(groupId));
       allow delete: if isAdmin() || isAdminTeacher();
@@ -337,31 +357,15 @@ service cloud.firestore {
           )
         ) || (
           isSignedIn() &&
-          request.resource.data.studentId == request.auth.uid &&
-          !submissionDataIsClosed(groupId, request.resource.data)
+          request.resource.data.studentId == request.auth.uid
         );
-        // Estudiante puede actualizar su propia entrega si NO está calificada
-        // y la materia no está cerrada (estado actual y estado destino).
-        allow update: if (
+        // Estudiante puede eliminar/actualizar su propia entrega si NO está calificada
+        // Se evalúa primero para evitar llamadas innecesarias a get()
+        allow update, delete: if (
           request.auth != null &&
           "studentId" in resource.data &&
           resource.data.studentId == request.auth.uid &&
-          !submissionIsGraded() &&
-          !submissionDataIsClosed(groupId, resource.data) &&
-          !submissionDataIsClosed(groupId, request.resource.data)
-        ) || isAdmin() || isAdminTeacher() || (
-          isTeacherLike() &&
-          exists(/databases/$(database)/documents/groups/$(groupId)) &&
-          isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId))
-        );
-        // Estudiante puede eliminar su propia entrega si NO está calificada
-        // y la materia no está cerrada.
-        allow delete: if (
-          request.auth != null &&
-          "studentId" in resource.data &&
-          resource.data.studentId == request.auth.uid &&
-          !submissionIsGraded() &&
-          !submissionDataIsClosed(groupId, resource.data)
+          !submissionIsGraded()
         ) || isAdmin() || isAdminTeacher() || (
           isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&

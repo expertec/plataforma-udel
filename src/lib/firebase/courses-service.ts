@@ -18,6 +18,7 @@ import {
 } from "firebase/firestore";
 import { db } from "./firestore";
 import { syncCourseProgram } from "./programs-service";
+import { auth } from "./client";
 
 export type Course = {
   id: string;
@@ -380,18 +381,73 @@ type CreateLessonInput = {
   order: number;
 };
 
+const isPermissionDeniedError = (error: unknown): boolean => {
+  if (!error || typeof error !== "object") return false;
+  return "code" in error && (error as { code?: unknown }).code === "permission-denied";
+};
+
+async function createLessonViaApiFallback(input: CreateLessonInput): Promise<string> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error("No hay sesión activa para crear la lección");
+  }
+
+  const token = await currentUser.getIdToken();
+  const response = await fetch(`/api/courses/${encodeURIComponent(input.courseId)}/lessons`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      title: input.title,
+      description: input.description ?? "",
+      lessonNumber: input.lessonNumber,
+      order: input.order,
+    }),
+  });
+
+  const payload = (await response.json().catch(() => null)) as
+    | { success?: boolean; data?: { lessonId?: string }; error?: string }
+    | null;
+
+  if (!response.ok || !payload?.success || !payload?.data?.lessonId) {
+    throw new Error(payload?.error || "No se pudo crear la lección");
+  }
+
+  return payload.data.lessonId;
+}
+
 export async function createLesson(input: CreateLessonInput): Promise<string> {
   const lessonsRef = collection(db, "courses", input.courseId, "lessons");
-  const docRef = await addDoc(lessonsRef, {
-    lessonNumber: input.lessonNumber,
-    title: input.title,
-    description: input.description ?? "",
-    order: input.order,
-    createdAt: serverTimestamp(),
-  });
+  let docRef;
+  try {
+    docRef = await addDoc(lessonsRef, {
+      lessonNumber: input.lessonNumber,
+      title: input.title,
+      description: input.description ?? "",
+      order: input.order,
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    if (isPermissionDeniedError(error)) {
+      return createLessonViaApiFallback(input);
+    }
+    throw error;
+  }
+
   // Incrementa contador de lecciones en el curso
   const courseRef = doc(db, "courses", input.courseId);
-  await updateDoc(courseRef, { lessonsCount: increment(1) });
+  try {
+    await updateDoc(courseRef, { lessonsCount: increment(1) });
+  } catch (error) {
+    // La lección ya se creó; si solo falla el contador por permisos, no bloquear la acción.
+    if (!isPermissionDeniedError(error)) {
+      throw error;
+    }
+    console.warn("No se pudo actualizar lessonsCount después de crear la lección", error);
+  }
+
   return docRef.id;
 }
 
@@ -683,20 +739,35 @@ export async function getQuizQuestions(
   const snap = await getDocs(q);
   return snap.docs.map((doc) => {
     const data = doc.data();
+    const rawOptions = Array.isArray(data.options) ? data.options : [];
     return {
       id: doc.id,
       prompt: data.prompt ?? "",
       explanation: data.explanation ?? data.questionFeedback ?? "",
       type: data.type ?? "multiple",
       order: data.order ?? 0,
-      options: (data.options ?? []).map((opt: any) => ({
-        id: opt.id,
-        text: opt.text,
-        isCorrect: opt.isCorrect,
-        feedback: opt.feedback,
-        correctFeedback: opt.correctFeedback,
-        incorrectFeedback: opt.incorrectFeedback,
-      })),
+      options: rawOptions.map((opt) => {
+        const option = (opt && typeof opt === "object"
+          ? opt
+          : {}) as {
+          id?: unknown;
+          text?: unknown;
+          isCorrect?: unknown;
+          feedback?: unknown;
+          correctFeedback?: unknown;
+          incorrectFeedback?: unknown;
+        };
+        return {
+          id: typeof option.id === "string" ? option.id : "",
+          text: typeof option.text === "string" ? option.text : "",
+          isCorrect: option.isCorrect === true,
+          feedback: typeof option.feedback === "string" ? option.feedback : undefined,
+          correctFeedback:
+            typeof option.correctFeedback === "string" ? option.correctFeedback : undefined,
+          incorrectFeedback:
+            typeof option.incorrectFeedback === "string" ? option.incorrectFeedback : undefined,
+        };
+      }),
       answerText: data.answerText,
     };
   });

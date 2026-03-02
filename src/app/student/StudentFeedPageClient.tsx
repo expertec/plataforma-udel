@@ -100,6 +100,7 @@ type FinanceStatus = {
 
 const VIDEO_COMPLETION_THRESHOLD = 80;
 const ENFORCE_VIDEO_GATE = true;
+const HEAVY_CARD_RENDER_RADIUS = 1;
 const getRequiredPct = (type?: string) => (type === "image" ? 100 : VIDEO_COMPLETION_THRESHOLD);
 const localProgressKey = (uid: string) => `classProgress:${uid}`;
 const UNIVERSITY_LOGO_SRC = "/university-logo.jpg";
@@ -350,7 +351,9 @@ export default function StudentFeedPageClient() {
   const [courseCoverMap, setCourseCoverMap] = useState<Record<string, string>>({});
   const [likesMap, setLikesMap] = useState<Record<string, number>>({});
   const [likedMap, setLikedMap] = useState<Record<string, boolean>>({});
+  const likedLoadCacheRef = useRef<Record<string, boolean>>({});
   const [likePendingMap, setLikePendingMap] = useState<Record<string, boolean>>({});
+  const commentsCountLoadCacheRef = useRef<Record<string, boolean>>({});
   const [loadingCommentsMap, setLoadingCommentsMap] = useState<Record<string, boolean>>({});
   const [mobileClassesOpen, setMobileClassesOpen] = useState(false);
   const [desktopFiltersOpen, setDesktopFiltersOpen] = useState(false);
@@ -598,6 +601,11 @@ export default function StudentFeedPageClient() {
     [visibleClasses],
   );
 
+  useEffect(() => {
+    likedLoadCacheRef.current = {};
+    commentsCountLoadCacheRef.current = {};
+  }, [visibleClassSignature]);
+
   const getPrevSameCourse = useCallback(
     (targetIdx: number) => {
       const target = visibleClasses[targetIdx];
@@ -615,6 +623,12 @@ export default function StudentFeedPageClient() {
     activeClass?.type === "image" && activeClass.images ? activeClass.images.length : 0;
   const activeImageIdx = activeClass?.id ? imageIndexMap[activeClass.id] ?? 0 : 0;
   const hasPendingImages = activeImagesCount > 0 && activeImageIdx < activeImagesCount - 1;
+  const engagementTargetClasses = useMemo(() => {
+    if (!visibleClasses.length) return [] as FeedClass[];
+    const start = Math.max(0, activeIndex - HEAVY_CARD_RENDER_RADIUS);
+    const end = Math.min(visibleClasses.length - 1, activeIndex + HEAVY_CARD_RENDER_RADIUS);
+    return visibleClasses.slice(start, end + 1);
+  }, [activeIndex, visibleClasses]);
 
   useEffect(() => {
     if (!visibleClasses.length) {
@@ -1120,6 +1134,11 @@ export default function StudentFeedPageClient() {
     return unsub;
   }, []);
 
+  useEffect(() => {
+    likedLoadCacheRef.current = {};
+    commentsCountLoadCacheRef.current = {};
+  }, [currentUser?.uid]);
+
   // Guardar progreso cuando el usuario cambia de pestaña, minimiza la app o cierra (especial para móviles)
   useEffect(() => {
     const saveAllProgress = () => {
@@ -1135,7 +1154,6 @@ export default function StudentFeedPageClient() {
         completed: updatedCompleted,
         seen: updatedSeen,
       });
-      console.log('💾 Guardado inmediato a localStorage completado');
 
       // Intentar guardar a Firestore (puede no completarse si se cierra el navegador)
       Object.keys(progressRef.current).forEach((classId) => {
@@ -1153,20 +1171,17 @@ export default function StudentFeedPageClient() {
     // Evento cuando la página pierde visibilidad (cambio de tab, minimizar, etc.)
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        console.log('📱 Página oculta - guardando progreso automáticamente');
         saveAllProgress();
       }
     };
 
     // Evento antes de que la página se descargue (más confiable que beforeunload en móviles)
     const handlePageHide = () => {
-      console.log('📱 Página cerrándose - guardando progreso final');
       saveAllProgress();
     };
 
     // beforeunload como última línea de defensa (desktop principalmente)
     const handleBeforeUnload = () => {
-      console.log('⚠️ beforeunload - guardando a localStorage');
       if (!previewMode && currentUser?.uid) {
         const localData = loadLocalProgress(currentUser.uid);
         saveLocalProgress(currentUser.uid, {
@@ -1914,134 +1929,112 @@ export default function StudentFeedPageClient() {
     }
   }, [authLoading, currentUser?.uid, previewCourseId, previewMode]);
 
-  // Cargar likes propios por clase (en lotes pequeños para evitar sobrecarga)
+  // Cargar engagement (likes/conteos) solo para la tarjeta activa y sus vecinas.
   useEffect(() => {
     let cancelled = false;
     const loadLikes = async () => {
       if (previewMode) return;
       if (!currentUser?.uid) return;
-      if (!classes.length) return;
 
-      // Filtrar clases válidas
-      const validClasses = classes.filter(
-        (cls) => cls.courseId && cls.lessonId && cls.classDocId
+      const pendingClasses = engagementTargetClasses.filter(
+        (cls) =>
+          cls.courseId &&
+          cls.lessonId &&
+          cls.classDocId &&
+          !likedLoadCacheRef.current[cls.id],
       );
-      if (!validClasses.length) return;
+      if (!pendingClasses.length) return;
 
-      // Procesar en lotes pequeños para evitar sobrecargar Firestore
-      const BATCH_SIZE = 5;
-      const nextLiked: Record<string, boolean> = {};
-
-      for (let i = 0; i < validClasses.length; i += BATCH_SIZE) {
-        if (cancelled) return;
-        const batch = validClasses.slice(i, i + BATCH_SIZE);
-
-        try {
-          const batchResults = await Promise.all(
-            batch.map(async (cls) => {
-              try {
-                const likeRef = doc(
-                  db,
-                  "courses",
-                  cls.courseId!,
-                  "lessons",
-                  cls.lessonId!,
-                  "classes",
-                  cls.classDocId!,
-                  "likes",
-                  currentUser.uid,
-                );
-                const likeSnap = await getDoc(likeRef);
-                return [cls.id, likeSnap.exists()] as const;
-              } catch (err) {
-                console.warn("No se pudo leer el like de una clase:", err);
-                return [cls.id, false] as const;
-              }
-            }),
-          );
-
-          batchResults.forEach(([id, liked]) => {
-            nextLiked[id] = liked;
-          });
-
-          // Actualizar incrementalmente
-          if (!cancelled) {
-            setLikedMap((prev) => ({ ...prev, ...nextLiked }));
+      const results = await Promise.all(
+        pendingClasses.map(async (cls) => {
+          try {
+            const likeRef = doc(
+              db,
+              "courses",
+              cls.courseId!,
+              "lessons",
+              cls.lessonId!,
+              "classes",
+              cls.classDocId!,
+              "likes",
+              currentUser.uid,
+            );
+            const likeSnap = await getDoc(likeRef);
+            return [cls.id, likeSnap.exists()] as const;
+          } catch (err) {
+            console.warn("No se pudo leer el like de una clase:", err);
+            return [cls.id, false] as const;
           }
-        } catch (err) {
-          console.warn("Error en lote de likes:", err);
-        }
-      }
+        }),
+      );
+
+      if (cancelled) return;
+
+      const nextLiked: Record<string, boolean> = {};
+      results.forEach(([id, liked]) => {
+        likedLoadCacheRef.current[id] = true;
+        nextLiked[id] = liked;
+      });
+      setLikedMap((prev) => ({ ...prev, ...nextLiked }));
     };
+
     loadLikes();
     return () => {
       cancelled = true;
     };
-  }, [classes, currentUser?.uid, previewMode]);
+  }, [currentUser?.uid, engagementTargetClasses, previewMode]);
 
-  // Cargar contador de comentarios de forma optimizada (en lotes pequeños)
   useEffect(() => {
     let cancelled = false;
     const loadCommentsCount = async () => {
       if (previewMode) return;
-      if (!classes.length) return;
 
-      // Filtrar clases que tienen los IDs necesarios
-      const validClasses = classes.filter(
-        (cls) => cls.courseId && cls.lessonId && cls.classDocId
+      const pendingClasses = engagementTargetClasses.filter(
+        (cls) =>
+          cls.courseId &&
+          cls.lessonId &&
+          cls.classDocId &&
+          !commentsCountLoadCacheRef.current[cls.id],
       );
-      if (!validClasses.length) return;
+      if (!pendingClasses.length) return;
 
-      // Procesar en lotes pequeños para evitar sobrecargar Firestore
-      const BATCH_SIZE = 5;
-      const nextCounts: Record<string, number> = {};
-
-      for (let i = 0; i < validClasses.length; i += BATCH_SIZE) {
-        if (cancelled) return;
-        const batch = validClasses.slice(i, i + BATCH_SIZE);
-
-        try {
-          const batchResults = await Promise.all(
-            batch.map(async (cls) => {
-              try {
-                const commentsRef = collection(
-                  db,
-                  "courses",
-                  cls.courseId!,
-                  "lessons",
-                  cls.lessonId!,
-                  "classes",
-                  cls.classDocId!,
-                  "comments",
-                );
-                // Usar getCountFromServer en lugar de getDocs para evitar cargar todos los documentos
-                const countSnap = await getCountFromServer(commentsRef);
-                return [cls.id, countSnap.data().count] as const;
-              } catch (err) {
-                console.warn("No se pudo leer el conteo de comentarios de una clase:", err);
-                return [cls.id, 0] as const;
-              }
-            }),
-          );
-
-          batchResults.forEach(([id, count]) => {
-            nextCounts[id] = count;
-          });
-
-          // Actualizar incrementalmente para mostrar progreso
-          if (!cancelled) {
-            setCommentsCountMap((prev) => ({ ...prev, ...nextCounts }));
+      const results = await Promise.all(
+        pendingClasses.map(async (cls) => {
+          try {
+            const commentsRef = collection(
+              db,
+              "courses",
+              cls.courseId!,
+              "lessons",
+              cls.lessonId!,
+              "classes",
+              cls.classDocId!,
+              "comments",
+            );
+            const countSnap = await getCountFromServer(commentsRef);
+            return [cls.id, countSnap.data().count] as const;
+          } catch (err) {
+            console.warn("No se pudo leer el conteo de comentarios de una clase:", err);
+            return [cls.id, 0] as const;
           }
-        } catch (err) {
-          console.warn("Error en lote de conteo de comentarios:", err);
-        }
-      }
+        }),
+      );
+
+      if (cancelled) return;
+
+      const nextCounts: Record<string, number> = {};
+      results.forEach(([id, count]) => {
+        commentsCountLoadCacheRef.current[id] = true;
+        nextCounts[id] = count;
+      });
+      setCommentsCountMap((prev) => ({ ...prev, ...nextCounts }));
     };
+
     loadCommentsCount();
     return () => {
       cancelled = true;
     };
-  }, [classes, previewMode]);
+  }, [engagementTargetClasses, previewMode]);
 
   // Snap & reproducción: usamos IntersectionObserver para determinar la tarjeta activa
   useEffect(() => {
@@ -2106,7 +2099,6 @@ export default function StudentFeedPageClient() {
             const cls = classes.find(c => c.id === id);
             if (cls) {
               const requiredPct = getRequiredPct(cls.type);
-              console.log(`💾 Guardando progreso al cambiar de clase - Clase: ${id}, Progreso: ${maxProgress.toFixed(2)}%`);
               saveProgressToFirestore(id, maxProgress, currentProgress, requiredPct).catch(err => {
                 console.warn('Error guardando progreso al cambiar de clase:', err);
               });
@@ -2371,7 +2363,6 @@ export default function StudentFeedPageClient() {
         maxProgress > previousProgress + 0.01 &&
         (Math.floor(maxProgress / 2) > Math.floor(previousProgress / 2) || (maxProgress >= 95 && previousProgress < 95))
       ) {
-        console.log(`💾 Guardando en Firestore - Clase: ${classId}, Progreso: ${maxProgress.toFixed(2)}%`);
         saveProgressToFirestore(classId, maxProgress, previousProgress, requiredPct);
       }
 
@@ -3264,6 +3255,7 @@ export default function StudentFeedPageClient() {
           {visibleClasses.map((cls, idx) => {
             const contentBoxSizeClass =
               "h-[calc(100vh-120px)] max-h-full lg:w-[min(90vh,90vw,820px)] lg:h-[min(90vh,90vw,820px)]";
+            const shouldRenderHeavyCard = Math.abs(idx - activeIndex) <= HEAVY_CARD_RENDER_RADIUS;
 
             return (
               <section
@@ -3279,10 +3271,22 @@ export default function StudentFeedPageClient() {
                 <div className="relative flex h-full w-full min-h-0 items-center justify-center lg:px-8 lg:py-5 mx-auto overflow-visible">
                   <div className="relative box-border flex min-h-0 items-center justify-center gap-6 lg:gap-10 w-full h-full lg:w-auto lg:h-auto pt-6 pb-14 lg:pt-0 lg:pb-0">
                   <div className={`relative w-full h-full ${contentBoxSizeClass} overflow-hidden rounded-none lg:rounded-2xl border-0 lg:border border-white/10 lg:bg-neutral-900/60 lg:shadow-2xl flex items-center justify-center`}>
-                      {renderContent(cls, idx)}
+                      {shouldRenderHeavyCard ? (
+                        renderContent(cls, idx)
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center bg-black px-8 text-center">
+                          <div className="max-w-sm">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/45">
+                              Clase {idx + 1}
+                            </p>
+                            <h3 className="mt-2 text-lg font-semibold text-white">{cls.title}</h3>
+                            <p className="mt-2 text-sm text-white/60">Desliza para cargar este contenido.</p>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Stack móvil (estilo TikTok) */}
-                      {cls.type !== "quiz" ? (
+                      {shouldRenderHeavyCard && cls.type !== "quiz" ? (
                         <ActionStack
                           likes={likesMap[cls.id] ?? cls.likesCount ?? 0}
                           comments={(commentsCountMap[cls.id] ?? commentsMap[cls.id]?.length ?? 0)}
@@ -3330,101 +3334,103 @@ export default function StudentFeedPageClient() {
                       ) : null}
 
                     {/* Overlay inferior con avance y estado */}
-                    <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4">
-                      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-neutral-200">
-                        {/* Indicador de grupo (si hay múltiples grupos) */}
-                        {cls.groupName && groupName.includes("grupos") ? (
-                          <span className="inline-flex items-center rounded-full bg-purple-500/20 px-3 py-1 text-[11px] font-semibold text-purple-200">
-                            📚 {cls.groupName}
-                          </span>
-                        ) : null}
-                        {!previewMode && isCourseClosedForClass(cls) ? (
-                          <span className="inline-flex items-center rounded-full bg-emerald-500/20 px-3 py-1 text-[11px] font-semibold text-emerald-200">
-                            Materia cerrada
-                          </span>
-                        ) : null}
-                        {/* Validar progreso antes de mostrar "Listo para avanzar" */}
-                        {(() => {
-                          const currentProgress = Math.max(
-                            progressRef.current[cls.id] ?? 0,
-                            progressMap[cls.id] ?? 0
-                          );
-                          const requiredPct = getRequiredPct(cls.type);
-                          const isCompleted = completedMap[cls.id] || seenMap[cls.id] || currentProgress >= requiredPct;
-                          const forumOk = cls.forumEnabled ? (forumDoneMap[cls.id] ?? false) : true;
-                          const canAdvance = isCompleted && forumOk;
-
-                          if (!ENFORCE_VIDEO_GATE) {
-                            return (
-                              <span className="inline-flex items-center rounded-full bg-green-500/20 px-3 py-1 text-green-200">
-                                Avance libre
-                              </span>
-                            );
-                          }
-
-                          if (canAdvance) {
-                            return (
-                              <span className="inline-flex items-center rounded-full bg-green-500/20 px-3 py-1 text-green-200">
-                                Listo para avanzar
-                              </span>
-                            );
-                          }
-
-                          // Mostrar progreso si no está listo
-                          const progressPct = Math.round(currentProgress);
-                          return (
-                            <span className="inline-flex items-center rounded-full bg-yellow-500/20 px-3 py-1 text-yellow-200">
-                              Progreso: {progressPct}%
+                    {shouldRenderHeavyCard ? (
+                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4">
+                        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-neutral-200">
+                          {/* Indicador de grupo (si hay múltiples grupos) */}
+                          {cls.groupName && groupName.includes("grupos") ? (
+                            <span className="inline-flex items-center rounded-full bg-purple-500/20 px-3 py-1 text-[11px] font-semibold text-purple-200">
+                              📚 {cls.groupName}
                             </span>
-                          );
-                        })()}
-                        {/* Botón para marcar clase como completada manualmente */}
-                        {(() => {
-                          const currentProgress = Math.max(
-                            progressRef.current[cls.id] ?? 0,
-                            progressMap[cls.id] ?? 0
-                          );
-                          const requiredPct = getRequiredPct(cls.type);
-                          const isCompleted = completedMap[cls.id] || seenMap[cls.id] || currentProgress >= requiredPct;
+                          ) : null}
+                          {!previewMode && isCourseClosedForClass(cls) ? (
+                            <span className="inline-flex items-center rounded-full bg-emerald-500/20 px-3 py-1 text-[11px] font-semibold text-emerald-200">
+                              Materia cerrada
+                            </span>
+                          ) : null}
+                          {/* Validar progreso antes de mostrar "Listo para avanzar" */}
+                          {(() => {
+                            const currentProgress = Math.max(
+                              progressRef.current[cls.id] ?? 0,
+                              progressMap[cls.id] ?? 0
+                            );
+                            const requiredPct = getRequiredPct(cls.type);
+                            const isCompleted = completedMap[cls.id] || seenMap[cls.id] || currentProgress >= requiredPct;
+                            const forumOk = cls.forumEnabled ? (forumDoneMap[cls.id] ?? false) : true;
+                            const canAdvance = isCompleted && forumOk;
 
-                          // Solo mostrar si NO está completada y el tipo no es quiz
-                          if (isCompleted || cls.type === "quiz") {
-                            return null;
-                          }
+                            if (!ENFORCE_VIDEO_GATE) {
+                              return (
+                                <span className="inline-flex items-center rounded-full bg-green-500/20 px-3 py-1 text-green-200">
+                                  Avance libre
+                                </span>
+                              );
+                            }
 
-                          return (
-                            <button
-                              type="button"
-                              onClick={() => handleManualComplete(cls.id, cls.type)}
-                              className="inline-flex items-center gap-1.5 rounded-full bg-green-600 px-3 py-1 text-[11px] font-semibold text-white shadow-md transition-all hover:bg-green-500 hover:shadow-lg active:scale-95"
-                            >
-                              <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                viewBox="0 0 20 20"
-                                fill="currentColor"
-                                className="h-3.5 w-3.5"
+                            if (canAdvance) {
+                              return (
+                                <span className="inline-flex items-center rounded-full bg-green-500/20 px-3 py-1 text-green-200">
+                                  Listo para avanzar
+                                </span>
+                              );
+                            }
+
+                            // Mostrar progreso si no está listo
+                            const progressPct = Math.round(currentProgress);
+                            return (
+                              <span className="inline-flex items-center rounded-full bg-yellow-500/20 px-3 py-1 text-yellow-200">
+                                Progreso: {progressPct}%
+                              </span>
+                            );
+                          })()}
+                          {/* Botón para marcar clase como completada manualmente */}
+                          {(() => {
+                            const currentProgress = Math.max(
+                              progressRef.current[cls.id] ?? 0,
+                              progressMap[cls.id] ?? 0
+                            );
+                            const requiredPct = getRequiredPct(cls.type);
+                            const isCompleted = completedMap[cls.id] || seenMap[cls.id] || currentProgress >= requiredPct;
+
+                            // Solo mostrar si NO está completada y el tipo no es quiz
+                            if (isCompleted || cls.type === "quiz") {
+                              return null;
+                            }
+
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => handleManualComplete(cls.id, cls.type)}
+                                className="inline-flex items-center gap-1.5 rounded-full bg-green-600 px-3 py-1 text-[11px] font-semibold text-white shadow-md transition-all hover:bg-green-500 hover:shadow-lg active:scale-95"
                               >
-                                <path
-                                  fillRule="evenodd"
-                                  d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z"
-                                  clipRule="evenodd"
-                                />
-                              </svg>
-                              Completar
-                            </button>
-                          );
-                        })()}
-                        {cls.hasAssignment ? (
-                          <span className="inline-flex items-center rounded-full bg-blue-500/20 px-3 py-1 text-[11px] font-semibold text-blue-100">
-                            Tarea activa
-                          </span>
-                        ) : null}
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  viewBox="0 0 20 20"
+                                  fill="currentColor"
+                                  className="h-3.5 w-3.5"
+                                >
+                                  <path
+                                    fillRule="evenodd"
+                                    d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z"
+                                    clipRule="evenodd"
+                                  />
+                                </svg>
+                                Completar
+                              </button>
+                            );
+                          })()}
+                          {cls.hasAssignment ? (
+                            <span className="inline-flex items-center rounded-full bg-blue-500/20 px-3 py-1 text-[11px] font-semibold text-blue-100">
+                              Tarea activa
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
-                    </div>
+                    ) : null}
                   </div>
 
                   {/* Stack desktop al costado del contenido */}
-                  {cls.type !== "quiz" ? (
+                  {shouldRenderHeavyCard && cls.type !== "quiz" ? (
                     <ActionStack
                       likes={likesMap[cls.id] ?? cls.likesCount ?? 0}
                       comments={(commentsCountMap[cls.id] ?? commentsMap[cls.id]?.length ?? 0)}
@@ -4147,15 +4153,12 @@ const VideoPlayer = React.memo(function VideoPlayer({
       await new Promise(resolve => setTimeout(resolve, 100));
 
       if (!iframeRef.current) {
-        console.log(`⚠️ iframe no disponible después del delay - ID: ${id}`);
         return;
       }
 
       try {
-        console.log(`🚀 Iniciando Vimeo Player - ID: ${id}`);
         const player = new Player(iframeRef.current);
         await player.ready();
-        console.log(`✅ Player ready() completado - ID: ${id}`);
 
         vimeoPlayerRef.current = player;
         playerInitializedRef.current = true;
@@ -4207,7 +4210,6 @@ const VideoPlayer = React.memo(function VideoPlayer({
           const duration = await player.getDuration();
           const targetTime = (initialProgress / 100) * duration;
           await player.setCurrentTime(targetTime);
-          console.log(`⏩ Video posicionado en ${Math.round(initialProgress)}% - ID: ${id}`);
         }
 
         // Intentar reproducir si está activo
@@ -4220,7 +4222,6 @@ const VideoPlayer = React.memo(function VideoPlayer({
           }
         }
 
-        console.log(`✅ Vimeo Player inicializado - ID: ${id}`);
       } catch (error) {
         console.error(`❌ Error inicializando Vimeo Player - ID: ${id}`, error);
         playerInitializedRef.current = false;
@@ -4231,7 +4232,6 @@ const VideoPlayer = React.memo(function VideoPlayer({
 
     return () => {
       if (vimeoPlayerRef.current) {
-        console.log(`🧹 Cleanup Vimeo Player - ID: ${id}`);
         vimeoPlayerRef.current.destroy();
         vimeoPlayerRef.current = null;
         playerInitializedRef.current = false;
@@ -4564,9 +4564,6 @@ const VideoPlayer = React.memo(function VideoPlayer({
             if (initialProgress > 0 && initialProgress < 95) {
               const targetTime = (v.duration * initialProgress) / 100;
               v.currentTime = targetTime;
-              console.log(`⏩ Video HTML5 restaurado a ${initialProgress.toFixed(2)}% (${targetTime.toFixed(1)}s) - ID: ${id}`);
-            } else {
-              console.log(`▶️ Video HTML5 iniciando desde 0% - ID: ${id}, initialProgress: ${initialProgress}`);
             }
             v.muted = muted;
             v.play().catch(() => {});
@@ -5297,21 +5294,17 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, les
     const loadQuestions = async () => {
       const targetClassId = classDocId ?? classId;
       if (!courseId || !lessonId || !targetClassId) {
-        console.log('Missing IDs:', { courseId, lessonId, classId: targetClassId });
         return;
       }
       try {
-        console.log('Loading questions for:', { courseId, lessonId, classId: targetClassId });
         const qSnap = await getDocs(
           query(
             collection(db, "courses", courseId, "lessons", lessonId, "classes", targetClassId, "questions"),
             orderBy("order", "asc"),
           ),
         );
-        console.log('Questions snapshot size:', qSnap.size);
         const data = qSnap.docs.map((d) => {
           const qd = d.data();
-          console.log('Question data:', { id: d.id, data: qd });
           return {
             id: d.id,
             prompt: toSafeString(qd.prompt ?? qd.text ?? qd.question),
@@ -5337,7 +5330,6 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, les
               : [],
           };
         });
-        console.log('Processed questions:', data);
         setQuestions(data);
       } catch (err) {
         console.error("No se pudieron cargar las preguntas del quiz:", err);
@@ -5429,16 +5421,6 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, les
     ? (trimSafeString(currentQuestion.prompt) || trimSafeString(currentQuestion.text) || "")
     : "";
   const allAnswered = answeredCount === questions.length && questions.length > 0;
-
-  // Debug log
-  useEffect(() => {
-    console.log('Quiz Debug:', {
-      questionsLength: questions.length,
-      currentIdx,
-      currentQuestion,
-      hasCurrentQuestion: !!currentQuestion
-    });
-  }, [questions, currentIdx, currentQuestion]);
 
   useEffect(() => {
     const checkExistingSubmission = async () => {
