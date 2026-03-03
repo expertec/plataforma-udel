@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import {
   addStudentsToGroup,
   getGroup,
@@ -32,6 +32,7 @@ import type { DocumentSnapshot } from "firebase/firestore";
 
 export default function GroupDetailPage() {
   const params = useParams<{ groupId: string }>();
+  const router = useRouter();
   const [group, setGroup] = useState<Group | null>(null);
   const [loading, setLoading] = useState(true);
   const [studentsModalOpen, setStudentsModalOpen] = useState(false);
@@ -161,17 +162,36 @@ export default function GroupDetailPage() {
       currentUserId &&
       (group.assistantTeacherIds ?? []).includes(currentUserId),
   );
+  const canManageClosuresInGroup = Boolean(
+    group &&
+      currentUserId &&
+      (currentUserId === group.teacherId ||
+        isAdminTeacherRole(userRole) ||
+        (group.assistantTeacherIds ?? []).includes(currentUserId)),
+  );
 
   const visibleCourseIdsForCurrentUser = useMemo(() => {
-    if (!group) return [];
-    if (!currentUserId) return courseIdsForGroup;
-    if (currentUserId === group.teacherId || isAdminTeacherRole(userRole)) {
+    if (!group || !currentUserId) return [];
+    if (
+      currentUserId === group.teacherId ||
+      isAdminTeacherRole(userRole) ||
+      isCampusCoordinatorRole(userRole)
+    ) {
       return courseIdsForGroup;
     }
-    if (!isCurrentUserAssistant) return courseIdsForGroup;
+    if (!isCurrentUserAssistant) return [];
 
+    const accessMap = group.mentorCourseAccess;
+    if (accessMap && typeof accessMap === "object") {
+      const explicitAccess = accessMap[currentUserId];
+      if (!Array.isArray(explicitAccess)) return [];
+      const allowedSet = new Set(explicitAccess.filter((id): id is string => typeof id === "string"));
+      return courseIdsForGroup.filter((courseId) => allowedSet.has(courseId));
+    }
+
+    // Legacy fallback para grupos antiguos sin mentorCourseAccess
     const explicitAccess = group.mentorCourseAccess?.[currentUserId];
-    if (!Array.isArray(explicitAccess)) return courseIdsForGroup;
+    if (!Array.isArray(explicitAccess)) return [];
     const allowedSet = new Set(explicitAccess.filter((id): id is string => typeof id === "string"));
     return courseIdsForGroup.filter((courseId) => allowedSet.has(courseId));
   }, [courseIdsForGroup, currentUserId, group, isCurrentUserAssistant, userRole]);
@@ -189,9 +209,33 @@ export default function GroupDetailPage() {
     currentUserId !== group?.teacherId &&
     !isAdminTeacherRole(userRole);
   const isCampusCoordinator = isCampusCoordinatorRole(userRole);
+  const canAccessGroupContent = Boolean(
+    group &&
+      currentUserId &&
+      (currentUserId === group.teacherId ||
+        isAdminTeacherRole(userRole) ||
+        isCampusCoordinator ||
+        isCurrentUserAssistant),
+  );
+
+  useEffect(() => {
+    if (loading) return;
+    if (!group || !currentUserId) return;
+    if (canAccessGroupContent) return;
+    toast("Tu acceso a este grupo fue retirado.");
+    router.replace("/creator/grupos");
+  }, [canAccessGroupContent, currentUserId, group, loading, router]);
 
   const getMentorAllowedCourseIds = (mentorId: string): string[] => {
     if (!group) return [];
+    const accessMap = group.mentorCourseAccess;
+    if (accessMap && typeof accessMap === "object") {
+      const explicitAccess = accessMap[mentorId];
+      if (!Array.isArray(explicitAccess)) return [];
+      const allowedSet = new Set(explicitAccess.filter((id): id is string => typeof id === "string"));
+      return courseIdsForGroup.filter((courseId) => allowedSet.has(courseId));
+    }
+
     const explicitAccess = group.mentorCourseAccess?.[mentorId];
     if (!Array.isArray(explicitAccess)) return courseIdsForGroup;
     const allowedSet = new Set(explicitAccess.filter((id): id is string => typeof id === "string"));
@@ -317,9 +361,16 @@ export default function GroupDetailPage() {
 
     setUnlinkingCourseId(courseId);
     try {
+      if (!currentUser) {
+        throw new Error("Tu sesión expiró. Inicia sesión nuevamente.");
+      }
+      const token = await currentUser.getIdToken();
       const response = await fetch("/api/groups/unlink-course", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           groupId: params.groupId,
           courseId,
@@ -406,7 +457,13 @@ export default function GroupDetailPage() {
             <p className="text-sm text-slate-600">{headerInfo}</p>
           </div>
 
-          <Tabs defaultValue={isCampusCoordinator ? "calificaciones" : "estudiantes"} className="w-full space-y-4">
+          {!canAccessGroupContent ? (
+            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-700">
+              Ya no tienes materias asignadas en este grupo. Si consideras que es un error, solicita acceso al
+              profesor principal o a coordinación.
+            </div>
+          ) : (
+            <Tabs defaultValue={isCampusCoordinator ? "calificaciones" : "estudiantes"} className="w-full space-y-4">
             <TabsList className={`grid w-full ${isCampusCoordinator ? "grid-cols-1" : "grid-cols-4"}`}>
               {!isCampusCoordinator ? <TabsTrigger value="estudiantes">Estudiantes</TabsTrigger> : null}
               {!isCampusCoordinator ? <TabsTrigger value="entregas">Entregas</TabsTrigger> : null}
@@ -472,6 +529,7 @@ export default function GroupDetailPage() {
                     groupTeacherId={group.teacherId}
                     currentUserId={currentUserId}
                     userRole={userRole}
+                    canManageClosuresOverride={canManageClosuresInGroup}
                     onCourseCompletedAndUnlinked={async () => {
                       const updated = await getGroup(group.id);
                       if (updated) setGroup(updated);
@@ -622,7 +680,8 @@ export default function GroupDetailPage() {
                 </div>
               </TabsContent>
             ) : null}
-          </Tabs>
+            </Tabs>
+          )}
         </>
       )}
 

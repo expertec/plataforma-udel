@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
@@ -12,7 +12,9 @@ import {
   where,
 } from "firebase/firestore";
 import toast from "react-hot-toast";
+import { jsPDF } from "jspdf";
 import { db } from "@/lib/firebase/firestore";
+import { auth } from "@/lib/firebase/client";
 import { Submission, getAllSubmissions } from "@/lib/firebase/submissions-service";
 import { UserRole, isAdminTeacherRole } from "@/lib/firebase/roles";
 
@@ -22,6 +24,7 @@ type CalificacionesTabProps = {
   groupTeacherId: string;
   currentUserId: string | null;
   userRole: UserRole | null;
+  canManageClosuresOverride?: boolean;
   onCourseCompletedAndUnlinked?: (courseId: string) => Promise<void> | void;
 };
 
@@ -64,6 +67,38 @@ type StudentCourseRow = {
   closure: CourseClosureState | null;
 };
 
+type ClosureDocumentRow = {
+  studentId: string;
+  studentName: string;
+  autoGrade: number | null;
+  finalGrade: number;
+  pendingUngradedCount: number;
+  totalEvaluable: number;
+};
+
+type SignatureModalContext = {
+  scope: "single" | "all";
+  courseId: string;
+  courseName: string;
+  rows: ClosureDocumentRow[];
+  requestedAt: Date;
+};
+
+type SignatureResult = {
+  signerName: string;
+  signedAt: Date;
+  signatureDataUrl: string;
+  context: SignatureModalContext;
+};
+
+type ConfirmationModalContext = {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  tone?: "default" | "warning" | "danger";
+};
+
 const toDateOrNull = (value: unknown): Date | null => {
   if (!value) return null;
   if (value instanceof Date) return value;
@@ -89,12 +124,24 @@ const formatDate = (value?: Date | null) => {
   }).format(value);
 };
 
+const formatDateTime = (value?: Date | null) => {
+  if (!value) return "";
+  return new Intl.DateTimeFormat("es-MX", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(value);
+};
+
 export function CalificacionesTab({
   groupId,
   courses,
   groupTeacherId,
   currentUserId,
   userRole,
+  canManageClosuresOverride,
   onCourseCompletedAndUnlinked,
 }: CalificacionesTabProps) {
   const [students, setStudents] = useState<Student[]>([]);
@@ -106,11 +153,24 @@ export function CalificacionesTab({
   const [loading, setLoading] = useState(true);
   const [processingStudentId, setProcessingStudentId] = useState<string | null>(null);
   const [processingAll, setProcessingAll] = useState(false);
+  const [signatureModalContext, setSignatureModalContext] = useState<SignatureModalContext | null>(null);
+  const [signerNameInput, setSignerNameInput] = useState("");
+  const [signatureError, setSignatureError] = useState<string | null>(null);
+  const [hasSignatureStroke, setHasSignatureStroke] = useState(false);
+  const [confirmationModalContext, setConfirmationModalContext] = useState<ConfirmationModalContext | null>(null);
+
+  const signatureCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const drawingSignatureRef = useRef(false);
+  const signatureLastPointRef = useRef<{ x: number; y: number } | null>(null);
+  const signatureModalResolverRef = useRef<((value: SignatureResult | null) => void) | null>(null);
+  const confirmationModalResolverRef = useRef<((value: boolean) => void) | null>(null);
+  const pdfBackgroundDataUrlRef = useRef<string | null>(null);
 
   const canManageClosures = useMemo(() => {
+    if (typeof canManageClosuresOverride === "boolean") return canManageClosuresOverride;
     if (!currentUserId) return false;
     return currentUserId === groupTeacherId || isAdminTeacherRole(userRole);
-  }, [currentUserId, groupTeacherId, userRole]);
+  }, [canManageClosuresOverride, currentUserId, groupTeacherId, userRole]);
 
   useEffect(() => {
     if (!selectedCourseId && courses.length > 0) {
@@ -343,6 +403,397 @@ export function CalificacionesTab({
     });
   };
 
+  const initializeSignatureCanvas = () => {
+    const canvas = signatureCanvasRef.current;
+    if (!canvas || typeof window === "undefined") return;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const ratio = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(rect.width * ratio);
+    canvas.height = Math.floor(rect.height * ratio);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(ratio, ratio);
+    ctx.clearRect(0, 0, rect.width, rect.height);
+    ctx.strokeStyle = "#0f172a";
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+  };
+
+  const clearSignatureCanvas = () => {
+    initializeSignatureCanvas();
+    drawingSignatureRef.current = false;
+    signatureLastPointRef.current = null;
+    setHasSignatureStroke(false);
+    setSignatureError(null);
+  };
+
+  const getCanvasPoint = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = signatureCanvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    };
+  };
+
+  const handleSignaturePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
+    const canvas = signatureCanvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    const point = getCanvasPoint(event);
+    if (!canvas || !ctx || !point) return;
+    drawingSignatureRef.current = true;
+    signatureLastPointRef.current = point;
+    canvas.setPointerCapture(event.pointerId);
+    ctx.beginPath();
+    ctx.moveTo(point.x, point.y);
+    ctx.lineTo(point.x, point.y);
+    ctx.stroke();
+    setHasSignatureStroke(true);
+    setSignatureError(null);
+  };
+
+  const handleSignaturePointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawingSignatureRef.current) return;
+    event.preventDefault();
+    const ctx = signatureCanvasRef.current?.getContext("2d");
+    const point = getCanvasPoint(event);
+    const previous = signatureLastPointRef.current;
+    if (!ctx || !point || !previous) return;
+    ctx.beginPath();
+    ctx.moveTo(previous.x, previous.y);
+    ctx.lineTo(point.x, point.y);
+    ctx.stroke();
+    signatureLastPointRef.current = point;
+    setHasSignatureStroke(true);
+  };
+
+  const handleSignaturePointerEnd = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawingSignatureRef.current) return;
+    event.preventDefault();
+    drawingSignatureRef.current = false;
+    signatureLastPointRef.current = null;
+  };
+
+  const resolveSignatureModal = (value: SignatureResult | null) => {
+    const resolver = signatureModalResolverRef.current;
+    signatureModalResolverRef.current = null;
+    setSignatureModalContext(null);
+    setSignerNameInput("");
+    setSignatureError(null);
+    setHasSignatureStroke(false);
+    drawingSignatureRef.current = false;
+    signatureLastPointRef.current = null;
+    resolver?.(value);
+  };
+
+  const requestDigitalSignature = (context: SignatureModalContext) =>
+    new Promise<SignatureResult | null>((resolve) => {
+      signatureModalResolverRef.current = resolve;
+      setSignerNameInput("");
+      setSignatureError(null);
+      setHasSignatureStroke(false);
+      drawingSignatureRef.current = false;
+      signatureLastPointRef.current = null;
+      setSignatureModalContext(context);
+    });
+
+  const resolveConfirmationModal = (accepted: boolean) => {
+    const resolver = confirmationModalResolverRef.current;
+    confirmationModalResolverRef.current = null;
+    setConfirmationModalContext(null);
+    resolver?.(accepted);
+  };
+
+  const requestConfirmation = (context: ConfirmationModalContext) =>
+    new Promise<boolean>((resolve) => {
+      confirmationModalResolverRef.current = resolve;
+      setConfirmationModalContext(context);
+    });
+
+  const confirmDigitalSignature = () => {
+    if (!signatureModalContext) return;
+    const signerName = signerNameInput.trim();
+    if (signerName.length < 3) {
+      setSignatureError("Escribe tu nombre completo para firmar.");
+      return;
+    }
+    if (!hasSignatureStroke) {
+      setSignatureError("Agrega tu firma en el recuadro.");
+      return;
+    }
+    const canvas = signatureCanvasRef.current;
+    if (!canvas) {
+      setSignatureError("No se pudo leer la firma, intenta nuevamente.");
+      return;
+    }
+    resolveSignatureModal({
+      signerName,
+      signedAt: new Date(),
+      signatureDataUrl: canvas.toDataURL("image/png"),
+      context: signatureModalContext,
+    });
+  };
+
+  const loadPdfBackgroundDataUrl = async (): Promise<string | null> => {
+    if (pdfBackgroundDataUrlRef.current) return pdfBackgroundDataUrlRef.current;
+    try {
+      const response = await fetch("/bg-pdf-01.png", { cache: "force-cache" });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const blob = await response.blob();
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          if (typeof reader.result === "string") {
+            resolve(reader.result);
+            return;
+          }
+          reject(new Error("No se pudo convertir el fondo del PDF"));
+        };
+        reader.onerror = () => reject(new Error("No se pudo leer el fondo del PDF"));
+        reader.readAsDataURL(blob);
+      });
+      pdfBackgroundDataUrlRef.current = dataUrl;
+      return dataUrl;
+    } catch (error) {
+      console.error("No se pudo cargar bg-pdf-01.png para el PDF:", error);
+      return null;
+    }
+  };
+
+  const downloadSignedClosurePdf = async (signature: SignatureResult) => {
+    const pdf = new jsPDF({ unit: "pt", format: "a4" });
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const contentWidth = Math.min(460, pageWidth - 120);
+    const marginX = (pageWidth - contentWidth) / 2;
+    const bottomLimit = pageHeight - 132;
+    const topStart = 130;
+    let y = topStart;
+    const bgImage = await loadPdfBackgroundDataUrl();
+
+    const rows = signature.context.rows;
+    const avgFinalGrade =
+      rows.length > 0
+        ? rows.reduce((acc, row) => acc + row.finalGrade, 0) / rows.length
+        : 0;
+    const columns = {
+      student: marginX + 2,
+      auto: marginX + 300,
+      final: marginX + 348,
+      pending: marginX + 406,
+    };
+
+    const drawPageBackground = () => {
+      if (bgImage) {
+        pdf.addImage(bgImage, "PNG", 0, 0, pageWidth, pageHeight);
+      }
+    };
+
+    const drawTopHeader = () => {
+      pdf.setTextColor(124, 21, 45);
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(22);
+      pdf.text("Acta de Cierre de Calificaciones", pageWidth / 2, y, { align: "center" });
+      y += 14;
+      pdf.setDrawColor(124, 21, 45);
+      pdf.setLineWidth(1);
+      pdf.line(marginX, y, marginX + contentWidth, y);
+      pdf.setTextColor(15, 23, 42);
+      y += 20;
+    };
+
+    const drawMetaSection = () => {
+      const metaRows = [
+        { label: "Materia:", value: signature.context.courseName },
+        { label: "Docente firmante:", value: signature.signerName },
+        { label: "Fecha y hora de firma:", value: formatDateTime(signature.signedAt) },
+        { label: "Grupo academico:", value: "asignado en plataforma" },
+      ];
+      const labelWidth = 184;
+      const valueX = marginX + labelWidth;
+      const valueWidth = contentWidth - labelWidth - 4;
+
+      pdf.setFontSize(12);
+      metaRows.forEach((item) => {
+        const valueLines = pdf.splitTextToSize(item.value, valueWidth) as string[];
+        const rowHeight = Math.max(16, valueLines.length * 14);
+        pdf.setFont("helvetica", "bold");
+        pdf.text(item.label, marginX, y);
+        pdf.setFont("helvetica", "normal");
+        pdf.text(valueLines, valueX, y);
+        y += rowHeight + 4;
+      });
+
+      y += 4;
+    };
+
+    const drawSummaryRow = () => {
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(12);
+      pdf.text(`Alumnos incluidos: ${rows.length}`, marginX, y);
+      pdf.text(`Promedio final: ${avgFinalGrade.toFixed(1)}`, marginX + contentWidth, y, { align: "right" });
+      y += 14;
+      pdf.setDrawColor(203, 213, 225);
+      pdf.setLineWidth(0.8);
+      pdf.line(marginX, y, marginX + contentWidth, y);
+      y += 16;
+    };
+
+    const drawTableHeader = () => {
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(11);
+      pdf.text("Alumno", columns.student, y);
+      pdf.text("Auto", columns.auto, y);
+      pdf.text("Final", columns.final, y);
+      pdf.text("Pendientes", columns.pending, y);
+      y += 8;
+      pdf.setDrawColor(148, 163, 184);
+      pdf.setLineWidth(0.9);
+      pdf.line(marginX, y, marginX + contentWidth, y);
+      y += 16;
+    };
+
+    const startNewPage = (withTableHeader = false) => {
+      pdf.addPage();
+      drawPageBackground();
+      y = topStart;
+      drawTopHeader();
+      if (withTableHeader) {
+        drawTableHeader();
+      }
+    };
+
+    const ensureSpace = (required: number, withTableHeader = false) => {
+      if (y + required <= bottomLimit) return;
+      startNewPage(withTableHeader);
+    };
+
+    drawPageBackground();
+    drawTopHeader();
+    drawMetaSection();
+    drawSummaryRow();
+    drawTableHeader();
+
+    rows.forEach((row, index) => {
+      const studentName = `${index + 1}. ${row.studentName || "Alumno sin nombre"}`;
+      const nameLines = pdf.splitTextToSize(studentName, 270) as string[];
+      const rowHeight = Math.max(24, nameLines.length * 12 + 6);
+      ensureSpace(rowHeight + 12, true);
+
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(11);
+      pdf.text(nameLines, columns.student, y);
+      pdf.text(typeof row.autoGrade === "number" ? row.autoGrade.toFixed(1) : "—", columns.auto, y);
+      pdf.text(row.finalGrade.toFixed(1), columns.final, y);
+      pdf.text(`${row.pendingUngradedCount}/${row.totalEvaluable}`, columns.pending, y);
+
+      y += rowHeight;
+      pdf.setDrawColor(226, 232, 240);
+      pdf.setLineWidth(0.7);
+      pdf.line(marginX, y, marginX + contentWidth, y);
+      y += 10;
+    });
+
+    ensureSpace(210, false);
+
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(14);
+    pdf.text("Firma digital del docente", marginX, y);
+
+    y += 12;
+    pdf.setDrawColor(148, 163, 184);
+    pdf.setLineWidth(0.9);
+    pdf.line(marginX, y, marginX + contentWidth, y);
+
+    const signatureBlockTop = y + 18;
+    const signatureLineWidth = 280;
+    const signatureLineY = signatureBlockTop + 64;
+
+    pdf.setDrawColor(120, 120, 120);
+    pdf.setLineWidth(0.85);
+    pdf.line(marginX, signatureLineY, marginX + signatureLineWidth, signatureLineY);
+
+    pdf.addImage(
+      signature.signatureDataUrl,
+      "PNG",
+      marginX + 14,
+      signatureLineY - 58,
+      signatureLineWidth - 28,
+      56,
+    );
+
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(10);
+    pdf.setTextColor(71, 85, 105);
+    pdf.text("Firma del docente", marginX, signatureLineY + 14);
+
+    const legalX = marginX + signatureLineWidth + 18;
+    const legalWidth = contentWidth - signatureLineWidth - 18;
+    const legalLineHeight = 14;
+    pdf.setFontSize(12);
+    pdf.setTextColor(15, 23, 42);
+    const legalText = pdf.splitTextToSize(
+      "Con esta firma se valida el cierre de calificaciones mostrado en este documento.",
+      legalWidth,
+    ) as string[];
+    pdf.text(legalText, legalX, signatureBlockTop + 12);
+    const legalBottomY = signatureBlockTop + 12 + Math.max(0, (legalText.length - 1) * legalLineHeight);
+    const registeredLabelY = legalBottomY + 24;
+    pdf.text("Fecha de registro:", legalX, registeredLabelY);
+    pdf.setFont("helvetica", "bold");
+    const registeredValueY = registeredLabelY + 16;
+    pdf.text(formatDateTime(signature.signedAt), legalX, registeredValueY);
+
+    const signerNameY = signatureLineY + 38;
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(15);
+    pdf.text(signature.signerName, marginX, signerNameY);
+
+    y = Math.max(signerNameY + 18, registeredValueY + 18);
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(11);
+    pdf.setTextColor(71, 85, 105);
+    pdf.text("Documento generado por Plataforma UDEL.", marginX, y);
+
+    const safeCourseName = signature.context.courseName
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-zA-Z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .toLowerCase();
+    const stamp = signature.signedAt
+      .toISOString()
+      .slice(0, 16)
+      .replace("T", "-")
+      .replace(":", "");
+    const fileName = `acta-cierre-${safeCourseName || "materia"}-${stamp}.pdf`;
+    pdf.save(fileName);
+  };
+
+  useEffect(() => {
+    if (!signatureModalContext) return;
+    const timer = window.setTimeout(() => {
+      initializeSignatureCanvas();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [signatureModalContext]);
+
+  useEffect(() => {
+    return () => {
+      signatureModalResolverRef.current?.(null);
+      signatureModalResolverRef.current = null;
+      confirmationModalResolverRef.current?.(false);
+      confirmationModalResolverRef.current = null;
+    };
+  }, []);
+
   const handleCloseCourseForStudent = async (row: StudentCourseRow) => {
     if (!selectedCourseId) return;
     if (processingAll) return;
@@ -359,11 +810,36 @@ export function CalificacionesTab({
     }
 
     if (row.pendingUngradedCount > 0) {
-      const confirmed = window.confirm(
-        `Este alumno tiene ${row.pendingUngradedCount} actividades sin calificar. ¿Deseas cerrar de todas formas?`,
-      );
+      const confirmed = await requestConfirmation({
+        title: "Actividades pendientes",
+        message:
+          `Este alumno tiene ${row.pendingUngradedCount} actividades sin calificar. ` +
+          "¿Deseas cerrar de todas formas?",
+        confirmLabel: "Cerrar de todas formas",
+        cancelLabel: "Cancelar",
+        tone: "warning",
+      });
       if (!confirmed) return;
     }
+
+    const selectedCourseName = selectedCourse?.courseName ?? "Materia";
+    const signature = await requestDigitalSignature({
+      scope: "single",
+      courseId: selectedCourseId,
+      courseName: selectedCourseName,
+      requestedAt: new Date(),
+      rows: [
+        {
+          studentId: row.studentId,
+          studentName: row.studentName,
+          autoGrade: row.autoGrade,
+          finalGrade,
+          pendingUngradedCount: row.pendingUngradedCount,
+          totalEvaluable: row.totalEvaluable,
+        },
+      ],
+    });
+    if (!signature) return;
 
     setProcessingStudentId(row.studentId);
     try {
@@ -377,7 +853,7 @@ export function CalificacionesTab({
         pendingUngradedCount: row.pendingUngradedCount,
         closedAt: new Date(),
         closedById: currentUserId,
-        closedByName: "Profesor",
+        closedByName: signature.signerName,
         updatedAt: new Date(),
       };
 
@@ -405,6 +881,7 @@ export function CalificacionesTab({
       );
 
       upsertLocalClosure(row.studentId, selectedCourseId, closurePayload, row.enrollmentId);
+      await downloadSignedClosurePdf(signature);
       toast.success(`Materia cerrada para ${row.studentName}`);
     } catch (err) {
       console.error(err);
@@ -422,7 +899,13 @@ export function CalificacionesTab({
       return;
     }
 
-    const confirmed = window.confirm(`¿Reabrir la materia para ${row.studentName}?`);
+    const confirmed = await requestConfirmation({
+      title: "Reabrir materia",
+      message: `¿Reabrir la materia para ${row.studentName}?`,
+      confirmLabel: "Sí, reabrir",
+      cancelLabel: "Cancelar",
+      tone: "default",
+    });
     if (!confirmed) return;
 
     setProcessingStudentId(row.studentId);
@@ -512,21 +995,48 @@ export function CalificacionesTab({
     const pendingStudents = openRows.filter((row) => row.pendingUngradedCount > 0);
     const pendingTotal = pendingStudents.reduce((acc, row) => acc + row.pendingUngradedCount, 0);
     if (pendingStudents.length > 0) {
-      const confirmed = window.confirm(
-        `Hay ${pendingStudents.length} alumno(s) con actividades pendientes (${pendingTotal} en total). ¿Cerrar de todas formas para todos?`,
-      );
+      const confirmed = await requestConfirmation({
+        title: "Hay actividades pendientes",
+        message:
+          `Hay ${pendingStudents.length} alumno(s) con actividades pendientes ` +
+          `(${pendingTotal} en total). ¿Cerrar de todas formas para todos?`,
+        confirmLabel: "Cerrar de todas formas",
+        cancelLabel: "Cancelar",
+        tone: "warning",
+      });
       if (!confirmed) return;
     }
 
     const selectedCourseName = selectedCourse?.courseName ?? "esta materia";
-    const confirmedAll = window.confirm(
-      `Vas a cerrar calificaciones de "${selectedCourseName}" para ${openRows.length} alumno(s).\n\n` +
-      "Al confirmar, la materia se marcará como completada y se desvinculará automáticamente del grupo para los maestros asignados.\n\n" +
-      "¿Deseas continuar?",
-    );
+    const confirmedAll = await requestConfirmation({
+      title: "Cerrar calificaciones de la materia",
+      message:
+        `Vas a cerrar calificaciones de "${selectedCourseName}" para ${openRows.length} alumno(s). ` +
+        "Al confirmar, la materia se marcará como completada y se retirará de tu carga docente en este grupo.",
+      confirmLabel: "Sí, cerrar calificaciones",
+      cancelLabel: "Cancelar",
+      tone: "danger",
+    });
     if (!confirmedAll) return;
 
+    const signature = await requestDigitalSignature({
+      scope: "all",
+      courseId: selectedCourseId,
+      courseName: selectedCourseName,
+      requestedAt: new Date(),
+      rows: parsedRows.map(({ row, finalGrade }) => ({
+        studentId: row.studentId,
+        studentName: row.studentName,
+        autoGrade: row.autoGrade,
+        finalGrade,
+        pendingUngradedCount: row.pendingUngradedCount,
+        totalEvaluable: row.totalEvaluable,
+      })),
+    });
+    if (!signature) return;
+
     setProcessingAll(true);
+    let processStage: "closing" | "unlinking" | "pdf" = "closing";
     try {
       const now = new Date();
       const closureFieldPath = `courseClosures.${selectedCourseId}`;
@@ -553,7 +1063,7 @@ export function CalificacionesTab({
                 pendingUngradedCount: row.pendingUngradedCount,
                 closedAt: now,
                 closedById: currentUserId,
-                closedByName: "Profesor",
+                closedByName: signature.signerName,
                 updatedAt: now,
               },
             },
@@ -582,7 +1092,7 @@ export function CalificacionesTab({
                 pendingUngradedCount: row.pendingUngradedCount,
                 closedAt: now,
                 closedById: currentUserId,
-                closedByName: "Profesor",
+                closedByName: signature.signerName,
                 updatedAt: now,
               },
             },
@@ -591,41 +1101,61 @@ export function CalificacionesTab({
         return next;
       });
 
-      let unlinked = false;
+      processStage = "unlinking";
+      const currentSessionUser = auth.currentUser;
+      if (!currentSessionUser) {
+        throw new Error("Tu sesión expiró. Inicia sesión nuevamente.");
+      }
+      const token = await currentSessionUser.getIdToken();
+      const response = await fetch("/api/groups/unlink-course", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          groupId,
+          courseId: selectedCourseId,
+          teacherId: currentUserId,
+          scope: "teacher",
+        }),
+      });
+
+      let data: { updated?: boolean; error?: string } | null = null;
       try {
-        const response = await fetch("/api/groups/unlink-course", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            groupId,
-            courseId: selectedCourseId,
-          }),
-        });
-
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data.error || "No se pudo desvincular la materia del grupo");
-        }
-
-        unlinked = true;
-        await onCourseCompletedAndUnlinked?.(selectedCourseId);
-      } catch (unlinkErr) {
-        console.error(unlinkErr);
-        const message =
-          unlinkErr instanceof Error
-            ? unlinkErr.message
-            : "No se pudo desvincular la materia del grupo";
-        toast.error(`Calificaciones cerradas, pero hubo un error al desvincular: ${message}`);
+        data = await response.json();
+      } catch {
+        data = null;
       }
 
+      if (!response.ok) {
+        throw new Error(data?.error || "No se pudo desvincular la materia del grupo");
+      }
+
+      const unlinked = Boolean(data?.updated);
+      if (!unlinked) {
+        throw new Error(data?.error || "No se aplicó la desvinculación del profesor para esta materia.");
+      }
+      await onCourseCompletedAndUnlinked?.(selectedCourseId);
+
+      processStage = "pdf";
+      await downloadSignedClosurePdf(signature);
+
       if (unlinked) {
-        toast.success(`Materia cerrada y completada para ${openRows.length} alumno(s).`);
+        toast.success(`Materia cerrada para ${openRows.length} alumno(s) y retirada de tu carga docente.`);
       } else {
         toast.success(`Materia cerrada para ${openRows.length} alumno(s).`);
       }
     } catch (err) {
       console.error(err);
-      toast.error("No se pudo cerrar la materia para todos.");
+      const message = err instanceof Error ? err.message : "Error inesperado al procesar el cierre";
+      if (processStage === "closing") {
+        toast.error("No se pudo cerrar la materia para todos.");
+      } else if (processStage === "unlinking") {
+        toast.error(`Calificaciones cerradas, pero hubo un error al desvincular: ${message}. No se generó el PDF.`);
+      } else {
+        toast.error(`Calificaciones cerradas y desvinculadas, pero no se pudo generar el PDF: ${message}`);
+      }
     } finally {
       setProcessingAll(false);
     }
@@ -799,6 +1329,150 @@ export function CalificacionesTab({
           </table>
         </div>
       )}
+
+      {signatureModalContext ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 px-4 py-6">
+          <div className="w-full max-w-3xl rounded-xl border border-slate-200 bg-white shadow-2xl">
+            <div className="border-b border-slate-200 px-5 py-4">
+              <h3 className="text-lg font-semibold text-slate-900">Firma digital para cierre de calificaciones</h3>
+              <p className="mt-1 text-sm text-slate-600">
+                Materia: <span className="font-medium">{signatureModalContext.courseName}</span> | Alumnos a cerrar:{" "}
+                <span className="font-medium">{signatureModalContext.rows.length}</span>
+              </p>
+            </div>
+
+            <div className="space-y-4 px-5 py-4">
+              <div className="grid gap-3 md:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                    Nombre del profesor firmante
+                  </label>
+                  <input
+                    type="text"
+                    value={signerNameInput}
+                    onChange={(event) => {
+                      setSignerNameInput(event.target.value);
+                      if (signatureError) setSignatureError(null);
+                    }}
+                    placeholder="Escribe tu nombre completo"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                  />
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                  <p>
+                    Fecha de solicitud:{" "}
+                    <span className="font-medium">{formatDateTime(signatureModalContext.requestedAt)}</span>
+                  </p>
+                  <p className="mt-1">
+                    Grupo: <span className="font-medium">{groupId}</span>
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-1 flex items-center justify-between">
+                  <label className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                    Firma manuscrita
+                  </label>
+                  <button
+                    type="button"
+                    onClick={clearSignatureCanvas}
+                    className="rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  >
+                    Limpiar firma
+                  </button>
+                </div>
+                <canvas
+                  ref={signatureCanvasRef}
+                  className="h-40 w-full rounded-lg border border-slate-300 bg-white"
+                  style={{ touchAction: "none" }}
+                  onPointerDown={handleSignaturePointerDown}
+                  onPointerMove={handleSignaturePointerMove}
+                  onPointerUp={handleSignaturePointerEnd}
+                  onPointerLeave={handleSignaturePointerEnd}
+                  onPointerCancel={handleSignaturePointerEnd}
+                />
+              </div>
+
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                  Resumen de calificaciones a cerrar
+                </p>
+                <div className="mt-2 max-h-32 overflow-auto text-xs text-slate-700">
+                  {signatureModalContext.rows.slice(0, 6).map((row) => (
+                    <p key={`${row.studentId}-${row.finalGrade}`} className="py-0.5">
+                      {row.studentName || "Sin nombre"} | Final {row.finalGrade.toFixed(1)} | Auto{" "}
+                      {typeof row.autoGrade === "number" ? row.autoGrade.toFixed(1) : "—"} | Pendientes{" "}
+                      {row.pendingUngradedCount}/{row.totalEvaluable}
+                    </p>
+                  ))}
+                  {signatureModalContext.rows.length > 6 ? (
+                    <p className="pt-1 text-slate-500">
+                      ... y {signatureModalContext.rows.length - 6} alumno(s) más.
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+
+              {signatureError ? (
+                <p className="text-sm font-medium text-red-600">{signatureError}</p>
+              ) : null}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => resolveSignatureModal(null)}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={confirmDigitalSignature}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+              >
+                Firmar y continuar
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {confirmationModalContext ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 px-4 py-6">
+          <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white shadow-2xl">
+            <div className="border-b border-slate-200 px-5 py-4">
+              <h3 className="text-lg font-semibold text-slate-900">{confirmationModalContext.title}</h3>
+            </div>
+            <div className="px-5 py-4">
+              <p className="text-sm text-slate-700">{confirmationModalContext.message}</p>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => resolveConfirmationModal(false)}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                {confirmationModalContext.cancelLabel ?? "Cancelar"}
+              </button>
+              <button
+                type="button"
+                onClick={() => resolveConfirmationModal(true)}
+                className={`rounded-lg px-4 py-2 text-sm font-semibold text-white ${
+                  confirmationModalContext.tone === "danger"
+                    ? "bg-red-600 hover:bg-red-500"
+                    : confirmationModalContext.tone === "warning"
+                      ? "bg-amber-600 hover:bg-amber-500"
+                      : "bg-slate-900 hover:bg-slate-800"
+                }`}
+              >
+                {confirmationModalContext.confirmLabel ?? "Confirmar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -299,12 +299,56 @@ const matchesRequestedPhoneOrWhatsapp = (
   return false;
 };
 
-const hasCandidateMatch = (source: string[], targetSet: Set<string>): boolean =>
-  source.some((candidate) => targetSet.has(candidate));
+const buildLookupPhones = (values: Array<string | null | undefined>): string[] => {
+  const set = new Set<string>();
+  for (const value of values) {
+    const local10 = toMxLocal10Digits(value);
+    if (local10.length === 10) {
+      set.add(local10);
+    }
+  }
+  return Array.from(set);
+};
+
+const extractCustomerInfoPhones = (
+  parsedBody: unknown,
+): { success?: boolean; error?: string; phone?: string; whatsapp?: string } => {
+  const response = asRecord(parsedBody);
+  if (!response) return {};
+
+  const success = typeof response.success === "boolean" ? response.success : undefined;
+  const error = typeof response.error === "string" ? response.error : undefined;
+
+  const responseData = asRecord(response.data);
+  const customer =
+    asRecord(responseData?.customer) ??
+    asRecord(response.customer) ??
+    responseData;
+
+  return {
+    success,
+    error,
+    phone: pickString(customer, ["phone", "Phone", "telefono", "tel", "cellphone", "mobile"]),
+    whatsapp: pickString(customer, ["whatsapp", "WhatsApp", "whatsApp", "wa", "whatsappPhone", "whatsappNumber"]),
+  };
+};
+
+const extractApiErrorCode = (parsedBody: unknown): string | undefined => {
+  const response = asRecord(parsedBody);
+  if (!response) return undefined;
+  const errorObj = asRecord(response.error);
+  const code = errorObj?.code;
+  return typeof code === "string" && code.trim() ? code.trim() : undefined;
+};
 
 export async function GET(request: NextRequest) {
-  const FINANCE_API_URL =
+  const configuredFinanceUrl =
     process.env.FINANCE_API_URL ?? "https://us-central1-pos-universal-662da.cloudfunctions.net/customerStatus";
+  const financeBaseUrl = configuredFinanceUrl
+    .replace(/\/customerStatus\/?$/i, "")
+    .replace(/\/customerInfo\/?$/i, "");
+  const FINANCE_STATUS_URL = `${financeBaseUrl}/customerStatus`;
+  const FINANCE_INFO_URL = `${financeBaseUrl}/customerInfo`;
   const phone = request.nextUrl.searchParams.get("phone")?.trim();
   const whatsapp = request.nextUrl.searchParams.get("whatsapp")?.trim();
   const email = normalizeEmail(request.nextUrl.searchParams.get("email"));
@@ -346,30 +390,13 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const requestedCandidates = Array.from(
-      new Set([...(phone ? buildPhoneCandidates(phone) : []), ...(whatsapp ? buildPhoneCandidates(whatsapp) : [])]),
-    );
-    const requestedEmailCandidates = Array.from(new Set([email].filter(Boolean)));
-    if (!requestedCandidates.length) {
+    const requestedLookupPhones = buildLookupPhones([phone, whatsapp]);
+    if (!requestedLookupPhones.length) {
       return NextResponse.json({ error: "phone o whatsapp invalido" }, { status: 400 });
     }
-    const requestedCandidateSet = new Set(requestedCandidates);
-
-    const queryStrategies: Array<{ field: string; param: string }> = [
-      { field: "phone", param: "phone" },
-      { field: "whatsapp", param: "whatsapp" },
-      { field: "wa", param: "wa" },
-      { field: "whatsappPhone", param: "whatsappPhone" },
-      { field: "whatsappNumber", param: "whatsappNumber" },
-      { field: "mobile", param: "mobile" },
-      { field: "cellphone", param: "cellphone" },
-      { field: "telefono", param: "telefono" },
-      { field: "tel", param: "tel" },
-      { field: "celular", param: "celular" },
-      { field: "email", param: "email" },
-      { field: "mail", param: "mail" },
-      { field: "correo", param: "correo" },
-    ];
+    const requestedCandidates = Array.from(
+      new Set(requestedLookupPhones.flatMap((lookupPhone) => buildPhoneCandidates(lookupPhone))),
+    );
 
     const results: CampusCheckResult[] = await Promise.all(
       configuredCampuses.map(async ({ campus, key }): Promise<CampusCheckResult> => {
@@ -383,258 +410,239 @@ export async function GET(request: NextRequest) {
           overdue: boolean;
           reason?: string;
         }> = [];
+        const pushAttempt = (attempt: {
+          field: string;
+          value: string;
+          statusCode: number;
+          matched: boolean;
+          overdue: boolean;
+          reason?: string;
+        }) => {
+          if (!debugMode) return;
+          if (attempts.length >= 60) return;
+          attempts.push(attempt);
+        };
 
-        for (const strategy of queryStrategies) {
-          const isEmailStrategy =
-            strategy.field === "email" || strategy.field === "mail" || strategy.field === "correo";
-          const queryValues = isEmailStrategy ? requestedEmailCandidates : requestedCandidates;
-          for (const queryPhone of queryValues) {
-            try {
-              const url = `${FINANCE_API_URL}?${strategy.param}=${encodeURIComponent(queryPhone)}`;
+        const lookupPhones = new Set<string>(requestedLookupPhones);
+        const infoQueue = [...requestedLookupPhones];
+        const infoVisited = new Set<string>();
 
-              const resp = await fetch(url, {
-                headers: {
-                  "X-API-Key": key,
-                },
-                cache: "no-store",
-              });
-
-              const rawBody = await resp.text();
-              let parsedBody: unknown = {};
-              if (rawBody) {
-                try {
-                  parsedBody = JSON.parse(rawBody);
-                } catch {
-                  parsedBody = { rawBody };
-                }
+        while (infoQueue.length) {
+          const lookupPhone = infoQueue.shift();
+          if (!lookupPhone || infoVisited.has(lookupPhone)) continue;
+          infoVisited.add(lookupPhone);
+          try {
+            const infoResp = await fetch(`${FINANCE_INFO_URL}?phone=${encodeURIComponent(lookupPhone)}`, {
+              headers: {
+                "X-API-Key": key,
+              },
+              cache: "no-store",
+            });
+            const infoRawBody = await infoResp.text();
+            let infoParsedBody: unknown = {};
+            if (infoRawBody) {
+              try {
+                infoParsedBody = JSON.parse(infoRawBody);
+              } catch {
+                infoParsedBody = { rawBody: infoRawBody };
               }
-
-              // En algunos planteles la API responde 404 cuando no existe.
-              if (resp.status === 404) {
-                attempts.push({
-                  field: strategy.field,
-                  value: queryPhone,
-                  statusCode: 404,
-                  matched: false,
-                  overdue: false,
-                  reason: "NOT_FOUND",
-                });
-                continue;
-              }
-
-              if (!resp.ok) {
-                // Algunas APIs no soportan query por whatsapp y devuelven 400.
-                if (strategy.field !== "phone" && resp.status === 400) {
-                  attempts.push({
-                    field: strategy.field,
-                    value: queryPhone,
-                    statusCode: 400,
-                    matched: false,
-                    overdue: false,
-                    reason: "UNSUPPORTED_PARAM",
-                  });
-                  continue;
-                }
-                attempts.push({
-                  field: strategy.field,
-                  value: queryPhone,
-                  statusCode: resp.status,
-                  matched: false,
-                  overdue: false,
-                  reason: `HTTP_${resp.status}`,
-                });
-                firstError = firstError ?? `HTTP ${resp.status}`;
-                continue;
-              }
-
-              const parsed = extractFinanceData(parsedBody);
-              if (parsed.success === false || !parsed.data) {
-                attempts.push({
-                  field: strategy.field,
-                  value: queryPhone,
-                  statusCode: resp.status,
-                  matched: false,
-                  overdue: false,
-                  reason: parsed.error || "EMPTY_DATA",
-                });
-                firstError = firstError ?? (parsed.error || "Respuesta sin data");
-                continue;
-              }
-
-              const normalizedData = normalizeFinanceData(parsed.data);
-              const hasDebt = hasOverdue(normalizedData);
-              const returnedEmail = normalizeEmail(normalizedData.email);
-              const queryEmail = normalizeEmail(queryPhone);
-
-              const matchedByPayload = matchesRequestedPhoneOrWhatsapp(requestedCandidates, normalizedData);
-              // Si la búsqueda fue por whatsapp, aceptamos el resultado aunque la API no regrese
-              // explícitamente el campo whatsapp en el payload.
-              const matchedByWhatsappQuery = !isEmailStrategy && strategy.field !== "phone";
-              const matchedByEmailQuery =
-                isEmailStrategy && queryEmail.length > 0 && (!returnedEmail || returnedEmail === queryEmail);
-              if (!matchedByPayload && !matchedByWhatsappQuery && !matchedByEmailQuery) {
-                attempts.push({
-                  field: strategy.field,
-                  value: queryPhone,
-                  statusCode: resp.status,
-                  matched: false,
-                  overdue: hasDebt,
-                  reason: "NO_MATCH",
-                });
-                continue;
-              }
-
-              const matchedResult: CampusCheckResult = {
-                campus,
-                ok: true,
-                statusCode: resp.status,
-                data: normalizedData,
-                matchedQueryField: strategy.field,
-                matchedQueryPhone: queryPhone,
-                returnedPhone: normalizedData.phone,
-                returnedWhatsapp: normalizedData.whatsapp,
-                matchReason: matchedByPayload
-                  ? "payload"
-                  : matchedByEmailQuery
-                    ? "email-query"
-                    : "whatsapp-query",
-                attempts: debugMode ? [...attempts] : undefined,
-              };
-              if (debugMode) {
-                matchedResult.attempts = [
-                  ...(matchedResult.attempts ?? []),
-                  {
-                    field: strategy.field,
-                    value: queryPhone,
-                    statusCode: resp.status,
-                    matched: true,
-                    overdue: hasDebt,
-                    reason: matchedResult.matchReason,
-                  },
-                ];
-              }
-
-              const returnedPhoneDigits = digitsOnly(normalizedData.phone ?? normalizedData.customer?.phone);
-              const returnedPhoneCandidates = returnedPhoneDigits
-                ? buildPhoneCandidates(returnedPhoneDigits)
-                : [];
-              const returnedWhatsappDigits = digitsOnly(normalizedData.whatsapp ?? normalizedData.customer?.whatsapp);
-              const returnedWhatsappCandidates = returnedWhatsappDigits
-                ? buildPhoneCandidates(returnedWhatsappDigits)
-                : [];
-              const matchedByReturnedWhatsapp = hasCandidateMatch(
-                returnedWhatsappCandidates,
-                requestedCandidateSet,
-              );
-              const requestedAlreadyContainsReturnedPhone = hasCandidateMatch(
-                returnedPhoneCandidates,
-                requestedCandidateSet,
-              );
-
-              // Caso clave: si el número del alumno coincide con whatsapp en finanzas,
-              // también validamos adeudo del phone enlazado de ese registro.
-              const shouldCheckLinkedPhoneDebt =
-                !hasDebt &&
-                returnedPhoneCandidates.length > 0 &&
-                !requestedAlreadyContainsReturnedPhone &&
-                (matchedByReturnedWhatsapp || matchedByWhatsappQuery);
-
-              if (shouldCheckLinkedPhoneDebt) {
-                for (const linkedPhone of returnedPhoneCandidates) {
-                  try {
-                    const linkedResp = await fetch(
-                      `${FINANCE_API_URL}?phone=${encodeURIComponent(linkedPhone)}`,
-                      {
-                        headers: {
-                          "X-API-Key": key,
-                        },
-                        cache: "no-store",
-                      },
-                    );
-
-                    const linkedRawBody = await linkedResp.text();
-                    let linkedParsedBody: unknown = {};
-                    if (linkedRawBody) {
-                      try {
-                        linkedParsedBody = JSON.parse(linkedRawBody);
-                      } catch {
-                        linkedParsedBody = { rawBody: linkedRawBody };
-                      }
-                    }
-
-                    const linkedParsed = extractFinanceData(linkedParsedBody);
-                    const linkedData = linkedParsed.data ? normalizeFinanceData(linkedParsed.data) : undefined;
-                    const linkedHasDebt = linkedData ? hasOverdue(linkedData) : false;
-                    const linkedMatched = linkedData
-                      ? matchesRequestedPhoneOrWhatsapp(returnedPhoneCandidates, linkedData)
-                      : false;
-
-                    if (debugMode) {
-                      matchedResult.attempts = [
-                        ...(matchedResult.attempts ?? []),
-                        {
-                          field: "linked-phone",
-                          value: linkedPhone,
-                          statusCode: linkedResp.status,
-                          matched: linkedMatched,
-                          overdue: linkedHasDebt,
-                          reason: linkedResp.ok
-                            ? linkedMatched
-                              ? linkedHasDebt
-                                ? "LINKED_OVERDUE"
-                                : "LINKED_NO_DEBT"
-                              : "LINKED_NO_MATCH"
-                            : `HTTP_${linkedResp.status}`,
-                        },
-                      ];
-                    }
-
-                    if (!linkedResp.ok || !linkedData || !linkedMatched || !linkedHasDebt) {
-                      continue;
-                    }
-
-                    return {
-                      ...matchedResult,
-                      statusCode: linkedResp.status,
-                      data: linkedData,
-                      matchedQueryField: "phone",
-                      matchedQueryPhone: linkedPhone,
-                      returnedPhone: linkedData.phone,
-                      returnedWhatsapp: linkedData.whatsapp,
-                      matchReason: "linked-phone-query",
-                    };
-                  } catch {
-                    if (debugMode) {
-                      matchedResult.attempts = [
-                        ...(matchedResult.attempts ?? []),
-                        {
-                          field: "linked-phone",
-                          value: linkedPhone,
-                          statusCode: 0,
-                          matched: false,
-                          overdue: false,
-                          reason: "NETWORK_ERROR",
-                        },
-                      ];
-                    }
-                  }
-                }
-              }
-
-              // Si encontramos adeudo en cualquier match del plantel, priorizamos ese resultado.
-              if (hasDebt) {
-                return matchedResult;
-              }
-
-              // Guardar el primer match sin adeudo por si no aparece ninguno con adeudo.
-              if (!firstMatchedResult) {
-                firstMatchedResult = matchedResult;
-              }
-            } catch (err: unknown) {
-              firstError =
-                firstError ??
-                ((err as { message?: string })?.message || "Error de red al consultar plantel");
             }
+
+            if (infoResp.status === 404) {
+              pushAttempt({
+                field: "customerInfo",
+                value: lookupPhone,
+                statusCode: 404,
+                matched: false,
+                overdue: false,
+                reason: "NOT_FOUND",
+              });
+              continue;
+            }
+
+            if (!infoResp.ok) {
+              const apiErrorCode = extractApiErrorCode(infoParsedBody);
+              const reason = apiErrorCode ? `HTTP_${infoResp.status}_${apiErrorCode}` : `HTTP_${infoResp.status}`;
+              pushAttempt({
+                field: "customerInfo",
+                value: lookupPhone,
+                statusCode: infoResp.status,
+                matched: false,
+                overdue: false,
+                reason,
+              });
+              firstError = firstError ?? (apiErrorCode ? `HTTP ${infoResp.status} (${apiErrorCode})` : `HTTP ${infoResp.status}`);
+              continue;
+            }
+
+            const infoParsed = extractCustomerInfoPhones(infoParsedBody);
+            if (infoParsed.success === false) {
+              pushAttempt({
+                field: "customerInfo",
+                value: lookupPhone,
+                statusCode: infoResp.status,
+                matched: false,
+                overdue: false,
+                reason: infoParsed.error || "EMPTY_DATA",
+              });
+              firstError = firstError ?? (infoParsed.error || "Respuesta sin data");
+              continue;
+            }
+
+            const discoveredLookupPhones = buildLookupPhones([infoParsed.phone, infoParsed.whatsapp]);
+            for (const discoveredPhone of discoveredLookupPhones) {
+              if (lookupPhones.has(discoveredPhone)) continue;
+              lookupPhones.add(discoveredPhone);
+              infoQueue.push(discoveredPhone);
+            }
+
+            pushAttempt({
+              field: "customerInfo",
+              value: lookupPhone,
+              statusCode: infoResp.status,
+              matched: discoveredLookupPhones.length > 0,
+              overdue: false,
+              reason:
+                discoveredLookupPhones.length > 0
+                  ? `LINKED_${discoveredLookupPhones.join("_")}`
+                  : "NO_LINKED_PHONE",
+            });
+          } catch (err: unknown) {
+            pushAttempt({
+              field: "customerInfo",
+              value: lookupPhone,
+              statusCode: 0,
+              matched: false,
+              overdue: false,
+              reason: "NETWORK_ERROR",
+            });
+            firstError =
+              firstError ??
+              ((err as { message?: string })?.message || "Error de red al consultar plantel");
+          }
+        }
+
+        const statusLookupPhones = Array.from(lookupPhones);
+        for (const lookupPhone of statusLookupPhones) {
+          try {
+            const statusResp = await fetch(`${FINANCE_STATUS_URL}?phone=${encodeURIComponent(lookupPhone)}`, {
+              headers: {
+                "X-API-Key": key,
+              },
+              cache: "no-store",
+            });
+
+            const statusRawBody = await statusResp.text();
+            let statusParsedBody: unknown = {};
+            if (statusRawBody) {
+              try {
+                statusParsedBody = JSON.parse(statusRawBody);
+              } catch {
+                statusParsedBody = { rawBody: statusRawBody };
+              }
+            }
+
+            if (statusResp.status === 404) {
+              pushAttempt({
+                field: "phone",
+                value: lookupPhone,
+                statusCode: 404,
+                matched: false,
+                overdue: false,
+                reason: "NOT_FOUND",
+              });
+              continue;
+            }
+
+            if (!statusResp.ok) {
+              const apiErrorCode = extractApiErrorCode(statusParsedBody);
+              const reason = apiErrorCode ? `HTTP_${statusResp.status}_${apiErrorCode}` : `HTTP_${statusResp.status}`;
+              pushAttempt({
+                field: "phone",
+                value: lookupPhone,
+                statusCode: statusResp.status,
+                matched: false,
+                overdue: false,
+                reason,
+              });
+              firstError = firstError ?? (apiErrorCode ? `HTTP ${statusResp.status} (${apiErrorCode})` : `HTTP ${statusResp.status}`);
+              continue;
+            }
+
+            const statusParsed = extractFinanceData(statusParsedBody);
+            if (statusParsed.success === false || !statusParsed.data) {
+              pushAttempt({
+                field: "phone",
+                value: lookupPhone,
+                statusCode: statusResp.status,
+                matched: false,
+                overdue: false,
+                reason: statusParsed.error || "EMPTY_DATA",
+              });
+              firstError = firstError ?? (statusParsed.error || "Respuesta sin data");
+              continue;
+            }
+
+            const normalizedData = normalizeFinanceData(statusParsed.data);
+            const hasDebt = hasOverdue(normalizedData);
+            const matchedByPayload = matchesRequestedPhoneOrWhatsapp(requestedCandidates, normalizedData);
+            const isLinkedLookupPhone = !requestedLookupPhones.includes(lookupPhone);
+            if (!matchedByPayload && !isLinkedLookupPhone) {
+              pushAttempt({
+                field: "phone",
+                value: lookupPhone,
+                statusCode: statusResp.status,
+                matched: false,
+                overdue: hasDebt,
+                reason: "NO_MATCH",
+              });
+              continue;
+            }
+
+            const matchReason: CampusCheckResult["matchReason"] = isLinkedLookupPhone
+              ? "linked-phone-query"
+              : "payload";
+            pushAttempt({
+              field: "phone",
+              value: lookupPhone,
+              statusCode: statusResp.status,
+              matched: true,
+              overdue: hasDebt,
+              reason: matchReason,
+            });
+
+            const matchedResult: CampusCheckResult = {
+              campus,
+              ok: true,
+              statusCode: statusResp.status,
+              data: normalizedData,
+              matchedQueryField: "phone",
+              matchedQueryPhone: lookupPhone,
+              returnedPhone: normalizedData.phone,
+              returnedWhatsapp: normalizedData.whatsapp,
+              matchReason,
+              attempts: debugMode ? [...attempts] : undefined,
+            };
+
+            if (hasDebt) {
+              return matchedResult;
+            }
+
+            if (!firstMatchedResult) {
+              firstMatchedResult = matchedResult;
+            }
+          } catch (err: unknown) {
+            pushAttempt({
+              field: "phone",
+              value: lookupPhone,
+              statusCode: 0,
+              matched: false,
+              overdue: false,
+              reason: "NETWORK_ERROR",
+            });
+            firstError =
+              firstError ??
+              ((err as { message?: string })?.message || "Error de red al consultar plantel");
           }
         }
 
@@ -678,6 +686,9 @@ export async function GET(request: NextRequest) {
     const successful = results.filter((item) => item.ok && item.data) as Array<
       CampusCheckResult & { data: RemoteFinanceData }
     >;
+    const failedCampuses = results
+      .filter((item) => !item.ok)
+      .map((item) => ({ campus: item.campus, error: item.error || "Error desconocido" }));
 
     if (!successful.length) {
       return NextResponse.json(
@@ -685,10 +696,44 @@ export async function GET(request: NextRequest) {
           success: false,
           error: "No se pudo consultar ningun plantel",
           campusesChecked: results.length,
-          failedCampuses: results.map((item) => ({
-            campus: item.campus,
-            error: item.error || "Error desconocido",
-          })),
+          failedCampuses,
+        },
+        { status: 502 },
+      );
+    }
+
+    // Fail closed: si algun plantel configurado no pudo validarse, no permitimos concluir "sin adeudo"
+    // para evitar falsos negativos por llaves revocadas/permisos insuficientes.
+    if (failedCampuses.length > 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "No se pudo validar adeudos en todos los planteles",
+          campusesChecked: successful.map((item) => item.campus),
+          failedCampuses,
+          ...(debugMode
+            ? {
+                debug: {
+                  requestedPhone: phone,
+                  requestedWhatsapp: whatsapp,
+                  requestedEmail: email || undefined,
+                  requestedLookupPhones,
+                  requestedCandidates,
+                  campusResults: results.map((item) => ({
+                    campus: item.campus,
+                    ok: item.ok,
+                    statusCode: item.statusCode,
+                    error: item.error,
+                    matchedQueryField: item.matchedQueryField,
+                    matchedQueryPhone: item.matchedQueryPhone,
+                    returnedPhone: item.returnedPhone,
+                    returnedWhatsapp: item.returnedWhatsapp,
+                    matchReason: item.matchReason,
+                    attempts: item.attempts,
+                  })),
+                },
+              }
+            : undefined),
         },
         { status: 502 },
       );
@@ -747,9 +792,7 @@ export async function GET(request: NextRequest) {
           notFoundCampuses: successful
             .filter((item) => item.error === "NOT_FOUND")
             .map((item) => item.campus),
-          failedCampuses: results
-            .filter((item) => !item.ok)
-            .map((item) => ({ campus: item.campus, error: item.error || "Error desconocido" })),
+          failedCampuses,
           overdueCampuses: overdueCampuses.map((item) => item.campus),
         },
         ...(debugMode
@@ -758,22 +801,23 @@ export async function GET(request: NextRequest) {
                 requestedPhone: phone,
                 requestedWhatsapp: whatsapp,
                 requestedEmail: email || undefined,
+                requestedLookupPhones,
                 requestedCandidates,
                 campusResults: results.map((item) => ({
-                campus: item.campus,
-                ok: item.ok,
-                statusCode: item.statusCode,
-                error: item.error,
-                matchedQueryField: item.matchedQueryField,
-                matchedQueryPhone: item.matchedQueryPhone,
-                returnedPhone: item.returnedPhone,
-                returnedWhatsapp: item.returnedWhatsapp,
-                matchReason: item.matchReason,
-                attempts: item.attempts,
-              })),
-            },
-          }
-          : {}),
+                  campus: item.campus,
+                  ok: item.ok,
+                  statusCode: item.statusCode,
+                  error: item.error,
+                  matchedQueryField: item.matchedQueryField,
+                  matchedQueryPhone: item.matchedQueryPhone,
+                  returnedPhone: item.returnedPhone,
+                  returnedWhatsapp: item.returnedWhatsapp,
+                  matchReason: item.matchReason,
+                  attempts: item.attempts,
+                })),
+              },
+            }
+          : undefined),
       },
       { status: 200 },
     );

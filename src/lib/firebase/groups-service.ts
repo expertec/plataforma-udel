@@ -13,6 +13,7 @@ import {
   Timestamp,
   where,
   getDoc,
+  getDocFromServer,
   writeBatch,
   updateDoc,
   QuerySnapshot,
@@ -269,7 +270,12 @@ export async function getAllGroups(maxResults?: number): Promise<Group[]> {
 
 export async function getGroup(groupId: string): Promise<Group | null> {
   const ref = doc(db, "groups", groupId);
-  const snap = await getDoc(ref);
+  let snap;
+  try {
+    snap = await getDocFromServer(ref);
+  } catch {
+    snap = await getDoc(ref);
+  }
   if (!snap.exists()) return null;
   return toGroup(snap.id, snap.data());
 }
@@ -569,6 +575,64 @@ export async function unlinkCourseFromGroup(params: {
   }
 
   await updateDoc(ref, updateData);
+}
+
+export async function unlinkCourseForTeacherInGroup(params: {
+  groupId: string;
+  courseId: string;
+  teacherId: string;
+}): Promise<{ updated: boolean }> {
+  const { groupId, courseId, teacherId } = params;
+  const ref = doc(db, "groups", groupId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error("Grupo no encontrado");
+
+  const data = snap.data();
+  const courseIds = toGroupCourseIds(data);
+  if (!courseIds.includes(courseId)) {
+    throw new Error("La materia no está asignada al grupo");
+  }
+
+  const teacherUid = teacherId.trim();
+  if (!teacherUid) throw new Error("teacherId es requerido");
+
+  const principalTeacherId = typeof data.teacherId === "string" ? data.teacherId : "";
+  // El profesor principal conserva control total del grupo/cursos; este modo aplica para mentores.
+  if (teacherUid === principalTeacherId) {
+    return { updated: false };
+  }
+
+  const mentorIds = toUniqueStringArray(data.assistantTeacherIds);
+  if (!mentorIds.includes(teacherUid)) {
+    throw new Error("El profesor no está asignado como mentor en este grupo");
+  }
+
+  const existingAccess = normalizeMentorCourseAccess(data.mentorCourseAccess, courseIds);
+  const nextAccess = buildMentorCourseAccess({
+    mentorIds,
+    existingAccess,
+    validCourseIds: courseIds,
+  });
+
+  const currentTeacherAccess = new Set(nextAccess[teacherUid] ?? []);
+  if (!currentTeacherAccess.has(courseId)) {
+    return { updated: false };
+  }
+  currentTeacherAccess.delete(courseId);
+  nextAccess[teacherUid] = courseIds.filter((id) => currentTeacherAccess.has(id));
+
+  await updateDoc(ref, {
+    mentorCourseAccess: nextAccess,
+    updatedAt: serverTimestamp(),
+  });
+
+  if (courseIds.length > 0) {
+    const { syncCourseMentorsByCourse } = await import("./courses-service");
+    const courseMentors = mapCourseMentorsByAccess(courseIds, mentorIds, nextAccess);
+    await syncCourseMentorsByCourse(courseMentors);
+  }
+
+  return { updated: true };
 }
 
 export async function setAssistantTeachers(groupId: string, teachers: Array<{ id: string; name: string; email?: string }>) {
