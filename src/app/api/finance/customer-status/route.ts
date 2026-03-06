@@ -42,6 +42,7 @@ type RemoteFinanceData = {
 type CampusConfig = {
   campus: string;
   envKey: string;
+  requiredForValidation?: boolean;
 };
 
 type CampusCheckResult = {
@@ -66,7 +67,7 @@ type CampusCheckResult = {
 };
 
 const CAMPUS_CONFIG: CampusConfig[] = [
-  { campus: "API PRUEBAS", envKey: "FINANCE_API_KEY_TESTS" },
+  { campus: "API PRUEBAS", envKey: "FINANCE_API_KEY_TESTS", requiredForValidation: false },
   { campus: "UDEL Online", envKey: "FINANCE_API_KEY_UDEL_ONLINE" },
   { campus: "UDEL Los Cabos", envKey: "FINANCE_API_KEY_UDEL_LOS_CABOS" },
   { campus: "UDEL Lazaro Cardenas", envKey: "FINANCE_API_KEY_UDEL_LAZARO_CARDENAS" },
@@ -364,16 +365,23 @@ export async function GET(request: NextRequest) {
       return {
         campus: campus.campus,
         envKey: campus.envKey,
+        requiredForValidation: campus.requiredForValidation !== false,
         key,
       };
     })
-    .filter((campus): campus is { campus: string; envKey: string; key: string } => Boolean(campus.key));
+    .filter(
+      (
+        campus,
+      ): campus is { campus: string; envKey: string; requiredForValidation: boolean; key: string } =>
+        Boolean(campus.key),
+    );
 
   // Compatibilidad con configuración anterior de una sola API key.
   if (!configuredCampuses.length && process.env.FINANCE_API_KEY) {
     configuredCampuses.push({
       campus: "Plantel Principal",
       envKey: "FINANCE_API_KEY",
+      requiredForValidation: true,
       key: process.env.FINANCE_API_KEY,
     });
   }
@@ -400,7 +408,7 @@ export async function GET(request: NextRequest) {
 
     const results: CampusCheckResult[] = await Promise.all(
       configuredCampuses.map(async ({ campus, key }): Promise<CampusCheckResult> => {
-        let firstError: string | undefined;
+        let firstStatusError: string | undefined;
         let firstMatchedResult: CampusCheckResult | undefined;
         const attempts: Array<{
           field: string;
@@ -471,7 +479,6 @@ export async function GET(request: NextRequest) {
                 overdue: false,
                 reason,
               });
-              firstError = firstError ?? (apiErrorCode ? `HTTP ${infoResp.status} (${apiErrorCode})` : `HTTP ${infoResp.status}`);
               continue;
             }
 
@@ -485,7 +492,6 @@ export async function GET(request: NextRequest) {
                 overdue: false,
                 reason: infoParsed.error || "EMPTY_DATA",
               });
-              firstError = firstError ?? (infoParsed.error || "Respuesta sin data");
               continue;
             }
 
@@ -507,7 +513,7 @@ export async function GET(request: NextRequest) {
                   ? `LINKED_${discoveredLookupPhones.join("_")}`
                   : "NO_LINKED_PHONE",
             });
-          } catch (err: unknown) {
+          } catch {
             pushAttempt({
               field: "customerInfo",
               value: lookupPhone,
@@ -516,9 +522,6 @@ export async function GET(request: NextRequest) {
               overdue: false,
               reason: "NETWORK_ERROR",
             });
-            firstError =
-              firstError ??
-              ((err as { message?: string })?.message || "Error de red al consultar plantel");
           }
         }
 
@@ -565,7 +568,9 @@ export async function GET(request: NextRequest) {
                 overdue: false,
                 reason,
               });
-              firstError = firstError ?? (apiErrorCode ? `HTTP ${statusResp.status} (${apiErrorCode})` : `HTTP ${statusResp.status}`);
+              firstStatusError =
+                firstStatusError ??
+                (apiErrorCode ? `HTTP ${statusResp.status} (${apiErrorCode})` : `HTTP ${statusResp.status}`);
               continue;
             }
 
@@ -579,7 +584,7 @@ export async function GET(request: NextRequest) {
                 overdue: false,
                 reason: statusParsed.error || "EMPTY_DATA",
               });
-              firstError = firstError ?? (statusParsed.error || "Respuesta sin data");
+              firstStatusError = firstStatusError ?? (statusParsed.error || "Respuesta sin data");
               continue;
             }
 
@@ -640,8 +645,8 @@ export async function GET(request: NextRequest) {
               overdue: false,
               reason: "NETWORK_ERROR",
             });
-            firstError =
-              firstError ??
+            firstStatusError =
+              firstStatusError ??
               ((err as { message?: string })?.message || "Error de red al consultar plantel");
           }
         }
@@ -651,11 +656,11 @@ export async function GET(request: NextRequest) {
         }
 
         // Si ningun intento coincidió pero hubo error HTTP/red, reportarlo como fallo del plantel.
-        if (firstError) {
+        if (firstStatusError) {
           return {
             campus,
             ok: false,
-            error: firstError,
+            error: firstStatusError,
             attempts: debugMode ? attempts : undefined,
           };
         }
@@ -686,9 +691,16 @@ export async function GET(request: NextRequest) {
     const successful = results.filter((item) => item.ok && item.data) as Array<
       CampusCheckResult & { data: RemoteFinanceData }
     >;
+    const requiredCampuses = new Set(
+      configuredCampuses
+        .filter((campus) => campus.requiredForValidation)
+        .map((campus) => campus.campus),
+    );
     const failedCampuses = results
       .filter((item) => !item.ok)
       .map((item) => ({ campus: item.campus, error: item.error || "Error desconocido" }));
+    const blockingFailedCampuses = failedCampuses.filter((item) => requiredCampuses.has(item.campus));
+    const nonBlockingFailedCampuses = failedCampuses.filter((item) => !requiredCampuses.has(item.campus));
 
     if (!successful.length) {
       return NextResponse.json(
@@ -702,15 +714,15 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Fail closed: si algun plantel configurado no pudo validarse, no permitimos concluir "sin adeudo"
-    // para evitar falsos negativos por llaves revocadas/permisos insuficientes.
-    if (failedCampuses.length > 0) {
+    // Fail closed solo en planteles requeridos: planteles de prueba no deben bloquear el acceso.
+    if (blockingFailedCampuses.length > 0) {
       return NextResponse.json(
         {
           success: false,
           error: "No se pudo validar adeudos en todos los planteles",
           campusesChecked: successful.map((item) => item.campus),
-          failedCampuses,
+          failedCampuses: blockingFailedCampuses,
+          ignoredFailedCampuses: nonBlockingFailedCampuses,
           ...(debugMode
             ? {
                 debug: {
@@ -792,7 +804,8 @@ export async function GET(request: NextRequest) {
           notFoundCampuses: successful
             .filter((item) => item.error === "NOT_FOUND")
             .map((item) => item.campus),
-          failedCampuses,
+          failedCampuses: blockingFailedCampuses,
+          ignoredFailedCampuses: nonBlockingFailedCampuses,
           overdueCampuses: overdueCampuses.map((item) => item.campus),
         },
         ...(debugMode
