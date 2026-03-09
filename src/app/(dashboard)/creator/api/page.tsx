@@ -3,7 +3,17 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { onAuthStateChanged, type User } from "firebase/auth";
 import toast from "react-hot-toast";
-import { Copy, Download, KeyRound, RefreshCw, ShieldX } from "lucide-react";
+import {
+  CheckCircle2,
+  Copy,
+  Download,
+  KeyRound,
+  Link2,
+  MessageCircle,
+  RefreshCw,
+  ShieldX,
+  Unlink2,
+} from "lucide-react";
 import { auth } from "@/lib/firebase/client";
 import { RoleGate } from "@/components/auth/RoleGate";
 
@@ -44,6 +54,46 @@ type CreateApiKeyResponse = {
   error?: string;
 };
 
+type KanwapSessionItem = {
+  id: string;
+  nombre: string;
+  telefono: string;
+  estado: string;
+};
+
+type KanwapSessionsResponse = {
+  success: boolean;
+  data?: {
+    total: number;
+    sessions: KanwapSessionItem[];
+  };
+  error?: string;
+  errors?: string[];
+  retryable?: boolean;
+};
+
+type WhatsAppConnection = {
+  provider: "kanwap";
+  baseUrl: string;
+  sessionId: string;
+  sessionName: string | null;
+  phone: string | null;
+  sessionState: string;
+  apiKeyMasked: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+  lastValidatedAt: string | null;
+  lastValidationError: string | null;
+};
+
+type WhatsAppConfigResponse = {
+  success: boolean;
+  data?: WhatsAppConnection | null;
+  error?: string;
+  encryptionConfigured?: boolean;
+};
+
 function formatDate(value: string | null): string {
   if (!value) return "N/D";
   const date = new Date(value);
@@ -61,6 +111,26 @@ function getStatusClassName(status: ApiKeyItem["status"]): string {
   if (status === "active") return "bg-emerald-100 text-emerald-700";
   if (status === "expired") return "bg-amber-100 text-amber-700";
   return "bg-rose-100 text-rose-700";
+}
+
+function getSessionStateLabel(state: string): string {
+  const normalized = state.trim().toLowerCase();
+  if (normalized === "conectada") return "Conectada";
+  if (normalized === "desconectada") return "Desconectada";
+  if (normalized === "pendiente") return "Pendiente";
+  if (normalized === "conectando") return "Conectando";
+  if (!normalized) return "Sin estado";
+  return state;
+}
+
+function getSessionStateClassName(state: string): string {
+  const normalized = state.trim().toLowerCase();
+  if (normalized === "conectada") return "bg-emerald-100 text-emerald-700";
+  if (normalized === "pendiente" || normalized === "conectando") {
+    return "bg-amber-100 text-amber-700";
+  }
+  if (normalized === "desconectada") return "bg-rose-100 text-rose-700";
+  return "bg-slate-100 text-slate-700";
 }
 
 async function extractApiError(resp: Response, fallback: string): Promise<string> {
@@ -87,6 +157,16 @@ export default function ApiManagementPage() {
   const [formName, setFormName] = useState("");
   const [formScope, setFormScope] = useState("platform.*");
   const [formExpiryDays, setFormExpiryDays] = useState(0);
+  const [whatsAppConfig, setWhatsAppConfig] = useState<WhatsAppConnection | null>(null);
+  const [loadingWhatsAppConfig, setLoadingWhatsAppConfig] = useState(false);
+  const [loadingKanwapSessions, setLoadingKanwapSessions] = useState(false);
+  const [savingWhatsAppConfig, setSavingWhatsAppConfig] = useState(false);
+  const [disconnectingWhatsApp, setDisconnectingWhatsApp] = useState(false);
+  const [kanwapApiKey, setKanwapApiKey] = useState("");
+  const [kanwapSessions, setKanwapSessions] = useState<KanwapSessionItem[]>([]);
+  const [selectedKanwapSessionId, setSelectedKanwapSessionId] = useState("");
+  const [showKanwapApiKey, setShowKanwapApiKey] = useState(false);
+  const [encryptionConfigured, setEncryptionConfigured] = useState<boolean>(true);
 
   const sortedKeys = useMemo(
     () =>
@@ -159,6 +239,39 @@ export default function ApiManagementPage() {
     }
   }, [currentUser, fetchWithToken]);
 
+  const loadWhatsAppConfig = useCallback(
+    async (refresh = false) => {
+      if (!currentUser) return;
+      setLoadingWhatsAppConfig(true);
+      try {
+        const response = await fetchWithToken(
+          `/api/admin/whatsapp/config${refresh ? "?refresh=1" : ""}`,
+        );
+        if (!response.ok) {
+          const error = await extractApiError(
+            response,
+            "No se pudo cargar la configuración de WhatsApp",
+          );
+          throw new Error(error);
+        }
+        const payload = (await response.json()) as WhatsAppConfigResponse;
+        setWhatsAppConfig(payload.data ?? null);
+        setEncryptionConfigured(payload.encryptionConfigured !== false);
+        if (payload.data?.sessionId) {
+          setSelectedKanwapSessionId(payload.data.sessionId);
+        }
+      } catch (error: unknown) {
+        const message =
+          (error as { message?: string }).message ||
+          "No se pudo cargar la configuración de WhatsApp";
+        toast.error(message);
+      } finally {
+        setLoadingWhatsAppConfig(false);
+      }
+    },
+    [currentUser, fetchWithToken],
+  );
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user);
@@ -170,7 +283,8 @@ export default function ApiManagementPage() {
     if (!currentUser) return;
     void loadKeys(false);
     void loadDocsPreview();
-  }, [currentUser, loadDocsPreview, loadKeys]);
+    void loadWhatsAppConfig(true);
+  }, [currentUser, loadDocsPreview, loadKeys, loadWhatsAppConfig]);
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -276,6 +390,133 @@ export default function ApiManagementPage() {
     }
   };
 
+  const loadKanwapSessions = async () => {
+    const apiKey = kanwapApiKey.trim();
+    if (!apiKey) {
+      toast.error("Ingresa la API key de KanWap");
+      return;
+    }
+    setLoadingKanwapSessions(true);
+    try {
+      const response = await fetchWithToken("/api/admin/whatsapp/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey }),
+      });
+      if (!response.ok) {
+        const error = await extractApiError(
+          response,
+          "No se pudieron cargar las sesiones de KanWap",
+        );
+        throw new Error(error);
+      }
+      const payload = (await response.json()) as KanwapSessionsResponse;
+      const sessions = payload.data?.sessions ?? [];
+      setKanwapSessions(sessions);
+      if (sessions.length > 0) {
+        const alreadySelected = sessions.some(
+          (session) => session.id === selectedKanwapSessionId,
+        );
+        if (!alreadySelected) {
+          setSelectedKanwapSessionId(sessions[0].id);
+        }
+      } else {
+        setSelectedKanwapSessionId("");
+      }
+      toast.success(
+        sessions.length > 0
+          ? `${sessions.length} sesión(es) encontrada(s)`
+          : "No hay sesiones disponibles para esta API key",
+      );
+    } catch (error: unknown) {
+      const message =
+        (error as { message?: string }).message ||
+        "No se pudieron cargar las sesiones de KanWap";
+      toast.error(message);
+    } finally {
+      setLoadingKanwapSessions(false);
+    }
+  };
+
+  const connectWhatsApp = async () => {
+    const apiKey = kanwapApiKey.trim();
+    if (!apiKey) {
+      toast.error("Ingresa la API key de KanWap");
+      return;
+    }
+    if (!selectedKanwapSessionId) {
+      toast.error("Selecciona una sesión de WhatsApp");
+      return;
+    }
+    setSavingWhatsAppConfig(true);
+    try {
+      const response = await fetchWithToken("/api/admin/whatsapp/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey,
+          sessionId: selectedKanwapSessionId,
+        }),
+      });
+      if (!response.ok) {
+        const error = await extractApiError(
+          response,
+          "No se pudo conectar la sesión de WhatsApp",
+        );
+        throw new Error(error);
+      }
+      const payload = (await response.json()) as WhatsAppConfigResponse;
+      if (!payload.success || !payload.data) {
+        throw new Error(payload.error || "No se pudo conectar la sesión de WhatsApp");
+      }
+      setWhatsAppConfig(payload.data);
+      setKanwapApiKey("");
+      setShowKanwapApiKey(false);
+      toast.success("WhatsApp conectado para notificaciones");
+      await loadWhatsAppConfig(true);
+    } catch (error: unknown) {
+      const message =
+        (error as { message?: string }).message ||
+        "No se pudo conectar la sesión de WhatsApp";
+      toast.error(message);
+    } finally {
+      setSavingWhatsAppConfig(false);
+    }
+  };
+
+  const disconnectWhatsApp = async () => {
+    if (!whatsAppConfig) return;
+    const confirmed = window.confirm(
+      "¿Desconectar esta sesión de WhatsApp del panel de notificaciones?",
+    );
+    if (!confirmed) return;
+
+    setDisconnectingWhatsApp(true);
+    try {
+      const response = await fetchWithToken("/api/admin/whatsapp/config", {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        const error = await extractApiError(
+          response,
+          "No se pudo desconectar la sesión de WhatsApp",
+        );
+        throw new Error(error);
+      }
+      setWhatsAppConfig(null);
+      setKanwapSessions([]);
+      setSelectedKanwapSessionId("");
+      toast.success("Conexión de WhatsApp eliminada");
+    } catch (error: unknown) {
+      const message =
+        (error as { message?: string }).message ||
+        "No se pudo desconectar la sesión de WhatsApp";
+      toast.error(message);
+    } finally {
+      setDisconnectingWhatsApp(false);
+    }
+  };
+
   return (
     <RoleGate allowedRole="adminTeacher">
       <div className="space-y-6 text-slate-900">
@@ -332,6 +573,155 @@ export default function ApiManagementPage() {
             </div>
           </section>
         ) : null}
+
+        <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">WhatsApp (KanWap)</h2>
+              <p className="text-sm text-slate-600">
+                Conecta una sesión de WhatsApp para habilitar notificaciones en la plataforma.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => loadWhatsAppConfig(true)}
+              disabled={loadingWhatsAppConfig}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:border-blue-500 hover:text-blue-700 disabled:opacity-70"
+            >
+              <RefreshCw size={14} className={loadingWhatsAppConfig ? "animate-spin" : ""} />
+              {loadingWhatsAppConfig ? "Validando..." : "Validar estado"}
+            </button>
+          </div>
+
+          {!encryptionConfigured ? (
+            <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+              Configura <code>KANWAP_CONFIG_SECRET</code> (o <code>API_KEY_HASH_PEPPER</code>) en
+              el entorno para guardar la API key de forma segura.
+            </div>
+          ) : null}
+
+          {whatsAppConfig ? (
+            <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <CheckCircle2 size={16} className="text-emerald-700" />
+                <p className="text-sm font-semibold text-emerald-800">Sesión conectada</p>
+                <span
+                  className={`rounded-full px-2 py-1 text-xs font-semibold ${getSessionStateClassName(whatsAppConfig.sessionState)}`}
+                >
+                  {getSessionStateLabel(whatsAppConfig.sessionState)}
+                </span>
+              </div>
+              <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
+                <p>
+                  <span className="font-semibold text-slate-900">Sesión:</span>{" "}
+                  {whatsAppConfig.sessionName || whatsAppConfig.sessionId}
+                </p>
+                <p>
+                  <span className="font-semibold text-slate-900">Número:</span>{" "}
+                  {whatsAppConfig.phone || "No disponible"}
+                </p>
+                <p>
+                  <span className="font-semibold text-slate-900">Session ID:</span>{" "}
+                  <span className="font-mono text-xs">{whatsAppConfig.sessionId}</span>
+                </p>
+                <p>
+                  <span className="font-semibold text-slate-900">API Key:</span>{" "}
+                  <span className="font-mono text-xs">{whatsAppConfig.apiKeyMasked}</span>
+                </p>
+                <p>
+                  <span className="font-semibold text-slate-900">Última validación:</span>{" "}
+                  {formatDate(whatsAppConfig.lastValidatedAt)}
+                </p>
+                <p>
+                  <span className="font-semibold text-slate-900">Actualizada:</span>{" "}
+                  {formatDate(whatsAppConfig.updatedAt)}
+                </p>
+              </div>
+              {whatsAppConfig.lastValidationError ? (
+                <p className="mt-2 text-xs text-rose-700">
+                  Último error de validación: {whatsAppConfig.lastValidationError}
+                </p>
+              ) : null}
+              <div className="mt-3">
+                <button
+                  type="button"
+                  onClick={disconnectWhatsApp}
+                  disabled={disconnectingWhatsApp}
+                  className="inline-flex items-center gap-2 rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-50 disabled:opacity-70"
+                >
+                  <Unlink2 size={14} />
+                  {disconnectingWhatsApp ? "Desconectando..." : "Desconectar sesión"}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+              No hay una sesión de WhatsApp conectada para este AdminTeacher.
+            </p>
+          )}
+
+          <div className="mt-4 grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-sm font-semibold text-slate-900">Conectar nueva sesión</p>
+            <div className="grid gap-3 sm:grid-cols-[2fr_auto] sm:items-end">
+              <div>
+                <label className="text-sm font-medium text-slate-800">API Key de KanWap</label>
+                <input
+                  type={showKanwapApiKey ? "text" : "password"}
+                  value={kanwapApiKey}
+                  onChange={(e) => setKanwapApiKey(e.target.value)}
+                  placeholder="Pega aquí tu API key de KanWap"
+                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowKanwapApiKey((prev) => !prev)}
+                  className="mt-1 text-xs font-semibold text-slate-600 hover:text-slate-900"
+                >
+                  {showKanwapApiKey ? "Ocultar API key" : "Mostrar API key"}
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={loadKanwapSessions}
+                disabled={loadingKanwapSessions}
+                className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-blue-500 hover:text-blue-700 disabled:opacity-70"
+              >
+                <MessageCircle size={16} />
+                {loadingKanwapSessions ? "Cargando..." : "Cargar sesiones"}
+              </button>
+            </div>
+            <div>
+              <label className="text-sm font-medium text-slate-800">Sesión</label>
+              <select
+                value={selectedKanwapSessionId}
+                onChange={(e) => setSelectedKanwapSessionId(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="">Selecciona una sesión</option>
+                {kanwapSessions.map((session) => (
+                  <option key={session.id} value={session.id}>
+                    {session.nombre} · {session.telefono || "Sin número"} ·{" "}
+                    {getSessionStateLabel(session.estado)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={connectWhatsApp}
+                disabled={savingWhatsAppConfig || !encryptionConfigured}
+                className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:opacity-70"
+              >
+                <Link2 size={16} />
+                {savingWhatsAppConfig ? "Conectando..." : "Conectar sesión"}
+              </button>
+              <p className="text-xs text-slate-500">
+                La API key se cifra y solo se usa para operar con KanWap desde el backend.
+              </p>
+            </div>
+          </div>
+        </section>
 
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <h2 className="text-lg font-semibold text-slate-900">Crear nueva API key</h2>

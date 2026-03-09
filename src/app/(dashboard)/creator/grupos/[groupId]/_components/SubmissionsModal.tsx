@@ -294,6 +294,43 @@ function ForumThreadModal({
   const [replyText, setReplyText] = useState<Record<string, string>>({});
   const [sendingReply, setSendingReply] = useState<string | null>(null);
 
+  const notifyForumReply = async (postId: string, replyId: string) => {
+    try {
+      const currentUser = auth.currentUser;
+      if (!currentUser) return;
+      const token = await currentUser.getIdToken();
+      const response = await fetch("/api/notifications/whatsapp/forum-reply", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          courseId,
+          lessonId,
+          classId,
+          postId,
+          replyId,
+        }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        success?: boolean;
+        data?: { notified?: boolean; reason?: string };
+        error?: string;
+      };
+      if (!response.ok || payload.success !== true) {
+        const errorText = payload.error || "No se pudo notificar por WhatsApp";
+        console.warn("Notificación de foro no enviada:", errorText);
+        return;
+      }
+      if (payload.data?.notified === false && payload.data.reason) {
+        console.warn("Notificación de foro omitida:", payload.data.reason);
+      }
+    } catch (error) {
+      console.warn("Error enviando notificación de foro:", error);
+    }
+  };
+
   // Cargar todas las aportaciones del foro
   useEffect(() => {
     const loadPosts = async () => {
@@ -355,7 +392,7 @@ function ForumThreadModal({
 
     setSendingReply(postId);
     try {
-      await addForumReply({
+      const replyId = await addForumReply({
         courseId,
         lessonId,
         classId,
@@ -379,6 +416,7 @@ function ForumThreadModal({
 
       // Limpiar input
       setReplyText((prev) => ({ ...prev, [postId]: "" }));
+      void notifyForumReply(postId, replyId);
       toast.success("Respuesta enviada");
     } catch (err) {
       console.error("Error enviando respuesta:", err);
@@ -690,7 +728,13 @@ export function SubmissionsModal({
             collection(db, "courses", courseId, "lessons", lessonId, "classes", classId, "forums"),
           );
           submissions = forumSnap.docs.map((d) => {
-            const data = d.data() as any;
+            const data = d.data() as {
+              authorId?: string;
+              authorName?: string;
+              createdAt?: { toDate?: () => Date };
+              mediaUrl?: string;
+              text?: string;
+            };
             return {
               id: d.id,
               classId,
@@ -731,11 +775,18 @@ export function SubmissionsModal({
                 id: d.id,
                 prompt: qd.prompt ?? qd.text ?? qd.question ?? "",
                 options: Array.isArray(qd.options)
-                  ? qd.options.map((opt: any) => ({
-                      id: opt.id ?? opt.text ?? "",
-                      text: opt.text ?? "",
-                      isCorrect: opt.isCorrect,
-                    }))
+                  ? qd.options.map((opt) => {
+                      const option = (opt ?? {}) as {
+                        id?: string;
+                        text?: string;
+                        isCorrect?: boolean;
+                      };
+                      return {
+                        id: option.id ?? option.text ?? "",
+                        text: option.text ?? "",
+                        isCorrect: option.isCorrect,
+                      };
+                    })
                   : [],
               };
             });
@@ -762,6 +813,43 @@ export function SubmissionsModal({
       hour: "2-digit",
       minute: "2-digit",
     });
+  };
+
+  const notifyGradeByWhatsApp = async (submission: Submission, grade: number) => {
+    try {
+      const currentUser = auth.currentUser;
+      if (!currentUser) return;
+      const token = await currentUser.getIdToken();
+      const response = await fetch("/api/notifications/whatsapp/grade", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          groupId,
+          submissionId: submission.id,
+          grade,
+        }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        success?: boolean;
+        data?: { notified?: boolean; reason?: string };
+        error?: string;
+      };
+      if (!response.ok || payload.success !== true) {
+        const reason = payload.error || "No se pudo enviar la notificación";
+        toast(`Calificación guardada, pero WhatsApp no fue enviado: ${reason}`);
+        return;
+      }
+      if (payload.data?.notified === false) {
+        const reason = payload.data.reason || "sin detalle";
+        toast(`Calificación guardada. WhatsApp no enviado: ${reason}`);
+      }
+    } catch (error) {
+      console.warn("Error notificando calificación por WhatsApp:", error);
+      toast("Calificación guardada, pero falló la notificación por WhatsApp.");
+    }
   };
 
   const handleResetSubmission = async (
@@ -955,7 +1043,10 @@ export function SubmissionsModal({
                                       // Obtener respuestas del submission
                                       try {
                                         const subDoc = await getDoc(doc(db, "groups", groupId, "submissions", sub.id));
-                                        const data = subDoc.data() as any;
+                                        const data = subDoc.data() as {
+                                          content?: string;
+                                          answers?: QuizAnswer[];
+                                        } | undefined;
                                         setQuizDetailModal({
                                           open: true,
                                           submission: {
@@ -1084,6 +1175,7 @@ export function SubmissionsModal({
           }}
           onSave={async (grade, feedback) => {
             await gradeSubmission(groupId, gradeModal.submission!.id, grade, feedback);
+            void notifyGradeByWhatsApp(gradeModal.submission!, grade);
             const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
               (s) => !courseId || !s.courseId || s.courseId === courseId,
             );
@@ -1105,6 +1197,7 @@ export function SubmissionsModal({
           onClose={() => setQuizDetailModal({ open: false })}
           onGrade={async (grade, feedback) => {
             await gradeSubmission(groupId, quizDetailModal.submission!.id, grade, feedback);
+            void notifyGradeByWhatsApp(quizDetailModal.submission!, grade);
             toast.success("Calificación guardada correctamente");
             const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
               (s) => !courseId || !s.courseId || s.courseId === courseId,

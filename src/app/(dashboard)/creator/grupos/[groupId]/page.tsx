@@ -8,10 +8,12 @@ import {
   getGroupStudents,
   Group,
   GroupStudent,
+  linkCourseToGroup,
   removeStudentFromGroup,
   setAssistantTeachers,
   setMentorCourseAccess,
 } from "@/lib/firebase/groups-service";
+import { Course, getCourses } from "@/lib/firebase/courses-service";
 import { getStudentUsersPaginated, StudentUser } from "@/lib/firebase/students-service";
 import { getTeacherUsers, TeacherUser } from "@/lib/firebase/teachers-service";
 import toast from "react-hot-toast";
@@ -49,6 +51,11 @@ export default function GroupDetailPage() {
   const [removingAssistantId, setRemovingAssistantId] = useState<string | null>(null);
   const [savingMentorAccessIds, setSavingMentorAccessIds] = useState<Set<string>>(new Set());
   const [unlinkingCourseId, setUnlinkingCourseId] = useState<string | null>(null);
+  const [assignCourseOpen, setAssignCourseOpen] = useState(false);
+  const [courseOptions, setCourseOptions] = useState<Course[]>([]);
+  const [courseSearch, setCourseSearch] = useState("");
+  const [loadingCourseOptions, setLoadingCourseOptions] = useState(false);
+  const [linkingCourseId, setLinkingCourseId] = useState<string | null>(null);
   const [studentSubmissionsModal, setStudentSubmissionsModal] = useState<{
     open: boolean;
     studentId: string;
@@ -97,6 +104,28 @@ export default function GroupDetailPage() {
     };
     loadTeachers();
   }, [assignTeachersOpen, group?.assistantTeacherIds]);
+
+  useEffect(() => {
+    if (!assignCourseOpen) return;
+    let cancelled = false;
+    const loadCourses = async () => {
+      setLoadingCourseOptions(true);
+      try {
+        const courses = await getCourses();
+        if (cancelled) return;
+        setCourseOptions(courses);
+      } catch (err) {
+        console.error(err);
+        toast.error("No se pudieron cargar los cursos");
+      } finally {
+        if (!cancelled) setLoadingCourseOptions(false);
+      }
+    };
+    void loadCourses();
+    return () => {
+      cancelled = true;
+    };
+  }, [assignCourseOpen]);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -395,6 +424,49 @@ export default function GroupDetailPage() {
     }
   };
 
+  const availableCoursesForLinking = useMemo(() => {
+    const assignedSet = new Set(assignedCourses.map((course) => course.courseId));
+    const term = courseSearch.trim().toLowerCase();
+    return courseOptions
+      .filter((course) => !assignedSet.has(course.id))
+      .filter((course) => {
+        if (!term) return true;
+        const text = [
+          course.title,
+          course.program ?? "",
+          course.category ?? "",
+          course.id,
+        ]
+          .join(" ")
+          .toLowerCase();
+        return text.includes(term);
+      });
+  }, [assignedCourses, courseOptions, courseSearch]);
+
+  const handleLinkCourse = async (course: Course) => {
+    if (!group) return;
+    if (!canManageMentors) {
+      toast.error("No tienes permisos para vincular cursos en este grupo.");
+      return;
+    }
+    setLinkingCourseId(course.id);
+    try {
+      await linkCourseToGroup({
+        groupId: group.id,
+        courseId: course.id,
+        courseName: course.title ?? "Curso",
+      });
+      const updated = await getGroup(group.id);
+      if (updated) setGroup(updated);
+      toast.success(`Curso "${course.title}" vinculado al grupo`);
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo vincular el curso al grupo");
+    } finally {
+      setLinkingCourseId(null);
+    }
+  };
+
   return (
     <div className="space-y-6 p-8">
       <div className="flex items-center justify-between">
@@ -650,6 +722,18 @@ export default function GroupDetailPage() {
                         Gestiona los cursos que los alumnos pueden ver en este grupo.
                       </p>
                     </div>
+                    {canManageMentors ? (
+                      <button
+                        type="button"
+                        className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"
+                        onClick={() => {
+                          setCourseSearch("");
+                          setAssignCourseOpen(true);
+                        }}
+                      >
+                        Vincular curso
+                      </button>
+                    ) : null}
                   </div>
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
                     <p className="text-sm font-semibold text-slate-800">Cursos asignados</p>
@@ -794,6 +878,82 @@ export default function GroupDetailPage() {
                   Después podrás definir por mentor qué materias específicas puede gestionar.
                 </p>
               </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {assignCourseOpen ? (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 px-4 py-6">
+          <div className="w-full max-w-3xl max-h-[calc(100vh-3rem)] overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+                  Cursos
+                </p>
+                <h4 className="text-lg font-semibold text-slate-900">Vincular curso al grupo</h4>
+                <p className="text-sm text-slate-600">
+                  Busca una materia y asígnala a este grupo sin salir de configuración.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                onClick={() => setAssignCourseOpen(false)}
+              >
+                Cerrar
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <input
+                type="text"
+                placeholder="Buscar por nombre de curso, programa o ID"
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                value={courseSearch}
+                onChange={(e) => setCourseSearch(e.target.value)}
+              />
+
+              <div className="max-h-80 overflow-auto rounded-lg border border-slate-200">
+                {loadingCourseOptions ? (
+                  <p className="p-3 text-sm text-slate-600">Cargando cursos...</p>
+                ) : availableCoursesForLinking.length === 0 ? (
+                  <p className="p-3 text-sm text-slate-600">
+                    {courseSearch.trim()
+                      ? "No se encontraron cursos con ese criterio."
+                      : "No hay cursos disponibles para vincular."}
+                  </p>
+                ) : (
+                  <ul className="divide-y divide-slate-200">
+                    {availableCoursesForLinking.map((course) => (
+                      <li
+                        key={course.id}
+                        className="flex items-center justify-between gap-3 px-3 py-3"
+                      >
+                        <div>
+                          <p className="font-semibold text-slate-800">{course.title}</p>
+                          <p className="text-xs text-slate-500">
+                            ID: {course.id}
+                            {course.program ? ` • Programa: ${course.program}` : ""}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleLinkCourse(course)}
+                          disabled={Boolean(linkingCourseId)}
+                          className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {linkingCourseId === course.id ? "Asignando..." : "Asignar al grupo"}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <p className="text-xs text-slate-500">
+                Los cursos ya vinculados no aparecen en este listado.
+              </p>
             </div>
           </div>
         </div>

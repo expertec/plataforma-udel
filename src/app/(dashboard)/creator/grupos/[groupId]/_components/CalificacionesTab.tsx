@@ -41,6 +41,9 @@ type CourseClosureState = {
   autoGrade?: number | null;
   manualOverride?: boolean;
   pendingUngradedCount?: number;
+  lastFinalGradeNotifiedAt?: Date | null;
+  lastFinalGradeNotifiedBy?: string;
+  lastFinalGradeNotifiedValue?: number;
   closedAt?: Date | null;
   closedById?: string;
   closedByName?: string;
@@ -152,6 +155,7 @@ export function CalificacionesTab({
   const [draftFinalGrades, setDraftFinalGrades] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [processingStudentId, setProcessingStudentId] = useState<string | null>(null);
+  const [processingNotifyStudentId, setProcessingNotifyStudentId] = useState<string | null>(null);
   const [processingAll, setProcessingAll] = useState(false);
   const [signatureModalContext, setSignatureModalContext] = useState<SignatureModalContext | null>(null);
   const [signerNameInput, setSignerNameInput] = useState("");
@@ -211,14 +215,29 @@ export function CalificacionesTab({
             studentId?: string;
             studentName?: string;
             courseClosures?: Record<string, unknown>;
+            [key: string]: unknown;
           };
-          const studentId = (data.studentId ?? "").trim();
+          const idFromDoc = enrollmentDoc.id.startsWith(`${groupId}_`)
+            ? enrollmentDoc.id.slice(groupId.length + 1).trim()
+            : "";
+          const studentId =
+            (typeof data.studentId === "string" ? data.studentId.trim() : "") || idFromDoc;
           if (!studentId) return;
           const canonicalId = `${groupId}_${studentId}`;
           const existing = enrollmentsMap[studentId];
           if (existing && existing.id === canonicalId) return;
 
-          const rawClosures = (data.courseClosures ?? {}) as Record<string, unknown>;
+          const rawClosures: Record<string, unknown> = {
+            ...((data.courseClosures ?? {}) as Record<string, unknown>),
+          };
+          Object.entries(data).forEach(([key, value]) => {
+            if (!key.startsWith("courseClosures.")) return;
+            const legacyCourseId = key.slice("courseClosures.".length).trim();
+            if (!legacyCourseId) return;
+            if (!Object.prototype.hasOwnProperty.call(rawClosures, legacyCourseId)) {
+              rawClosures[legacyCourseId] = value;
+            }
+          });
           const normalizedClosures: Record<string, CourseClosureState> = {};
           Object.entries(rawClosures).forEach(([courseId, closureValue]) => {
             if (!closureValue || typeof closureValue !== "object") return;
@@ -240,6 +259,16 @@ export function CalificacionesTab({
               pendingUngradedCount:
                 typeof closureObj.pendingUngradedCount === "number"
                   ? closureObj.pendingUngradedCount
+                  : undefined,
+              lastFinalGradeNotifiedAt: toDateOrNull(closureObj.lastFinalGradeNotifiedAt),
+              lastFinalGradeNotifiedBy:
+                typeof closureObj.lastFinalGradeNotifiedBy === "string"
+                  ? closureObj.lastFinalGradeNotifiedBy
+                  : undefined,
+              lastFinalGradeNotifiedValue:
+                typeof closureObj.lastFinalGradeNotifiedValue === "number" &&
+                Number.isFinite(closureObj.lastFinalGradeNotifiedValue)
+                  ? closureObj.lastFinalGradeNotifiedValue
                   : undefined,
               closedAt: toDateOrNull(closureObj.closedAt),
               closedById: typeof closureObj.closedById === "string" ? closureObj.closedById : undefined,
@@ -350,7 +379,7 @@ export function CalificacionesTab({
       return {
         studentId: student.id,
         studentName: student.name,
-        enrollmentId: `${groupId}_${student.id}`,
+        enrollmentId: enrollment?.id ?? `${groupId}_${student.id}`,
         autoGrade,
         pendingUngradedCount,
         gradedCount: gradedSubmissions.length,
@@ -797,6 +826,7 @@ export function CalificacionesTab({
   const handleCloseCourseForStudent = async (row: StudentCourseRow) => {
     if (!selectedCourseId) return;
     if (processingAll) return;
+    if (processingNotifyStudentId === row.studentId) return;
     if (!canManageClosures || !currentUserId) {
       toast.error("No tienes permisos para cerrar materias.");
       return;
@@ -843,6 +873,7 @@ export function CalificacionesTab({
 
     setProcessingStudentId(row.studentId);
     try {
+      const previousClosure = row.closure ?? null;
       const manualOverride =
         row.autoGrade === null ? true : Math.abs(finalGrade - row.autoGrade) > 0.01;
       const closurePayload: CourseClosureState = {
@@ -851,13 +882,15 @@ export function CalificacionesTab({
         autoGrade: row.autoGrade,
         manualOverride,
         pendingUngradedCount: row.pendingUngradedCount,
+        lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
+        lastFinalGradeNotifiedBy: previousClosure?.lastFinalGradeNotifiedBy,
+        lastFinalGradeNotifiedValue: previousClosure?.lastFinalGradeNotifiedValue,
         closedAt: new Date(),
         closedById: currentUserId,
         closedByName: signature.signerName,
         updatedAt: new Date(),
       };
 
-      const closureFieldPath = `courseClosures.${selectedCourseId}`;
       const enrollmentRef = doc(db, "studentEnrollments", row.enrollmentId);
       await setDoc(
         enrollmentRef,
@@ -865,16 +898,21 @@ export function CalificacionesTab({
           studentId: row.studentId,
           studentName: row.studentName,
           groupId,
-          [closureFieldPath]: {
-            status: closurePayload.status,
-            finalGrade: closurePayload.finalGrade,
-            autoGrade: closurePayload.autoGrade,
-            manualOverride: closurePayload.manualOverride,
-            pendingUngradedCount: closurePayload.pendingUngradedCount,
-            closedAt: closurePayload.closedAt,
-            closedById: closurePayload.closedById,
-            closedByName: closurePayload.closedByName,
-            updatedAt: closurePayload.updatedAt,
+          courseClosures: {
+            [selectedCourseId]: {
+              status: closurePayload.status,
+              finalGrade: closurePayload.finalGrade,
+              autoGrade: closurePayload.autoGrade,
+              manualOverride: closurePayload.manualOverride,
+              pendingUngradedCount: closurePayload.pendingUngradedCount,
+              lastFinalGradeNotifiedAt: closurePayload.lastFinalGradeNotifiedAt ?? null,
+              lastFinalGradeNotifiedBy: closurePayload.lastFinalGradeNotifiedBy ?? null,
+              lastFinalGradeNotifiedValue: closurePayload.lastFinalGradeNotifiedValue ?? null,
+              closedAt: closurePayload.closedAt,
+              closedById: closurePayload.closedById,
+              closedByName: closurePayload.closedByName,
+              updatedAt: closurePayload.updatedAt,
+            },
           },
         },
         { merge: true },
@@ -891,9 +929,177 @@ export function CalificacionesTab({
     }
   };
 
+  const handleSaveAndNotifyFinalGradeForStudent = async (row: StudentCourseRow) => {
+    if (!selectedCourseId) return;
+    if (processingAll) return;
+    if (!canManageClosures || !currentUserId) {
+      toast.error("No tienes permisos para calificar materias.");
+      return;
+    }
+
+    const rawGrade = getFinalGradeInput(row).trim();
+    const finalGrade = Number(rawGrade);
+    if (!Number.isFinite(finalGrade) || finalGrade < 0 || finalGrade > 100) {
+      toast.error("La calificación final debe estar entre 0 y 100.");
+      return;
+    }
+
+    setProcessingNotifyStudentId(row.studentId);
+    let gradeSaved = false;
+    try {
+      const now = new Date();
+      const manualOverride =
+        row.autoGrade === null ? true : Math.abs(finalGrade - row.autoGrade) > 0.01;
+      const previousClosure = row.closure ?? null;
+      const isClosed = previousClosure?.status === "closed";
+      const payload: CourseClosureState = {
+        status: isClosed ? "closed" : "open",
+        finalGrade,
+        autoGrade: row.autoGrade,
+        manualOverride,
+        pendingUngradedCount: row.pendingUngradedCount,
+        lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
+        lastFinalGradeNotifiedBy: previousClosure?.lastFinalGradeNotifiedBy,
+        lastFinalGradeNotifiedValue: previousClosure?.lastFinalGradeNotifiedValue,
+        closedAt: previousClosure?.closedAt ?? null,
+        closedById: previousClosure?.closedById,
+        closedByName: previousClosure?.closedByName,
+        reopenedAt: previousClosure?.reopenedAt ?? null,
+        reopenedById: previousClosure?.reopenedById,
+        reopenedByName: previousClosure?.reopenedByName,
+        updatedAt: now,
+      };
+
+      const enrollmentRef = doc(db, "studentEnrollments", row.enrollmentId);
+      await setDoc(
+        enrollmentRef,
+        {
+          studentId: row.studentId,
+          studentName: row.studentName,
+          groupId,
+          courseClosures: {
+            [selectedCourseId]: {
+              status: payload.status,
+              finalGrade: payload.finalGrade,
+              autoGrade: payload.autoGrade,
+              manualOverride: payload.manualOverride,
+              pendingUngradedCount: payload.pendingUngradedCount,
+              lastFinalGradeNotifiedAt: payload.lastFinalGradeNotifiedAt ?? null,
+              lastFinalGradeNotifiedBy: payload.lastFinalGradeNotifiedBy ?? null,
+              lastFinalGradeNotifiedValue: payload.lastFinalGradeNotifiedValue ?? null,
+              closedAt: payload.closedAt ?? null,
+              closedById: payload.closedById ?? null,
+              closedByName: payload.closedByName ?? null,
+              reopenedAt: payload.reopenedAt ?? null,
+              reopenedById: payload.reopenedById ?? null,
+              reopenedByName: payload.reopenedByName ?? null,
+              updatedAt: payload.updatedAt,
+            },
+          },
+        },
+        { merge: true },
+      );
+
+      gradeSaved = true;
+      upsertLocalClosure(row.studentId, selectedCourseId, payload, row.enrollmentId);
+      const key = getDraftKey(row.studentId);
+      setDraftFinalGrades((prev) => ({ ...prev, [key]: finalGrade.toFixed(1) }));
+
+      const currentSessionUser = auth.currentUser;
+      if (!currentSessionUser) {
+        throw new Error("Tu sesión expiró. Inicia sesión nuevamente.");
+      }
+      const token = await currentSessionUser.getIdToken();
+      const response = await fetch("/api/notifications/whatsapp/final-grade", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          groupId,
+          studentId: row.studentId,
+          courseId: selectedCourseId,
+          finalGrade,
+        }),
+      });
+
+      const data = (await response.json().catch(() => ({}))) as {
+        success?: boolean;
+        error?: string;
+        data?: { notified?: boolean; reason?: string };
+      };
+
+      if (!response.ok || data.success !== true) {
+        throw new Error(data.error || "No se pudo notificar por WhatsApp");
+      }
+
+      if (data.data?.notified === false) {
+        toast(
+          `Calificación guardada para ${row.studentName}, pero WhatsApp no enviado: ${
+            data.data.reason || "sin detalle"
+          }`,
+        );
+      } else {
+        const notifiedAt = new Date();
+        const notifiedPayload: CourseClosureState = {
+          ...payload,
+          lastFinalGradeNotifiedAt: notifiedAt,
+          lastFinalGradeNotifiedBy: currentUserId,
+          lastFinalGradeNotifiedValue: finalGrade,
+          updatedAt: notifiedAt,
+        };
+
+        await setDoc(
+          enrollmentRef,
+          {
+            studentId: row.studentId,
+            studentName: row.studentName,
+            groupId,
+            courseClosures: {
+              [selectedCourseId]: {
+                status: notifiedPayload.status,
+                finalGrade: notifiedPayload.finalGrade,
+                autoGrade: notifiedPayload.autoGrade,
+                manualOverride: notifiedPayload.manualOverride,
+                pendingUngradedCount: notifiedPayload.pendingUngradedCount,
+                lastFinalGradeNotifiedAt: notifiedPayload.lastFinalGradeNotifiedAt,
+                lastFinalGradeNotifiedBy: notifiedPayload.lastFinalGradeNotifiedBy,
+                lastFinalGradeNotifiedValue: notifiedPayload.lastFinalGradeNotifiedValue,
+                closedAt: notifiedPayload.closedAt ?? null,
+                closedById: notifiedPayload.closedById ?? null,
+                closedByName: notifiedPayload.closedByName ?? null,
+                reopenedAt: notifiedPayload.reopenedAt ?? null,
+                reopenedById: notifiedPayload.reopenedById ?? null,
+                reopenedByName: notifiedPayload.reopenedByName ?? null,
+                updatedAt: notifiedPayload.updatedAt,
+              },
+            },
+          },
+          { merge: true },
+        );
+
+        upsertLocalClosure(row.studentId, selectedCourseId, notifiedPayload, row.enrollmentId);
+        toast.success(`Calificación guardada y notificada a ${row.studentName}`);
+      }
+    } catch (err) {
+      console.error(err);
+      const message =
+        err instanceof Error ? err.message : "Error al guardar/notificar calificación";
+      if (gradeSaved) {
+        toast.error(`Calificación guardada, pero no se pudo notificar por WhatsApp: ${message}`);
+      } else {
+        toast.error(message);
+      }
+    } finally {
+      setProcessingNotifyStudentId(null);
+    }
+  };
+
   const handleReopenCourseForStudent = async (row: StudentCourseRow) => {
     if (!selectedCourseId) return;
     if (processingAll) return;
+    if (processingNotifyStudentId === row.studentId) return;
     if (!canManageClosures || !currentUserId) {
       toast.error("No tienes permisos para reabrir materias.");
       return;
@@ -917,6 +1123,9 @@ export function CalificacionesTab({
         autoGrade: previous?.autoGrade ?? row.autoGrade,
         manualOverride: previous?.manualOverride ?? false,
         pendingUngradedCount: row.pendingUngradedCount,
+        lastFinalGradeNotifiedAt: previous?.lastFinalGradeNotifiedAt ?? null,
+        lastFinalGradeNotifiedBy: previous?.lastFinalGradeNotifiedBy,
+        lastFinalGradeNotifiedValue: previous?.lastFinalGradeNotifiedValue,
         closedAt: previous?.closedAt ?? null,
         closedById: previous?.closedById,
         closedByName: previous?.closedByName,
@@ -926,7 +1135,6 @@ export function CalificacionesTab({
         updatedAt: new Date(),
       };
 
-      const closureFieldPath = `courseClosures.${selectedCourseId}`;
       const enrollmentRef = doc(db, "studentEnrollments", row.enrollmentId);
       await setDoc(
         enrollmentRef,
@@ -934,19 +1142,24 @@ export function CalificacionesTab({
           studentId: row.studentId,
           studentName: row.studentName,
           groupId,
-          [closureFieldPath]: {
-            status: reopenPayload.status,
-            finalGrade: reopenPayload.finalGrade ?? null,
-            autoGrade: reopenPayload.autoGrade ?? null,
-            manualOverride: reopenPayload.manualOverride ?? false,
-            pendingUngradedCount: reopenPayload.pendingUngradedCount,
-            closedAt: reopenPayload.closedAt ?? null,
-            closedById: reopenPayload.closedById ?? null,
-            closedByName: reopenPayload.closedByName ?? null,
-            reopenedAt: reopenPayload.reopenedAt,
-            reopenedById: reopenPayload.reopenedById,
-            reopenedByName: reopenPayload.reopenedByName,
-            updatedAt: reopenPayload.updatedAt,
+          courseClosures: {
+            [selectedCourseId]: {
+              status: reopenPayload.status,
+              finalGrade: reopenPayload.finalGrade ?? null,
+              autoGrade: reopenPayload.autoGrade ?? null,
+              manualOverride: reopenPayload.manualOverride ?? false,
+              pendingUngradedCount: reopenPayload.pendingUngradedCount,
+              lastFinalGradeNotifiedAt: reopenPayload.lastFinalGradeNotifiedAt ?? null,
+              lastFinalGradeNotifiedBy: reopenPayload.lastFinalGradeNotifiedBy ?? null,
+              lastFinalGradeNotifiedValue: reopenPayload.lastFinalGradeNotifiedValue ?? null,
+              closedAt: reopenPayload.closedAt ?? null,
+              closedById: reopenPayload.closedById ?? null,
+              closedByName: reopenPayload.closedByName ?? null,
+              reopenedAt: reopenPayload.reopenedAt,
+              reopenedById: reopenPayload.reopenedById,
+              reopenedByName: reopenPayload.reopenedByName,
+              updatedAt: reopenPayload.updatedAt,
+            },
           },
         },
         { merge: true },
@@ -964,6 +1177,10 @@ export function CalificacionesTab({
 
   const handleCloseCourseForAll = async () => {
     if (!selectedCourseId) return;
+    if (processingNotifyStudentId !== null) {
+      toast("Espera a que termine la notificación en curso.");
+      return;
+    }
     if (!canManageClosures || !currentUserId) {
       toast.error("No tienes permisos para cerrar materias.");
       return;
@@ -1039,7 +1256,6 @@ export function CalificacionesTab({
     let processStage: "closing" | "unlinking" | "pdf" = "closing";
     try {
       const now = new Date();
-      const closureFieldPath = `courseClosures.${selectedCourseId}`;
       const chunkSize = 400;
 
       for (let i = 0; i < parsedRows.length; i += chunkSize) {
@@ -1048,6 +1264,7 @@ export function CalificacionesTab({
         chunk.forEach(({ row, finalGrade }) => {
           const manualOverride =
             row.autoGrade === null ? true : Math.abs(finalGrade - row.autoGrade) > 0.01;
+          const previousClosure = row.closure ?? null;
           const enrollmentRef = doc(db, "studentEnrollments", row.enrollmentId);
           batch.set(
             enrollmentRef,
@@ -1055,16 +1272,21 @@ export function CalificacionesTab({
               studentId: row.studentId,
               studentName: row.studentName,
               groupId,
-              [closureFieldPath]: {
-                status: "closed",
-                finalGrade,
-                autoGrade: row.autoGrade,
-                manualOverride,
-                pendingUngradedCount: row.pendingUngradedCount,
-                closedAt: now,
-                closedById: currentUserId,
-                closedByName: signature.signerName,
-                updatedAt: now,
+              courseClosures: {
+                [selectedCourseId]: {
+                  status: "closed",
+                  finalGrade,
+                  autoGrade: row.autoGrade,
+                  manualOverride,
+                  pendingUngradedCount: row.pendingUngradedCount,
+                  lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
+                  lastFinalGradeNotifiedBy: previousClosure?.lastFinalGradeNotifiedBy ?? null,
+                  lastFinalGradeNotifiedValue: previousClosure?.lastFinalGradeNotifiedValue ?? null,
+                  closedAt: now,
+                  closedById: currentUserId,
+                  closedByName: signature.signerName,
+                  updatedAt: now,
+                },
               },
             },
             { merge: true },
@@ -1078,6 +1300,7 @@ export function CalificacionesTab({
         parsedRows.forEach(({ row, finalGrade }) => {
           const manualOverride =
             row.autoGrade === null ? true : Math.abs(finalGrade - row.autoGrade) > 0.01;
+          const previousClosure = row.closure ?? null;
           const current = next[row.studentId] ?? { id: row.enrollmentId, courseClosures: {} };
           next[row.studentId] = {
             ...current,
@@ -1090,6 +1313,9 @@ export function CalificacionesTab({
                 autoGrade: row.autoGrade,
                 manualOverride,
                 pendingUngradedCount: row.pendingUngradedCount,
+                lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
+                lastFinalGradeNotifiedBy: previousClosure?.lastFinalGradeNotifiedBy,
+                lastFinalGradeNotifiedValue: previousClosure?.lastFinalGradeNotifiedValue,
                 closedAt: now,
                 closedById: currentUserId,
                 closedByName: signature.signerName,
@@ -1202,6 +1428,7 @@ export function CalificacionesTab({
               disabled={
                 processingAll ||
                 processingStudentId !== null ||
+                processingNotifyStudentId !== null ||
                 selectedCourseTasks.length === 0 ||
                 rows.length === 0 ||
                 openRowsCount === 0
@@ -1213,7 +1440,7 @@ export function CalificacionesTab({
           ) : null}
           <span className="text-xs text-slate-500">
             {canManageClosures
-              ? "Puedes cerrar o reabrir materia por alumno."
+              ? "Puedes guardar/notificar calificación y cerrar o reabrir materia por alumno."
               : "Solo lectura: no tienes permiso para cerrar/reabrir."}
           </span>
         </div>
@@ -1250,6 +1477,10 @@ export function CalificacionesTab({
                 const invalidFinal =
                   finalInput.trim().length > 0 &&
                   (!Number.isFinite(finalGradeNum) || finalGradeNum < 0 || finalGradeNum > 100);
+                const isRowProcessing =
+                  processingAll ||
+                  processingStudentId === row.studentId ||
+                  processingNotifyStudentId === row.studentId;
 
                 return (
                   <tr key={row.studentId} className="hover:bg-slate-50">
@@ -1268,7 +1499,7 @@ export function CalificacionesTab({
                           const key = getDraftKey(row.studentId);
                           setDraftFinalGrades((prev) => ({ ...prev, [key]: e.target.value }));
                         }}
-                        disabled={!canManageClosures || processingAll || processingStudentId === row.studentId}
+                        disabled={!canManageClosures || isRowProcessing}
                         className={`w-28 rounded-lg border px-2 py-1 text-sm ${
                           invalidFinal ? "border-red-400" : "border-slate-300"
                         } ${!canManageClosures ? "bg-slate-100 text-slate-500" : "bg-white text-slate-900"}`}
@@ -1299,27 +1530,43 @@ export function CalificacionesTab({
                       {isClosed ? (
                         <button
                           type="button"
-                          disabled={!canManageClosures || processingAll || processingStudentId === row.studentId}
+                          disabled={!canManageClosures || isRowProcessing}
                           onClick={() => handleReopenCourseForStudent(row)}
                           className="rounded-lg border border-amber-300 px-3 py-1 text-xs font-semibold text-amber-700 hover:bg-amber-50 disabled:opacity-60"
                         >
-                          {processingStudentId === row.studentId ? "Procesando..." : "Reabrir"}
+                          {isRowProcessing ? "Procesando..." : "Reabrir"}
                         </button>
                       ) : (
-                        <button
-                          type="button"
-                          disabled={
-                            !canManageClosures ||
-                            processingAll ||
-                            processingStudentId === row.studentId ||
-                            finalInput.trim().length === 0 ||
-                            invalidFinal
-                          }
-                          onClick={() => handleCloseCourseForStudent(row)}
-                          className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-60"
-                        >
-                          {processingStudentId === row.studentId ? "Procesando..." : "Cerrar"}
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={
+                              !canManageClosures ||
+                              isRowProcessing ||
+                              finalInput.trim().length === 0 ||
+                              invalidFinal
+                            }
+                            onClick={() => handleSaveAndNotifyFinalGradeForStudent(row)}
+                            className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
+                          >
+                            {processingNotifyStudentId === row.studentId
+                              ? "Notificando..."
+                              : "Guardar y notificar"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={
+                              !canManageClosures ||
+                              isRowProcessing ||
+                              finalInput.trim().length === 0 ||
+                              invalidFinal
+                            }
+                            onClick={() => handleCloseCourseForStudent(row)}
+                            className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-60"
+                          >
+                            {processingStudentId === row.studentId ? "Procesando..." : "Cerrar"}
+                          </button>
+                        </div>
                       )}
                     </td>
                   </tr>

@@ -278,6 +278,7 @@ export default function StudentFeedPageClient() {
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [billingBlocked, setBillingBlocked] = useState<{
+    blockType?: "overdue" | "missingContact";
     reason: string;
     amount?: number;
     overdueRows?: Array<{
@@ -460,6 +461,27 @@ export default function StudentFeedPageClient() {
       return forumDoneMap[cls.id] === true;
     },
     [forumDoneMap],
+  );
+
+  const buildForumPendingMessage = useCallback(
+    (cls: FeedClass) => {
+      const forumName = trimSafeString(cls.classTitle) || trimSafeString(cls.title);
+      const courseName = trimSafeString(courseTitleMap[cls.courseId ?? ""] || cls.courseTitle || "");
+      const lessonName = trimSafeString(cls.lessonName || cls.lessonTitle || "");
+      const context = [courseName, lessonName].filter(Boolean);
+
+      if (forumName && context.length > 0) {
+        return `Completa el foro pendiente "${forumName}" (${context.join(" • ")}).`;
+      }
+      if (forumName) {
+        return `Completa el foro pendiente "${forumName}" para avanzar.`;
+      }
+      if (context.length > 0) {
+        return `Completa el foro pendiente de ${context.join(" • ")} para avanzar.`;
+      }
+      return "Completa el foro pendiente para avanzar.";
+    },
+    [courseTitleMap],
   );
 
   const isClassEvaluable = useCallback((cls: FeedClass) => cls.type === "quiz" || cls.hasAssignment === true, []);
@@ -1567,6 +1589,7 @@ export default function StudentFeedPageClient() {
         if (!phone && !whatsapp) {
           setClabeCopied(false);
           setBillingBlocked({
+            blockType: "missingContact",
             reason: "No hay teléfono o WhatsApp registrado para validar tus pagos. Contacta a administración.",
           });
           setLoading(false);
@@ -1628,6 +1651,7 @@ export default function StudentFeedPageClient() {
           }
 
           setBillingBlocked({
+            blockType: "overdue",
             reason: "Tienes pagos vencidos. Regulariza tu cuenta para continuar.",
             amount: financeJson.data.totalOverdueAmount,
             overdueRows: overdueRows.length ? overdueRows : undefined,
@@ -1638,6 +1662,7 @@ export default function StudentFeedPageClient() {
           setLoading(false);
           return;
         }
+        setBillingBlocked(null);
       } catch (billingErr) {
         console.error("Error validando estado financiero:", billingErr);
         setError("No se pudo validar tu estado de pagos.");
@@ -2263,14 +2288,14 @@ export default function StudentFeedPageClient() {
             : `Completa esta clase para continuar (progreso ${pct}%).`;
         toast.error(
           needsForum
-            ? "Participa en el foro requerido para avanzar."
+            ? buildForumPendingMessage(prevSameCourse)
             : completionMessage,
         );
         return;
       }
       scrollToIndex(idx, true);
     },
-    [getPrevSameCourse, isClassComplete, scrollToIndex, progressMap, completedMap, seenMap, isForumSatisfied, previewMode, activeQuizState],
+    [getPrevSameCourse, isClassComplete, scrollToIndex, progressMap, completedMap, seenMap, isForumSatisfied, buildForumPendingMessage, previewMode, activeQuizState],
   );
 
   const handleTextReachEnd = useCallback(
@@ -6164,7 +6189,7 @@ function ForumPanel({
 
     setSendingReply(prev => ({ ...prev, [postId]: true }));
     try {
-      await addForumReply({
+      const replyId = await addForumReply({
         courseId: classMeta.courseId,
         lessonId: classMeta.lessonId,
         classId: classMeta.classDocId,
@@ -6177,6 +6202,29 @@ function ForumPanel({
 
       setReplyText(prev => ({ ...prev, [postId]: "" }));
       await loadReplies(postId);
+
+      try {
+        const currentUser = auth.currentUser;
+        if (currentUser) {
+          const token = await currentUser.getIdToken();
+          await fetch("/api/notifications/whatsapp/forum-reply", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              courseId: classMeta.courseId,
+              lessonId: classMeta.lessonId,
+              classId: classMeta.classDocId,
+              postId,
+              replyId,
+            }),
+          });
+        }
+      } catch (notifyErr) {
+        console.warn("No se pudo enviar notificación de respuesta de foro:", notifyErr);
+      }
 
       setPosts(prevPosts =>
         prevPosts.map(p =>
