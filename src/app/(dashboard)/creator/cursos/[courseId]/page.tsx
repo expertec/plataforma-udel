@@ -30,7 +30,12 @@ import {
   Group,
 } from "@/lib/firebase/groups-service";
 import { getAlumnos } from "@/lib/firebase/alumnos-service";
-import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import {
+  isAdminTeacherRole,
+  isCampusCoordinatorRole,
+  resolveUserRole,
+  UserRole,
+} from "@/lib/firebase/roles";
 import { EntregasTab } from "@/app/(dashboard)/creator/grupos/[groupId]/_components/EntregasTab";
 import { getPrograms } from "@/lib/firebase/programs-service";
 
@@ -132,8 +137,8 @@ export default function CourseBuilderPage() {
     lessons.forEach((l) => map.set(l.id, l));
     return Array.from(map.values());
   }, [lessons]);
-  const canManageGroups = isAdminTeacherRole(userRole);
-  const canLinkGroups = isAdminTeacherRole(userRole) || userRole === "teacher";
+  const canManageGroups = isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
+  const canLinkGroups = canManageGroups || userRole === "teacher";
 
   const handleThumbnailFile = async (file: File) => {
     if (!courseId) return;
@@ -355,7 +360,7 @@ export default function CourseBuilderPage() {
       return;
     }
     if (!canManageGroups) {
-      toast.error("Solo un adminTeacher puede crear grupos");
+      toast.error("No tienes permisos para crear grupos");
       return;
     }
     if (!newGroupName.trim()) {
@@ -996,7 +1001,7 @@ export default function CourseBuilderPage() {
             </div>
           ) : courseGroups.length === 0 ? (
             <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-              No hay grupos asociados a este curso. Pide a un adminTeacher que cree el grupo y
+              No hay grupos asociados a este curso. Pide al responsable del grupo que lo cree y
               luego selecciónalo arriba para vincularlo.
             </div>
           ) : (

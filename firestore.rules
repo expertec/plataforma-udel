@@ -13,7 +13,7 @@ service cloud.firestore {
     function isAdminTeacher() { return isSignedIn() && (userRole() == 'adminTeacher' || userRole() == 'superAdminTeacher'); }
     function isSuperAdminTeacher() { return isSignedIn() && userRole() == 'superAdminTeacher'; }
     function isTeacher() { return isSignedIn() && userRole() == 'teacher'; }
-    function isTeacherLike() { return isSignedIn() && (userRole() == 'teacher' || userRole() == 'adminTeacher' || userRole() == 'superAdminTeacher'); }
+    function isTeacherLike() { return isSignedIn() && (userRole() == 'teacher' || userRole() == 'adminTeacher' || userRole() == 'superAdminTeacher' || userRole() == 'coordinadorPlantel'); }
     function isCampusCoordinator() { return isSignedIn() && userRole() == 'coordinadorPlantel'; }
     function isAdminOrCampusCoordinator() { return isSignedIn() && (isAdmin() || isCampusCoordinator()); }
     function isApproved() { return isSignedIn() && userDoc().data.approved == true; }
@@ -322,11 +322,14 @@ service cloud.firestore {
     /* groups */
     match /groups/{groupId} {
       allow read: if isSignedIn();
-      allow create: if isAdmin() || isAdminTeacher();
+      allow create: if isAdmin() || isAdminTeacher() ||
+        (isCampusCoordinator() && request.resource.data.teacherId == request.auth.uid);
       allow update: if isAdmin() || isAdminTeacher() ||
+        (isCampusCoordinator() && resource.data.teacherId == request.auth.uid) ||
         canTeacherLinkCourseToGroup() ||
         canTeacherUnlinkCourseFromGroup(/databases/$(database)/documents/groups/$(groupId));
-      allow delete: if isAdmin() || isAdminTeacher();
+      allow delete: if isAdmin() || isAdminTeacher() ||
+        (isCampusCoordinator() && resource.data.teacherId == request.auth.uid);
 
       match /students/{studentId} {
         allow read: if isAdmin() || isAdminTeacher() ||

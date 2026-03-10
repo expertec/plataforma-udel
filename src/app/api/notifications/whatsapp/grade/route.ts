@@ -5,7 +5,11 @@ import { sendWhatsAppTextToStudent } from "@/lib/server/whatsapp-notifier";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type TeacherRole = "teacher" | "adminTeacher" | "superAdminTeacher";
+type TeacherRole =
+  | "teacher"
+  | "adminTeacher"
+  | "superAdminTeacher"
+  | "coordinadorPlantel";
 
 type GradeNotificationRequest = {
   groupId?: string;
@@ -27,7 +31,12 @@ function asText(value: unknown): string {
 }
 
 function asTeacherRole(value: unknown): TeacherRole | null {
-  if (value === "teacher" || value === "adminTeacher" || value === "superAdminTeacher") {
+  if (
+    value === "teacher" ||
+    value === "adminTeacher" ||
+    value === "superAdminTeacher" ||
+    value === "coordinadorPlantel"
+  ) {
     return value;
   }
   return null;
@@ -138,7 +147,7 @@ function buildGradeMessage(params: {
     `\n` +
     `👨‍🏫 Profesor: ${teacherName}\n` +
     `📝 Actividad: ${className}${contextLine}\n` +
-    `⭐ Calificación: *${params.grade}/100*\n` +
+    `⭐ Puntos obtenidos: *${params.grade}*\n` +
     `\n` +
     `Revisa los detalles y la retroalimentación en la plataforma.\n` +
     `\n` +

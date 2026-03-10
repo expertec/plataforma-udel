@@ -12,7 +12,6 @@ import {
   Group,
   deleteGroup,
   getGroupsWhereAssistant,
-  getAllGroups,
 } from "@/lib/firebase/groups-service";
 import toast from "react-hot-toast";
 import { RoleGate } from "@/components/auth/RoleGate";
@@ -66,16 +65,11 @@ export default function GroupsPage() {
     }
     setLoading(true);
     try {
-      if (isCampusCoordinatorRole(userRole)) {
-        const coordinatorGroups = await getAllGroups();
-        setGroups(coordinatorGroups);
-        setAssistantGroups([]);
-        setCourses([]);
-        return;
-      }
+      const canManageOwnGroups =
+        isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
 
       const [myGroups, myAssistantGroups, myCourses] = await Promise.all([
-        isAdminTeacherRole(userRole) ? getGroupsForTeacher(currentUser.uid) : Promise.resolve([]),
+        canManageOwnGroups ? getGroupsForTeacher(currentUser.uid) : Promise.resolve([]),
         getGroupsWhereAssistant(currentUser.uid),
         getCourses(),
       ]);
@@ -158,6 +152,7 @@ export default function GroupsPage() {
     activeGroups.length + finishedGroups.length + activeAssistantGroups.length + finishedAssistantGroups.length;
   const isAdminTeacher = isAdminTeacherRole(userRole);
   const isCampusCoordinator = isCampusCoordinatorRole(userRole);
+  const canManageOwnGroups = isAdminTeacher || isCampusCoordinator;
 
   return (
     <RoleGate allowedRole={["teacher", "adminTeacher", "superAdminTeacher", "coordinadorPlantel"]}>
@@ -168,10 +163,10 @@ export default function GroupsPage() {
               Grupos
             </p>
             <h1 className="text-2xl font-semibold text-slate-900">
-              {isCampusCoordinator ? "Todos los grupos" : isAdminTeacher ? "Mis grupos" : "Grupos asignados"}
+              {canManageOwnGroups ? "Mis grupos" : "Grupos asignados"}
             </h1>
           </div>
-          {isAdminTeacher ? (
+          {canManageOwnGroups ? (
             <div className="flex gap-2">
               <button
                 type="button"
@@ -197,9 +192,7 @@ export default function GroupsPage() {
           </div>
         ) : totalGroups === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-600 shadow-sm">
-            {isCampusCoordinator
-              ? "No hay grupos registrados todavía."
-              : isAdminTeacher
+            {canManageOwnGroups
               ? "Aún no tienes grupos. Crea el primero para asignar alumnos."
               : "Aún no te han asignado como mentor de ningún grupo."}
           </div>
@@ -233,8 +226,8 @@ export default function GroupsPage() {
               </div>
             ) : null}
 
-            {/* Grupos creados por el AdminTeacher */}
-            {filteredTotalGroups > 0 && isAdminTeacher && activeGroups.length > 0 ? (
+            {/* Grupos propios */}
+            {filteredTotalGroups > 0 && canManageOwnGroups && activeGroups.length > 0 ? (
               <section className="space-y-3">
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-semibold text-slate-800">Mis Grupos Activos</h2>
@@ -253,29 +246,12 @@ export default function GroupsPage() {
               </section>
             ) : null}
 
-            {filteredTotalGroups > 0 && isCampusCoordinator && activeGroups.length > 0 ? (
-              <section className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-semibold text-slate-800">Grupos Activos</h2>
-                </div>
-                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                  {activeGroups.map((group) => (
-                    <GroupCard
-                      key={group.id}
-                      group={group}
-                      formatRange={formatRange}
-                    />
-                  ))}
-                </div>
-              </section>
-            ) : null}
-
             {/* Grupos donde es mentor */}
-            {filteredTotalGroups > 0 && !isCampusCoordinator && activeAssistantGroups.length > 0 ? (
+            {filteredTotalGroups > 0 && activeAssistantGroups.length > 0 ? (
               <section className="space-y-3">
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-semibold text-slate-800">
-                    {isAdminTeacher ? "Grupos como Mentor - Activos" : "Grupos Activos"}
+                    {canManageOwnGroups ? "Grupos como Mentor - Activos" : "Grupos Activos"}
                   </h2>
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -292,7 +268,7 @@ export default function GroupsPage() {
             ) : null}
 
             {/* Grupos finalizados propios */}
-            {filteredTotalGroups > 0 && isAdminTeacher && finishedGroups.length > 0 ? (
+            {filteredTotalGroups > 0 && canManageOwnGroups && finishedGroups.length > 0 ? (
               <section className="space-y-3">
                 <h2 className="text-sm font-semibold text-slate-800">
                   Mis Grupos Finalizados
@@ -311,28 +287,11 @@ export default function GroupsPage() {
               </section>
             ) : null}
 
-            {filteredTotalGroups > 0 && isCampusCoordinator && finishedGroups.length > 0 ? (
-              <section className="space-y-3">
-                <h2 className="text-sm font-semibold text-slate-800">
-                  Grupos Finalizados
-                </h2>
-                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                  {finishedGroups.map((group) => (
-                    <GroupCard
-                      key={group.id}
-                      group={group}
-                      formatRange={formatRange}
-                    />
-                  ))}
-                </div>
-              </section>
-            ) : null}
-
             {/* Grupos finalizados como mentor */}
-            {filteredTotalGroups > 0 && !isCampusCoordinator && finishedAssistantGroups.length > 0 ? (
+            {filteredTotalGroups > 0 && finishedAssistantGroups.length > 0 ? (
               <section className="space-y-3">
                 <h2 className="text-sm font-semibold text-slate-800">
-                  {isAdminTeacher ? "Grupos como Mentor - Finalizados" : "Grupos Finalizados"}
+                  {canManageOwnGroups ? "Grupos como Mentor - Finalizados" : "Grupos Finalizados"}
                 </h2>
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                   {finishedAssistantGroups.map((group) => (

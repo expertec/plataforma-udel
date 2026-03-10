@@ -5,7 +5,11 @@ import { sendWhatsAppTextToStudent } from "@/lib/server/whatsapp-notifier";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type TeacherRole = "teacher" | "adminTeacher" | "superAdminTeacher";
+type TeacherRole =
+  | "teacher"
+  | "adminTeacher"
+  | "superAdminTeacher"
+  | "coordinadorPlantel";
 
 type FinalGradeNotificationRequest = {
   groupId?: string;
@@ -28,7 +32,12 @@ function asText(value: unknown): string {
 }
 
 function asTeacherRole(value: unknown): TeacherRole | null {
-  if (value === "teacher" || value === "adminTeacher" || value === "superAdminTeacher") {
+  if (
+    value === "teacher" ||
+    value === "adminTeacher" ||
+    value === "superAdminTeacher" ||
+    value === "coordinadorPlantel"
+  ) {
     return value;
   }
   return null;

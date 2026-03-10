@@ -13,7 +13,11 @@ type UnlinkCourseRequest = {
   scope?: "group" | "teacher";
 };
 
-type TeacherRole = "teacher" | "adminTeacher" | "superAdminTeacher";
+type TeacherRole =
+  | "teacher"
+  | "adminTeacher"
+  | "superAdminTeacher"
+  | "coordinadorPlantel";
 
 type RequesterContext = {
   uid: string;
@@ -44,7 +48,12 @@ function asTrimmedString(value: unknown): string {
 }
 
 function asTeacherRole(value: unknown): TeacherRole | null {
-  if (value === "teacher" || value === "adminTeacher" || value === "superAdminTeacher") {
+  if (
+    value === "teacher" ||
+    value === "adminTeacher" ||
+    value === "superAdminTeacher" ||
+    value === "coordinadorPlantel"
+  ) {
     return value;
   }
   return null;

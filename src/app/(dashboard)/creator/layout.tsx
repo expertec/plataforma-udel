@@ -57,23 +57,6 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("mousedown", handleClickOutside);
   }, [userMenuOpen]);
 
-  useEffect(() => {
-    if (!userRole || !isCampusCoordinatorRole(userRole)) return;
-
-    if (pathname === "/creator" || pathname === "/creator/") {
-      router.replace("/creator/grupos");
-      return;
-    }
-
-    const isAllowedPath =
-      pathname.startsWith("/creator/grupos") ||
-      pathname.startsWith("/creator/alumnos") ||
-      pathname.startsWith("/creator/perfil");
-    if (!isAllowedPath) {
-      router.replace("/creator/grupos");
-    }
-  }, [pathname, router, userRole]);
-
   const handleSignOut = async () => {
     setUserMenuOpen(false);
     try {
@@ -101,13 +84,6 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
   };
 
   const navItems = useMemo(() => {
-    if (isCampusCoordinatorRole(userRole)) {
-      return [
-        { href: "/creator/grupos", label: "Grupos" },
-        { href: "/creator/alumnos", label: "Alumnos" },
-      ];
-    }
-
     const items = [
       { href: "/creator", label: "Dashboard" },
       { href: "/creator/cursos", label: "Cursos" },

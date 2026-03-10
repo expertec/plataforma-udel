@@ -6,7 +6,12 @@ import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import { Course, getCourses } from "@/lib/firebase/courses-service";
 import { Group, getGroupsForTeacher } from "@/lib/firebase/groups-service";
-import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import {
+  isAdminTeacherRole,
+  isCampusCoordinatorRole,
+  resolveUserRole,
+  UserRole,
+} from "@/lib/firebase/roles";
 
 export default function CreatorPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
@@ -118,7 +123,7 @@ export default function CreatorPage() {
               Resumen de tu actividad docente, alumnos inscritos y rendimiento de tus cohortes.
             </p>
           </div>
-          {isAdminTeacherRole(userRole) ? (
+          {isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole) ? (
             <Link
               href="/creator/grupos"
               className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-800 shadow-sm transition hover:border-blue-500 hover:text-blue-700"
