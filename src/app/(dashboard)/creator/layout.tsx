@@ -97,6 +97,9 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
       items.push({ href: "/creator/programas", label: "Programas" });
     }
     if (userRole === "adminTeacher") {
+      items.push({ href: "/creator/convenios", label: "Convenios" });
+    }
+    if (userRole === "adminTeacher") {
       items.push({ href: "/creator/api", label: "API" });
     }
     return items;

@@ -95,6 +95,14 @@ type FinanceStatus = {
       | string;
     overdueDetailsText?: string;
     details?: string;
+    hasActivePaymentAgreement?: boolean;
+    accessGrantedByAgreement?: boolean;
+    activePaymentAgreement?: {
+      id?: string;
+      reason?: string;
+      startDate?: string;
+      endDate?: string;
+    };
   };
 };
 
@@ -1618,8 +1626,11 @@ export default function StudentFeedPageClient() {
           (financeJson.data.overdueCount ?? 0) > 0 ||
           (financeJson.data.overduePaymentsCount ?? 0) > 0 ||
           (financeJson.data.overdueReceivablesCount ?? 0) > 0;
+        const hasActivePaymentAgreement =
+          financeJson.data.hasActivePaymentAgreement === true &&
+          financeJson.data.accessGrantedByAgreement !== false;
 
-        if (overdue) {
+        if (overdue && !hasActivePaymentAgreement) {
           const accountClabe = (financeJson.data.clabe?.clabe ?? "").trim();
           const accountBank = (financeJson.data.clabe?.bank ?? "").trim();
           const overdueSource = financeJson.data.overdueDetails;

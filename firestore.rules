@@ -11,6 +11,7 @@ service cloud.firestore {
     function isAdmin() { return isSignedIn() && (userRole() == 'admin' || userRole() == 'superAdmin'); }
     // Admin-level teachers (including super-admin teachers) share elevated permissions.
     function isAdminTeacher() { return isSignedIn() && (userRole() == 'adminTeacher' || userRole() == 'superAdminTeacher'); }
+    function isStrictAdminTeacher() { return isSignedIn() && userRole() == 'adminTeacher'; }
     function isSuperAdminTeacher() { return isSignedIn() && userRole() == 'superAdminTeacher'; }
     function isTeacher() { return isSignedIn() && userRole() == 'teacher'; }
     function isTeacherLike() { return isSignedIn() && (userRole() == 'teacher' || userRole() == 'adminTeacher' || userRole() == 'superAdminTeacher' || userRole() == 'coordinadorPlantel'); }
@@ -404,6 +405,22 @@ service cloud.firestore {
       match /classProgress/{classId} {
         allow read, write: if isSignedIn();
       }
+    }
+
+    /* convenios de pago */
+    match /paymentAgreements/{agreementId} {
+      allow read: if isStrictAdminTeacher();
+      allow create: if isStrictAdminTeacher() &&
+        request.resource.data.studentId is string &&
+        request.resource.data.studentName is string &&
+        request.resource.data.studentEmail is string &&
+        request.resource.data.reason is string &&
+        request.resource.data.startDate is string &&
+        request.resource.data.endDate is string &&
+        request.resource.data.status == "active" &&
+        request.resource.data.createdBy == request.auth.uid;
+      allow update: if isStrictAdminTeacher();
+      allow delete: if false;
     }
 
     // Regla para collectionGroup queries en forums (necesaria para consultas globales)

@@ -1,4 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getAdminFirestore } from "@/lib/firebase/admin";
+import {
+  buildAgreementLookupPhones,
+  getTodayDateKeyMonterrey,
+  isDateKeyInRange,
+  normalizeEmail,
+} from "@/lib/finance/payment-agreements-utils";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 type RemoteOverdueDetail = {
   type?: string;
@@ -64,6 +74,13 @@ type CampusCheckResult = {
     overdue: boolean;
     reason?: string;
   }>;
+};
+
+type ActivePaymentAgreement = {
+  id: string;
+  reason: string;
+  startDate: string;
+  endDate: string;
 };
 
 const CAMPUS_CONFIG: CampusConfig[] = [
@@ -236,7 +253,6 @@ const extractFinanceData = (
 };
 
 const digitsOnly = (value?: string | null): string => (value ?? "").replace(/\D/g, "");
-const normalizeEmail = (value?: string | null): string => (value ?? "").trim().toLowerCase();
 
 const toMxLocal10Digits = (value?: string | null): string => {
   const digits = digitsOnly(value);
@@ -342,6 +358,100 @@ const extractApiErrorCode = (parsedBody: unknown): string | undefined => {
   return typeof code === "string" && code.trim() ? code.trim() : undefined;
 };
 
+const toAgreementText = (value: unknown): string =>
+  typeof value === "string" ? value.trim() : "";
+
+const resolveActivePaymentAgreement = async (params: {
+  phone?: string | null;
+  whatsapp?: string | null;
+  email?: string | null;
+}): Promise<ActivePaymentAgreement | null> => {
+  const db = getAdminFirestore();
+  const todayDateKey = getTodayDateKeyMonterrey();
+  const lookupPhones = buildAgreementLookupPhones([params.phone, params.whatsapp]);
+  const normalizedEmail = normalizeEmail(params.email);
+  const agreementsById = new Map<string, ActivePaymentAgreement>();
+
+  const collectAgreement = (agreementId: string, rawData: unknown) => {
+    const data = asRecord(rawData);
+    if (!data) return;
+
+    const status = toAgreementText(data.status);
+    if (status !== "active") return;
+
+    const reason = toAgreementText(data.reason);
+    const startDate = toAgreementText(data.startDate);
+    const endDate = toAgreementText(data.endDate);
+    if (!startDate || !endDate) return;
+
+    agreementsById.set(agreementId, {
+      id: agreementId,
+      reason,
+      startDate,
+      endDate,
+    });
+  };
+
+  try {
+    if (normalizedEmail) {
+      const usersSnap = await db
+        .collection("users")
+        .where("email", "==", normalizedEmail)
+        .limit(10)
+        .get();
+      const studentIds = usersSnap.docs.map((docSnap) => docSnap.id).filter(Boolean);
+
+      for (let index = 0; index < studentIds.length; index += 30) {
+        const chunk = studentIds.slice(index, index + 30);
+        if (chunk.length === 0) continue;
+        const byStudentSnap = await db
+          .collection("paymentAgreements")
+          .where("studentId", "in", chunk)
+          .limit(50)
+          .get();
+        byStudentSnap.docs.forEach((docSnap) =>
+          collectAgreement(docSnap.id, docSnap.data()),
+        );
+      }
+    }
+
+    for (let index = 0; index < lookupPhones.length; index += 30) {
+      const chunk = lookupPhones.slice(index, index + 30);
+      if (chunk.length === 0) continue;
+      const snap = await db
+        .collection("paymentAgreements")
+        .where("lookupPhones", "array-contains-any", chunk)
+        .limit(50)
+        .get();
+      snap.docs.forEach((docSnap) => collectAgreement(docSnap.id, docSnap.data()));
+    }
+
+    if (normalizedEmail) {
+      const emailSnap = await db
+        .collection("paymentAgreements")
+        .where("studentEmailNormalized", "==", normalizedEmail)
+        .limit(50)
+        .get();
+      emailSnap.docs.forEach((docSnap) => collectAgreement(docSnap.id, docSnap.data()));
+    }
+  } catch (error) {
+    console.error("No se pudo consultar convenios de pago activos:", error);
+    return null;
+  }
+
+  const validAgreements = Array.from(agreementsById.values())
+    .filter((agreement) =>
+      isDateKeyInRange(todayDateKey, agreement.startDate, agreement.endDate),
+    )
+    .sort((a, b) => {
+      const byEndDate = a.endDate.localeCompare(b.endDate);
+      if (byEndDate !== 0) return byEndDate;
+      return a.startDate.localeCompare(b.startDate);
+    });
+
+  return validAgreements[0] ?? null;
+};
+
 export async function GET(request: NextRequest) {
   const configuredFinanceUrl =
     process.env.FINANCE_API_URL ?? "https://us-central1-pos-universal-662da.cloudfunctions.net/customerStatus";
@@ -402,6 +512,11 @@ export async function GET(request: NextRequest) {
     if (!requestedLookupPhones.length) {
       return NextResponse.json({ error: "phone o whatsapp invalido" }, { status: 400 });
     }
+    const activePaymentAgreement = await resolveActivePaymentAgreement({
+      phone,
+      whatsapp,
+      email,
+    });
     const requestedCandidates = Array.from(
       new Set(requestedLookupPhones.flatMap((lookupPhone) => buildPhoneCandidates(lookupPhone))),
     );
@@ -753,6 +868,8 @@ export async function GET(request: NextRequest) {
 
     const overdueCampuses = successful.filter((item) => hasOverdue(item.data));
     const firstData = overdueCampuses[0]?.data ?? successful[0].data;
+    const hasOverduePayments = overdueCampuses.length > 0;
+    const accessGrantedByAgreement = hasOverduePayments && Boolean(activePaymentAgreement);
 
     const aggregatedDetails = overdueCampuses.flatMap((item) => {
       const source = item.data.overdueDetails;
@@ -794,12 +911,22 @@ export async function GET(request: NextRequest) {
           name: firstData.name,
           email: firstData.email,
           clabe: firstData.clabe,
-          hasOverduePayments: overdueCampuses.length > 0,
+          hasOverduePayments,
           totalOverdueAmount,
           overdueCount,
           overduePaymentsCount,
           overdueReceivablesCount,
           overdueDetails: aggregatedDetails,
+          hasActivePaymentAgreement: Boolean(activePaymentAgreement),
+          accessGrantedByAgreement,
+          activePaymentAgreement: activePaymentAgreement
+            ? {
+                id: activePaymentAgreement.id,
+                reason: activePaymentAgreement.reason,
+                startDate: activePaymentAgreement.startDate,
+                endDate: activePaymentAgreement.endDate,
+              }
+            : undefined,
           campusesChecked: successful.map((item) => item.campus),
           notFoundCampuses: successful
             .filter((item) => item.error === "NOT_FOUND")

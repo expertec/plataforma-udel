@@ -68,6 +68,17 @@ async function compressImage(file: File, maxSize = 1280, quality = 0.72): Promis
   });
 }
 
+const formatCreationDate = (value?: Date): string => {
+  if (!value || Number.isNaN(value.getTime())) return "Sin fecha registrada";
+  return new Intl.DateTimeFormat("es-MX", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(value);
+};
+
 export default function CourseBuilderPage() {
   const { courseId } = useParams<{ courseId: string }>();
   const router = useRouter();
@@ -139,6 +150,7 @@ export default function CourseBuilderPage() {
   }, [lessons]);
   const canManageGroups = isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
   const canLinkGroups = canManageGroups || userRole === "teacher";
+  const showCreationMetadata = isAdminTeacherRole(userRole);
 
   const handleThumbnailFile = async (file: File) => {
     if (!courseId) return;
@@ -198,6 +210,7 @@ export default function CourseBuilderPage() {
             program: d.program ?? d.category ?? "",
             thumbnail: d.thumbnail ?? "",
             isPublished: d.isPublished ?? false,
+            createdAt: d.createdAt?.toDate?.() ?? undefined,
           });
           setLoadError(null);
         }
@@ -221,6 +234,7 @@ export default function CourseBuilderPage() {
             title: d.title ?? "Lección sin título",
             description: d.description ?? "",
             order: d.order ?? 0,
+            createdAt: d.createdAt?.toDate?.() ?? undefined,
           };
         });
         setLessons(data);
@@ -463,7 +477,13 @@ export default function CourseBuilderPage() {
 
   const handleLessonCreated = (
     lessonId: string,
-    payload: { lessonNumber: number; title: string; description: string; order: number },
+    payload: {
+      lessonNumber: number;
+      title: string;
+      description: string;
+      order: number;
+      createdAt: Date;
+    },
   ) => {
     // Evita duplicados: el snapshot en tiempo real actualizará la lista.
     setLessons((prev) => {
@@ -476,6 +496,7 @@ export default function CourseBuilderPage() {
           title: payload.title,
           description: payload.description,
           order: payload.order,
+          createdAt: payload.createdAt,
         },
       ];
     });
@@ -692,6 +713,11 @@ export default function CourseBuilderPage() {
       {activeTab === "info" ? (
         <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <h2 className="text-lg font-semibold text-slate-900">Información del curso</h2>
+          {showCreationMetadata ? (
+            <p className="mt-1 text-xs text-slate-500">
+              Creado: {formatCreationDate(courseInfo?.createdAt)}
+            </p>
+          ) : null}
           {courseInfo ? (
             <form
               className="mt-4 grid gap-4 sm:grid-cols-2"
@@ -898,6 +924,7 @@ export default function CourseBuilderPage() {
                         setCommentsTarget({ open: true, lesson: lessonItem, classItem })
                       }
                       onReorderClass={handleReorderClasses}
+                      showCreationMetadata={showCreationMetadata}
                     />
                 ))}
             </div>

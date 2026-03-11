@@ -355,6 +355,7 @@ export type Lesson = {
   title: string;
   description?: string;
   order: number;
+  createdAt?: Date;
 };
 
 export async function getLessons(courseId: string): Promise<Lesson[]> {
@@ -369,6 +370,7 @@ export async function getLessons(courseId: string): Promise<Lesson[]> {
       title: data.title ?? "Lección sin título",
       description: data.description ?? "",
       order: data.order ?? 0,
+      createdAt: data.createdAt?.toDate?.() ?? undefined,
     };
   });
 }

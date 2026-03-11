@@ -9,7 +9,13 @@ type AddLessonModalProps = {
   onClose: () => void;
   courseId: string;
   nextNumber: number;
-  onCreated: (lessonId: string, payload: { lessonNumber: number; title: string; description: string; order: number }) => void;
+  onCreated: (lessonId: string, payload: {
+    lessonNumber: number;
+    title: string;
+    description: string;
+    order: number;
+    createdAt: Date;
+  }) => void;
 };
 
 export function AddLessonModal({
@@ -42,7 +48,13 @@ export function AddLessonModal({
         lessonNumber,
         order,
       });
-      onCreated(lessonId, { lessonNumber, title: title.trim(), description: description.trim(), order });
+      onCreated(lessonId, {
+        lessonNumber,
+        title: title.trim(),
+        description: description.trim(),
+        order,
+        createdAt: new Date(),
+      });
       toast.success("Lección creada");
       onClose();
       setTitle("");

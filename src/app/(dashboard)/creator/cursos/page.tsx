@@ -11,6 +11,17 @@ import { EditCourseModal } from "./_components/EditCourseModal";
 import { CreateCourseModal } from "./_components/CreateCourseModal";
 import { BulkUploadCoursesModal } from "./_components/BulkUploadCoursesModal";
 
+const formatCreationDate = (value?: Date): string => {
+  if (!value || Number.isNaN(value.getTime())) return "Sin fecha registrada";
+  return new Intl.DateTimeFormat("es-MX", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(value);
+};
+
 export default function CoursesPage() {
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
@@ -96,6 +107,7 @@ export default function CoursesPage() {
     const start = (currentPage - 1) * PAGE_SIZE;
     return filteredCourses.slice(start, start + PAGE_SIZE);
   }, [filteredCourses, currentPage]);
+  const showCreationMetadata = isAdminTeacherRole(userRole);
 
   return (
     <div className="flex flex-col gap-6">
@@ -231,6 +243,11 @@ export default function CoursesPage() {
                     <span>•</span>
                     <span>{course.studentsCount ?? 0} alumnos</span>
                   </div>
+                  {showCreationMetadata ? (
+                    <p className="text-xs text-slate-500">
+                      Creado: {formatCreationDate(course.createdAt)}
+                    </p>
+                  ) : null}
                   <div className="flex items-center justify-between pt-2">
                     <a
                       href={`/creator/cursos/${course.id}`}

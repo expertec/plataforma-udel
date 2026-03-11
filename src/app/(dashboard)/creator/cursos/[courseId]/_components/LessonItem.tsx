@@ -16,6 +16,18 @@ type LessonItemProps = {
   onEditClass: (lesson: Lesson, classItem: ClassData) => void;
   onOpenComments: (lesson: Lesson, classItem: ClassData) => void;
   onReorderClass: (lessonId: string, fromIndex: number, toIndex: number) => void;
+  showCreationMetadata?: boolean;
+};
+
+const formatCreationDate = (value?: Date): string => {
+  if (!value || Number.isNaN(value.getTime())) return "Sin fecha registrada";
+  return new Intl.DateTimeFormat("es-MX", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(value);
 };
 
 export function LessonItem({
@@ -30,6 +42,7 @@ export function LessonItem({
   onEditClass,
   onOpenComments,
   onReorderClass,
+  showCreationMetadata = false,
 }: LessonItemProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
@@ -50,6 +63,11 @@ export function LessonItem({
             <p className="text-sm font-semibold text-slate-900">
               Lección {lesson.lessonNumber}: {lesson.title}
             </p>
+            {showCreationMetadata ? (
+              <p className="text-[11px] text-slate-500">
+                Creada: {formatCreationDate(lesson.createdAt)}
+              </p>
+            ) : null}
             {lesson.description ? (
               <p className="text-xs text-slate-500 line-clamp-2">
                 {lesson.description}
