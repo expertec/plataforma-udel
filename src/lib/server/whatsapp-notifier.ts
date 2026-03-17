@@ -11,6 +11,8 @@ import {
 
 const ADMIN_INTEGRATIONS_COLLECTION = "adminIntegrations";
 const KANWAP_FIELD = "whatsappKanwap";
+const GLOBAL_SETTINGS_DOC_ID = "global-settings";
+const GLOBAL_WHATSAPP_ENABLED_FIELD = "whatsappNotificationsEnabled";
 const MAX_INTEGRATION_SCAN = 120;
 
 type StoredKanwapConfig = {
@@ -158,6 +160,20 @@ function chooseConnectionFromCandidates(candidates: ResolvedKanwapConnection[]):
   return connected ?? candidates[0];
 }
 
+async function areGlobalWhatsAppNotificationsEnabled(): Promise<boolean> {
+  try {
+    const db = getAdminFirestore();
+    const snap = await db
+      .collection(ADMIN_INTEGRATIONS_COLLECTION)
+      .doc(GLOBAL_SETTINGS_DOC_ID)
+      .get();
+    return snap.data()?.[GLOBAL_WHATSAPP_ENABLED_FIELD] !== false;
+  } catch {
+    // Fail-open: si no podemos leer este ajuste, mantenemos el comportamiento actual.
+    return true;
+  }
+}
+
 export async function resolveKanwapConnection(
   preferredOwnerUid?: string,
 ): Promise<ResolvedKanwapConnection | null> {
@@ -261,6 +277,14 @@ export async function sendWhatsAppTextToStudent(params: {
   const message = params.message.trim();
   if (!message) {
     return { notified: false, reason: "Mensaje vacío" };
+  }
+
+  const notificationsEnabled = await areGlobalWhatsAppNotificationsEnabled();
+  if (!notificationsEnabled) {
+    return {
+      notified: false,
+      reason: "Las notificaciones globales de WhatsApp están apagadas",
+    };
   }
 
   const connection = await resolveKanwapConnection(params.preferredOwnerUid);

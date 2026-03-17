@@ -92,6 +92,13 @@ type WhatsAppConfigResponse = {
   data?: WhatsAppConnection | null;
   error?: string;
   encryptionConfigured?: boolean;
+  notificationsEnabled?: boolean;
+};
+
+type UpdateWhatsAppNotificationsResponse = {
+  success: boolean;
+  notificationsEnabled?: boolean;
+  error?: string;
 };
 
 function formatDate(value: string | null): string {
@@ -162,11 +169,14 @@ export default function ApiManagementPage() {
   const [loadingKanwapSessions, setLoadingKanwapSessions] = useState(false);
   const [savingWhatsAppConfig, setSavingWhatsAppConfig] = useState(false);
   const [disconnectingWhatsApp, setDisconnectingWhatsApp] = useState(false);
+  const [updatingWhatsAppNotifications, setUpdatingWhatsAppNotifications] = useState(false);
   const [kanwapApiKey, setKanwapApiKey] = useState("");
   const [kanwapSessions, setKanwapSessions] = useState<KanwapSessionItem[]>([]);
   const [selectedKanwapSessionId, setSelectedKanwapSessionId] = useState("");
   const [showKanwapApiKey, setShowKanwapApiKey] = useState(false);
   const [encryptionConfigured, setEncryptionConfigured] = useState<boolean>(true);
+  const [whatsAppNotificationsEnabled, setWhatsAppNotificationsEnabled] =
+    useState<boolean>(true);
 
   const sortedKeys = useMemo(
     () =>
@@ -257,6 +267,7 @@ export default function ApiManagementPage() {
         const payload = (await response.json()) as WhatsAppConfigResponse;
         setWhatsAppConfig(payload.data ?? null);
         setEncryptionConfigured(payload.encryptionConfigured !== false);
+        setWhatsAppNotificationsEnabled(payload.notificationsEnabled !== false);
         if (payload.data?.sessionId) {
           setSelectedKanwapSessionId(payload.data.sessionId);
         }
@@ -517,6 +528,46 @@ export default function ApiManagementPage() {
     }
   };
 
+  const toggleWhatsAppNotifications = async () => {
+    const nextValue = !whatsAppNotificationsEnabled;
+    setUpdatingWhatsAppNotifications(true);
+    try {
+      const response = await fetchWithToken("/api/admin/whatsapp/config", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          notificationsEnabled: nextValue,
+        }),
+      });
+      if (!response.ok) {
+        const error = await extractApiError(
+          response,
+          "No se pudo actualizar el estado global de notificaciones",
+        );
+        throw new Error(error);
+      }
+      const payload = (await response.json()) as UpdateWhatsAppNotificationsResponse;
+      if (!payload.success) {
+        throw new Error(
+          payload.error || "No se pudo actualizar el estado global de notificaciones",
+        );
+      }
+      setWhatsAppNotificationsEnabled(payload.notificationsEnabled ?? nextValue);
+      toast.success(
+        nextValue
+          ? "Notificaciones globales de WhatsApp encendidas"
+          : "Notificaciones globales de WhatsApp apagadas",
+      );
+    } catch (error: unknown) {
+      const message =
+        (error as { message?: string }).message ||
+        "No se pudo actualizar el estado global de notificaciones";
+      toast.error(message);
+    } finally {
+      setUpdatingWhatsAppNotifications(false);
+    }
+  };
+
   return (
     <RoleGate allowedRole="adminTeacher">
       <div className="space-y-6 text-slate-900">
@@ -591,6 +642,46 @@ export default function ApiManagementPage() {
               <RefreshCw size={14} className={loadingWhatsAppConfig ? "animate-spin" : ""} />
               {loadingWhatsAppConfig ? "Validando..." : "Validar estado"}
             </button>
+          </div>
+
+          <div
+            className={`mt-3 rounded-xl border p-3 ${
+              whatsAppNotificationsEnabled
+                ? "border-emerald-200 bg-emerald-50"
+                : "border-amber-200 bg-amber-50"
+            }`}
+          >
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p
+                  className={`text-sm font-semibold ${
+                    whatsAppNotificationsEnabled ? "text-emerald-800" : "text-amber-800"
+                  }`}
+                >
+                  Notificaciones globales:{" "}
+                  {whatsAppNotificationsEnabled ? "Encendidas" : "Apagadas"}
+                </p>
+                <p className="text-xs text-slate-600">
+                  Si están apagadas, la plataforma no enviará ningún WhatsApp automático.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={toggleWhatsAppNotifications}
+                disabled={updatingWhatsAppNotifications || loadingWhatsAppConfig}
+                className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition disabled:opacity-70 ${
+                  whatsAppNotificationsEnabled
+                    ? "border border-amber-200 bg-white text-amber-700 hover:bg-amber-50"
+                    : "border border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50"
+                }`}
+              >
+                {updatingWhatsAppNotifications
+                  ? "Guardando..."
+                  : whatsAppNotificationsEnabled
+                    ? "Apagar notificaciones"
+                    : "Prender notificaciones"}
+              </button>
+            </div>
           </div>
 
           {!encryptionConfigured ? (

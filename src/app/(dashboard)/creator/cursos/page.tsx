@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import { onAuthStateChanged, User } from "firebase/auth";
-import { Settings2 } from "lucide-react";
+import { Copy, Loader2, Settings2 } from "lucide-react";
+import toast from "react-hot-toast";
 import { auth } from "@/lib/firebase/client";
-import { Course, getCourses } from "@/lib/firebase/courses-service";
+import { Course, duplicateCourse, getCourses } from "@/lib/firebase/courses-service";
 import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/roles";
 import { EditCourseModal } from "./_components/EditCourseModal";
 import { CreateCourseModal } from "./_components/CreateCourseModal";
@@ -34,6 +35,7 @@ export default function CoursesPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [duplicatingCourseId, setDuplicatingCourseId] = useState<string | null>(null);
   const PAGE_SIZE = 9;
 
   const loadCourses = useCallback(
@@ -108,6 +110,32 @@ export default function CoursesPage() {
     return filteredCourses.slice(start, start + PAGE_SIZE);
   }, [filteredCourses, currentPage]);
   const showCreationMetadata = isAdminTeacherRole(userRole);
+
+  const handleDuplicateCourse = async (course: Course) => {
+    if (!currentUser || !isAdminTeacherRole(userRole)) {
+      toast.error("Solo adminTeacher puede duplicar cursos");
+      return;
+    }
+
+    const confirmed = window.confirm(`¿Duplicar el curso "${course.title}"?`);
+    if (!confirmed) return;
+
+    setDuplicatingCourseId(course.id);
+    try {
+      await duplicateCourse({
+        sourceCourseId: course.id,
+        teacherId: currentUser.uid,
+        teacherName: currentUser.displayName ?? "",
+      });
+      await loadCourses(currentUser.uid, userRole);
+      toast.success("Curso duplicado correctamente");
+    } catch (error) {
+      console.error("No se pudo duplicar el curso:", error);
+      toast.error("No se pudo duplicar el curso");
+    } finally {
+      setDuplicatingCourseId(null);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-6">
@@ -249,12 +277,34 @@ export default function CoursesPage() {
                     </p>
                   ) : null}
                   <div className="flex items-center justify-between pt-2">
-                    <a
-                      href={`/creator/cursos/${course.id}`}
-                      className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-800 transition hover:border-blue-500 hover:text-blue-600"
-                    >
-                      Abrir curso
-                    </a>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <a
+                        href={`/creator/cursos/${course.id}`}
+                        className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-800 transition hover:border-blue-500 hover:text-blue-600"
+                      >
+                        Abrir curso
+                      </a>
+                      {isAdminTeacherRole(userRole) ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleDuplicateCourse(course)}
+                          disabled={duplicatingCourseId === course.id}
+                          className="inline-flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-70"
+                        >
+                          {duplicatingCourseId === course.id ? (
+                            <>
+                              <Loader2 size={14} className="animate-spin" />
+                              Duplicando...
+                            </>
+                          ) : (
+                            <>
+                              <Copy size={14} />
+                              Duplicar
+                            </>
+                          )}
+                        </button>
+                      ) : null}
+                    </div>
                     <div className="flex items-center gap-2 text-sm text-slate-500">
                       ⋮
                     </div>

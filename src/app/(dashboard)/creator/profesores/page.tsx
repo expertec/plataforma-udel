@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import { User, onAuthStateChanged } from "firebase/auth";
 import { useRouter } from "next/navigation";
@@ -9,8 +9,10 @@ import { isAdminTeacherRole, resolveUserRole } from "@/lib/firebase/roles";
 import {
   createTeacherAccount,
   deactivateTeacher,
+  getTeacherWorkloadReport,
   getTeacherUsers,
   TeacherUser,
+  TeacherWorkloadReportRow,
 } from "@/lib/firebase/teachers-service";
 
 type EditableTeacherRole = "teacher" | "adminTeacher" | "coordinadorPlantel";
@@ -31,6 +33,60 @@ function getTeacherRoleLabel(role: TeacherUser["role"]): string {
   if (role === "coordinadorPlantel") return "Coordinador de plantel";
   return "Profesor";
 }
+
+const moneyFormatter = new Intl.NumberFormat("es-MX", {
+  style: "currency",
+  currency: "MXN",
+  maximumFractionDigits: 2,
+});
+
+const integerFormatter = new Intl.NumberFormat("es-MX");
+
+const parseNumericInput = (value: string): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return parsed >= 0 ? parsed : 0;
+};
+
+const toCurrency = (value: number): string => moneyFormatter.format(Number.isFinite(value) ? value : 0);
+
+const toInteger = (value: number): string =>
+  integerFormatter.format(Number.isFinite(value) ? Math.round(value) : 0);
+
+const toCsvField = (value: string | number): string => {
+  const raw = String(value ?? "");
+  const escaped = raw.replace(/"/g, "\"\"");
+  return `"${escaped}"`;
+};
+
+const toProgramBreakdownText = (
+  programBreakdown: TeacherWorkloadReportRow["programBreakdown"],
+): string => {
+  if (!programBreakdown || programBreakdown.length === 0) return "Sin materias";
+  return programBreakdown
+    .map((item) => `${item.program}: ${toInteger(item.courses)}`)
+    .join(" | ");
+};
+
+const toLevelBreakdownText = (
+  levelBreakdown: TeacherWorkloadReportRow["levelBreakdown"],
+): string =>
+  `P:${toInteger(levelBreakdown.preparatoria)} / L:${toInteger(levelBreakdown.licenciatura)} / O:${toInteger(levelBreakdown.otros)} / S:${toInteger(levelBreakdown.sinPrograma)}`;
+
+const toCompactList = (items: string[], maxVisible = 4): string => {
+  if (!items || items.length === 0) return "—";
+  if (items.length <= maxVisible) return items.join(", ");
+  return `${items.slice(0, maxVisible).join(", ")} +${items.length - maxVisible}`;
+};
+
+const toCourseDetailsText = (
+  courseDetails: TeacherWorkloadReportRow["courseDetails"],
+): string => {
+  if (!courseDetails || courseDetails.length === 0) return "Sin materias";
+  return courseDetails
+    .map((course) => `${course.courseName} (${toInteger(course.groupsCount)} grupo${course.groupsCount === 1 ? "" : "s"})`)
+    .join(" | ");
+};
 
 function mergeAuthHeaders(token: string, headers?: HeadersInit): Headers {
   const merged = new Headers(headers ?? {});
@@ -66,6 +122,17 @@ export default function ProfesoresPage() {
   const [newRole, setNewRole] = useState<EditableTeacherRole>("teacher");
   const [changingPassword, setChangingPassword] = useState(false);
   const [updatingProfile, setUpdatingProfile] = useState(false);
+  const [reportRows, setReportRows] = useState<TeacherWorkloadReportRow[]>([]);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [reportSearch, setReportSearch] = useState("");
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [salaryConfig, setSalaryConfig] = useState({
+    perCourseLicenciatura: 1900,
+    perCoursePreparatoria: 0,
+    perCourseOtros: 0,
+    perCourseSinPrograma: 0,
+  });
 
   const fetchWithToken = useCallback(
     async (url: string, init?: RequestInit): Promise<Response> => {
@@ -93,6 +160,32 @@ export default function ProfesoresPage() {
       setLoading(false);
     }
   }, []);
+
+  const loadTeacherWorkloadReport = useCallback(async () => {
+    setReportLoading(true);
+    setReportError(null);
+    try {
+      const rows = await getTeacherWorkloadReport(300);
+      setReportRows(rows);
+    } catch (err) {
+      console.error(err);
+      setReportError("No se pudo generar el reporte de carga por profesor.");
+      toast.error("No se pudo cargar el reporte de profesores.");
+    } finally {
+      setReportLoading(false);
+    }
+  }, []);
+
+  const refreshTeachersAndReport = useCallback(async () => {
+    await Promise.all([loadTeachers(), loadTeacherWorkloadReport()]);
+  }, [loadTeacherWorkloadReport, loadTeachers]);
+
+  const handleOpenReportModal = useCallback(() => {
+    setReportModalOpen(true);
+    if (reportRows.length === 0) {
+      void loadTeacherWorkloadReport();
+    }
+  }, [loadTeacherWorkloadReport, reportRows.length]);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -127,6 +220,36 @@ export default function ProfesoresPage() {
   }, [router]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = window.localStorage.getItem("teacherCoursePayConfig");
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as {
+        perCourseLicenciatura?: number;
+        perCoursePreparatoria?: number;
+        perCourseOtros?: number;
+        perCourseSinPrograma?: number;
+      };
+      setSalaryConfig({
+        perCourseLicenciatura: parseNumericInput(String(parsed.perCourseLicenciatura ?? 1900)),
+        perCoursePreparatoria: parseNumericInput(String(parsed.perCoursePreparatoria ?? 0)),
+        perCourseOtros: parseNumericInput(String(parsed.perCourseOtros ?? 0)),
+        perCourseSinPrograma: parseNumericInput(String(parsed.perCourseSinPrograma ?? 0)),
+      });
+    } catch {
+      // Ignorar configuración inválida en localStorage.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(
+      "teacherCoursePayConfig",
+      JSON.stringify(salaryConfig),
+    );
+  }, [salaryConfig]);
+
+  useEffect(() => {
     if (!isAdminTeacher) return;
     loadTeachers();
   }, [isAdminTeacher, loadTeachers]);
@@ -153,7 +276,7 @@ export default function ProfesoresPage() {
           : "Profesor creado con acceso por correo/contraseña",
       );
       setNewTeacher({ name: "", email: "", password: "", admin: false, phone: "" });
-      await loadTeachers();
+      await refreshTeachersAndReport();
     } catch (err: unknown) {
       console.error(err);
       const code = (err as { code?: string })?.code ?? "";
@@ -174,7 +297,7 @@ export default function ProfesoresPage() {
     try {
       await deactivateTeacher(teacher.id);
       toast.success("Profesor desactivado");
-      await loadTeachers();
+      await refreshTeachersAndReport();
     } catch (err) {
       console.error(err);
       toast.error("No se pudo eliminar al profesor");
@@ -252,7 +375,7 @@ export default function ProfesoresPage() {
       toast.success("Datos actualizados correctamente");
       setEditProfileModalOpen(false);
       setSelectedTeacher(null);
-      await loadTeachers();
+      await refreshTeachersAndReport();
     } catch (err: unknown) {
       console.error(err);
       const message =
@@ -302,6 +425,133 @@ export default function ProfesoresPage() {
       setChangingPassword(false);
     }
   };
+
+  const reportRowsWithSalary = useMemo(() => {
+    const normalizedSearch = reportSearch.trim().toLowerCase();
+    const rows = reportRows.filter((row) => {
+      if (!normalizedSearch) return true;
+      return (
+        row.teacherName.toLowerCase().includes(normalizedSearch) ||
+        row.teacherEmail.toLowerCase().includes(normalizedSearch)
+      );
+    });
+
+    const withSalary = rows.map((row) => {
+      const estimatedSalary =
+        row.levelBreakdown.licenciatura * salaryConfig.perCourseLicenciatura +
+        row.levelBreakdown.preparatoria * salaryConfig.perCoursePreparatoria +
+        row.levelBreakdown.otros * salaryConfig.perCourseOtros +
+        row.levelBreakdown.sinPrograma * salaryConfig.perCourseSinPrograma;
+      return {
+        ...row,
+        estimatedSalary,
+      };
+    });
+
+    withSalary.sort((a, b) => {
+      if (b.estimatedSalary !== a.estimatedSalary) return b.estimatedSalary - a.estimatedSalary;
+      if (b.activeStudents !== a.activeStudents) return b.activeStudents - a.activeStudents;
+      return a.teacherName.localeCompare(b.teacherName, "es");
+    });
+    return withSalary;
+  }, [reportRows, reportSearch, salaryConfig]);
+
+  const reportTotals = useMemo(
+    () =>
+      reportRowsWithSalary.reduce(
+        (acc, row) => {
+          acc.totalGroups += row.totalGroups;
+          acc.activeGroups += row.activeGroups;
+          acc.totalStudents += row.totalStudents;
+          acc.activeStudents += row.activeStudents;
+          acc.totalClasses += row.totalClasses;
+          acc.activeClasses += row.activeClasses;
+          acc.totalUniqueCourses += row.uniqueCourses;
+          acc.totalEstimatedSalary += row.estimatedSalary;
+          return acc;
+        },
+        {
+          totalGroups: 0,
+          activeGroups: 0,
+          totalStudents: 0,
+          activeStudents: 0,
+          totalClasses: 0,
+          activeClasses: 0,
+          totalUniqueCourses: 0,
+          totalEstimatedSalary: 0,
+        },
+      ),
+    [reportRowsWithSalary],
+  );
+
+  const handleDownloadReportCsv = useCallback(() => {
+    if (reportRowsWithSalary.length === 0) {
+      toast.error("No hay datos del reporte para exportar.");
+      return;
+    }
+    const header = [
+      "Profesor",
+      "Email",
+      "Rol",
+      "Grupos activos",
+      "Grupos totales",
+      "Alumnos activos",
+      "Alumnos totales",
+      "Clases activas",
+      "Clases totales",
+      "Materias unicas",
+      "Programas unicos",
+      "Materias prepa",
+      "Materias licenciatura",
+      "Materias otros",
+      "Materias sin programa",
+      "Grupos (nombres)",
+      "Materias por programa",
+      "Materias detalle",
+      "Tarifa licenciatura MXN",
+      "Tarifa preparatoria MXN",
+      "Tarifa otros MXN",
+      "Tarifa sin programa MXN",
+      "Pago estimado MXN",
+    ];
+    const body = reportRowsWithSalary.map((row) =>
+      [
+        row.teacherName,
+        row.teacherEmail,
+        getTeacherRoleLabel(row.role),
+        row.activeGroups,
+        row.totalGroups,
+        row.activeStudents,
+        row.totalStudents,
+        row.activeClasses,
+        row.totalClasses,
+        row.uniqueCourses,
+        row.uniquePrograms,
+        row.levelBreakdown.preparatoria,
+        row.levelBreakdown.licenciatura,
+        row.levelBreakdown.otros,
+        row.levelBreakdown.sinPrograma,
+        toCompactList(row.groupNames, 8),
+        toProgramBreakdownText(row.programBreakdown),
+        toCourseDetailsText(row.courseDetails),
+        salaryConfig.perCourseLicenciatura.toFixed(2),
+        salaryConfig.perCoursePreparatoria.toFixed(2),
+        salaryConfig.perCourseOtros.toFixed(2),
+        salaryConfig.perCourseSinPrograma.toFixed(2),
+        row.estimatedSalary.toFixed(2),
+      ]
+        .map((value) => toCsvField(value))
+        .join(","),
+    );
+    const csv = [header.map((value) => toCsvField(value)).join(","), ...body].join("\n");
+    const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `reporte-profesores-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }, [reportRowsWithSalary, salaryConfig]);
 
   return (
     <div className="space-y-4">
@@ -392,15 +642,247 @@ export default function ProfesoresPage() {
         </p>
       </div>
 
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">Reporte de materias y grupos</h2>
+            <p className="text-sm text-slate-600">
+              Consulta detalle de cursos (materias), grupos y pago por materia en una modal.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleOpenReportModal}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
+          >
+            Abrir reporte
+          </button>
+        </div>
+      </div>
+
+      {reportModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 px-4 py-6">
+          <div className="w-full max-w-7xl rounded-2xl bg-white p-4 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">Reporte de materias, cursos y grupos</h2>
+                <p className="text-sm text-slate-600">
+                  Pago calculado solo por materia impartida.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReportModalOpen(false)}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
+              >
+                Cerrar
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={loadTeacherWorkloadReport}
+                  disabled={reportLoading}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed"
+                >
+                  {reportLoading ? "Actualizando..." : "Actualizar reporte"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadReportCsv}
+                  disabled={reportLoading || reportRowsWithSalary.length === 0}
+                  className="rounded-lg border border-blue-200 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:border-blue-100 disabled:text-blue-300"
+                >
+                  Exportar CSV
+                </button>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">Tarifa por materia (Licenciatura)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={salaryConfig.perCourseLicenciatura}
+                    onChange={(event) =>
+                      setSalaryConfig((prev) => ({
+                        ...prev,
+                        perCourseLicenciatura: parseNumericInput(event.target.value),
+                      }))
+                    }
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">Tarifa por materia (Preparatoria)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={salaryConfig.perCoursePreparatoria}
+                    onChange={(event) =>
+                      setSalaryConfig((prev) => ({
+                        ...prev,
+                        perCoursePreparatoria: parseNumericInput(event.target.value),
+                      }))
+                    }
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">Tarifa por materia (Otros)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={salaryConfig.perCourseOtros}
+                    onChange={(event) =>
+                      setSalaryConfig((prev) => ({
+                        ...prev,
+                        perCourseOtros: parseNumericInput(event.target.value),
+                      }))
+                    }
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">Tarifa por materia (Sin programa)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={salaryConfig.perCourseSinPrograma}
+                    onChange={(event) =>
+                      setSalaryConfig((prev) => ({
+                        ...prev,
+                        perCourseSinPrograma: parseNumericInput(event.target.value),
+                      }))
+                    }
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">Buscar profesor</label>
+                  <input
+                    type="text"
+                    value={reportSearch}
+                    onChange={(event) => setReportSearch(event.target.value)}
+                    placeholder="Nombre o correo"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {reportError ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  {reportError}
+                </div>
+              ) : null}
+
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Profesores</p>
+                  <p className="text-lg font-semibold text-slate-900">{toInteger(reportRowsWithSalary.length)}</p>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Grupos totales</p>
+                  <p className="text-lg font-semibold text-slate-900">{toInteger(reportTotals.totalGroups)}</p>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Materias totales</p>
+                  <p className="text-lg font-semibold text-slate-900">{toInteger(reportTotals.totalUniqueCourses)}</p>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Pago estimado total</p>
+                  <p className="text-lg font-semibold text-slate-900">
+                    {toCurrency(reportTotals.totalEstimatedSalary)}
+                  </p>
+                </div>
+              </div>
+
+              {reportLoading ? (
+                <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-600">
+                  Generando reporte de profesores...
+                </div>
+              ) : reportRowsWithSalary.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-600">
+                  No hay datos para mostrar en el reporte.
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-lg border border-slate-200">
+                  <table className="min-w-[1600px] w-full text-sm">
+                    <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-600">
+                      <tr>
+                        <th className="px-3 py-2 text-left">Profesor</th>
+                        <th className="px-3 py-2 text-left">Grupos</th>
+                        <th className="px-3 py-2 text-left">Materias (cursos)</th>
+                        <th className="px-3 py-2 text-right">Niveles P/L/O/S</th>
+                        <th className="px-3 py-2 text-left">Programas</th>
+                        <th className="px-3 py-2 text-right">Pago estimado</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {reportRowsWithSalary.map((row) => (
+                        <tr key={row.teacherId} className="text-slate-800">
+                          <td className="px-3 py-2">
+                            <div className="font-medium">{row.teacherName}</div>
+                            <div className="text-xs text-slate-500">{row.teacherEmail || "Sin correo"}</div>
+                            <div className="text-xs text-slate-500">{getTeacherRoleLabel(row.role)}</div>
+                          </td>
+                          <td className="px-3 py-2 text-xs text-slate-600">
+                            <div className="font-medium text-slate-800">{toInteger(row.totalGroups)} grupo(s)</div>
+                            <div>{toCompactList(row.groupNames, 6)}</div>
+                          </td>
+                          <td className="px-3 py-2 text-xs text-slate-600">
+                            <div className="font-medium text-slate-800">{toInteger(row.uniqueCourses)} materia(s)</div>
+                            <div>{toCourseDetailsText(row.courseDetails)}</div>
+                          </td>
+                          <td className="px-3 py-2 text-right">{toLevelBreakdownText(row.levelBreakdown)}</td>
+                          <td className="px-3 py-2 text-xs text-slate-600">
+                            {toProgramBreakdownText(row.programBreakdown)}
+                          </td>
+                          <td className="px-3 py-2 text-right font-semibold text-slate-900">
+                            {toCurrency(row.estimatedSalary)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="border-t border-slate-300 bg-slate-50 text-xs font-semibold text-slate-700">
+                      <tr>
+                        <td className="px-3 py-2">Totales</td>
+                        <td className="px-3 py-2">{toInteger(reportTotals.totalGroups)} grupos</td>
+                        <td className="px-3 py-2">{toInteger(reportTotals.totalUniqueCourses)} materias</td>
+                        <td className="px-3 py-2 text-right">-</td>
+                        <td className="px-3 py-2">-</td>
+                        <td className="px-3 py-2 text-right">{toCurrency(reportTotals.totalEstimatedSalary)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="flex items-center justify-between">
         <p className="text-sm text-slate-600">Listado de profesores, AdminTeacher y Coordinador de plantel.</p>
         <button
           type="button"
-          onClick={loadTeachers}
-          disabled={loading}
+          onClick={() => {
+            if (reportModalOpen) {
+              void refreshTeachersAndReport();
+              return;
+            }
+            void loadTeachers();
+          }}
+          disabled={loading || (reportModalOpen && reportLoading)}
           className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed"
         >
-          {loading ? "Actualizando..." : "Refrescar"}
+          {loading || (reportModalOpen && reportLoading) ? "Actualizando..." : "Refrescar"}
         </button>
       </div>
 

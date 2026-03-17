@@ -23,12 +23,18 @@ export const dynamic = "force-dynamic";
 
 const ADMIN_INTEGRATIONS_COLLECTION = "adminIntegrations";
 const KANWAP_FIELD = "whatsappKanwap";
+const GLOBAL_SETTINGS_DOC_ID = "global-settings";
+const GLOBAL_WHATSAPP_ENABLED_FIELD = "whatsappNotificationsEnabled";
 
 type UpsertWhatsAppConfigRequest = {
   apiKey?: string;
   sessionId?: string;
   sessionName?: string;
   phone?: string;
+};
+
+type UpdateWhatsAppNotificationsRequest = {
+  notificationsEnabled?: boolean;
 };
 
 type StoredKanwapConfig = {
@@ -49,6 +55,10 @@ type StoredKanwapConfig = {
 
 function asText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function asBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
 }
 
 function toDate(value: unknown): Date | null {
@@ -145,10 +155,19 @@ export async function GET(request: NextRequest) {
   try {
     const adminContext = await requireAdminTeacher(request);
     const shouldRefresh = request.nextUrl.searchParams.get("refresh") === "1";
-    const docRef = getAdminFirestore()
+    const db = getAdminFirestore();
+    const docRef = db.collection(ADMIN_INTEGRATIONS_COLLECTION).doc(adminContext.uid);
+    const globalSettingsRef = db
       .collection(ADMIN_INTEGRATIONS_COLLECTION)
-      .doc(adminContext.uid);
-    const snap = await docRef.get();
+      .doc(GLOBAL_SETTINGS_DOC_ID);
+    const [snap, globalSettingsSnap] = await Promise.all([
+      docRef.get(),
+      globalSettingsRef.get(),
+    ]);
+    const notificationsEnabled = asBoolean(
+      globalSettingsSnap.data()?.[GLOBAL_WHATSAPP_ENABLED_FIELD],
+      true,
+    );
     const config = parseStoredKanwapConfig(snap.data()?.[KANWAP_FIELD]);
 
     if (!config) {
@@ -157,6 +176,7 @@ export async function GET(request: NextRequest) {
           success: true,
           data: null,
           encryptionConfigured: isSecretEncryptionConfigured(),
+          notificationsEnabled,
         },
         { status: 200 },
       );
@@ -168,6 +188,7 @@ export async function GET(request: NextRequest) {
           success: true,
           data: mapPublicConfig(config),
           encryptionConfigured: isSecretEncryptionConfigured(),
+          notificationsEnabled,
         },
         { status: 200 },
       );
@@ -211,6 +232,7 @@ export async function GET(request: NextRequest) {
             { liveState: sessionState, liveError: null },
           ),
           encryptionConfigured: isSecretEncryptionConfigured(),
+          notificationsEnabled,
         },
         { status: 200 },
       );
@@ -236,6 +258,7 @@ export async function GET(request: NextRequest) {
           success: true,
           data: mapPublicConfig(config, { liveError: message }),
           encryptionConfigured: isSecretEncryptionConfigured(),
+          notificationsEnabled,
         },
         { status: 200 },
       );
@@ -346,6 +369,46 @@ export async function POST(request: NextRequest) {
       return kanwapErrorResponse(error);
     }
     return toRouteErrorResponse(error, "Error guardando configuración de WhatsApp");
+  }
+}
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const adminContext = await requireAdminTeacher(request);
+    const body = (await request.json()) as UpdateWhatsAppNotificationsRequest;
+    if (typeof body.notificationsEnabled !== "boolean") {
+      return NextResponse.json(
+        { success: false, error: "notificationsEnabled debe ser booleano" },
+        { status: 400 },
+      );
+    }
+
+    const now = new Date();
+    await getAdminFirestore()
+      .collection(ADMIN_INTEGRATIONS_COLLECTION)
+      .doc(GLOBAL_SETTINGS_DOC_ID)
+      .set(
+        {
+          [GLOBAL_WHATSAPP_ENABLED_FIELD]: body.notificationsEnabled,
+          updatedAt: now,
+          updatedBy: adminContext.uid,
+        },
+        { merge: true },
+      );
+
+    return NextResponse.json(
+      {
+        success: true,
+        notificationsEnabled: body.notificationsEnabled,
+        updatedAt: now.toISOString(),
+      },
+      { status: 200 },
+    );
+  } catch (error: unknown) {
+    return toRouteErrorResponse(
+      error,
+      "Error actualizando estado global de notificaciones de WhatsApp",
+    );
   }
 }
 

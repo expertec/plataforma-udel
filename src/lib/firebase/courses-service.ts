@@ -38,6 +38,10 @@ export type Course = {
   teacherId?: string; // ID del profesor creador del curso
 };
 
+type CourseClassType = "video" | "text" | "audio" | "quiz" | "image";
+type ForumRequiredFormat = "text" | "audio" | "video" | null;
+type QuizQuestionType = "multiple" | "truefalse" | "open";
+
 const toUniqueStringArray = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
   return Array.from(
@@ -47,6 +51,39 @@ const toUniqueStringArray = (value: unknown): string[] => {
       ),
     ),
   );
+};
+
+const asString = (value: unknown, fallback = ""): string =>
+  typeof value === "string" ? value : fallback;
+
+const asNumber = (value: unknown, fallback = 0): number =>
+  typeof value === "number" && Number.isFinite(value) ? value : fallback;
+
+const asFiniteNumberOrNull = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? value : null;
+
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+const normalizeClassType = (value: unknown): CourseClassType => {
+  if (value === "video" || value === "text" || value === "audio" || value === "quiz" || value === "image") {
+    return value;
+  }
+  return "video";
+};
+
+const normalizeForumRequiredFormat = (value: unknown): ForumRequiredFormat => {
+  if (value === "text" || value === "audio" || value === "video") return value;
+  return null;
+};
+
+const normalizeQuizQuestionType = (value: unknown): QuizQuestionType => {
+  if (value === "multiple" || value === "truefalse" || value === "open") {
+    return value;
+  }
+  return "multiple";
 };
 
 const getGroupCourseIds = (groupData: Record<string, unknown>): string[] => {
@@ -250,6 +287,187 @@ export async function createCourse(input: CreateCourseInput): Promise<string> {
   }
 
   return docRef.id;
+}
+
+type DuplicateCourseInput = {
+  sourceCourseId: string;
+  teacherId: string;
+  teacherName?: string;
+  titleSuffix?: string;
+};
+
+export async function duplicateCourse(input: DuplicateCourseInput): Promise<string> {
+  const sourceCourseId = input.sourceCourseId.trim();
+  const teacherId = input.teacherId.trim();
+  if (!sourceCourseId) {
+    throw new Error("sourceCourseId es requerido");
+  }
+  if (!teacherId) {
+    throw new Error("teacherId es requerido");
+  }
+
+  const sourceCourseRef = doc(db, "courses", sourceCourseId);
+  const sourceCourseSnap = await getDoc(sourceCourseRef);
+  if (!sourceCourseSnap.exists()) {
+    throw new Error("No se encontró el curso origen");
+  }
+
+  const sourceCourse = sourceCourseSnap.data() as Record<string, unknown>;
+  const baseTitle = asString(sourceCourse.title, "Curso sin título").trim() || "Curso sin título";
+  const titleSuffix = input.titleSuffix ?? " (Copia)";
+  const program = asString(sourceCourse.program) || asString(sourceCourse.category);
+  const duplicatedCourseRef = await addDoc(collection(db, "courses"), {
+    title: `${baseTitle}${titleSuffix}`,
+    description: asString(sourceCourse.description),
+    introVideoUrl: asString(sourceCourse.introVideoUrl),
+    program,
+    category: program,
+    teacherId,
+    teacherName: input.teacherName ?? "",
+    thumbnail: asString(sourceCourse.thumbnail),
+    isArchived: false,
+    isPublished: false,
+    createdAt: serverTimestamp(),
+    lessonsCount: 0,
+    studentsCount: 0,
+    mentorIds: [],
+  });
+
+  const lessonsSnap = await getDocs(collection(db, "courses", sourceCourseId, "lessons"));
+  const sourceLessons = lessonsSnap.docs
+    .map((lessonDoc) => ({
+      id: lessonDoc.id,
+      data: lessonDoc.data() as Record<string, unknown>,
+    }))
+    .sort((left, right) => {
+      const byOrder = asNumber(left.data.order) - asNumber(right.data.order);
+      if (byOrder !== 0) return byOrder;
+      return asNumber(left.data.lessonNumber) - asNumber(right.data.lessonNumber);
+    });
+
+  let copiedLessonsCount = 0;
+  for (let lessonIndex = 0; lessonIndex < sourceLessons.length; lessonIndex += 1) {
+    const lesson = sourceLessons[lessonIndex];
+    const lessonOrder = asNumber(lesson.data.order, lessonIndex);
+    const lessonNumber = asNumber(lesson.data.lessonNumber, lessonIndex + 1);
+    const duplicatedLessonRef = await addDoc(
+      collection(db, "courses", duplicatedCourseRef.id, "lessons"),
+      {
+        lessonNumber,
+        title: asString(lesson.data.title, `Lección ${lessonNumber}`),
+        description: asString(lesson.data.description),
+        order: lessonOrder,
+        createdAt: serverTimestamp(),
+      },
+    );
+    copiedLessonsCount += 1;
+
+    const classesSnap = await getDocs(
+      collection(db, "courses", sourceCourseId, "lessons", lesson.id, "classes"),
+    );
+    const sourceClasses = classesSnap.docs
+      .map((classDoc) => ({
+        id: classDoc.id,
+        data: classDoc.data() as Record<string, unknown>,
+      }))
+      .sort((left, right) => asNumber(left.data.order) - asNumber(right.data.order));
+
+    for (let classIndex = 0; classIndex < sourceClasses.length; classIndex += 1) {
+      const classItem = sourceClasses[classIndex];
+      const duplicatedClassRef = await addDoc(
+        collection(
+          db,
+          "courses",
+          duplicatedCourseRef.id,
+          "lessons",
+          duplicatedLessonRef.id,
+          "classes",
+        ),
+        {
+          title: asString(classItem.data.title, "Clase sin título"),
+          type: normalizeClassType(classItem.data.type),
+          order: asNumber(classItem.data.order, classIndex),
+          duration: asFiniteNumberOrNull(classItem.data.duration),
+          videoUrl: asString(classItem.data.videoUrl),
+          content: asString(classItem.data.content),
+          audioUrl: asString(classItem.data.audioUrl),
+          imageUrls: toUniqueStringArray(classItem.data.imageUrls),
+          hasAssignment: Boolean(classItem.data.hasAssignment),
+          assignmentTemplateUrl: asString(classItem.data.assignmentTemplateUrl),
+          forumEnabled: Boolean(classItem.data.forumEnabled),
+          forumRequiredFormat: normalizeForumRequiredFormat(classItem.data.forumRequiredFormat),
+          likesCount: 0,
+          createdAt: serverTimestamp(),
+        },
+      );
+
+      const questionsSnap = await getDocs(
+        collection(
+          db,
+          "courses",
+          sourceCourseId,
+          "lessons",
+          lesson.id,
+          "classes",
+          classItem.id,
+          "questions",
+        ),
+      );
+      const sourceQuestions = questionsSnap.docs
+        .map((questionDoc) => ({
+          data: questionDoc.data() as Record<string, unknown>,
+        }))
+        .sort((left, right) => asNumber(left.data.order) - asNumber(right.data.order));
+
+      for (let questionIndex = 0; questionIndex < sourceQuestions.length; questionIndex += 1) {
+        const question = sourceQuestions[questionIndex];
+        const questionType = normalizeQuizQuestionType(question.data.type);
+        const options = Array.isArray(question.data.options)
+          ? question.data.options.map((option, optionIndex) => {
+              const optionRecord = asRecord(option);
+              return {
+                id: asString(optionRecord.id, `option-${optionIndex + 1}`),
+                text: asString(optionRecord.text),
+                isCorrect: Boolean(optionRecord.isCorrect),
+                feedback: asString(optionRecord.feedback),
+                correctFeedback: asString(optionRecord.correctFeedback),
+                incorrectFeedback: asString(optionRecord.incorrectFeedback),
+              };
+            })
+          : [];
+
+        await addDoc(
+          collection(
+            db,
+            "courses",
+            duplicatedCourseRef.id,
+            "lessons",
+            duplicatedLessonRef.id,
+            "classes",
+            duplicatedClassRef.id,
+            "questions",
+          ),
+          {
+            prompt: asString(question.data.prompt),
+            type: questionType,
+            order: asNumber(question.data.order, questionIndex),
+            explanation:
+              asString(question.data.explanation) || asString(question.data.questionFeedback),
+            options,
+            answerText: questionType === "open" ? asString(question.data.answerText) : "",
+            createdAt: serverTimestamp(),
+          },
+        );
+      }
+    }
+  }
+
+  await updateDoc(duplicatedCourseRef, { lessonsCount: copiedLessonsCount });
+  if (program) {
+    await syncCourseProgram(duplicatedCourseRef.id, program);
+  }
+
+  return duplicatedCourseRef.id;
 }
 
 type UpdateCourseInput = {

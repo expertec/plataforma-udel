@@ -73,6 +73,67 @@ const toUniqueStringArray = (value: unknown): string[] => {
   );
 };
 
+const toDateFromUnknown = (value: unknown): Date | null => {
+  if (!value) return null;
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  if (typeof value === "object") {
+    if ("toDate" in value && typeof (value as { toDate?: unknown }).toDate === "function") {
+      try {
+        const maybeDate = (value as { toDate: () => Date }).toDate();
+        return Number.isNaN(maybeDate.getTime()) ? null : maybeDate;
+      } catch {
+        return null;
+      }
+    }
+
+    const seconds = (value as { seconds?: unknown }).seconds;
+    const nanoseconds = (value as { nanoseconds?: unknown }).nanoseconds;
+    if (typeof seconds === "number" && Number.isFinite(seconds)) {
+      const nanos = typeof nanoseconds === "number" && Number.isFinite(nanoseconds) ? nanoseconds : 0;
+      const millis = Math.trunc(seconds * 1000 + nanos / 1_000_000);
+      const parsed = new Date(millis);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  if (typeof value === "string") {
+    const raw = value.trim();
+    if (!raw) return null;
+
+    const iso = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (iso) {
+      const year = Number(iso[1]);
+      const month = Number(iso[2]);
+      const day = Number(iso[3]);
+      const parsed = new Date(year, month - 1, day);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    const slash = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (slash) {
+      const day = Number(slash[1]);
+      const month = Number(slash[2]);
+      const year = Number(slash[3]);
+      const parsed = new Date(year, month - 1, day);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  return null;
+};
+
 const toGroupCourses = (data: DocumentData): Array<{ courseId: string; courseName: string }> => {
   if (Array.isArray(data.courses)) {
     const courses = data.courses
@@ -200,8 +261,8 @@ const toGroup = (id: string, data: DocumentData): Group => {
       : [],
     mentorCourseAccess: normalizeMentorCourseAccess(data.mentorCourseAccess, courseIds),
     semester: typeof data.semester === "string" ? data.semester : "",
-    startDate: data.startDate?.toDate?.() ?? null,
-    endDate: data.endDate?.toDate?.() ?? null,
+    startDate: toDateFromUnknown(data.startDate),
+    endDate: toDateFromUnknown(data.endDate),
     status:
       data.status === "finished" || data.status === "archived" || data.status === "active"
         ? data.status
