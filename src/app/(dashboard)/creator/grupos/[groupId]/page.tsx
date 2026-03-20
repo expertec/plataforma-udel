@@ -12,6 +12,7 @@ import {
   removeStudentFromGroup,
   setAssistantTeachers,
   setMentorCourseAccess,
+  updateGroupCampusGradeSettings,
 } from "@/lib/firebase/groups-service";
 import { Course, getCourses } from "@/lib/firebase/courses-service";
 import { getStudentUsersPaginated, StudentUser } from "@/lib/firebase/students-service";
@@ -55,6 +56,11 @@ export default function GroupDetailPage() {
   const [courseSearch, setCourseSearch] = useState("");
   const [loadingCourseOptions, setLoadingCourseOptions] = useState(false);
   const [linkingCourseId, setLinkingCourseId] = useState<string | null>(null);
+  const [campusGradeConfig, setCampusGradeConfig] = useState({
+    enableCampusTasksGrade: false,
+    enableCampusFinalExamGrade: false,
+  });
+  const [savingCampusGradeConfig, setSavingCampusGradeConfig] = useState(false);
   const [studentSubmissionsModal, setStudentSubmissionsModal] = useState<{
     open: boolean;
     studentId: string;
@@ -143,6 +149,14 @@ export default function GroupDetailPage() {
     return () => unsub();
   }, []);
 
+  useEffect(() => {
+    if (!group) return;
+    setCampusGradeConfig({
+      enableCampusTasksGrade: group.enableCampusTasksGrade === true,
+      enableCampusFinalExamGrade: group.enableCampusFinalExamGrade === true,
+    });
+  }, [group]);
+
   const headerInfo = useMemo(() => {
     if (!group) return "";
     const range = group.startDate && group.endDate
@@ -185,6 +199,7 @@ export default function GroupDetailPage() {
       currentUserId &&
       (currentUserId === group.teacherId || isAdminTeacherRole(userRole)),
   );
+  const canManageCampusGradeConfig = isAdminTeacherRole(userRole);
   const isCurrentUserAssistant = Boolean(
     group &&
       currentUserId &&
@@ -241,6 +256,11 @@ export default function GroupDetailPage() {
       (currentUserId === group.teacherId ||
         isAdminTeacherRole(userRole) ||
         isCurrentUserAssistant),
+  );
+  const campusGradeConfigChanged = Boolean(
+    group &&
+      (campusGradeConfig.enableCampusTasksGrade !== (group.enableCampusTasksGrade === true) ||
+        campusGradeConfig.enableCampusFinalExamGrade !== (group.enableCampusFinalExamGrade === true)),
   );
 
   useEffect(() => {
@@ -463,6 +483,37 @@ export default function GroupDetailPage() {
     }
   };
 
+  const handleSaveCampusGradeConfig = async () => {
+    if (!group) return;
+    if (!canManageCampusGradeConfig) {
+      toast.error("Solo adminTeacher puede cambiar esta configuración.");
+      return;
+    }
+    setSavingCampusGradeConfig(true);
+    try {
+      await updateGroupCampusGradeSettings({
+        groupId: group.id,
+        enableCampusTasksGrade: campusGradeConfig.enableCampusTasksGrade,
+        enableCampusFinalExamGrade: campusGradeConfig.enableCampusFinalExamGrade,
+      });
+      setGroup((prev) =>
+        prev
+          ? {
+              ...prev,
+              enableCampusTasksGrade: campusGradeConfig.enableCampusTasksGrade,
+              enableCampusFinalExamGrade: campusGradeConfig.enableCampusFinalExamGrade,
+            }
+          : prev,
+      );
+      toast.success("Configuración de calificaciones en plantel actualizada.");
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo guardar la configuración de calificaciones en plantel.");
+    } finally {
+      setSavingCampusGradeConfig(false);
+    }
+  };
+
   return (
     <div className="space-y-6 p-8">
       <div className="flex items-center justify-between">
@@ -593,6 +644,12 @@ export default function GroupDetailPage() {
                     groupTeacherId={group.teacherId}
                     currentUserId={currentUserId}
                     userRole={userRole}
+                    enableCampusTasksGrade={
+                      canManageCampusGradeConfig && group.enableCampusTasksGrade === true
+                    }
+                    enableCampusFinalExamGrade={
+                      canManageCampusGradeConfig && group.enableCampusFinalExamGrade === true
+                    }
                     canManageClosuresOverride={canManageClosuresInGroup}
                     onCourseCompletedAndUnlinked={async () => {
                       const updated = await getGroup(group.id);
@@ -605,6 +662,65 @@ export default function GroupDetailPage() {
 
             <TabsContent value="config">
               <div className="rounded-lg bg-white p-6 shadow-sm space-y-4">
+                {canManageCampusGradeConfig ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                      Calificaciones en plantel
+                    </p>
+                    <h3 className="mt-1 text-lg font-semibold text-slate-900">
+                      Captura extra por grupo
+                    </h3>
+                    <p className="text-sm text-slate-600">
+                      Activa los campos para capturar tareas en plantel y examen final en plantel antes de la calificación final.
+                    </p>
+
+                    <div className="mt-4 space-y-3">
+                      <label className="flex items-center gap-2 text-sm text-slate-800">
+                        <input
+                          type="checkbox"
+                          checked={campusGradeConfig.enableCampusTasksGrade}
+                          onChange={(event) =>
+                            setCampusGradeConfig((prev) => ({
+                              ...prev,
+                              enableCampusTasksGrade: event.target.checked,
+                            }))
+                          }
+                          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span>Capturar calificación de tareas en plantel</span>
+                      </label>
+                      <label className="flex items-center gap-2 text-sm text-slate-800">
+                        <input
+                          type="checkbox"
+                          checked={campusGradeConfig.enableCampusFinalExamGrade}
+                          onChange={(event) =>
+                            setCampusGradeConfig((prev) => ({
+                              ...prev,
+                              enableCampusFinalExamGrade: event.target.checked,
+                            }))
+                          }
+                          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span>Capturar examen final en plantel</span>
+                      </label>
+                    </div>
+
+                    <div className="mt-4 flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={handleSaveCampusGradeConfig}
+                        disabled={!campusGradeConfigChanged || savingCampusGradeConfig}
+                        className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {savingCampusGradeConfig ? "Guardando..." : "Guardar configuración"}
+                      </button>
+                      <p className="text-xs text-slate-500">
+                        Estos campos se mostrarán en la pestaña de calificaciones.
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Mentores</p>

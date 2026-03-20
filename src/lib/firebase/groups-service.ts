@@ -41,6 +41,8 @@ export type Group = {
   status: "active" | "finished" | "archived";
   studentsCount: number;
   maxStudents: number;
+  enableCampusTasksGrade?: boolean;
+  enableCampusFinalExamGrade?: boolean;
   createdAt?: Date;
   updatedAt?: Date;
 };
@@ -58,6 +60,8 @@ type CreateGroupData = {
   startDate?: Date;
   endDate?: Date;
   maxStudents: number;
+  enableCampusTasksGrade?: boolean;
+  enableCampusFinalExamGrade?: boolean;
 };
 
 type MentorCourseAccessMap = Record<string, string[]>;
@@ -269,6 +273,8 @@ const toGroup = (id: string, data: DocumentData): Group => {
         : "active",
     studentsCount: typeof data.studentsCount === "number" ? data.studentsCount : 0,
     maxStudents: typeof data.maxStudents === "number" ? data.maxStudents : 0,
+    enableCampusTasksGrade: data.enableCampusTasksGrade === true,
+    enableCampusFinalExamGrade: data.enableCampusFinalExamGrade === true,
     createdAt: data.createdAt?.toDate?.(),
     updatedAt: data.updatedAt?.toDate?.(),
   };
@@ -306,10 +312,26 @@ export async function createGroup(data: CreateGroupData): Promise<string> {
     status: "active",
     studentsCount: 0,
     maxStudents: data.maxStudents,
+    enableCampusTasksGrade: data.enableCampusTasksGrade === true,
+    enableCampusFinalExamGrade: data.enableCampusFinalExamGrade === true,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
   return docRef.id;
+}
+
+export async function updateGroupCampusGradeSettings(params: {
+  groupId: string;
+  enableCampusTasksGrade: boolean;
+  enableCampusFinalExamGrade: boolean;
+}): Promise<void> {
+  const { groupId, enableCampusTasksGrade, enableCampusFinalExamGrade } = params;
+  if (!groupId) return;
+  await updateDoc(doc(db, "groups", groupId), {
+    enableCampusTasksGrade: Boolean(enableCampusTasksGrade),
+    enableCampusFinalExamGrade: Boolean(enableCampusFinalExamGrade),
+    updatedAt: serverTimestamp(),
+  });
 }
 
 export async function getGroups(teacherId: string): Promise<Group[]> {

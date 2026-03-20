@@ -24,6 +24,8 @@ type CalificacionesTabProps = {
   groupTeacherId: string;
   currentUserId: string | null;
   userRole: UserRole | null;
+  enableCampusTasksGrade?: boolean;
+  enableCampusFinalExamGrade?: boolean;
   canManageClosuresOverride?: boolean;
   onCourseCompletedAndUnlinked?: (courseId: string) => Promise<void> | void;
 };
@@ -39,6 +41,8 @@ type CourseClosureState = {
   status?: "open" | "closed";
   finalGrade?: number;
   autoGrade?: number | null;
+  campusTasksGrade?: number | null;
+  campusFinalExamGrade?: number | null;
   manualOverride?: boolean;
   pendingUngradedCount?: number;
   lastFinalGradeNotifiedAt?: Date | null;
@@ -144,6 +148,8 @@ export function CalificacionesTab({
   groupTeacherId,
   currentUserId,
   userRole,
+  enableCampusTasksGrade = false,
+  enableCampusFinalExamGrade = false,
   canManageClosuresOverride,
   onCourseCompletedAndUnlinked,
 }: CalificacionesTabProps) {
@@ -153,6 +159,8 @@ export function CalificacionesTab({
   const [enrollmentByStudent, setEnrollmentByStudent] = useState<Record<string, EnrollmentRecord>>({});
   const [selectedCourseId, setSelectedCourseId] = useState<string>(courses[0]?.courseId ?? "");
   const [draftFinalGrades, setDraftFinalGrades] = useState<Record<string, string>>({});
+  const [draftCampusTasksGrades, setDraftCampusTasksGrades] = useState<Record<string, string>>({});
+  const [draftCampusFinalExamGrades, setDraftCampusFinalExamGrades] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [processingStudentId, setProcessingStudentId] = useState<string | null>(null);
   const [processingNotifyStudentId, setProcessingNotifyStudentId] = useState<string | null>(null);
@@ -254,6 +262,16 @@ export function CalificacionesTab({
               autoGrade:
                 typeof closureObj.autoGrade === "number" && Number.isFinite(closureObj.autoGrade)
                   ? closureObj.autoGrade
+                  : null,
+              campusTasksGrade:
+                typeof closureObj.campusTasksGrade === "number" &&
+                Number.isFinite(closureObj.campusTasksGrade)
+                  ? closureObj.campusTasksGrade
+                  : null,
+              campusFinalExamGrade:
+                typeof closureObj.campusFinalExamGrade === "number" &&
+                Number.isFinite(closureObj.campusFinalExamGrade)
+                  ? closureObj.campusFinalExamGrade
                   : null,
               manualOverride: closureObj.manualOverride === true,
               pendingUngradedCount:
@@ -395,6 +413,15 @@ export function CalificacionesTab({
   );
 
   const getDraftKey = (studentId: string) => `${selectedCourseId}::${studentId}`;
+  const formatGradeInput = (value?: number | null) =>
+    typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "";
+  const parseOptionalGradeInput = (value: string): number | null | undefined => {
+    const normalized = value.trim();
+    if (!normalized) return null;
+    const parsed = Number(normalized);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) return undefined;
+    return parsed;
+  };
 
   const getFinalGradeInput = (row: StudentCourseRow) => {
     const key = getDraftKey(row.studentId);
@@ -408,6 +435,54 @@ export function CalificacionesTab({
       return row.autoGrade.toFixed(1);
     }
     return "";
+  };
+
+  const getCampusTasksGradeInput = (row: StudentCourseRow) => {
+    if (!enableCampusTasksGrade) return "";
+    const key = getDraftKey(row.studentId);
+    if (Object.prototype.hasOwnProperty.call(draftCampusTasksGrades, key)) {
+      return draftCampusTasksGrades[key];
+    }
+    return formatGradeInput(row.closure?.campusTasksGrade);
+  };
+
+  const getCampusFinalExamGradeInput = (row: StudentCourseRow) => {
+    if (!enableCampusFinalExamGrade) return "";
+    const key = getDraftKey(row.studentId);
+    if (Object.prototype.hasOwnProperty.call(draftCampusFinalExamGrades, key)) {
+      return draftCampusFinalExamGrades[key];
+    }
+    return formatGradeInput(row.closure?.campusFinalExamGrade);
+  };
+
+  const resolveCampusGradesForRow = (row: StudentCourseRow) => {
+    const parsedCampusTasksGrade = enableCampusTasksGrade
+      ? parseOptionalGradeInput(getCampusTasksGradeInput(row))
+      : row.closure?.campusTasksGrade ?? null;
+    if (enableCampusTasksGrade && parsedCampusTasksGrade === undefined) {
+      return {
+        campusTasksGrade: null,
+        campusFinalExamGrade: null,
+        errorMessage: "La calificación de tareas en plantel debe estar entre 0 y 100.",
+      };
+    }
+
+    const parsedCampusFinalExamGrade = enableCampusFinalExamGrade
+      ? parseOptionalGradeInput(getCampusFinalExamGradeInput(row))
+      : row.closure?.campusFinalExamGrade ?? null;
+    if (enableCampusFinalExamGrade && parsedCampusFinalExamGrade === undefined) {
+      return {
+        campusTasksGrade: null,
+        campusFinalExamGrade: null,
+        errorMessage: "La calificación de examen final en plantel debe estar entre 0 y 100.",
+      };
+    }
+
+    return {
+      campusTasksGrade: parsedCampusTasksGrade ?? null,
+      campusFinalExamGrade: parsedCampusFinalExamGrade ?? null,
+      errorMessage: null,
+    };
   };
 
   const upsertLocalClosure = (
@@ -838,6 +913,11 @@ export function CalificacionesTab({
       toast.error("La calificación final debe estar entre 0 y 100.");
       return;
     }
+    const campusGrades = resolveCampusGradesForRow(row);
+    if (campusGrades.errorMessage) {
+      toast.error(campusGrades.errorMessage);
+      return;
+    }
 
     if (row.pendingUngradedCount > 0) {
       const confirmed = await requestConfirmation({
@@ -880,6 +960,8 @@ export function CalificacionesTab({
         status: "closed",
         finalGrade,
         autoGrade: row.autoGrade,
+        campusTasksGrade: campusGrades.campusTasksGrade,
+        campusFinalExamGrade: campusGrades.campusFinalExamGrade,
         manualOverride,
         pendingUngradedCount: row.pendingUngradedCount,
         lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
@@ -903,6 +985,8 @@ export function CalificacionesTab({
               status: closurePayload.status,
               finalGrade: closurePayload.finalGrade,
               autoGrade: closurePayload.autoGrade,
+              campusTasksGrade: closurePayload.campusTasksGrade,
+              campusFinalExamGrade: closurePayload.campusFinalExamGrade,
               manualOverride: closurePayload.manualOverride,
               pendingUngradedCount: closurePayload.pendingUngradedCount,
               lastFinalGradeNotifiedAt: closurePayload.lastFinalGradeNotifiedAt ?? null,
@@ -943,6 +1027,11 @@ export function CalificacionesTab({
       toast.error("La calificación final debe estar entre 0 y 100.");
       return;
     }
+    const campusGrades = resolveCampusGradesForRow(row);
+    if (campusGrades.errorMessage) {
+      toast.error(campusGrades.errorMessage);
+      return;
+    }
 
     setProcessingNotifyStudentId(row.studentId);
     let gradeSaved = false;
@@ -956,6 +1045,8 @@ export function CalificacionesTab({
         status: isClosed ? "closed" : "open",
         finalGrade,
         autoGrade: row.autoGrade,
+        campusTasksGrade: campusGrades.campusTasksGrade,
+        campusFinalExamGrade: campusGrades.campusFinalExamGrade,
         manualOverride,
         pendingUngradedCount: row.pendingUngradedCount,
         lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
@@ -982,6 +1073,8 @@ export function CalificacionesTab({
               status: payload.status,
               finalGrade: payload.finalGrade,
               autoGrade: payload.autoGrade,
+              campusTasksGrade: payload.campusTasksGrade,
+              campusFinalExamGrade: payload.campusFinalExamGrade,
               manualOverride: payload.manualOverride,
               pendingUngradedCount: payload.pendingUngradedCount,
               lastFinalGradeNotifiedAt: payload.lastFinalGradeNotifiedAt ?? null,
@@ -1004,6 +1097,14 @@ export function CalificacionesTab({
       upsertLocalClosure(row.studentId, selectedCourseId, payload, row.enrollmentId);
       const key = getDraftKey(row.studentId);
       setDraftFinalGrades((prev) => ({ ...prev, [key]: finalGrade.toFixed(1) }));
+      setDraftCampusTasksGrades((prev) => ({
+        ...prev,
+        [key]: formatGradeInput(campusGrades.campusTasksGrade),
+      }));
+      setDraftCampusFinalExamGrades((prev) => ({
+        ...prev,
+        [key]: formatGradeInput(campusGrades.campusFinalExamGrade),
+      }));
 
       const currentSessionUser = auth.currentUser;
       if (!currentSessionUser) {
@@ -1061,6 +1162,8 @@ export function CalificacionesTab({
                 status: notifiedPayload.status,
                 finalGrade: notifiedPayload.finalGrade,
                 autoGrade: notifiedPayload.autoGrade,
+                campusTasksGrade: notifiedPayload.campusTasksGrade,
+                campusFinalExamGrade: notifiedPayload.campusFinalExamGrade,
                 manualOverride: notifiedPayload.manualOverride,
                 pendingUngradedCount: notifiedPayload.pendingUngradedCount,
                 lastFinalGradeNotifiedAt: notifiedPayload.lastFinalGradeNotifiedAt,
@@ -1121,6 +1224,8 @@ export function CalificacionesTab({
         status: "open",
         finalGrade: previous?.finalGrade,
         autoGrade: previous?.autoGrade ?? row.autoGrade,
+        campusTasksGrade: previous?.campusTasksGrade ?? null,
+        campusFinalExamGrade: previous?.campusFinalExamGrade ?? null,
         manualOverride: previous?.manualOverride ?? false,
         pendingUngradedCount: row.pendingUngradedCount,
         lastFinalGradeNotifiedAt: previous?.lastFinalGradeNotifiedAt ?? null,
@@ -1147,6 +1252,8 @@ export function CalificacionesTab({
               status: reopenPayload.status,
               finalGrade: reopenPayload.finalGrade ?? null,
               autoGrade: reopenPayload.autoGrade ?? null,
+              campusTasksGrade: reopenPayload.campusTasksGrade ?? null,
+              campusFinalExamGrade: reopenPayload.campusFinalExamGrade ?? null,
               manualOverride: reopenPayload.manualOverride ?? false,
               pendingUngradedCount: reopenPayload.pendingUngradedCount,
               lastFinalGradeNotifiedAt: reopenPayload.lastFinalGradeNotifiedAt ?? null,
@@ -1195,16 +1302,21 @@ export function CalificacionesTab({
     const parsedRows = openRows.map((row) => {
       const rawGrade = getFinalGradeInput(row).trim();
       const finalGrade = Number(rawGrade);
-      return { row, rawGrade, finalGrade };
+      const campusGrades = resolveCampusGradesForRow(row);
+      return { row, rawGrade, finalGrade, campusGrades };
     });
 
     const invalidRows = parsedRows.filter(
-      ({ rawGrade, finalGrade }) =>
-        rawGrade.length === 0 || !Number.isFinite(finalGrade) || finalGrade < 0 || finalGrade > 100,
+      ({ rawGrade, finalGrade, campusGrades }) =>
+        rawGrade.length === 0 ||
+        !Number.isFinite(finalGrade) ||
+        finalGrade < 0 ||
+        finalGrade > 100 ||
+        Boolean(campusGrades.errorMessage),
     );
     if (invalidRows.length > 0) {
       toast.error(
-        `Faltan calificaciones válidas (0..100) para ${invalidRows.length} alumno(s).`,
+        `Faltan calificaciones válidas (0..100) en Final o campos en plantel para ${invalidRows.length} alumno(s).`,
       );
       return;
     }
@@ -1261,7 +1373,7 @@ export function CalificacionesTab({
       for (let i = 0; i < parsedRows.length; i += chunkSize) {
         const chunk = parsedRows.slice(i, i + chunkSize);
         const batch = writeBatch(db);
-        chunk.forEach(({ row, finalGrade }) => {
+        chunk.forEach(({ row, finalGrade, campusGrades }) => {
           const manualOverride =
             row.autoGrade === null ? true : Math.abs(finalGrade - row.autoGrade) > 0.01;
           const previousClosure = row.closure ?? null;
@@ -1277,6 +1389,8 @@ export function CalificacionesTab({
                   status: "closed",
                   finalGrade,
                   autoGrade: row.autoGrade,
+                  campusTasksGrade: campusGrades.campusTasksGrade,
+                  campusFinalExamGrade: campusGrades.campusFinalExamGrade,
                   manualOverride,
                   pendingUngradedCount: row.pendingUngradedCount,
                   lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
@@ -1297,7 +1411,7 @@ export function CalificacionesTab({
 
       setEnrollmentByStudent((prev) => {
         const next = { ...prev };
-        parsedRows.forEach(({ row, finalGrade }) => {
+        parsedRows.forEach(({ row, finalGrade, campusGrades }) => {
           const manualOverride =
             row.autoGrade === null ? true : Math.abs(finalGrade - row.autoGrade) > 0.01;
           const previousClosure = row.closure ?? null;
@@ -1311,6 +1425,8 @@ export function CalificacionesTab({
                 status: "closed",
                 finalGrade,
                 autoGrade: row.autoGrade,
+                campusTasksGrade: campusGrades.campusTasksGrade,
+                campusFinalExamGrade: campusGrades.campusFinalExamGrade,
                 manualOverride,
                 pendingUngradedCount: row.pendingUngradedCount,
                 lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
@@ -1403,6 +1519,9 @@ export function CalificacionesTab({
     );
   }
 
+  const tableColumnsCount =
+    6 + (enableCampusTasksGrade ? 1 : 0) + (enableCampusFinalExamGrade ? 1 : 0);
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1457,6 +1576,12 @@ export function CalificacionesTab({
               <tr>
                 <th className="px-3 py-2 text-left">Alumno</th>
                 <th className="px-3 py-2 text-left">Auto</th>
+                {enableCampusTasksGrade ? (
+                  <th className="px-3 py-2 text-left">Tareas plantel</th>
+                ) : null}
+                {enableCampusFinalExamGrade ? (
+                  <th className="px-3 py-2 text-left">Examen final plantel</th>
+                ) : null}
                 <th className="px-3 py-2 text-left">Final</th>
                 <th className="px-3 py-2 text-left">Pendientes</th>
                 <th className="px-3 py-2 text-left">Estado</th>
@@ -1466,17 +1591,34 @@ export function CalificacionesTab({
             <tbody className="divide-y divide-slate-100">
               {rows.length === 0 ? (
                 <tr>
-                  <td className="px-3 py-4 text-center text-slate-500" colSpan={6}>
+                  <td className="px-3 py-4 text-center text-slate-500" colSpan={tableColumnsCount}>
                     No hay alumnos en este grupo.
                   </td>
                 </tr>
               ) : rows.map((row) => {
                 const isClosed = row.closure?.status === "closed";
+                const campusTasksInput = getCampusTasksGradeInput(row);
+                const campusFinalExamInput = getCampusFinalExamGradeInput(row);
                 const finalInput = getFinalGradeInput(row);
                 const finalGradeNum = Number(finalInput);
                 const invalidFinal =
                   finalInput.trim().length > 0 &&
                   (!Number.isFinite(finalGradeNum) || finalGradeNum < 0 || finalGradeNum > 100);
+                const campusTasksGradeNum = Number(campusTasksInput);
+                const invalidCampusTasksGrade =
+                  enableCampusTasksGrade &&
+                  campusTasksInput.trim().length > 0 &&
+                  (!Number.isFinite(campusTasksGradeNum) ||
+                    campusTasksGradeNum < 0 ||
+                    campusTasksGradeNum > 100);
+                const campusFinalExamGradeNum = Number(campusFinalExamInput);
+                const invalidCampusFinalExamGrade =
+                  enableCampusFinalExamGrade &&
+                  campusFinalExamInput.trim().length > 0 &&
+                  (!Number.isFinite(campusFinalExamGradeNum) ||
+                    campusFinalExamGradeNum < 0 ||
+                    campusFinalExamGradeNum > 100);
+                const hasCampusInputErrors = invalidCampusTasksGrade || invalidCampusFinalExamGrade;
                 const isRowProcessing =
                   processingAll ||
                   processingStudentId === row.studentId ||
@@ -1488,6 +1630,44 @@ export function CalificacionesTab({
                     <td className="px-3 py-2 text-slate-700">
                       {typeof row.autoGrade === "number" ? row.autoGrade.toFixed(1) : "—"}
                     </td>
+                    {enableCampusTasksGrade ? (
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          step={0.1}
+                          value={campusTasksInput}
+                          onChange={(e) => {
+                            const key = getDraftKey(row.studentId);
+                            setDraftCampusTasksGrades((prev) => ({ ...prev, [key]: e.target.value }));
+                          }}
+                          disabled={!canManageClosures || isRowProcessing}
+                          className={`w-28 rounded-lg border px-2 py-1 text-sm ${
+                            invalidCampusTasksGrade ? "border-red-400" : "border-slate-300"
+                          } ${!canManageClosures ? "bg-slate-100 text-slate-500" : "bg-white text-slate-900"}`}
+                        />
+                      </td>
+                    ) : null}
+                    {enableCampusFinalExamGrade ? (
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          step={0.1}
+                          value={campusFinalExamInput}
+                          onChange={(e) => {
+                            const key = getDraftKey(row.studentId);
+                            setDraftCampusFinalExamGrades((prev) => ({ ...prev, [key]: e.target.value }));
+                          }}
+                          disabled={!canManageClosures || isRowProcessing}
+                          className={`w-28 rounded-lg border px-2 py-1 text-sm ${
+                            invalidCampusFinalExamGrade ? "border-red-400" : "border-slate-300"
+                          } ${!canManageClosures ? "bg-slate-100 text-slate-500" : "bg-white text-slate-900"}`}
+                        />
+                      </td>
+                    ) : null}
                     <td className="px-3 py-2">
                       <input
                         type="number"
@@ -1544,7 +1724,8 @@ export function CalificacionesTab({
                               !canManageClosures ||
                               isRowProcessing ||
                               finalInput.trim().length === 0 ||
-                              invalidFinal
+                              invalidFinal ||
+                              hasCampusInputErrors
                             }
                             onClick={() => handleSaveAndNotifyFinalGradeForStudent(row)}
                             className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
@@ -1559,7 +1740,8 @@ export function CalificacionesTab({
                               !canManageClosures ||
                               isRowProcessing ||
                               finalInput.trim().length === 0 ||
-                              invalidFinal
+                              invalidFinal ||
+                              hasCampusInputErrors
                             }
                             onClick={() => handleCloseCourseForStudent(row)}
                             className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-60"
