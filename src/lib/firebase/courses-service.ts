@@ -735,6 +735,49 @@ type CreateClassInput = {
   forumRequiredFormat?: "text" | "audio" | "video" | null;
 };
 
+async function createClassViaApiFallback(input: CreateClassInput): Promise<string> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error("No hay sesión activa para crear la clase");
+  }
+
+  const token = await currentUser.getIdToken();
+  const response = await fetch(
+    `/api/courses/${encodeURIComponent(input.courseId)}/lessons/${encodeURIComponent(input.lessonId)}/classes`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        title: input.title,
+        type: input.type,
+        order: input.order,
+        duration: input.duration ?? null,
+        videoUrl: input.videoUrl ?? "",
+        content: input.content ?? "",
+        audioUrl: input.audioUrl ?? "",
+        imageUrls: input.imageUrls ?? [],
+        hasAssignment: input.hasAssignment ?? false,
+        assignmentTemplateUrl: input.assignmentTemplateUrl ?? "",
+        forumEnabled: input.forumEnabled ?? false,
+        forumRequiredFormat: input.forumRequiredFormat ?? null,
+      }),
+    },
+  );
+
+  const payload = (await response.json().catch(() => null)) as
+    | { success?: boolean; data?: { classId?: string }; error?: string }
+    | null;
+
+  if (!response.ok || !payload?.success || !payload?.data?.classId) {
+    throw new Error(payload?.error || "No se pudo crear la clase");
+  }
+
+  return payload.data.classId;
+}
+
 export async function createClass(input: CreateClassInput): Promise<string> {
   const classesRef = collection(
     db,
@@ -744,22 +787,29 @@ export async function createClass(input: CreateClassInput): Promise<string> {
     input.lessonId,
     "classes",
   );
-  const docRef = await addDoc(classesRef, {
-    title: input.title,
-    type: input.type,
-    order: input.order,
-    duration: input.duration ?? null,
-    videoUrl: input.videoUrl ?? "",
-    content: input.content ?? "",
-    audioUrl: input.audioUrl ?? "",
-    imageUrls: input.imageUrls ?? [],
-    hasAssignment: input.hasAssignment ?? false,
-    assignmentTemplateUrl: input.assignmentTemplateUrl ?? "",
-    forumEnabled: input.forumEnabled ?? false,
-    forumRequiredFormat: input.forumRequiredFormat ?? null,
-    createdAt: serverTimestamp(),
-  });
-  return docRef.id;
+  try {
+    const docRef = await addDoc(classesRef, {
+      title: input.title,
+      type: input.type,
+      order: input.order,
+      duration: input.duration ?? null,
+      videoUrl: input.videoUrl ?? "",
+      content: input.content ?? "",
+      audioUrl: input.audioUrl ?? "",
+      imageUrls: input.imageUrls ?? [],
+      hasAssignment: input.hasAssignment ?? false,
+      assignmentTemplateUrl: input.assignmentTemplateUrl ?? "",
+      forumEnabled: input.forumEnabled ?? false,
+      forumRequiredFormat: input.forumRequiredFormat ?? null,
+      createdAt: serverTimestamp(),
+    });
+    return docRef.id;
+  } catch (error) {
+    if (isPermissionDeniedError(error)) {
+      return createClassViaApiFallback(input);
+    }
+    throw error;
+  }
 }
 
 type UpdateClassInput = {
@@ -779,6 +829,37 @@ type UpdateClassInput = {
   forumEnabled?: boolean;
   forumRequiredFormat?: "text" | "audio" | "video" | null;
 };
+
+async function updateClassViaApiFallback(
+  input: Pick<UpdateClassInput, "courseId" | "lessonId" | "classId">,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error("No hay sesión activa para actualizar la clase");
+  }
+
+  const token = await currentUser.getIdToken();
+  const response = await fetch(
+    `/api/courses/${encodeURIComponent(input.courseId)}/lessons/${encodeURIComponent(input.lessonId)}/classes/${encodeURIComponent(input.classId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    },
+  );
+
+  const data = (await response.json().catch(() => null)) as
+    | { success?: boolean; error?: string }
+    | null;
+
+  if (!response.ok || !data?.success) {
+    throw new Error(data?.error || "No se pudo actualizar la clase");
+  }
+}
 
 export async function updateClass(input: UpdateClassInput): Promise<void> {
   const classRef = doc(
@@ -805,7 +886,15 @@ export async function updateClass(input: UpdateClassInput): Promise<void> {
   if (input.forumEnabled !== undefined) payload.forumEnabled = input.forumEnabled;
   if (input.forumRequiredFormat !== undefined) payload.forumRequiredFormat = input.forumRequiredFormat;
   if (Object.keys(payload).length === 0) return;
-  await updateDoc(classRef, payload);
+  try {
+    await updateDoc(classRef, payload);
+  } catch (error) {
+    if (isPermissionDeniedError(error)) {
+      await updateClassViaApiFallback(input, payload);
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function reorderClasses(
