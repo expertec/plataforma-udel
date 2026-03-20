@@ -235,50 +235,61 @@ async function resolveGroupIdFromPayload(params: {
   groupName?: string;
   programName?: string;
 }): Promise<string | undefined> {
-  const directGroupId = params.groupId?.trim();
-  if (directGroupId) {
-    return directGroupId;
-  }
+  const resolveGroupIdByName = async (candidateGroupName: string): Promise<string> => {
+    const byNameSnap = await params.firestore
+      .collection("groups")
+      .where("groupName", "==", candidateGroupName)
+      .limit(10)
+      .get();
 
-  const groupIds = (params.groupIds ?? []).map((id) => id.trim()).filter(Boolean);
-  if (groupIds.length > 0) {
-    return groupIds[0];
-  }
+    if (byNameSnap.empty) {
+      throw new WebhookRequestError(400, `No existe grupo con nombre ${candidateGroupName}`);
+    }
+
+    if (byNameSnap.size === 1) {
+      const singleMatch = byNameSnap.docs[0];
+      if (singleMatch) return singleMatch.id;
+      throw new WebhookRequestError(500, "No se pudo resolver el grupo por nombre");
+    }
+
+    const normalizedProgram = params.programName?.trim().toLowerCase();
+    if (normalizedProgram) {
+      const matchesByProgram = byNameSnap.docs.filter((docSnap) => {
+        const groupProgram = asText(docSnap.data()?.program);
+        return (groupProgram ?? "").trim().toLowerCase() === normalizedProgram;
+      });
+      if (matchesByProgram.length === 1) {
+        const singleProgramMatch = matchesByProgram[0];
+        if (singleProgramMatch) return singleProgramMatch.id;
+        throw new WebhookRequestError(500, "No se pudo resolver el grupo por programa");
+      }
+    }
+
+    throw new WebhookRequestError(
+      409,
+      `Hay ${byNameSnap.size} grupos con nombre ${candidateGroupName}. Envía program/programId o un groupName único para evitar ambigüedad.`,
+    );
+  };
 
   const trimmedGroupName = params.groupName?.trim();
-  if (!trimmedGroupName) {
-    return undefined;
+  if (trimmedGroupName) {
+    return resolveGroupIdByName(trimmedGroupName);
   }
 
-  const byNameSnap = await params.firestore
-    .collection("groups")
-    .where("groupName", "==", trimmedGroupName)
-    .limit(10)
-    .get();
-
-  if (byNameSnap.empty) {
-    throw new WebhookRequestError(400, `No existe grupo con nombre ${trimmedGroupName}`);
+  // Compatibilidad de payload: si el integrador envía groupId/groupIds,
+  // se interpretan como clave/nombre de grupo y se buscan por groupName.
+  const groupNameFromGroupId = params.groupId?.trim();
+  if (groupNameFromGroupId) {
+    return resolveGroupIdByName(groupNameFromGroupId);
   }
 
-  if (byNameSnap.size === 1) {
-    return byNameSnap.docs[0]?.id;
+  const groupNamesFromGroupIds = (params.groupIds ?? []).map((id) => id.trim()).filter(Boolean);
+  const firstGroupName = groupNamesFromGroupIds[0];
+  if (firstGroupName) {
+    return resolveGroupIdByName(firstGroupName);
   }
 
-  const normalizedProgram = params.programName?.trim().toLowerCase();
-  if (normalizedProgram) {
-    const matchesByProgram = byNameSnap.docs.filter((docSnap) => {
-      const groupProgram = asText(docSnap.data()?.program);
-      return (groupProgram ?? "").trim().toLowerCase() === normalizedProgram;
-    });
-    if (matchesByProgram.length === 1) {
-      return matchesByProgram[0]?.id;
-    }
-  }
-
-  throw new WebhookRequestError(
-    409,
-    `Hay ${byNameSnap.size} grupos con nombre ${trimmedGroupName}. Envía groupId para evitar ambigüedad.`,
-  );
+  return undefined;
 }
 
 function resolvePrimaryCourse(groupData: AnyRecord): { courseId: string; courseName: string } {

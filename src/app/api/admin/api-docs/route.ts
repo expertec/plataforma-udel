@@ -97,10 +97,10 @@ Nota: si no envías \`password\`, la plataforma usará la contraseña por defect
 }
 \`\`\`
 
-Puedes enviar el grupo como \`groupId\`, \`groupIds\` (usa el primero) o \`groupName\`.
-Si \`groupName\` coincide con más de un grupo, debes enviar \`groupId\`.
+Puedes enviar el grupo como \`groupName\`. Por compatibilidad también puede venir en \`groupId\` o \`groupIds\` (usa el primero), pero en todos los casos la plataforma lo interpreta como nombre/clave y busca en \`groups.groupName\`.
+Si \`groupName\` coincide con más de un grupo, la plataforma intenta desambiguar con \`program/programId\`; si persiste la ambigüedad, responde \`409\`.
 
-Si envías \`groupId\` (directo o resuelto por nombre), la plataforma además:
+Si se resuelve un grupo por \`groupName\`, la plataforma además:
 
 - Inscribe al alumno en \`groups/{groupId}/students/{studentId}\`
 - Crea/actualiza \`studentEnrollments/{groupId}_{studentId}\`
