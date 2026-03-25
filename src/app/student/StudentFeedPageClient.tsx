@@ -334,7 +334,14 @@ export default function StudentFeedPageClient() {
   const [assignmentSubmissionMap, setAssignmentSubmissionMap] = useState<
     Record<
       string,
-      { id: string; status: SubmissionStatus; grade: number | null; fileUrl?: string; audioUrl?: string }
+      {
+        id: string;
+        status: SubmissionStatus;
+        grade: number | null;
+        fileUrl?: string;
+        audioUrl?: string;
+        feedback?: string;
+      }
     >
   >({});
   const authorNameCacheRef = useRef<Record<string, string>>({});
@@ -1403,6 +1410,7 @@ export default function StudentFeedPageClient() {
             grade?: number;
             fileUrl?: string;
             audioUrl?: string;
+            feedback?: string;
           };
           const normalizedStatus: SubmissionStatus =
             docData.status === "graded" || typeof docData.grade === "number"
@@ -1419,6 +1427,7 @@ export default function StudentFeedPageClient() {
               grade: typeof docData.grade === "number" ? docData.grade : null,
               fileUrl: docData.fileUrl ?? "",
               audioUrl: docData.audioUrl ?? "",
+              feedback: docData.feedback ?? "",
             },
           }));
           assignmentAckRef.current = { ...assignmentAckRef.current, [cls.id]: true };
@@ -3811,6 +3820,7 @@ export default function StudentFeedPageClient() {
                     submissionGrade={submissionInfo?.grade ?? null}
                     submissionFileUrl={submissionInfo?.fileUrl}
                     submissionAudioUrl={submissionInfo?.audioUrl}
+                    submissionFeedback={submissionInfo?.feedback}
                     canDeleteSubmission={canDeleteSubmission}
                     onDeleteSubmission={async () => {
                       if (!currentUser?.uid || !cls.groupId) {
@@ -3876,6 +3886,7 @@ export default function StudentFeedPageClient() {
                       grade?: number;
                       fileUrl?: string;
                       audioUrl?: string;
+                      feedback?: string;
                     };
                     const isGraded = docData.status === "graded" || typeof docData.grade === "number";
                     setAssignmentStatusMap((prev) => ({ ...prev, [cls.id]: "submitted" }));
@@ -3887,6 +3898,7 @@ export default function StudentFeedPageClient() {
                         grade: typeof docData.grade === "number" ? docData.grade : null,
                         fileUrl: docData.fileUrl ?? "",
                         audioUrl: docData.audioUrl ?? "",
+                        feedback: docData.feedback ?? "",
                       },
                     }));
                     assignmentAckRef.current = { ...assignmentAckRef.current, [cls.id]: true };
@@ -3982,6 +3994,7 @@ export default function StudentFeedPageClient() {
                         grade: null,
                         fileUrl,
                         audioUrl,
+                        feedback: "",
                       },
                     }));
                     toast.success("Tarea enviada");
@@ -6712,6 +6725,7 @@ type AssignmentPanelProps = {
   submissionGrade: number | null;
   submissionFileUrl?: string;
   submissionAudioUrl?: string;
+  submissionFeedback?: string;
   canDeleteSubmission: boolean;
   onDeleteSubmission: () => void | Promise<void>;
 };
@@ -6732,6 +6746,7 @@ function AssignmentPanel({
   submissionGrade,
   submissionFileUrl,
   submissionAudioUrl,
+  submissionFeedback,
   canDeleteSubmission,
   onDeleteSubmission,
 }: AssignmentPanelProps) {
@@ -6863,6 +6878,15 @@ function AssignmentPanel({
                 ? "Tu entrega ya fue evaluada."
                 : "Tu entrega está en revisión."}
             </p>
+            {typeof submissionGrade === "number" ? (
+              <p className="text-xs font-semibold text-emerald-200">Calificación: {submissionGrade}/100</p>
+            ) : null}
+            <div className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-left">
+              <p className="text-[11px] uppercase tracking-[0.12em] text-white/55">Retroalimentación</p>
+              <p className="mt-1 whitespace-pre-wrap text-xs text-white/80">
+                {submissionFeedback?.trim() ? submissionFeedback : "Aún no hay retroalimentación registrada."}
+              </p>
+            </div>
             {submissionFileUrl || submissionAudioUrl ? (
               <div className="flex flex-wrap items-center justify-center gap-2">
                 {submissionFileUrl ? (

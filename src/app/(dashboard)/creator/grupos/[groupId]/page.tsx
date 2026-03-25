@@ -644,12 +644,8 @@ export default function GroupDetailPage() {
                     groupTeacherId={group.teacherId}
                     currentUserId={currentUserId}
                     userRole={userRole}
-                    enableCampusTasksGrade={
-                      canManageCampusGradeConfig && group.enableCampusTasksGrade === true
-                    }
-                    enableCampusFinalExamGrade={
-                      canManageCampusGradeConfig && group.enableCampusFinalExamGrade === true
-                    }
+                    enableCampusTasksGrade={group.enableCampusTasksGrade === true}
+                    enableCampusFinalExamGrade={group.enableCampusFinalExamGrade === true}
                     canManageClosuresOverride={canManageClosuresInGroup}
                     onCourseCompletedAndUnlinked={async () => {
                       const updated = await getGroup(group.id);
