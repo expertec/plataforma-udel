@@ -59,6 +59,8 @@ export default function GroupDetailPage() {
   const [campusGradeConfig, setCampusGradeConfig] = useState({
     enableCampusTasksGrade: false,
     enableCampusFinalExamGrade: false,
+    enableGlobalExamGrade: false,
+    enableExtraordinaryExamGrade: false,
   });
   const [savingCampusGradeConfig, setSavingCampusGradeConfig] = useState(false);
   const [studentSubmissionsModal, setStudentSubmissionsModal] = useState<{
@@ -154,6 +156,8 @@ export default function GroupDetailPage() {
     setCampusGradeConfig({
       enableCampusTasksGrade: group.enableCampusTasksGrade === true,
       enableCampusFinalExamGrade: group.enableCampusFinalExamGrade === true,
+      enableGlobalExamGrade: group.enableGlobalExamGrade === true,
+      enableExtraordinaryExamGrade: group.enableExtraordinaryExamGrade === true,
     });
   }, [group]);
 
@@ -260,7 +264,10 @@ export default function GroupDetailPage() {
   const campusGradeConfigChanged = Boolean(
     group &&
       (campusGradeConfig.enableCampusTasksGrade !== (group.enableCampusTasksGrade === true) ||
-        campusGradeConfig.enableCampusFinalExamGrade !== (group.enableCampusFinalExamGrade === true)),
+        campusGradeConfig.enableCampusFinalExamGrade !== (group.enableCampusFinalExamGrade === true) ||
+        campusGradeConfig.enableGlobalExamGrade !== (group.enableGlobalExamGrade === true) ||
+        campusGradeConfig.enableExtraordinaryExamGrade !==
+          (group.enableExtraordinaryExamGrade === true)),
   );
 
   useEffect(() => {
@@ -495,6 +502,8 @@ export default function GroupDetailPage() {
         groupId: group.id,
         enableCampusTasksGrade: campusGradeConfig.enableCampusTasksGrade,
         enableCampusFinalExamGrade: campusGradeConfig.enableCampusFinalExamGrade,
+        enableGlobalExamGrade: campusGradeConfig.enableGlobalExamGrade,
+        enableExtraordinaryExamGrade: campusGradeConfig.enableExtraordinaryExamGrade,
       });
       setGroup((prev) =>
         prev
@@ -502,6 +511,8 @@ export default function GroupDetailPage() {
               ...prev,
               enableCampusTasksGrade: campusGradeConfig.enableCampusTasksGrade,
               enableCampusFinalExamGrade: campusGradeConfig.enableCampusFinalExamGrade,
+              enableGlobalExamGrade: campusGradeConfig.enableGlobalExamGrade,
+              enableExtraordinaryExamGrade: campusGradeConfig.enableExtraordinaryExamGrade,
             }
           : prev,
       );
@@ -646,6 +657,8 @@ export default function GroupDetailPage() {
                     userRole={userRole}
                     enableCampusTasksGrade={group.enableCampusTasksGrade === true}
                     enableCampusFinalExamGrade={group.enableCampusFinalExamGrade === true}
+                    enableGlobalExamGrade={group.enableGlobalExamGrade === true}
+                    enableExtraordinaryExamGrade={group.enableExtraordinaryExamGrade === true}
                     canManageClosuresOverride={canManageClosuresInGroup}
                     onCourseCompletedAndUnlinked={async () => {
                       const updated = await getGroup(group.id);
@@ -667,7 +680,7 @@ export default function GroupDetailPage() {
                       Captura extra por grupo
                     </h3>
                     <p className="text-sm text-slate-600">
-                      Activa los campos para capturar tareas en plantel y examen final en plantel antes de la calificación final.
+                      Activa los campos extra para capturar calificaciones antes de la calificación final.
                     </p>
 
                     <div className="mt-4 space-y-3">
@@ -698,6 +711,34 @@ export default function GroupDetailPage() {
                           className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                         />
                         <span>Capturar examen final en plantel</span>
+                      </label>
+                      <label className="flex items-center gap-2 text-sm text-slate-800">
+                        <input
+                          type="checkbox"
+                          checked={campusGradeConfig.enableGlobalExamGrade}
+                          onChange={(event) =>
+                            setCampusGradeConfig((prev) => ({
+                              ...prev,
+                              enableGlobalExamGrade: event.target.checked,
+                            }))
+                          }
+                          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span>Capturar examen global</span>
+                      </label>
+                      <label className="flex items-center gap-2 text-sm text-slate-800">
+                        <input
+                          type="checkbox"
+                          checked={campusGradeConfig.enableExtraordinaryExamGrade}
+                          onChange={(event) =>
+                            setCampusGradeConfig((prev) => ({
+                              ...prev,
+                              enableExtraordinaryExamGrade: event.target.checked,
+                            }))
+                          }
+                          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span>Capturar examen extraordinario</span>
                       </label>
                     </div>
 

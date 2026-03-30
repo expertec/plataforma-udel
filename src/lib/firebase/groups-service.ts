@@ -43,6 +43,8 @@ export type Group = {
   maxStudents: number;
   enableCampusTasksGrade?: boolean;
   enableCampusFinalExamGrade?: boolean;
+  enableGlobalExamGrade?: boolean;
+  enableExtraordinaryExamGrade?: boolean;
   createdAt?: Date;
   updatedAt?: Date;
 };
@@ -62,6 +64,8 @@ type CreateGroupData = {
   maxStudents: number;
   enableCampusTasksGrade?: boolean;
   enableCampusFinalExamGrade?: boolean;
+  enableGlobalExamGrade?: boolean;
+  enableExtraordinaryExamGrade?: boolean;
 };
 
 type MentorCourseAccessMap = Record<string, string[]>;
@@ -275,6 +279,8 @@ const toGroup = (id: string, data: DocumentData): Group => {
     maxStudents: typeof data.maxStudents === "number" ? data.maxStudents : 0,
     enableCampusTasksGrade: data.enableCampusTasksGrade === true,
     enableCampusFinalExamGrade: data.enableCampusFinalExamGrade === true,
+    enableGlobalExamGrade: data.enableGlobalExamGrade === true,
+    enableExtraordinaryExamGrade: data.enableExtraordinaryExamGrade === true,
     createdAt: data.createdAt?.toDate?.(),
     updatedAt: data.updatedAt?.toDate?.(),
   };
@@ -314,6 +320,8 @@ export async function createGroup(data: CreateGroupData): Promise<string> {
     maxStudents: data.maxStudents,
     enableCampusTasksGrade: data.enableCampusTasksGrade === true,
     enableCampusFinalExamGrade: data.enableCampusFinalExamGrade === true,
+    enableGlobalExamGrade: data.enableGlobalExamGrade === true,
+    enableExtraordinaryExamGrade: data.enableExtraordinaryExamGrade === true,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
@@ -324,12 +332,22 @@ export async function updateGroupCampusGradeSettings(params: {
   groupId: string;
   enableCampusTasksGrade: boolean;
   enableCampusFinalExamGrade: boolean;
+  enableGlobalExamGrade: boolean;
+  enableExtraordinaryExamGrade: boolean;
 }): Promise<void> {
-  const { groupId, enableCampusTasksGrade, enableCampusFinalExamGrade } = params;
+  const {
+    groupId,
+    enableCampusTasksGrade,
+    enableCampusFinalExamGrade,
+    enableGlobalExamGrade,
+    enableExtraordinaryExamGrade,
+  } = params;
   if (!groupId) return;
   await updateDoc(doc(db, "groups", groupId), {
     enableCampusTasksGrade: Boolean(enableCampusTasksGrade),
     enableCampusFinalExamGrade: Boolean(enableCampusFinalExamGrade),
+    enableGlobalExamGrade: Boolean(enableGlobalExamGrade),
+    enableExtraordinaryExamGrade: Boolean(enableExtraordinaryExamGrade),
     updatedAt: serverTimestamp(),
   });
 }
