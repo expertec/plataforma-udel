@@ -14,6 +14,8 @@ import {
   getForumPosts,
   getForumReplies,
   addForumReply,
+  deleteStudentForumPostIfNotEvaluated,
+  gradeForumPost,
   type ForumPost,
   type ForumReply,
 } from "@/lib/firebase/forum-service";
@@ -724,32 +726,28 @@ export function SubmissionsModal({
 
         let submissions: Submission[] = [];
         if (classType === "forum" && courseId && lessonId) {
-          const forumSnap = await getDocs(
-            collection(db, "courses", courseId, "lessons", lessonId, "classes", classId, "forums"),
-          );
-          submissions = forumSnap.docs.map((d) => {
-            const data = d.data() as {
-              authorId?: string;
-              authorName?: string;
-              createdAt?: { toDate?: () => Date };
-              mediaUrl?: string;
-              text?: string;
-            };
+          const forumPosts = await getForumPosts(courseId, lessonId, classId);
+          submissions = forumPosts.map((post) => {
+            const authorId = (post.authorId ?? "").trim() || post.id;
             return {
-              id: d.id,
+              id: post.id,
               classId,
               classDocId: classId,
               courseId,
               className,
               classType: "forum",
-              studentId: data.authorId ?? "",
-              studentName: data.authorName ?? "",
-              submittedAt: data.createdAt?.toDate?.() ?? null,
-              fileUrl: data.mediaUrl ?? "",
-              content: data.text ?? "",
-              status: "pending",
-              grade: undefined,
-              feedback: "",
+              studentId: authorId,
+              studentName: post.authorName ?? "",
+              submittedAt: post.createdAt ?? null,
+              fileUrl: post.mediaUrl ?? "",
+              content: post.text ?? "",
+              status:
+                post.status === "graded" || typeof post.grade === "number"
+                  ? "graded"
+                  : "pending",
+              grade: typeof post.grade === "number" ? post.grade : undefined,
+              feedback: post.feedback ?? "",
+              gradedAt: post.gradedAt ?? null,
             };
           });
         } else {
@@ -802,7 +800,7 @@ export function SubmissionsModal({
       }
     };
     load();
-  }, [isOpen, groupId, classId, courseId, lessonId, classType]);
+  }, [isOpen, groupId, classId, className, courseId, lessonId, classType]);
 
   const formatDate = (date?: Date | null) => {
     if (!date) return "-";
@@ -853,7 +851,7 @@ export function SubmissionsModal({
   };
 
   const handleResetSubmission = async (
-    submissionId: string,
+    submission: Submission,
     studentName: string,
     label: "tarea" | "aporte" = "tarea",
   ) => {
@@ -862,28 +860,69 @@ export function SubmissionsModal({
       return;
     }
 
-    setDeletingIds((prev) => new Set(prev).add(submissionId));
+    setDeletingIds((prev) => new Set(prev).add(submission.id));
     try {
-      await deleteSubmission(groupId, submissionId);
+      if (isForumClass && courseId && lessonId) {
+        await deleteStudentForumPostIfNotEvaluated({
+          courseId,
+          lessonId,
+          classId,
+          studentId: submission.id,
+        });
+      } else {
+        await deleteSubmission(groupId, submission.id);
+      }
       toast.success(`${label === "tarea" ? "Tarea" : "Aporte"} reseteado. El alumno puede enviar${pronoun} nuevamente.`);
 
-      // Recargar las submissions
-      const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
-        (s) => !courseId || !s.courseId || s.courseId === courseId,
-      );
-      setRows((prev) =>
-        prev.map((r) => ({
-          ...r,
-          submission: submissions.find((s) => s.studentId === r.student.id),
-        })),
-      );
+      if (isForumClass && courseId && lessonId) {
+        const forumPosts = await getForumPosts(courseId, lessonId, classId);
+        const forumSubmissions: Submission[] = forumPosts.map((post) => {
+          const authorId = (post.authorId ?? "").trim() || post.id;
+          return {
+            id: post.id,
+            classId,
+            classDocId: classId,
+            courseId,
+            className,
+            classType: "forum",
+            studentId: authorId,
+            studentName: post.authorName ?? "",
+            submittedAt: post.createdAt ?? null,
+            fileUrl: post.mediaUrl ?? "",
+            content: post.text ?? "",
+            status:
+              post.status === "graded" || typeof post.grade === "number"
+                ? "graded"
+                : "pending",
+            grade: typeof post.grade === "number" ? post.grade : undefined,
+            feedback: post.feedback ?? "",
+            gradedAt: post.gradedAt ?? null,
+          };
+        });
+        setRows((prev) =>
+          prev.map((r) => ({
+            ...r,
+            submission: forumSubmissions.find((s) => s.studentId === r.student.id),
+          })),
+        );
+      } else {
+        const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
+          (s) => !courseId || !s.courseId || s.courseId === courseId,
+        );
+        setRows((prev) =>
+          prev.map((r) => ({
+            ...r,
+            submission: submissions.find((s) => s.studentId === r.student.id),
+          })),
+        );
+      }
     } catch (err) {
       console.error("Error al resetear la tarea:", err);
       toast.error("No se pudo resetear la tarea");
     } finally {
       setDeletingIds((prev) => {
         const next = new Set(prev);
-        next.delete(submissionId);
+        next.delete(submission.id);
         return next;
       });
     }
@@ -895,7 +934,7 @@ export function SubmissionsModal({
     return rows.filter((r) => r.student.name.toLowerCase().includes(term));
   }, [rows, searchTerm]);
 
-  const columnsCount = isForumClass ? 3 : isQuizClass ? 4 : 5;
+  const columnsCount = isForumClass ? 4 : isQuizClass ? 4 : 5;
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => (!open ? onClose() : null)}>
@@ -953,7 +992,10 @@ export function SubmissionsModal({
                   <th className="px-3 py-2 text-left align-middle">Nombre</th>
                   <th className="px-3 py-2 text-left align-middle">Fecha entrega</th>
                   {isForumClass ? (
-                    <th className="px-3 py-2 text-left align-middle">Acción</th>
+                    <>
+                      <th className="px-3 py-2 text-left align-middle">Calificación</th>
+                      <th className="px-3 py-2 text-left align-middle">Acción</th>
+                    </>
                   ) : isQuizClass ? (
                     <>
                       <th className="px-3 py-2 text-left align-middle">Calificación</th>
@@ -986,35 +1028,67 @@ export function SubmissionsModal({
                         {sub ? formatDate(sub.submittedAt) : "-"}
                       </td>
                       {isForumClass ? (
-                        <td className="px-3 py-2">
-                          <div className="flex items-center gap-2">
-                            {sub ? (
-                              <>
-                                <button
-                                  type="button"
-                                  className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1 text-sm font-medium text-blue-600 hover:border-blue-400 hover:bg-blue-100"
-                                  onClick={() => setForumThreadModal({
-                                    open: true,
-                                    studentId: row.student.id,
-                                    studentName: row.student.name,
-                                  })}
-                                >
-                                  Ver hilo
-                                </button>
-                                <button
-                                  type="button"
-                                  className="rounded-lg border border-red-200 bg-red-50 px-3 py-1 text-sm font-medium text-red-600 hover:border-red-400 hover:bg-red-100 disabled:opacity-60"
-                                  disabled={deletingIds.has(sub.id)}
-                                  onClick={() => handleResetSubmission(sub.id, row.student.name, "aporte")}
-                                >
-                                  {deletingIds.has(sub.id) ? "Reseteando..." : "Resetear"}
-                                </button>
-                              </>
+                        <>
+                          <td className="px-3 py-2 text-slate-600">
+                            {sub?.grade != null ? (
+                              <span className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                                sub.grade >= 4 ? "bg-emerald-100 text-emerald-700" :
+                                sub.grade >= 3 ? "bg-amber-100 text-amber-700" :
+                                "bg-red-100 text-red-700"
+                              }`}>
+                                {sub.grade}/5
+                              </span>
+                            ) : sub ? (
+                              <span className="rounded-full bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-700">
+                                Pendiente
+                              </span>
                             ) : (
-                              <span className="text-slate-400">-</span>
+                              "-"
                             )}
-                          </div>
-                        </td>
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-2">
+                              {sub ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-medium text-blue-600 hover:border-blue-400"
+                                    onClick={() =>
+                                      setGradeModal({
+                                        open: true,
+                                        submission: sub,
+                                        readonly: sub?.grade != null,
+                                      })
+                                    }
+                                  >
+                                    {sub.grade == null ? "Calificar" : "Ver"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1 text-sm font-medium text-blue-600 hover:border-blue-400 hover:bg-blue-100"
+                                    onClick={() => setForumThreadModal({
+                                      open: true,
+                                      studentId: row.student.id,
+                                      studentName: row.student.name,
+                                    })}
+                                  >
+                                    Ver hilo
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="rounded-lg border border-red-200 bg-red-50 px-3 py-1 text-sm font-medium text-red-600 hover:border-red-400 hover:bg-red-100 disabled:opacity-60"
+                                    disabled={deletingIds.has(sub.id)}
+                                    onClick={() => handleResetSubmission(sub, row.student.name, "aporte")}
+                                  >
+                                    {deletingIds.has(sub.id) ? "Reseteando..." : "Resetear"}
+                                  </button>
+                                </>
+                              ) : (
+                                <span className="text-slate-400">-</span>
+                              )}
+                            </div>
+                          </td>
+                        </>
                       ) : isQuizClass ? (
                           <>
                             <td className="px-3 py-2">
@@ -1072,7 +1146,7 @@ export function SubmissionsModal({
                                     type="button"
                                     className="rounded-lg border border-red-200 bg-red-50 px-3 py-1 text-sm font-medium text-red-600 hover:border-red-400 hover:bg-red-100 disabled:opacity-60"
                                     disabled={deletingIds.has(sub.id)}
-                                    onClick={() => handleResetSubmission(sub.id, row.student.name)}
+                                    onClick={() => handleResetSubmission(sub, row.student.name)}
                                   >
                                     {deletingIds.has(sub.id) ? "Reseteando..." : "Resetear"}
                                   </button>
@@ -1139,7 +1213,7 @@ export function SubmissionsModal({
                                     type="button"
                                     className="rounded-lg border border-red-200 bg-red-50 px-3 py-1 text-sm font-medium text-red-600 hover:border-red-400 hover:bg-red-100 disabled:opacity-60"
                                     disabled={deletingIds.has(sub.id)}
-                                    onClick={() => handleResetSubmission(sub.id, row.student.name)}
+                                    onClick={() => handleResetSubmission(sub, row.student.name)}
                                   >
                                     {deletingIds.has(sub.id) ? "Reseteando..." : "Resetear"}
                                   </button>
@@ -1163,6 +1237,7 @@ export function SubmissionsModal({
           readonly={gradeModal.readonly}
           onClose={async () => {
             setGradeModal({ open: false });
+            if (isForumClass) return;
             const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
               (s) => !courseId || !s.courseId || s.courseId === courseId,
             );
@@ -1174,6 +1249,37 @@ export function SubmissionsModal({
             );
           }}
           onSave={async (grade, feedback) => {
+            if (isForumClass && courseId && lessonId) {
+              await gradeForumPost({
+                courseId,
+                lessonId,
+                classId,
+                studentId: gradeModal.submission!.id,
+                grade,
+                feedback,
+              });
+              setRows((prev) =>
+                prev.map((r) =>
+                  r.student.id === gradeModal.submission!.studentId
+                    ? {
+                        ...r,
+                        submission: r.submission
+                          ? {
+                              ...r.submission,
+                              grade,
+                              feedback,
+                              status: "graded",
+                              gradedAt: new Date(),
+                            }
+                          : r.submission,
+                      }
+                    : r,
+                ),
+              );
+              toast.success("Calificación de foro guardada correctamente");
+              setGradeModal({ open: false });
+              return;
+            }
             await gradeSubmission(groupId, gradeModal.submission!.id, grade, feedback);
             void notifyGradeByWhatsApp(gradeModal.submission!, grade);
             const submissions = (await getSubmissionsByClass(groupId, classId)).filter(

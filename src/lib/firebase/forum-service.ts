@@ -536,3 +536,48 @@ export async function deleteStudentForumPostIfNotEvaluated(params: {
 
   await deleteDoc(postRef);
 }
+
+/**
+ * Califica la aportación principal de un estudiante en el foro
+ */
+export async function gradeForumPost(params: {
+  courseId: string;
+  lessonId: string;
+  classId: string;
+  studentId: string;
+  grade: number;
+  feedback?: string;
+}): Promise<void> {
+  const { courseId, lessonId, classId, studentId, grade, feedback } = params;
+  if (!Number.isFinite(grade) || grade < 0 || grade > 5) {
+    throw new Error("FORUM_GRADE_INVALID");
+  }
+
+  const postRef = doc(
+    db,
+    "courses",
+    courseId,
+    "lessons",
+    lessonId,
+    "classes",
+    classId,
+    "forums",
+    studentId
+  );
+
+  const postSnap = await getDoc(postRef);
+  if (!postSnap.exists()) {
+    throw new Error("FORUM_POST_NOT_FOUND");
+  }
+
+  await setDoc(
+    postRef,
+    {
+      status: "graded",
+      grade,
+      feedback: (feedback ?? "").trim(),
+      gradedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}

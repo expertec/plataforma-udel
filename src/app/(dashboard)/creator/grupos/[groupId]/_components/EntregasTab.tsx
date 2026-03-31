@@ -5,6 +5,7 @@ import { ChevronDown } from "lucide-react";
 import { collection, doc, getDoc, getDocs, orderBy, query } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { getAllSubmissions, Submission } from "@/lib/firebase/submissions-service";
+import { getForumPosts } from "@/lib/firebase/forum-service";
 import { SubmissionsModal } from "./SubmissionsModal";
 
 type EntregasTabProps = {
@@ -131,37 +132,29 @@ export function EntregasTab({ groupId, courseIds, studentsCount }: EntregasTabPr
 
         const forumSubs: Submission[] = [];
         for (const cls of allClasses.filter((c) => c.classType === "forum")) {
-          const snap = await getDocs(
-            collection(
-              db,
-              "courses",
-              cls.courseId,
-              "lessons",
-              cls.lessonId,
-              "classes",
-              cls.classId,
-              "forums",
-            ),
-          );
-          snap.docs.forEach((d) => {
-            const data = d.data() as any;
-            const authorId = data.authorId ?? "";
+          const forumPosts = await getForumPosts(cls.courseId, cls.lessonId, cls.classId);
+          forumPosts.forEach((post) => {
+            const authorId = (post.authorId ?? "").trim() || post.id;
             if (authorId && studentIds.size && !studentIds.has(authorId)) return;
             forumSubs.push({
-              id: d.id,
+              id: post.id,
               classId: cls.classId,
               classDocId: cls.classId,
               courseId: cls.courseId,
               className: cls.title,
               classType: "forum",
               studentId: authorId,
-              studentName: data.authorName ?? "",
-              submittedAt: data.createdAt?.toDate?.() ?? null,
-              fileUrl: data.mediaUrl ?? "",
-              content: data.text ?? "",
-              status: "pending",
-              grade: undefined,
-              feedback: "",
+              studentName: post.authorName ?? "",
+              submittedAt: post.createdAt ?? null,
+              fileUrl: post.mediaUrl ?? "",
+              content: post.text ?? "",
+              status:
+                post.status === "graded" || typeof post.grade === "number"
+                  ? "graded"
+                  : "pending",
+              grade: typeof post.grade === "number" ? post.grade : undefined,
+              feedback: post.feedback ?? "",
+              gradedAt: post.gradedAt ?? null,
             });
           });
         }

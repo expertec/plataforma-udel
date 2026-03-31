@@ -15,6 +15,10 @@ export function GradeModal({ submission, readonly, onClose, onSave }: GradeModal
   const [grade, setGrade] = useState<number | undefined>(submission.grade ?? undefined);
   const [feedback, setFeedback] = useState(submission.feedback ?? "");
   const [saving, setSaving] = useState(false);
+  const isForumSubmission = submission.classType === "forum";
+  const gradeMax = isForumSubmission ? 5 : 100;
+  const gradeLabel = `Calificación (0-${gradeMax})`;
+  const isGradeInvalid = grade == null || Number.isNaN(grade) || grade < 0 || grade > gradeMax;
   const isContentUrl =
     typeof submission.content === "string" &&
     /^https?:\/\//i.test(submission.content.trim());
@@ -25,7 +29,7 @@ export function GradeModal({ submission, readonly, onClose, onSave }: GradeModal
   }, [submission]);
 
   const handleSave = async () => {
-    if (grade == null || Number.isNaN(grade)) return;
+    if (isGradeInvalid || grade == null) return;
     if (!onSave) return;
     setSaving(true);
     try {
@@ -94,11 +98,11 @@ export function GradeModal({ submission, readonly, onClose, onSave }: GradeModal
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <label className="text-xs font-medium text-slate-700">Calificación</label>
+              <label className="text-xs font-medium text-slate-700">{gradeLabel}</label>
               <input
                 type="number"
                 min={0}
-                max={100}
+                max={gradeMax}
                 value={grade ?? ""}
                 disabled={readonly}
                 onChange={(e) => setGrade(e.target.value ? Number(e.target.value) : undefined)}
@@ -135,7 +139,7 @@ export function GradeModal({ submission, readonly, onClose, onSave }: GradeModal
             {!readonly ? (
               <button
                 type="button"
-                disabled={saving || grade == null || Number.isNaN(grade)}
+                disabled={saving || isGradeInvalid}
                 onClick={handleSave}
                 className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
               >

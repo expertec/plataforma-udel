@@ -6436,9 +6436,43 @@ function ForumPanel({
                   Ya enviaste tu aportación.
                 </p>
                 {postEvaluated ? (
-                  <p className="text-xs text-amber-200">
-                    Tu aporte ya fue evaluado. No puedes eliminarlo.
-                  </p>
+                  <div className="space-y-2">
+                    <p className="text-xs text-amber-200">
+                      Tu aporte ya fue evaluado. No puedes eliminarlo.
+                    </p>
+                    <div
+                      className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
+                        typeof studentPost?.grade === "number"
+                          ? studentPost.grade >= 4
+                            ? "bg-emerald-500/20 text-emerald-300"
+                            : studentPost.grade >= 3
+                              ? "bg-amber-500/20 text-amber-300"
+                              : "bg-red-500/20 text-red-300"
+                          : "bg-blue-500/20 text-blue-300"
+                      }`}
+                    >
+                      {typeof studentPost?.grade === "number"
+                        ? `Tu calificación: ${studentPost.grade}/5`
+                        : "Aporte calificado"}
+                    </div>
+                    {typeof studentPost?.feedback === "string" && studentPost.feedback.trim().length > 0 ? (
+                      <p className="text-xs text-white/80 whitespace-pre-wrap">
+                        Retroalimentación: {studentPost.feedback}
+                      </p>
+                    ) : null}
+                    {studentPost?.gradedAt ? (
+                      <p className="text-[11px] text-white/60">
+                        Evaluado:{" "}
+                        {studentPost.gradedAt.toLocaleString("es-MX", {
+                          day: "2-digit",
+                          month: "2-digit",
+                          year: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </p>
+                    ) : null}
+                  </div>
                 ) : (
                   <button
                     type="button"
