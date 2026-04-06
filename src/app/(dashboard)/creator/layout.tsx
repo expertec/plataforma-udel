@@ -91,6 +91,9 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
       { href: "/creator/alumnos", label: "Alumnos" },
     ];
     if (isAdminTeacherRole(userRole)) {
+      items.push({ href: "/creator/encuestas", label: "Encuestas" });
+    }
+    if (isAdminTeacherRole(userRole)) {
       items.push({ href: "/creator/profesores", label: "Profesores" });
     }
     if (isAdminTeacherRole(userRole)) {

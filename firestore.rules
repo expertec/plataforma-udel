@@ -6,7 +6,18 @@ service cloud.firestore {
     /* Helpers */
     function isSignedIn() { return request.auth != null; }
     function userDoc() { return get(/databases/$(database)/documents/users/$(request.auth.uid)); }
-    function userRole() { return isSignedIn() ? userDoc().data.role : null; }
+    function tokenRole() {
+      return isSignedIn() && request.auth.token.role is string
+        ? request.auth.token.role
+        : null;
+    }
+    function userRole() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        userDoc().data.role is string
+          ? userDoc().data.role
+          : tokenRole();
+    }
     function isSuperAdmin() { return isSignedIn() && userRole() == 'superAdmin'; }
     function isAdmin() { return isSignedIn() && (userRole() == 'admin' || userRole() == 'superAdmin'); }
     // Admin-level teachers (including super-admin teachers) share elevated permissions.
@@ -40,6 +51,30 @@ service cloud.firestore {
     }
     function isOptionalString(x) {
       return x is string || x == null;
+    }
+    function publishedSurveyExists(surveyId) {
+      return surveyId is string &&
+        surveyId.size() > 0 &&
+        exists(/databases/$(database)/documents/satisfactionSurveys/$(surveyId)) &&
+        get(/databases/$(database)/documents/satisfactionSurveys/$(surveyId)).data.status == "published";
+    }
+    function isFeedbackAdminRole(roleValue) {
+      return roleValue == 'adminTeacher' ||
+        roleValue == 'superAdminTeacher' ||
+        roleValue == 'admin' ||
+        roleValue == 'superAdmin' ||
+        roleValue == 'adminteacher' ||
+        roleValue == 'superadminteacher' ||
+        roleValue == 'admin_teacher' ||
+        roleValue == 'super_admin_teacher';
+    }
+    function canReadFeedbackAnalytics() {
+      return isSignedIn() && (
+        isAdminTeacher() ||
+        isAdmin() ||
+        isFeedbackAdminRole(userRole()) ||
+        isFeedbackAdminRole(tokenRole())
+      );
     }
     function canSelfUpsertProfile(userId) {
       return isSelf(userId) &&
@@ -405,6 +440,63 @@ service cloud.firestore {
       match /classProgress/{classId} {
         allow read, write: if isSignedIn();
       }
+    }
+
+    /* evaluaciones de clase */
+    match /classEvaluations/{evaluationId} {
+      allow read: if canReadFeedbackAnalytics() || (
+        isSignedIn() &&
+        resource.data.studentId is string &&
+        resource.data.studentId == request.auth.uid
+      );
+      allow create: if isSignedIn() &&
+        request.resource.data.studentId is string &&
+        request.resource.data.studentId == request.auth.uid &&
+        request.resource.data.classDocId is string &&
+        request.resource.data.classDocId.size() > 0 &&
+        request.resource.data.rating is number &&
+        request.resource.data.rating >= 1 &&
+        request.resource.data.rating <= 5;
+      allow update: if isSignedIn() &&
+        resource.data.studentId is string &&
+        resource.data.studentId == request.auth.uid &&
+        request.resource.data.studentId is string &&
+        request.resource.data.studentId == request.auth.uid &&
+        request.resource.data.classDocId is string &&
+        request.resource.data.classDocId.size() > 0 &&
+        request.resource.data.rating is number &&
+        request.resource.data.rating >= 1 &&
+        request.resource.data.rating <= 5;
+      allow delete: if false;
+    }
+
+    /* encuestas de satisfacción */
+    match /satisfactionSurveys/{surveyId} {
+      allow read: if canReadFeedbackAnalytics() || (
+        isSignedIn() &&
+        resource.data.status == "published"
+      );
+      allow create, update, delete: if isAdminTeacher();
+    }
+
+    /* respuestas a encuestas */
+    match /surveyResponses/{responseId} {
+      allow read: if canReadFeedbackAnalytics() || (
+        isSignedIn() &&
+        resource.data.studentId is string &&
+        resource.data.studentId == request.auth.uid
+      );
+      allow create: if isSignedIn() &&
+        request.resource.data.studentId is string &&
+        request.resource.data.studentId == request.auth.uid &&
+        request.resource.data.surveyId is string &&
+        request.resource.data.surveyId.size() > 0 &&
+        responseId == request.resource.data.surveyId + "_" + request.auth.uid &&
+        request.resource.data.answers is list &&
+        request.resource.data.answers.size() > 0 &&
+        publishedSurveyExists(request.resource.data.surveyId) &&
+        !exists(/databases/$(database)/documents/surveyResponses/$(responseId));
+      allow update, delete: if false;
     }
 
     /* convenios de pago */

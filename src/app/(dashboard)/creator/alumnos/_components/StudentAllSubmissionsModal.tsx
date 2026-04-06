@@ -361,7 +361,7 @@ export function StudentAllSubmissionsModal({
         : "bg-green-100 text-green-700";
       return (
         <span className={`rounded-full px-2 py-1 text-xs font-medium ${gradeColor}`}>
-          {submission.grade != null ? `${submission.grade}/100` : "Calificada"}
+          {submission.grade != null ? `${submission.grade}` : "Calificada"}
         </span>
       );
     }
@@ -598,7 +598,7 @@ export function StudentAllSubmissionsModal({
                               : "bg-red-50 text-red-700"
                             : "bg-white text-slate-900"
                         }`}>
-                          {sub.grade != null ? `${sub.grade}/100` : "Pendiente de calificación"}
+                          {sub.grade != null ? `${sub.grade}` : "Pendiente de calificación"}
                         </div>
                       </div>
                     ) : sub.content ? (

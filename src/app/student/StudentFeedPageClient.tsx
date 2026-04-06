@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import Player from "@vimeo/player";
 import Image from "next/image";
+import type { FirebaseError } from "firebase/app";
 import { auth } from "@/lib/firebase/client";
 import { onAuthStateChanged, signOut, updatePassword, User } from "firebase/auth";
 import toast from "react-hot-toast";
@@ -38,6 +39,18 @@ import {
   type ForumPost,
   type ForumReply,
 } from "@/lib/firebase/forum-service";
+import {
+  getClassEvaluationsForStudent,
+  upsertClassEvaluation,
+} from "@/lib/firebase/class-evaluations-service";
+import {
+  getPublishedSatisfactionSurveys,
+  getSurveyResponse,
+  isStudentEligibleForSurvey,
+  saveSurveyResponse,
+  type SatisfactionSurvey,
+  type SurveyAnswer,
+} from "@/lib/firebase/satisfaction-surveys-service";
 import { v4 as uuidv4 } from "uuid";
 import sanitizeHtml from "sanitize-html";
 
@@ -259,10 +272,10 @@ const saveLocalProgress = (
 };
 
 type LoadingStage = "auth" | "billing" | "enrollments" | "progress" | "courses" | "classes" | "done";
-type ClassEvaluationState = {
-  submitted: boolean;
-  graded: boolean;
-  grade: number | null;
+type ClassFeedbackState = {
+  rating: 1 | 2 | 3 | 4 | 5;
+  comment: string;
+  updatedAt: Date | null;
 };
 
 type CourseClosureState = {
@@ -278,6 +291,20 @@ type CourseClosureState = {
   reopenedById?: string;
   reopenedByName?: string;
   updatedAt?: Date | null;
+};
+
+const toDateFromUnknown = (value: unknown): Date | null => {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === "object" && value !== null && "toDate" in value && typeof (value as { toDate?: unknown }).toDate === "function") {
+    try {
+      const parsed = (value as { toDate: () => Date }).toDate();
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 };
 
 export default function StudentFeedPageClient() {
@@ -381,7 +408,19 @@ export default function StudentFeedPageClient() {
   const desktopFiltersRef = useRef<HTMLDivElement | null>(null);
   const mobileFiltersRef = useRef<HTMLDivElement | null>(null);
   const [showClosedCourses, setShowClosedCourses] = useState(false);
-  const [classEvaluationMap, setClassEvaluationMap] = useState<Record<string, ClassEvaluationState>>({});
+  const [classFeedbackMap, setClassFeedbackMap] = useState<Record<string, ClassFeedbackState>>({});
+  const classFeedbackPromptedRef = useRef<Record<string, boolean>>({});
+  const [classFeedbackModal, setClassFeedbackModal] = useState<{ open: boolean; classId: string | null }>({
+    open: false,
+    classId: null,
+  });
+  const [classFeedbackRating, setClassFeedbackRating] = useState<number>(0);
+  const [classFeedbackComment, setClassFeedbackComment] = useState("");
+  const [classFeedbackSaving, setClassFeedbackSaving] = useState(false);
+  const [studentCreatedAt, setStudentCreatedAt] = useState<Date | null>(null);
+  const [pendingSurveys, setPendingSurveys] = useState<SatisfactionSurvey[]>([]);
+  const [surveyAnswers, setSurveyAnswers] = useState<Record<string, string | number>>({});
+  const [surveySubmitting, setSurveySubmitting] = useState(false);
   const [courseClosureMap, setCourseClosureMap] = useState<Record<string, CourseClosureState>>({});
   const [forumDoneMap, setForumDoneMap] = useState<Record<string, boolean>>({});
   const [forumsReady, setForumsReady] = useState(false);
@@ -399,6 +438,7 @@ export default function StudentFeedPageClient() {
   const previewCourseId = searchParams.get("previewCourseId") ?? searchParams.get("courseId");
   const previewMode = Boolean(previewCourseId);
   const router = useRouter();
+  const activePendingSurvey = pendingSurveys.length > 0 ? pendingSurveys[0] : null;
 
   const sanitizeOptions = useMemo(
     () => ({
@@ -499,7 +539,28 @@ export default function StudentFeedPageClient() {
     [courseTitleMap],
   );
 
-  const isClassEvaluable = useCallback((cls: FeedClass) => cls.type === "quiz" || cls.hasAssignment === true, []);
+  const getBaseClassDocId = useCallback((cls: FeedClass) => (cls.classDocId ?? cls.id).trim(), []);
+
+  const isClassFeedbackSubmitted = useCallback(
+    (cls: FeedClass) => {
+      const baseClassId = getBaseClassDocId(cls);
+      return baseClassId ? Boolean(classFeedbackMap[baseClassId]) : false;
+    },
+    [classFeedbackMap, getBaseClassDocId],
+  );
+
+  const openClassFeedbackModal = useCallback(
+    (classId: string) => {
+      const cls = findClassById(classId);
+      if (!cls) return;
+      const baseClassId = getBaseClassDocId(cls);
+      const previous = baseClassId ? classFeedbackMap[baseClassId] : undefined;
+      setClassFeedbackRating(previous?.rating ?? 0);
+      setClassFeedbackComment(previous?.comment ?? "");
+      setClassFeedbackModal({ open: true, classId });
+    },
+    [classFeedbackMap, findClassById, getBaseClassDocId],
+  );
 
   const courseClosureKeyFromClass = useCallback(
     (cls: FeedClass) => `${cls.enrollmentId ?? "sin-enrollment"}::${cls.courseId ?? "sin-curso"}`,
@@ -548,86 +609,93 @@ export default function StudentFeedPageClient() {
   }, [mobileClassesOpen]);
 
   useEffect(() => {
-    if (previewMode || !currentUser?.uid || !classes.length) {
-      setClassEvaluationMap({});
+    if (previewMode || !currentUser?.uid) {
+      setClassFeedbackMap({});
       return;
     }
 
     let cancelled = false;
-    const loadClassEvaluations = async () => {
-      const groupedByClass = new Map<string, Map<string, string[]>>();
-      classes.forEach((cls) => {
-        if (!cls.groupId) return;
-        const baseClassId = cls.classDocId ?? cls.id;
-        if (!baseClassId) return;
-        if (!groupedByClass.has(cls.groupId)) {
-          groupedByClass.set(cls.groupId, new Map());
-        }
-        const byClass = groupedByClass.get(cls.groupId)!;
-        if (!byClass.has(baseClassId)) {
-          byClass.set(baseClassId, []);
-        }
-        byClass.get(baseClassId)!.push(cls.id);
-      });
-
-      const groups = Array.from(groupedByClass.keys());
-      if (!groups.length) {
-        if (!cancelled) setClassEvaluationMap({});
-        return;
-      }
-
-      const nextEvaluation: Record<string, ClassEvaluationState> = {};
-      await Promise.all(
-        groups.map(async (gid) => {
-          try {
-            const submissionsSnap = await getDocs(
-              query(
-                collection(db, "groups", gid, "submissions"),
-                where("studentId", "==", currentUser.uid),
-              ),
-            );
-            submissionsSnap.docs.forEach((subDoc) => {
-              const data = subDoc.data() as {
-                classId?: string;
-                classDocId?: string;
-                status?: string;
-                grade?: number;
-              };
-              const baseClassId = (data.classDocId ?? data.classId ?? "").trim();
-              if (!baseClassId) return;
-
-              const targetClassIds = groupedByClass.get(gid)?.get(baseClassId) ?? [];
-              if (!targetClassIds.length) return;
-              const graded = data.status === "graded" || typeof data.grade === "number";
-
-              targetClassIds.forEach((feedClassId) => {
-                const previous = nextEvaluation[feedClassId];
-                nextEvaluation[feedClassId] = {
-                  submitted: true,
-                  graded: Boolean(previous?.graded || graded),
-                  grade:
-                    typeof data.grade === "number"
-                      ? data.grade
-                      : previous?.grade ?? null,
-                };
-              });
-            });
-          } catch (err) {
-            console.warn(`No se pudieron cargar evaluaciones del grupo ${gid}:`, err);
-          }
-        }),
-      );
-
-      if (!cancelled) {
-        setClassEvaluationMap(nextEvaluation);
+    const loadClassFeedback = async () => {
+      try {
+        const byClassDocId = await getClassEvaluationsForStudent(currentUser.uid);
+        if (cancelled) return;
+        const nextMap = Object.entries(byClassDocId).reduce<Record<string, ClassFeedbackState>>(
+          (acc, [classDocId, evaluation]) => {
+            acc[classDocId] = {
+              rating: evaluation.rating,
+              comment: evaluation.comment ?? "",
+              updatedAt: evaluation.updatedAt ?? null,
+            };
+            return acc;
+          },
+          {},
+        );
+        setClassFeedbackMap(nextMap);
+      } catch (err) {
+        console.warn("No se pudieron cargar evaluaciones de clase:", err);
       }
     };
 
-    loadClassEvaluations();
+    loadClassFeedback();
     return () => {
       cancelled = true;
     };
-  }, [classes, currentUser?.uid, previewMode]);
+  }, [currentUser?.uid, previewMode]);
+
+  useEffect(() => {
+    if (previewMode || !currentUser?.uid) {
+      setPendingSurveys([]);
+      return;
+    }
+
+    let cancelled = false;
+    const loadPendingSurveys = async () => {
+      try {
+        const published = await getPublishedSatisfactionSurveys();
+        const eligible = published.filter((survey) =>
+          isStudentEligibleForSurvey({
+            survey,
+            studentCreatedAt,
+          }),
+        );
+
+        const checks = await Promise.all(
+          eligible.map(async (survey) => {
+            const existing = await getSurveyResponse(survey.id, currentUser.uid);
+            return { survey, answered: Boolean(existing) };
+          }),
+        );
+
+        if (cancelled) return;
+        setPendingSurveys(checks.filter((entry) => !entry.answered).map((entry) => entry.survey));
+      } catch (err) {
+        console.warn("No se pudieron cargar encuestas pendientes:", err);
+      }
+    };
+
+    loadPendingSurveys();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.uid, previewMode, studentCreatedAt]);
+
+  useEffect(() => {
+    if (!activePendingSurvey) {
+      setSurveyAnswers({});
+      return;
+    }
+    setSurveyAnswers((prev) => {
+      const next: Record<string, string | number> = {};
+      activePendingSurvey.questions.forEach((question) => {
+        if (Object.prototype.hasOwnProperty.call(prev, question.id)) {
+          next[question.id] = prev[question.id];
+          return;
+        }
+        next[question.id] = question.type === "rating_1_5" ? 0 : "";
+      });
+      return next;
+    });
+  }, [activePendingSurvey?.id, activePendingSurvey]);
 
   const visibleClasses = useMemo(() => {
     if (previewMode) return classes;
@@ -645,6 +713,7 @@ export default function StudentFeedPageClient() {
   useEffect(() => {
     likedLoadCacheRef.current = {};
     commentsCountLoadCacheRef.current = {};
+    classFeedbackPromptedRef.current = {};
   }, [visibleClassSignature]);
 
   const getPrevSameCourse = useCallback(
@@ -870,8 +939,7 @@ export default function StudentFeedPageClient() {
           : 0,
       );
       const forumOk = c.forumEnabled ? forumDoneMap[c.id] === true : true;
-      const evaluationOk = isClassEvaluable(c) ? classEvaluationMap[c.id]?.graded === true : true;
-      return pct < getRequiredPct(c.type) || !forumOk || !evaluationOk;
+      return pct < getRequiredPct(c.type) || !forumOk;
     });
     const pendingLessonKey =
       firstPending && firstPending.courseId
@@ -906,11 +974,9 @@ export default function StudentFeedPageClient() {
     });
   }, [
     activeId,
-    classEvaluationMap,
     completedMap,
     courseThreads,
     forumDoneMap,
-    isClassEvaluable,
     progressMap,
     seenMap,
     visibleClasses,
@@ -1365,6 +1431,7 @@ export default function StudentFeedPageClient() {
   useEffect(() => {
     if (!currentUser?.uid) {
       setMustChangePassword(false);
+      setStudentCreatedAt(null);
       return;
     }
     let active = true;
@@ -1372,11 +1439,16 @@ export default function StudentFeedPageClient() {
       try {
         const snap = await getDoc(doc(db, "users", currentUser.uid));
         if (!active) return;
-        const flag = snap.data()?.mustChangePassword;
+        const userData = snap.data() as Record<string, unknown> | undefined;
+        const flag = userData?.mustChangePassword;
+        setStudentCreatedAt(toDateFromUnknown(userData?.createdAt));
         setMustChangePassword(flag === undefined ? true : Boolean(flag));
       } catch (err) {
         console.warn("No se pudo leer mustChangePassword:", err);
-        if (active) setMustChangePassword(false);
+        if (active) {
+          setMustChangePassword(false);
+          setStudentCreatedAt(null);
+        }
       }
     };
     loadFlag();
@@ -2239,13 +2311,12 @@ export default function StudentFeedPageClient() {
       );
       const baseOk = pct >= getRequiredPct(cls.type);
       const forumOk = cls.forumEnabled ? forumDoneMap[cls.id] === true : true;
-      const evaluationOk = isClassEvaluable(cls) ? classEvaluationMap[cls.id]?.graded === true : true;
-      return baseOk && forumOk && evaluationOk;
+      return baseOk && forumOk;
     };
     const firstPendingIdx = visibleClasses.findIndex((cls) => !computeComplete(cls));
     const targetIndex = firstPendingIdx === -1 ? Math.max(visibleClasses.length - 1, 0) : firstPendingIdx;
     return { index: targetIndex, id: visibleClasses[targetIndex]?.id ?? null };
-  }, [visibleClasses, progressMap, completedMap, seenMap, forumDoneMap, classEvaluationMap, isClassEvaluable, previewMode]);
+  }, [visibleClasses, progressMap, completedMap, seenMap, forumDoneMap, previewMode]);
 
   // Al cargar, posicionar en la primera clase pendiente
   useEffect(() => {
@@ -2439,6 +2510,19 @@ export default function StudentFeedPageClient() {
         setSeenMap((prev) => ({ ...prev, [classId]: true }));
       }
 
+      const reachedCompletionThisTick =
+        (!previousCompleted && maxProgress >= requiredPct && forumOk) ||
+        (seenRef.current[classId] && forumOk);
+
+      if (reachedCompletionThisTick && meta) {
+        const baseClassId = getBaseClassDocId(meta);
+        const alreadySubmitted = baseClassId ? Boolean(classFeedbackMap[baseClassId]) : false;
+        if (!alreadySubmitted && !classFeedbackPromptedRef.current[classId]) {
+          classFeedbackPromptedRef.current[classId] = true;
+          openClassFeedbackModal(classId);
+        }
+      }
+
       // Mostrar modal de tarea cuando el video termina (>= 95%)
       if (
         maxProgress >= 95 &&
@@ -2454,7 +2538,15 @@ export default function StudentFeedPageClient() {
         });
       }
     },
-    [saveProgressToFirestore, findClassById, isForumSatisfied, previewMode],
+    [
+      saveProgressToFirestore,
+      findClassById,
+      isForumSatisfied,
+      previewMode,
+      classFeedbackMap,
+      getBaseClassDocId,
+      openClassFeedbackModal,
+    ],
   );
 
   // Handler para marcar manualmente una clase como completada al 100%
@@ -2513,13 +2605,173 @@ export default function StudentFeedPageClient() {
         await saveSeenForUser(classId, 100, true);
 
         toast.success("Clase marcada como completada");
+
+        if (cls) {
+          const baseClassId = getBaseClassDocId(cls);
+          const alreadySubmitted = baseClassId ? Boolean(classFeedbackMap[baseClassId]) : false;
+          if (!alreadySubmitted && !classFeedbackPromptedRef.current[classId]) {
+            classFeedbackPromptedRef.current[classId] = true;
+            openClassFeedbackModal(classId);
+          }
+        }
       } catch (error) {
         console.error("Error al completar clase manualmente:", error);
         toast.error("No se pudo completar la clase. Intenta de nuevo.");
       }
     },
-    [currentUser?.uid, enrollmentId, classes, previewMode, saveSeenForUser],
+    [
+      currentUser?.uid,
+      enrollmentId,
+      classes,
+      previewMode,
+      saveSeenForUser,
+      classFeedbackMap,
+      getBaseClassDocId,
+      openClassFeedbackModal,
+    ],
   );
+
+  const handleSubmitClassFeedback = useCallback(async () => {
+    if (previewMode) return;
+    if (!currentUser?.uid) {
+      toast.error("Inicia sesión para evaluar la clase.");
+      return;
+    }
+    if (!classFeedbackModal.classId) return;
+    const cls = findClassById(classFeedbackModal.classId);
+    if (!cls) {
+      toast.error("No se encontró la clase para evaluar.");
+      return;
+    }
+    const rating = Math.round(classFeedbackRating);
+    if (rating < 1 || rating > 5) {
+      toast.error("Selecciona una calificación de 1 a 5 estrellas.");
+      return;
+    }
+    const baseClassId = getBaseClassDocId(cls);
+    if (!baseClassId) {
+      toast.error("No se pudo identificar la clase.");
+      return;
+    }
+
+    setClassFeedbackSaving(true);
+    try {
+      await upsertClassEvaluation({
+        classDocId: baseClassId,
+        courseId: cls.courseId ?? "",
+        lessonId: cls.lessonId ?? "",
+        groupId: cls.groupId ?? "",
+        enrollmentId: cls.enrollmentId ?? enrollmentId ?? "",
+        studentId: currentUser.uid,
+        studentName: studentName || currentUser.displayName || "Estudiante",
+        rating,
+        comment: classFeedbackComment.trim(),
+        courseTitle: cls.courseTitle ?? courseTitleMap[cls.courseId ?? ""] ?? "",
+        lessonTitle: cls.lessonTitle ?? cls.lessonName ?? "",
+        classTitle: cls.title ?? "",
+      });
+      setClassFeedbackMap((prev) => ({
+        ...prev,
+        [baseClassId]: {
+          rating: rating as 1 | 2 | 3 | 4 | 5,
+          comment: classFeedbackComment.trim(),
+          updatedAt: new Date(),
+        },
+      }));
+      classFeedbackPromptedRef.current[cls.id] = true;
+      setClassFeedbackModal({ open: false, classId: null });
+      setClassFeedbackRating(0);
+      setClassFeedbackComment("");
+      toast.success("Gracias por evaluar esta clase.");
+    } catch (error) {
+      console.error("No se pudo guardar la evaluación de clase:", error);
+      const code = (error as FirebaseError | undefined)?.code;
+      toast.error(`No se pudo guardar la evaluación${code ? ` (${code})` : ""}. Intenta de nuevo.`);
+    } finally {
+      setClassFeedbackSaving(false);
+    }
+  }, [
+    classFeedbackComment,
+    classFeedbackModal.classId,
+    classFeedbackRating,
+    courseTitleMap,
+    currentUser?.displayName,
+    currentUser?.uid,
+    enrollmentId,
+    findClassById,
+    getBaseClassDocId,
+    previewMode,
+    studentName,
+  ]);
+
+  const handleSubmitSurvey = useCallback(async () => {
+    if (previewMode) return;
+    if (!currentUser?.uid) {
+      toast.error("Inicia sesión para responder la encuesta.");
+      return;
+    }
+    if (!activePendingSurvey) return;
+
+    const answers: SurveyAnswer[] = [];
+    for (const question of activePendingSurvey.questions) {
+      const rawValue = surveyAnswers[question.id];
+      const asText = typeof rawValue === "string" ? rawValue.trim() : "";
+      const asNumber = typeof rawValue === "number" ? rawValue : Number.NaN;
+
+      if (question.type === "rating_1_5") {
+        if (question.required && (!Number.isFinite(asNumber) || asNumber < 1 || asNumber > 5)) {
+          toast.error(`Responde la pregunta: ${question.label}`);
+          return;
+        }
+        if (Number.isFinite(asNumber) && asNumber >= 1 && asNumber <= 5) {
+          answers.push({ questionId: question.id, value: Math.round(asNumber) });
+        }
+        continue;
+      }
+
+      if (question.required && !asText) {
+        toast.error(`Responde la pregunta: ${question.label}`);
+        return;
+      }
+      if (asText) {
+        answers.push({ questionId: question.id, value: asText });
+      }
+    }
+
+    if (!answers.length) {
+      toast.error("Debes responder al menos una pregunta.");
+      return;
+    }
+
+    setSurveySubmitting(true);
+    try {
+      await saveSurveyResponse({
+        surveyId: activePendingSurvey.id,
+        studentId: currentUser.uid,
+        studentName: studentName || currentUser.displayName || "Estudiante",
+        studentEmail: currentUser.email ?? "",
+        answers,
+        studentCreatedAtSnapshot: studentCreatedAt,
+      });
+      setPendingSurveys((prev) => prev.slice(1));
+      setSurveyAnswers({});
+      toast.success("Encuesta enviada. Gracias por tu respuesta.");
+    } catch (error) {
+      console.error("No se pudo enviar la encuesta:", error);
+      toast.error("No se pudo enviar la encuesta. Intenta de nuevo.");
+    } finally {
+      setSurveySubmitting(false);
+    }
+  }, [
+    activePendingSurvey,
+    currentUser?.displayName,
+    currentUser?.email,
+    currentUser?.uid,
+    previewMode,
+    studentCreatedAt,
+    studentName,
+    surveyAnswers,
+  ]);
 
   const handleForceChangePassword = useCallback(async () => {
     if (!currentUser) {
@@ -3465,6 +3717,11 @@ export default function StudentFeedPageClient() {
                               </span>
                             );
                           })()}
+                          {!previewMode && isClassFeedbackSubmitted(cls) ? (
+                            <span className="inline-flex items-center rounded-full bg-emerald-500/20 px-3 py-1 text-[11px] font-semibold text-emerald-200">
+                              Evaluación enviada
+                            </span>
+                          ) : null}
                           {/* Botón para marcar clase como completada manualmente */}
                           {(() => {
                             const currentProgress = Math.max(
@@ -3791,6 +4048,176 @@ export default function StudentFeedPageClient() {
                     className="rounded-full bg-gradient-to-r from-blue-500 via-blue-600 to-blue-500 bg-[length:200%_100%] animate-pulse ring-2 ring-blue-400/50 ring-offset-2 ring-offset-neutral-900 px-4 py-2 text-sm font-semibold text-white shadow hover:ring-blue-300 disabled:opacity-50 disabled:animate-none disabled:ring-0"
                   >
                     {quizModalSubmitting ? "Enviando..." : "Enviar quiz"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {/* Modal de evaluación de clase (no bloqueante) */}
+          {classFeedbackModal.open && classFeedbackModal.classId && !previewMode ? (
+            <div
+              className="fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto bg-black/70 px-4 py-6"
+              onClick={() => setClassFeedbackModal({ open: false, classId: null })}
+            >
+              <div
+                className="w-full max-w-md max-h-[calc(100vh-3rem)] overflow-y-auto rounded-2xl bg-neutral-900 p-6 shadow-2xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="mb-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-200">
+                    Evaluación de clase
+                  </p>
+                  <h3 className="mt-1 text-lg font-semibold text-white">
+                    {findClassById(classFeedbackModal.classId)?.title ?? "Clase"}
+                  </h3>
+                  <p className="mt-1 text-sm text-neutral-300">
+                    Califica el contenido de 1 a 5 estrellas. Comentario opcional.
+                  </p>
+                </div>
+
+                <div className="mb-4 flex items-center justify-center gap-2">
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <button
+                      key={star}
+                      type="button"
+                      onClick={() => setClassFeedbackRating(star)}
+                      className={`text-3xl transition ${
+                        classFeedbackRating >= star ? "text-amber-400" : "text-neutral-500 hover:text-amber-300"
+                      }`}
+                      aria-label={`${star} estrella${star === 1 ? "" : "s"}`}
+                    >
+                      ★
+                    </button>
+                  ))}
+                </div>
+
+                <label className="block text-sm text-neutral-200">
+                  Comentario
+                  <textarea
+                    value={classFeedbackComment}
+                    onChange={(event) => setClassFeedbackComment(event.target.value)}
+                    rows={4}
+                    placeholder="¿Qué te gustó o qué podemos mejorar?"
+                    className="mt-1 w-full rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-white placeholder:text-neutral-500 focus:border-cyan-400 focus:outline-none"
+                  />
+                </label>
+
+                <div className="mt-5 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setClassFeedbackModal({ open: false, classId: null })}
+                    className="rounded-lg border border-white/20 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                  >
+                    Después
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleSubmitClassFeedback()}
+                    disabled={classFeedbackSaving || classFeedbackRating < 1 || classFeedbackRating > 5}
+                    className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {classFeedbackSaving ? "Guardando..." : "Enviar evaluación"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {/* Encuesta de satisfacción obligatoria (una vez por encuesta) */}
+          {activePendingSurvey && !previewMode ? (
+            <div className="fixed inset-0 z-[90] flex items-start justify-center overflow-y-auto bg-black/80 px-4 py-6">
+              <div className="w-full max-w-2xl max-h-[calc(100vh-3rem)] overflow-y-auto rounded-2xl bg-neutral-900 p-6 shadow-2xl">
+                <div className="mb-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-300">
+                    Encuesta obligatoria
+                  </p>
+                  <h3 className="mt-1 text-xl font-semibold text-white">{activePendingSurvey.title}</h3>
+                  {activePendingSurvey.description ? (
+                    <p className="mt-1 text-sm text-neutral-300">{activePendingSurvey.description}</p>
+                  ) : null}
+                </div>
+
+                <div className="space-y-4">
+                  {activePendingSurvey.questions.map((question, idx) => {
+                    const currentValue = surveyAnswers[question.id];
+                    return (
+                      <div key={question.id} className="rounded-lg border border-neutral-700 bg-neutral-800 p-4">
+                        <p className="text-sm font-semibold text-white">
+                          {idx + 1}. {question.label}{" "}
+                          {question.required ? <span className="text-rose-300">*</span> : null}
+                        </p>
+
+                        {question.type === "rating_1_5" ? (
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                            {[1, 2, 3, 4, 5].map((star) => (
+                              <button
+                                key={star}
+                                type="button"
+                                onClick={() =>
+                                  setSurveyAnswers((prev) => ({ ...prev, [question.id]: star }))
+                                }
+                                className={`rounded-full px-3 py-1 text-sm font-semibold transition ${
+                                  Number(currentValue) >= star
+                                    ? "bg-amber-400 text-neutral-900"
+                                    : "bg-neutral-700 text-neutral-200 hover:bg-neutral-600"
+                                }`}
+                              >
+                                {star}★
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {question.type === "single_choice" ? (
+                          <div className="mt-3 space-y-2">
+                            {(question.options ?? []).map((option) => (
+                              <label key={option.id} className="flex cursor-pointer items-center gap-2 text-sm text-neutral-200">
+                                <input
+                                  type="radio"
+                                  name={`survey-${activePendingSurvey.id}-${question.id}`}
+                                  checked={currentValue === option.label}
+                                  onChange={() =>
+                                    setSurveyAnswers((prev) => ({
+                                      ...prev,
+                                      [question.id]: option.label,
+                                    }))
+                                  }
+                                  className="h-4 w-4"
+                                />
+                                <span>{option.label}</span>
+                              </label>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {question.type === "text" ? (
+                          <textarea
+                            value={typeof currentValue === "string" ? currentValue : ""}
+                            onChange={(event) =>
+                              setSurveyAnswers((prev) => ({
+                                ...prev,
+                                [question.id]: event.target.value,
+                              }))
+                            }
+                            rows={3}
+                            placeholder="Escribe tu respuesta"
+                            className="mt-3 w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-white placeholder:text-neutral-500 focus:border-emerald-400 focus:outline-none"
+                          />
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-5 flex items-center justify-end">
+                  <button
+                    type="button"
+                    onClick={() => void handleSubmitSurvey()}
+                    disabled={surveySubmitting}
+                    className="rounded-lg bg-emerald-500 px-5 py-2 text-sm font-semibold text-white transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {surveySubmitting ? "Enviando..." : "Enviar encuesta"}
                   </button>
                 </div>
               </div>
@@ -6913,7 +7340,7 @@ function AssignmentPanel({
                 : "Tu entrega está en revisión."}
             </p>
             {typeof submissionGrade === "number" ? (
-              <p className="text-xs font-semibold text-emerald-200">Calificación: {submissionGrade}/100</p>
+              <p className="text-xs font-semibold text-emerald-200">Calificación: {submissionGrade}</p>
             ) : null}
             <div className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-left">
               <p className="text-[11px] uppercase tracking-[0.12em] text-white/55">Retroalimentación</p>
