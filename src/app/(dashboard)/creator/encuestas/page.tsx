@@ -60,6 +60,7 @@ const STATUS_CLASS: Record<SurveyStatus, string> = {
   published: "bg-emerald-100 text-emerald-700",
   archived: "bg-slate-100 text-slate-700",
 };
+const RATING_STARS: Array<1 | 2 | 3 | 4 | 5> = [1, 2, 3, 4, 5];
 
 const formatDateTime = (value: Date | null | undefined): string => {
   if (!value || Number.isNaN(value.getTime())) return "N/D";
@@ -223,7 +224,7 @@ export default function EncuestasPage() {
           return [survey.id, responses] as const;
         } catch (error) {
           console.warn(`No se pudieron cargar respuestas para ${survey.id}:`, error);
-          return [survey.id, []] as const;
+          return [survey.id, [] as SurveyResponse[]] as const;
         }
       }),
     );
@@ -821,7 +822,7 @@ export default function EncuestasPage() {
           </div>
 
           <div className="mt-4 grid gap-2 sm:grid-cols-5">
-            {(Object.keys(evaluationSummary.counts) as Array<keyof typeof evaluationSummary.counts>).map((star) => (
+            {RATING_STARS.map((star) => (
               <div key={star} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-center">
                 <p className="text-xs font-semibold text-slate-500">{star} estrella{star === 1 ? "" : "s"}</p>
                 <p className="text-lg font-semibold text-slate-900">{evaluationSummary.counts[star]}</p>
