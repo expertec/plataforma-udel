@@ -23,10 +23,12 @@ import Link from "next/link";
 import { EntregasTab } from "./_components/EntregasTab";
 import { CalificacionesTab } from "./_components/CalificacionesTab";
 import { StudentSubmissionsModal } from "./_components/StudentSubmissionsModal";
+import { DropoutRiskTab } from "./_components/DropoutRiskTab";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import {
   isAdminTeacherRole,
+  isCampusCoordinatorRole,
   resolveUserRole,
   UserRole,
 } from "@/lib/firebase/roles";
@@ -204,6 +206,7 @@ export default function GroupDetailPage() {
       (currentUserId === group.teacherId || isAdminTeacherRole(userRole)),
   );
   const canManageCampusGradeConfig = isAdminTeacherRole(userRole);
+  const hasFullGroupVisibility = isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
   const isCurrentUserAssistant = Boolean(
     group &&
       currentUserId &&
@@ -216,12 +219,13 @@ export default function GroupDetailPage() {
         isAdminTeacherRole(userRole) ||
         (group.assistantTeacherIds ?? []).includes(currentUserId)),
   );
+  const canViewDropoutRisk = isAdminTeacherRole(userRole);
 
   const visibleCourseIdsForCurrentUser = useMemo(() => {
     if (!group || !currentUserId) return [];
     if (
       currentUserId === group.teacherId ||
-      isAdminTeacherRole(userRole)
+      hasFullGroupVisibility
     ) {
       return courseIdsForGroup;
     }
@@ -240,7 +244,7 @@ export default function GroupDetailPage() {
     if (!Array.isArray(explicitAccess)) return [];
     const allowedSet = new Set(explicitAccess.filter((id): id is string => typeof id === "string"));
     return courseIdsForGroup.filter((courseId) => allowedSet.has(courseId));
-  }, [courseIdsForGroup, currentUserId, group, isCurrentUserAssistant, userRole]);
+  }, [courseIdsForGroup, currentUserId, group, hasFullGroupVisibility, isCurrentUserAssistant]);
 
   const visibleCourseIdsSet = useMemo(
     () => new Set(visibleCourseIdsForCurrentUser),
@@ -258,7 +262,7 @@ export default function GroupDetailPage() {
     group &&
       currentUserId &&
       (currentUserId === group.teacherId ||
-        isAdminTeacherRole(userRole) ||
+        hasFullGroupVisibility ||
         isCurrentUserAssistant),
   );
   const campusGradeConfigChanged = Boolean(
@@ -594,10 +598,13 @@ export default function GroupDetailPage() {
             </div>
           ) : (
             <Tabs defaultValue="estudiantes" className="w-full space-y-4">
-            <TabsList className="grid w-full grid-cols-4">
+            <TabsList className={`grid w-full ${canViewDropoutRisk ? "grid-cols-5" : "grid-cols-4"}`}>
               <TabsTrigger value="estudiantes">Estudiantes</TabsTrigger>
               <TabsTrigger value="entregas">Entregas</TabsTrigger>
               <TabsTrigger value="calificaciones">Calificaciones</TabsTrigger>
+              {canViewDropoutRisk ? (
+                <TabsTrigger value="riesgo">Riesgo deserción</TabsTrigger>
+              ) : null}
               <TabsTrigger value="config">Configuración</TabsTrigger>
             </TabsList>
 
@@ -668,6 +675,16 @@ export default function GroupDetailPage() {
                 )}
               </div>
             </TabsContent>
+
+            {canViewDropoutRisk ? (
+              <TabsContent value="riesgo">
+                <DropoutRiskTab
+                  groupId={group.id}
+                  courseIds={courseIdsForGroup}
+                  students={groupStudents}
+                />
+              </TabsContent>
+            ) : null}
 
             <TabsContent value="config">
               <div className="rounded-lg bg-white p-6 shadow-sm space-y-4">

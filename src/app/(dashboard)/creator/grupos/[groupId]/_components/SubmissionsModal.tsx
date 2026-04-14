@@ -709,6 +709,8 @@ export function SubmissionsModal({
     studentId: string;
     studentName: string;
   }>({ open: false, studentId: "", studentName: "" });
+  const [inlineGrades, setInlineGrades] = useState<Record<string, string>>({});
+  const [savingInlineGrades, setSavingInlineGrades] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!isOpen) return;
@@ -760,6 +762,7 @@ export function SubmissionsModal({
           submission: submissions.find((sub) => sub.studentId === s.id),
         }));
         setRows(rows);
+        setInlineGrades({});
 
         // Cargar preguntas del quiz si es un quiz
         if (classType === "quiz" && courseId && lessonId) {
@@ -850,6 +853,130 @@ export function SubmissionsModal({
     }
   };
 
+  const refreshSubmissionsForTable = async () => {
+    if (isForumClass && courseId && lessonId) {
+      const forumPosts = await getForumPosts(courseId, lessonId, classId);
+      const forumSubmissions: Submission[] = forumPosts.map((post) => {
+        const authorId = (post.authorId ?? "").trim() || post.id;
+        return {
+          id: post.id,
+          classId,
+          classDocId: classId,
+          courseId,
+          className,
+          classType: "forum",
+          studentId: authorId,
+          studentName: post.authorName ?? "",
+          submittedAt: post.createdAt ?? null,
+          fileUrl: post.mediaUrl ?? "",
+          content: post.text ?? "",
+          status:
+            post.status === "graded" || typeof post.grade === "number"
+              ? "graded"
+              : "pending",
+          grade: typeof post.grade === "number" ? post.grade : undefined,
+          feedback: post.feedback ?? "",
+          gradedAt: post.gradedAt ?? null,
+        };
+      });
+      setRows((prev) =>
+        prev.map((r) => ({
+          ...r,
+          submission: forumSubmissions.find((s) => s.studentId === r.student.id),
+        })),
+      );
+      return;
+    }
+
+    const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
+      (s) => !courseId || !s.courseId || s.courseId === courseId,
+    );
+    setRows((prev) =>
+      prev.map((r) => ({
+        ...r,
+        submission: submissions.find((s) => s.studentId === r.student.id),
+      })),
+    );
+  };
+
+  const inlineGradeMax = isForumClass ? 5 : 100;
+
+  const parseInlineGrade = (raw: string): number | null => {
+    const normalized = raw.trim().replace(",", ".");
+    if (!normalized) return null;
+    const parsed = Number(normalized);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > inlineGradeMax) return null;
+    return parsed;
+  };
+
+  const getInlineGradeInput = (submission: Submission): string => {
+    if (Object.prototype.hasOwnProperty.call(inlineGrades, submission.id)) {
+      return inlineGrades[submission.id];
+    }
+    return typeof submission.grade === "number" ? String(submission.grade) : "";
+  };
+
+  const handleSaveInlineGrade = async (row: Row) => {
+    const submission = row.submission;
+    if (!submission) return;
+
+    const parsedGrade = parseInlineGrade(getInlineGradeInput(submission));
+    if (parsedGrade === null) {
+      toast.error(
+        isForumClass
+          ? "La calificación debe estar entre 0 y 5."
+          : "La calificación debe estar entre 0 y 100.",
+      );
+      return;
+    }
+
+    setSavingInlineGrades((prev) => new Set(prev).add(submission.id));
+    try {
+      if (isForumClass && courseId && lessonId) {
+        await gradeForumPost({
+          courseId,
+          lessonId,
+          classId,
+          studentId: submission.id,
+          grade: parsedGrade,
+          feedback: submission.feedback ?? "",
+        });
+        setRows((prev) =>
+          prev.map((r) =>
+            r.student.id === row.student.id
+              ? {
+                  ...r,
+                  submission: r.submission
+                    ? {
+                        ...r.submission,
+                        grade: parsedGrade,
+                        status: "graded",
+                        gradedAt: new Date(),
+                      }
+                    : r.submission,
+                }
+              : r,
+          ),
+        );
+        toast.success("Calificación de foro guardada correctamente");
+      } else {
+        await gradeSubmission(groupId, submission.id, parsedGrade, submission.feedback ?? "");
+        void notifyGradeByWhatsApp(submission, parsedGrade);
+        await refreshSubmissionsForTable();
+        toast.success("Calificación guardada correctamente");
+      }
+    } catch (err) {
+      console.error("Error guardando calificación inline:", err);
+      toast.error("No se pudo guardar la calificación.");
+    } finally {
+      setSavingInlineGrades((prev) => {
+        const next = new Set(prev);
+        next.delete(submission.id);
+        return next;
+      });
+    }
+  };
+
   const handleResetSubmission = async (
     submission: Submission,
     studentName: string,
@@ -873,49 +1000,7 @@ export function SubmissionsModal({
         await deleteSubmission(groupId, submission.id);
       }
       toast.success(`${label === "tarea" ? "Tarea" : "Aporte"} reseteado. El alumno puede enviar${pronoun} nuevamente.`);
-
-      if (isForumClass && courseId && lessonId) {
-        const forumPosts = await getForumPosts(courseId, lessonId, classId);
-        const forumSubmissions: Submission[] = forumPosts.map((post) => {
-          const authorId = (post.authorId ?? "").trim() || post.id;
-          return {
-            id: post.id,
-            classId,
-            classDocId: classId,
-            courseId,
-            className,
-            classType: "forum",
-            studentId: authorId,
-            studentName: post.authorName ?? "",
-            submittedAt: post.createdAt ?? null,
-            fileUrl: post.mediaUrl ?? "",
-            content: post.text ?? "",
-            status:
-              post.status === "graded" || typeof post.grade === "number"
-                ? "graded"
-                : "pending",
-            grade: typeof post.grade === "number" ? post.grade : undefined,
-            feedback: post.feedback ?? "",
-            gradedAt: post.gradedAt ?? null,
-          };
-        });
-        setRows((prev) =>
-          prev.map((r) => ({
-            ...r,
-            submission: forumSubmissions.find((s) => s.studentId === r.student.id),
-          })),
-        );
-      } else {
-        const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
-          (s) => !courseId || !s.courseId || s.courseId === courseId,
-        );
-        setRows((prev) =>
-          prev.map((r) => ({
-            ...r,
-            submission: submissions.find((s) => s.studentId === r.student.id),
-          })),
-        );
-      }
+      await refreshSubmissionsForTable();
     } catch (err) {
       console.error("Error al resetear la tarea:", err);
       toast.error("No se pudo resetear la tarea");
@@ -1020,7 +1105,21 @@ export function SubmissionsModal({
                 ) : null}
                 {filteredRows.map((row) => {
                   const sub = row.submission;
-                  const gradeValue = sub?.grade != null ? sub.grade : "-";
+                  const gradeInput = sub ? getInlineGradeInput(sub) : "";
+                  const parsedInlineGrade = sub ? parseInlineGrade(gradeInput) : null;
+                  const hasInlineValue = gradeInput.trim().length > 0;
+                  const isInlineSaving = sub ? savingInlineGrades.has(sub.id) : false;
+                  const inlineGradeInvalid =
+                    Boolean(sub) && hasInlineValue && parsedInlineGrade === null;
+                  const currentGrade = sub?.grade ?? null;
+                  const canSaveInline =
+                    Boolean(sub) &&
+                    parsedInlineGrade !== null &&
+                    (
+                      currentGrade == null ||
+                      Math.abs(currentGrade - parsedInlineGrade) > 0.001
+                    ) &&
+                    !isInlineSaving;
                   return (
                     <tr key={row.student.id} className="hover:bg-slate-50">
                       <td className="px-3 py-2 align-middle text-slate-900">{row.student.name}</td>
@@ -1039,9 +1138,25 @@ export function SubmissionsModal({
                                 {sub.grade}/5
                               </span>
                             ) : sub ? (
-                              <span className="rounded-full bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-700">
-                                Pendiente
-                              </span>
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={gradeInput}
+                                onChange={(event) =>
+                                  setInlineGrades((prev) => ({ ...prev, [sub.id]: event.target.value }))
+                                }
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter" && canSaveInline) {
+                                    event.preventDefault();
+                                    void handleSaveInlineGrade(row);
+                                  }
+                                }}
+                                placeholder="0-5"
+                                disabled={isInlineSaving}
+                                className={`w-20 rounded-lg border px-2 py-1 text-sm ${
+                                  inlineGradeInvalid ? "border-red-400" : "border-slate-300"
+                                }`}
+                              />
                             ) : (
                               "-"
                             )}
@@ -1050,6 +1165,16 @@ export function SubmissionsModal({
                             <div className="flex items-center gap-2">
                               {sub ? (
                                 <>
+                                  {sub.grade == null ? (
+                                    <button
+                                      type="button"
+                                      className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1 text-sm font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
+                                      disabled={!canSaveInline}
+                                      onClick={() => void handleSaveInlineGrade(row)}
+                                    >
+                                      {isInlineSaving ? "Guardando..." : "Guardar"}
+                                    </button>
+                                  ) : null}
                                   <button
                                     type="button"
                                     className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-medium text-blue-600 hover:border-blue-400"
@@ -1061,7 +1186,7 @@ export function SubmissionsModal({
                                       })
                                     }
                                   >
-                                    {sub.grade == null ? "Calificar" : "Ver"}
+                                    Ver
                                   </button>
                                   <button
                                     type="button"
@@ -1101,9 +1226,25 @@ export function SubmissionsModal({
                                   {sub.grade}
                                 </span>
                               ) : sub ? (
-                                <span className="rounded-full bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-700">
-                                  Pendiente
-                                </span>
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  value={gradeInput}
+                                  onChange={(event) =>
+                                    setInlineGrades((prev) => ({ ...prev, [sub.id]: event.target.value }))
+                                  }
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter" && canSaveInline) {
+                                      event.preventDefault();
+                                      void handleSaveInlineGrade(row);
+                                    }
+                                  }}
+                                  placeholder="0-100"
+                                  disabled={isInlineSaving}
+                                  className={`w-24 rounded-lg border px-2 py-1 text-sm ${
+                                    inlineGradeInvalid ? "border-red-400" : "border-slate-300"
+                                  }`}
+                                />
                               ) : (
                                 "-"
                               )}
@@ -1111,6 +1252,16 @@ export function SubmissionsModal({
                             <td className="px-3 py-2">
                               {sub ? (
                                 <div className="flex items-center gap-2">
+                                  {sub.grade == null ? (
+                                    <button
+                                      type="button"
+                                      className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1 text-sm font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
+                                      disabled={!canSaveInline}
+                                      onClick={() => void handleSaveInlineGrade(row)}
+                                    >
+                                      {isInlineSaving ? "Guardando..." : "Guardar"}
+                                    </button>
+                                  ) : null}
                                   <button
                                     type="button"
                                     onClick={async () => {
@@ -1140,7 +1291,7 @@ export function SubmissionsModal({
                                         : "border-slate-200 text-blue-600 hover:border-blue-400"
                                     }`}
                                   >
-                                    {sub.grade == null ? "Ver y Calificar" : "Ver detalles"}
+                                    {sub.grade == null ? "Ver respuestas" : "Ver detalles"}
                                   </button>
                                   <button
                                     type="button"
@@ -1188,10 +1339,42 @@ export function SubmissionsModal({
                               </div>
                             </td>
                             <td className="px-3 py-2 text-slate-600">
-                              {gradeValue}
+                              {sub ? (
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  value={gradeInput}
+                                  onChange={(event) =>
+                                    setInlineGrades((prev) => ({ ...prev, [sub.id]: event.target.value }))
+                                  }
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter" && canSaveInline) {
+                                      event.preventDefault();
+                                      void handleSaveInlineGrade(row);
+                                    }
+                                  }}
+                                  placeholder="0-100"
+                                  disabled={isInlineSaving}
+                                  className={`w-24 rounded-lg border px-2 py-1 text-sm ${
+                                    inlineGradeInvalid ? "border-red-400" : "border-slate-300"
+                                  }`}
+                                />
+                              ) : (
+                                "-"
+                              )}
                             </td>
                             <td className="px-3 py-2">
                               <div className="flex items-center gap-2">
+                                {sub ? (
+                                  <button
+                                    type="button"
+                                    className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1 text-sm font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
+                                    disabled={!canSaveInline}
+                                    onClick={() => void handleSaveInlineGrade(row)}
+                                  >
+                                    {isInlineSaving ? "Guardando..." : sub.grade == null ? "Guardar" : "Actualizar"}
+                                  </button>
+                                ) : null}
                                 <button
                                   type="button"
                                   className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-medium text-blue-600 hover:border-blue-400 disabled:opacity-60"
@@ -1206,7 +1389,7 @@ export function SubmissionsModal({
                                       : null
                                   }
                                 >
-                                  {!sub ? "Pendiente" : sub.grade == null ? "Calificar" : "Ver"}
+                                  {!sub ? "Pendiente" : "Ver"}
                                 </button>
                                 {sub ? (
                                   <button
@@ -1237,16 +1420,9 @@ export function SubmissionsModal({
           readonly={gradeModal.readonly}
           onClose={async () => {
             setGradeModal({ open: false });
-            if (isForumClass) return;
-            const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
-              (s) => !courseId || !s.courseId || s.courseId === courseId,
-            );
-            setRows((prev) =>
-              prev.map((r) => ({
-                ...r,
-                submission: submissions.find((s) => s.studentId === r.student.id),
-              })),
-            );
+            if (!isForumClass) {
+              await refreshSubmissionsForTable();
+            }
           }}
           onSave={async (grade, feedback) => {
             if (isForumClass && courseId && lessonId) {
@@ -1276,21 +1452,14 @@ export function SubmissionsModal({
                     : r,
                 ),
               );
+              setInlineGrades((prev) => ({ ...prev, [gradeModal.submission!.id]: String(grade) }));
               toast.success("Calificación de foro guardada correctamente");
               setGradeModal({ open: false });
               return;
             }
             await gradeSubmission(groupId, gradeModal.submission!.id, grade, feedback);
             void notifyGradeByWhatsApp(gradeModal.submission!, grade);
-            const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
-              (s) => !courseId || !s.courseId || s.courseId === courseId,
-            );
-            setRows((prev) =>
-              prev.map((r) => ({
-                ...r,
-                submission: submissions.find((s) => s.studentId === r.student.id),
-              })),
-            );
+            await refreshSubmissionsForTable();
             setGradeModal({ open: false });
           }}
         />
@@ -1305,15 +1474,7 @@ export function SubmissionsModal({
             await gradeSubmission(groupId, quizDetailModal.submission!.id, grade, feedback);
             void notifyGradeByWhatsApp(quizDetailModal.submission!, grade);
             toast.success("Calificación guardada correctamente");
-            const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
-              (s) => !courseId || !s.courseId || s.courseId === courseId,
-            );
-            setRows((prev) =>
-              prev.map((r) => ({
-                ...r,
-                submission: submissions.find((s) => s.studentId === r.student.id),
-              })),
-            );
+            await refreshSubmissionsForTable();
             setQuizDetailModal({ open: false });
           }}
         />

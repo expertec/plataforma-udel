@@ -8,7 +8,7 @@ import { getCourses } from "@/lib/firebase/courses-service";
 import { CreateGroupModal } from "./_components/CreateGroupModal";
 import { BulkCreateGroupsModal } from "./_components/BulkCreateGroupsModal";
 import {
-  getGroupsForTeacher,
+  getAllGroups,
   Group,
   deleteGroup,
   getGroupsWhereAssistant,
@@ -65,12 +65,12 @@ export default function GroupsPage() {
     }
     setLoading(true);
     try {
-      const canManageOwnGroups =
+      const hasGlobalGroupsView =
         isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
 
       const [myGroups, myAssistantGroups, myCourses] = await Promise.all([
-        canManageOwnGroups ? getGroupsForTeacher(currentUser.uid) : Promise.resolve([]),
-        getGroupsWhereAssistant(currentUser.uid),
+        hasGlobalGroupsView ? getAllGroups() : Promise.resolve([]),
+        hasGlobalGroupsView ? Promise.resolve([]) : getGroupsWhereAssistant(currentUser.uid),
         getCourses(),
       ]);
       setGroups(myGroups);
@@ -153,6 +153,9 @@ export default function GroupsPage() {
   const isAdminTeacher = isAdminTeacherRole(userRole);
   const isCampusCoordinator = isCampusCoordinatorRole(userRole);
   const canManageOwnGroups = isAdminTeacher || isCampusCoordinator;
+  const hasGlobalGroupsView = canManageOwnGroups;
+  const canDeleteGroup = (group: Group) =>
+    isAdminTeacher || (isCampusCoordinator && group.teacherId === currentUser?.uid);
 
   return (
     <RoleGate allowedRole={["teacher", "adminTeacher", "superAdminTeacher", "coordinadorPlantel"]}>
@@ -163,7 +166,7 @@ export default function GroupsPage() {
               Grupos
             </p>
             <h1 className="text-2xl font-semibold text-slate-900">
-              {canManageOwnGroups ? "Mis grupos" : "Grupos asignados"}
+              {hasGlobalGroupsView ? "Todos los grupos" : "Grupos asignados"}
             </h1>
           </div>
           {canManageOwnGroups ? (
@@ -193,7 +196,7 @@ export default function GroupsPage() {
         ) : totalGroups === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-600 shadow-sm">
             {canManageOwnGroups
-              ? "Aún no tienes grupos. Crea el primero para asignar alumnos."
+              ? "Aún no hay grupos registrados."
               : "Aún no te han asignado como mentor de ningún grupo."}
           </div>
         ) : (
@@ -230,7 +233,9 @@ export default function GroupsPage() {
             {filteredTotalGroups > 0 && canManageOwnGroups && activeGroups.length > 0 ? (
               <section className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-semibold text-slate-800">Mis Grupos Activos</h2>
+                  <h2 className="text-sm font-semibold text-slate-800">
+                    {hasGlobalGroupsView ? "Grupos Activos" : "Mis Grupos Activos"}
+                  </h2>
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                   {activeGroups.map((group) => (
@@ -238,7 +243,7 @@ export default function GroupsPage() {
                       key={group.id}
                       group={group}
                       formatRange={formatRange}
-                      onDelete={handleDeleteGroup}
+                      onDelete={canDeleteGroup(group) ? handleDeleteGroup : undefined}
                       deleting={deletingGroupId === group.id}
                     />
                   ))}
@@ -271,7 +276,7 @@ export default function GroupsPage() {
             {filteredTotalGroups > 0 && canManageOwnGroups && finishedGroups.length > 0 ? (
               <section className="space-y-3">
                 <h2 className="text-sm font-semibold text-slate-800">
-                  Mis Grupos Finalizados
+                  {hasGlobalGroupsView ? "Grupos Finalizados" : "Mis Grupos Finalizados"}
                 </h2>
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                   {finishedGroups.map((group) => (
@@ -279,7 +284,7 @@ export default function GroupsPage() {
                       key={group.id}
                       group={group}
                       formatRange={formatRange}
-                      onDelete={handleDeleteGroup}
+                      onDelete={canDeleteGroup(group) ? handleDeleteGroup : undefined}
                       deleting={deletingGroupId === group.id}
                     />
                   ))}

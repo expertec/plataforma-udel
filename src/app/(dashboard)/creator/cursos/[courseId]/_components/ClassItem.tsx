@@ -93,6 +93,16 @@ export function ClassItem({
                 Tarea
               </span>
             ) : null}
+            {item.isClassroomActivity ? (
+              <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] font-semibold text-indigo-700">
+                Actividad en clase
+              </span>
+            ) : null}
+            {item.showInStudentPlatform === false ? (
+              <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
+                Oculta en plataforma
+              </span>
+            ) : null}
           </div>
           {item.duration ? (
             <p className="text-xs text-slate-500">{item.duration} min</p>

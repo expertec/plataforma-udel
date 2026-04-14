@@ -28,6 +28,7 @@ import type { FirebaseError } from "firebase/app";
 type SurveyFormState = {
   title: string;
   description: string;
+  enabled: boolean;
   segment: SurveySegment;
   applyToFutureStudents: boolean;
   questions: SurveyQuestion[];
@@ -38,6 +39,7 @@ type SurveyStatusCounts = Record<string, number>;
 const EMPTY_FORM: SurveyFormState = {
   title: "",
   description: "",
+  enabled: false,
   segment: "all",
   applyToFutureStudents: true,
   questions: [],
@@ -324,6 +326,7 @@ export default function EncuestasPage() {
         await updateSatisfactionSurvey(editingSurveyId, {
           title: normalizedTitle,
           description: form.description.trim(),
+          status: form.enabled ? "published" : "draft",
           segment: form.segment,
           applyToFutureStudents: form.applyToFutureStudents,
           questions: validQuestions,
@@ -334,7 +337,7 @@ export default function EncuestasPage() {
         await createSatisfactionSurvey({
           title: normalizedTitle,
           description: form.description.trim(),
-          status: "draft",
+          status: form.enabled ? "published" : "draft",
           segment: form.segment,
           applyToFutureStudents: form.applyToFutureStudents,
           questions: validQuestions,
@@ -359,10 +362,15 @@ export default function EncuestasPage() {
     setForm({
       title: survey.title,
       description: survey.description,
+      enabled: survey.status === "published",
       segment: survey.segment,
       applyToFutureStudents: survey.applyToFutureStudents,
       questions: survey.questions.length ? survey.questions : [buildQuestion("rating_1_5")],
     });
+  };
+
+  const handleToggleSurveyEnabled = async (survey: SatisfactionSurvey, enabled: boolean) => {
+    await handleChangeSurveyStatus(survey.id, enabled ? "published" : "draft");
   };
 
   const handleChangeSurveyStatus = async (surveyId: string, status: SurveyStatus) => {
@@ -506,6 +514,26 @@ export default function EncuestasPage() {
                   placeholder="Mensaje breve para el alumno"
                 />
               </label>
+
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-800">
+                  <input
+                    type="checkbox"
+                    checked={form.enabled}
+                    onChange={(event) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        enabled: event.target.checked,
+                      }))
+                    }
+                    className="h-4 w-4 rounded border-slate-300"
+                  />
+                  Encuesta activa
+                </label>
+                <p className="mt-1 text-xs text-slate-600">
+                  Por defecto queda desactivada (borrador). Actívala cuando quieras publicarla.
+                </p>
+              </div>
 
               <label className="inline-flex items-center gap-2 text-sm text-slate-700">
                 <input
@@ -727,6 +755,18 @@ export default function EncuestasPage() {
 
                     {canManageSurveys ? (
                       <>
+                        <label className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={survey.status === "published"}
+                            onChange={(event) =>
+                              void handleToggleSurveyEnabled(survey, event.target.checked)
+                            }
+                            disabled={statusUpdatingId === survey.id}
+                            className="h-4 w-4 rounded border-slate-300"
+                          />
+                          {survey.status === "published" ? "Activa" : "Desactivada"}
+                        </label>
                         <button
                           type="button"
                           onClick={() => handleEditSurvey(survey)}
@@ -734,16 +774,6 @@ export default function EncuestasPage() {
                         >
                           Editar
                         </button>
-                        {survey.status !== "published" ? (
-                          <button
-                            type="button"
-                            onClick={() => void handleChangeSurveyStatus(survey.id, "published")}
-                            disabled={statusUpdatingId === survey.id}
-                            className="rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:border-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            Publicar
-                          </button>
-                        ) : null}
                         {survey.status !== "archived" ? (
                           <button
                             type="button"

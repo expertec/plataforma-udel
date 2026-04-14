@@ -27,6 +27,7 @@ import {
 import { getGroupStudents, getGroupsForTeacher } from "@/lib/firebase/groups-service";
 import { StudentAllSubmissionsModal } from "./_components/StudentAllSubmissionsModal";
 import { StudentGradesModal } from "./_components/StudentGradesModal";
+import { StudentDropoutRiskTab } from "./_components/StudentDropoutRiskTab";
 
 type ParsedStudentRow = {
   row: number;
@@ -69,7 +70,7 @@ export default function AlumnosPage() {
   const [parseError, setParseError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [activeTab, setActiveTab] = useState<"gestion" | "altas" | "passwords">("gestion");
+  const [activeTab, setActiveTab] = useState<"gestion" | "altas" | "passwords" | "riesgo">("gestion");
   const [newStudent, setNewStudent] = useState({
     name: "",
     email: "",
@@ -618,9 +619,10 @@ export default function AlumnosPage() {
   const isAdmin = isAdminTeacherRole(userRole);
   const isCoordinator = isCampusCoordinatorRole(userRole);
   const canViewAllStudents = isAdmin || isCampusCoordinatorRole(userRole);
-  const adminTabs: { key: "gestion" | "altas" | "passwords"; label: string; helper?: string }[] = isAdmin
+  const adminTabs: { key: "gestion" | "altas" | "passwords" | "riesgo"; label: string; helper?: string }[] = isAdmin
     ? [
         { key: "gestion", label: "Listado y acciones" },
+        { key: "riesgo", label: "Riesgo deserción" },
         { key: "altas", label: "Altas e importación" },
         { key: "passwords", label: "Contraseñas" },
       ]
@@ -1354,6 +1356,10 @@ export default function AlumnosPage() {
             </div>
           )}
         </div>
+      ) : null}
+
+      {isAdmin && activeTab === "riesgo" ? (
+        <StudentDropoutRiskTab />
       ) : null}
 
       {(activeTab === "gestion" || !isAdmin) && (

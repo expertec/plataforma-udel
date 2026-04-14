@@ -303,6 +303,9 @@ export default function CourseBuilderPage() {
             imageUrls: d.imageUrls ?? [],
             hasAssignment: d.hasAssignment ?? false,
             assignmentTemplateUrl: d.assignmentTemplateUrl ?? "",
+            assignmentSubmissionType: d.assignmentSubmissionType === "audio" ? "audio" : "file",
+            isClassroomActivity: d.isClassroomActivity ?? false,
+            showInStudentPlatform: d.showInStudentPlatform ?? true,
             forumEnabled: d.forumEnabled ?? false,
             forumRequiredFormat: d.forumRequiredFormat ?? null,
           };
@@ -575,7 +578,15 @@ export default function CourseBuilderPage() {
 
   const handleClassCreated = (
     classId: string,
-    payload: { title: string; type: string; duration?: number; hasAssignment?: boolean },
+    payload: {
+      title: string;
+      type: string;
+      duration?: number;
+      hasAssignment?: boolean;
+      assignmentSubmissionType?: "file" | "audio";
+      isClassroomActivity?: boolean;
+      showInStudentPlatform?: boolean;
+    },
   ) => {
     if (!selectedLesson) return;
     if (classListeners.current[selectedLesson.id]) {
@@ -593,6 +604,9 @@ export default function CourseBuilderPage() {
           order: selectedClassesCount(selectedLesson.id),
           duration: payload.duration,
           hasAssignment: payload.hasAssignment ?? false,
+          assignmentSubmissionType: payload.assignmentSubmissionType ?? "file",
+          isClassroomActivity: payload.isClassroomActivity ?? false,
+          showInStudentPlatform: payload.showInStudentPlatform ?? true,
         },
       ],
     }));

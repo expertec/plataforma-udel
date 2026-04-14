@@ -40,7 +40,9 @@ export type Course = {
 
 type CourseClassType = "video" | "text" | "audio" | "quiz" | "image";
 type ForumRequiredFormat = "text" | "audio" | "video" | null;
+type AssignmentSubmissionType = "file" | "audio";
 type QuizQuestionType = "multiple" | "truefalse" | "open";
+type ClassroomPlatformVisibility = boolean;
 
 const toUniqueStringArray = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
@@ -78,6 +80,16 @@ const normalizeForumRequiredFormat = (value: unknown): ForumRequiredFormat => {
   if (value === "text" || value === "audio" || value === "video") return value;
   return null;
 };
+
+const normalizeAssignmentSubmissionType = (value: unknown): AssignmentSubmissionType => {
+  if (value === "audio") return "audio";
+  return "file";
+};
+
+const normalizeClassroomActivity = (value: unknown): boolean => value === true;
+
+const normalizeShowInStudentPlatform = (value: unknown): ClassroomPlatformVisibility =>
+  value === false ? false : true;
 
 const normalizeQuizQuestionType = (value: unknown): QuizQuestionType => {
   if (value === "multiple" || value === "truefalse" || value === "open") {
@@ -394,6 +406,11 @@ export async function duplicateCourse(input: DuplicateCourseInput): Promise<stri
           imageUrls: toUniqueStringArray(classItem.data.imageUrls),
           hasAssignment: Boolean(classItem.data.hasAssignment),
           assignmentTemplateUrl: asString(classItem.data.assignmentTemplateUrl),
+          assignmentSubmissionType: normalizeAssignmentSubmissionType(
+            classItem.data.assignmentSubmissionType,
+          ),
+          isClassroomActivity: normalizeClassroomActivity(classItem.data.isClassroomActivity),
+          showInStudentPlatform: normalizeShowInStudentPlatform(classItem.data.showInStudentPlatform),
           forumEnabled: Boolean(classItem.data.forumEnabled),
           forumRequiredFormat: normalizeForumRequiredFormat(classItem.data.forumRequiredFormat),
           likesCount: 0,
@@ -690,6 +707,9 @@ export type ClassItem = {
   imageUrls?: string[] | null;
   hasAssignment?: boolean;
   assignmentTemplateUrl?: string | null;
+  assignmentSubmissionType?: AssignmentSubmissionType;
+  isClassroomActivity?: boolean;
+  showInStudentPlatform?: ClassroomPlatformVisibility;
   forumEnabled?: boolean;
   forumRequiredFormat?: "text" | "audio" | "video" | null;
 };
@@ -712,6 +732,9 @@ export async function getClasses(courseId: string, lessonId: string): Promise<Cl
       imageUrls: data.imageUrls ?? [],
       hasAssignment: data.hasAssignment ?? false,
       assignmentTemplateUrl: data.assignmentTemplateUrl ?? "",
+      assignmentSubmissionType: normalizeAssignmentSubmissionType(data.assignmentSubmissionType),
+      isClassroomActivity: normalizeClassroomActivity(data.isClassroomActivity),
+      showInStudentPlatform: normalizeShowInStudentPlatform(data.showInStudentPlatform),
       forumEnabled: data.forumEnabled ?? false,
       forumRequiredFormat: data.forumRequiredFormat ?? null,
     };
@@ -731,6 +754,9 @@ type CreateClassInput = {
   imageUrls?: string[];
   hasAssignment?: boolean;
   assignmentTemplateUrl?: string | null;
+  assignmentSubmissionType?: AssignmentSubmissionType;
+  isClassroomActivity?: boolean;
+  showInStudentPlatform?: ClassroomPlatformVisibility;
   forumEnabled?: boolean;
   forumRequiredFormat?: "text" | "audio" | "video" | null;
 };
@@ -761,6 +787,9 @@ async function createClassViaApiFallback(input: CreateClassInput): Promise<strin
         imageUrls: input.imageUrls ?? [],
         hasAssignment: input.hasAssignment ?? false,
         assignmentTemplateUrl: input.assignmentTemplateUrl ?? "",
+        assignmentSubmissionType: input.assignmentSubmissionType ?? "file",
+        isClassroomActivity: input.isClassroomActivity ?? false,
+        showInStudentPlatform: input.showInStudentPlatform ?? true,
         forumEnabled: input.forumEnabled ?? false,
         forumRequiredFormat: input.forumRequiredFormat ?? null,
       }),
@@ -799,6 +828,9 @@ export async function createClass(input: CreateClassInput): Promise<string> {
       imageUrls: input.imageUrls ?? [],
       hasAssignment: input.hasAssignment ?? false,
       assignmentTemplateUrl: input.assignmentTemplateUrl ?? "",
+      assignmentSubmissionType: input.assignmentSubmissionType ?? "file",
+      isClassroomActivity: input.isClassroomActivity ?? false,
+      showInStudentPlatform: input.showInStudentPlatform ?? true,
       forumEnabled: input.forumEnabled ?? false,
       forumRequiredFormat: input.forumRequiredFormat ?? null,
       createdAt: serverTimestamp(),
@@ -826,6 +858,9 @@ type UpdateClassInput = {
   imageUrls?: string[] | null;
   hasAssignment?: boolean;
   assignmentTemplateUrl?: string | null;
+  assignmentSubmissionType?: AssignmentSubmissionType;
+  isClassroomActivity?: boolean;
+  showInStudentPlatform?: ClassroomPlatformVisibility;
   forumEnabled?: boolean;
   forumRequiredFormat?: "text" | "audio" | "video" | null;
 };
@@ -883,6 +918,12 @@ export async function updateClass(input: UpdateClassInput): Promise<void> {
   if (input.hasAssignment !== undefined) payload.hasAssignment = input.hasAssignment;
   if (input.assignmentTemplateUrl !== undefined)
     payload.assignmentTemplateUrl = input.assignmentTemplateUrl;
+  if (input.assignmentSubmissionType !== undefined)
+    payload.assignmentSubmissionType = input.assignmentSubmissionType;
+  if (input.isClassroomActivity !== undefined)
+    payload.isClassroomActivity = input.isClassroomActivity;
+  if (input.showInStudentPlatform !== undefined)
+    payload.showInStudentPlatform = input.showInStudentPlatform;
   if (input.forumEnabled !== undefined) payload.forumEnabled = input.forumEnabled;
   if (input.forumRequiredFormat !== undefined) payload.forumRequiredFormat = input.forumRequiredFormat;
   if (Object.keys(payload).length === 0) return;

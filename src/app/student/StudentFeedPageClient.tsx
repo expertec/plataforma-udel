@@ -72,6 +72,9 @@ type FeedClass = {
   images?: string[];
   hasAssignment?: boolean;
   assignmentTemplateUrl?: string;
+  assignmentSubmissionType?: "file" | "audio";
+  isClassroomActivity?: boolean;
+  showInStudentPlatform?: boolean;
   lessonTitle?: string;
   lessonName?: string;
   likesCount?: number;
@@ -698,8 +701,9 @@ export default function StudentFeedPageClient() {
   }, [activePendingSurvey?.id, activePendingSurvey]);
 
   const visibleClasses = useMemo(() => {
-    if (previewMode) return classes;
-    return classes.filter((cls) => {
+    const platformVisible = classes.filter((cls) => cls.showInStudentPlatform !== false);
+    if (previewMode) return platformVisible;
+    return platformVisible.filter((cls) => {
       const courseClosed = isCourseClosedForClass(cls);
       if (courseClosed) return showClosedCourses;
       return true;
@@ -1574,6 +1578,9 @@ export default function StudentFeedPageClient() {
                   : [],
                 hasAssignment: c.hasAssignment ?? false,
                 assignmentTemplateUrl: c.assignmentTemplateUrl ?? "",
+                assignmentSubmissionType: c.assignmentSubmissionType === "audio" ? "audio" : "file",
+                isClassroomActivity: c.isClassroomActivity ?? false,
+                showInStudentPlatform: c.showInStudentPlatform ?? true,
                 lessonTitle,
                 lessonName: lessonTitle,
                 courseTitle,
@@ -1995,6 +2002,9 @@ export default function StudentFeedPageClient() {
                           : [],
                         hasAssignment: c.hasAssignment ?? false,
                         assignmentTemplateUrl: c.assignmentTemplateUrl ?? "",
+                        assignmentSubmissionType: c.assignmentSubmissionType === "audio" ? "audio" : "file",
+                        isClassroomActivity: c.isClassroomActivity ?? false,
+                        showInStudentPlatform: c.showInStudentPlatform ?? true,
                         lessonTitle,
                         lessonName: lessonTitle,
                         courseTitle,
@@ -4237,6 +4247,7 @@ export default function StudentFeedPageClient() {
                     classId={cls.id}
                     classTitle={cls.title}
                     templateUrl={cls.assignmentTemplateUrl}
+                    assignmentSubmissionType={cls.assignmentSubmissionType === "audio" ? "audio" : "file"}
                     selectedFile={assignmentFileMap[cls.id] ?? null}
                     audioFile={assignmentAudioMap[cls.id] ?? null}
                     uploading={assignmentUploadingMap[cls.id] ?? false}
@@ -4337,10 +4348,22 @@ export default function StudentFeedPageClient() {
                     );
                     return;
                   }
-                  const file = assignmentFileMap[cls.id] ?? null;
-                  const audioFile = assignmentAudioMap[cls.id] ?? null;
-                  if (!file && !audioFile) {
-                    toast.error("Adjunta un archivo o audio antes de enviar la tarea.");
+                  const assignmentSubmissionType =
+                    cls.assignmentSubmissionType === "audio" ? "audio" : "file";
+                  const file =
+                    assignmentSubmissionType === "file"
+                      ? assignmentFileMap[cls.id] ?? null
+                      : null;
+                  const audioFile =
+                    assignmentSubmissionType === "audio"
+                      ? assignmentAudioMap[cls.id] ?? null
+                      : null;
+                  if (assignmentSubmissionType === "file" && !file) {
+                    toast.error("Adjunta un archivo antes de enviar la tarea.");
+                    return;
+                  }
+                  if (assignmentSubmissionType === "audio" && !audioFile) {
+                    toast.error("Adjunta o graba un audio antes de enviar la tarea.");
                     return;
                   }
                   const shouldUploadAssets = Boolean(file || audioFile);
@@ -7174,6 +7197,7 @@ type AssignmentPanelProps = {
   classId: string;
   classTitle?: string;
   templateUrl?: string;
+  assignmentSubmissionType?: "file" | "audio";
   onSubmit: () => void | Promise<void>;
   onClose: () => void;
   selectedFile: File | null;
@@ -7195,6 +7219,7 @@ function AssignmentPanel({
   classId,
   classTitle,
   templateUrl,
+  assignmentSubmissionType = "file",
   onSubmit,
   onClose,
   selectedFile,
@@ -7289,6 +7314,7 @@ function AssignmentPanel({
     const file = e.dataTransfer.files?.[0];
     if (file) onFileChange(file);
   };
+  const isAudioAssignment = assignmentSubmissionType === "audio";
 
   return (
     <div className="fixed inset-y-0 right-0 z-40 w-full max-w-md bg-neutral-900/95 backdrop-blur-lg text-white shadow-2xl lg:top-0 lg:right-0 flex flex-col">
@@ -7389,81 +7415,84 @@ function AssignmentPanel({
           </div>
         ) : (
           <div className="rounded-2xl bg-white/5 p-3">
-            <div className="mt-3 space-y-2 text-sm text-white/90">
-              <p className="font-semibold text-white">Adjuntar archivo (PDF o DOC)</p>
-              <div
-                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={handleDrop}
-                className={`relative flex min-h-[120px] cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed ${
-                  dragOver ? "border-blue-400 bg-blue-500/10" : "border-white/20 bg-white/5"
-                } px-4 py-3 text-center transition`}
-                onClick={() => document.getElementById(`assignment-file-${classId}`)?.click()}
-              >
-                <input
-                  id={`assignment-file-${classId}`}
-                  type="file"
-                  accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                  className="hidden"
-                  onChange={(e) => onFileChange(e.target.files?.[0] ?? null)}
-                />
-                <ControlIcon name="assignment" />
-                <p className="mt-2 text-sm font-semibold text-white">Arrastra aquí o haz clic para subir</p>
-                <p className="text-xs text-white/60">Formatos: PDF, DOC, DOCX</p>
-                {selectedFile ? (
-                  <p className="mt-2 text-xs text-white/80">Seleccionado: {selectedFile.name}</p>
-                ) : (
-                  <p className="mt-2 text-xs text-white/50">Máx. 1 archivo</p>
-                )}
-              </div>
-            </div>
-            <div className="mt-3 space-y-2 text-sm text-white/90">
-              <p className="font-semibold text-white">Enviar un audio</p>
-              <div className="space-y-3 rounded-2xl border border-dashed border-white/20 bg-white/5 p-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleAudioRecording}
-                    disabled={uploading}
-                    className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold ${
-                      recording ? "bg-red-600 text-white" : "bg-white/10 text-white hover:bg-white/20"
-                    }`}
-                  >
-                    <ControlIcon name="audio" />
-                    {recording ? "Detener grabación" : "Grabar audio"}
-                  </button>
+            {!isAudioAssignment ? (
+              <div className="mt-3 space-y-2 text-sm text-white/90">
+                <p className="font-semibold text-white">Adjuntar archivo (PDF o DOC)</p>
+                <div
+                  onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                  onDragLeave={() => setDragOver(false)}
+                  onDrop={handleDrop}
+                  className={`relative flex min-h-[120px] cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed ${
+                    dragOver ? "border-blue-400 bg-blue-500/10" : "border-white/20 bg-white/5"
+                  } px-4 py-3 text-center transition`}
+                  onClick={() => document.getElementById(`assignment-file-${classId}`)?.click()}
+                >
                   <input
+                    id={`assignment-file-${classId}`}
                     type="file"
-                    accept="audio/*,.wav,.wave,.mp3,.m4a,.aac,.ogg,.oga,.flac,.opus,.weba,.mpeg"
-                    disabled={uploading}
-                    onChange={(e) => onAudioChange(e.target.files?.[0] ?? null)}
-                    className="w-full cursor-pointer rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white placeholder:text-white/50 transition hover:border-blue-400 focus:border-blue-500 focus:outline-none"
+                    accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    className="hidden"
+                    onChange={(e) => onFileChange(e.target.files?.[0] ?? null)}
                   />
+                  <ControlIcon name="assignment" />
+                  <p className="mt-2 text-sm font-semibold text-white">Arrastra aquí o haz clic para subir</p>
+                  <p className="text-xs text-white/60">Formatos: PDF, DOC, DOCX</p>
+                  {selectedFile ? (
+                    <p className="mt-2 text-xs text-white/80">Seleccionado: {selectedFile.name}</p>
+                  ) : (
+                    <p className="mt-2 text-xs text-white/50">Máx. 1 archivo</p>
+                  )}
                 </div>
-                {recordingError ? <p className="text-xs text-red-300">{recordingError}</p> : null}
-                {audioFile ? (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-xs text-white/70">
-                      <span className="truncate">{audioFile.name}</span>
-                      <button
-                        type="button"
-                        onClick={() => onAudioChange(null)}
-                        className="text-xs font-semibold text-red-300 hover:text-red-200"
-                      >
-                        Quitar
-                      </button>
-                    </div>
-                    {audioPreviewUrl ? (
-                      <StyledAudioPreview src={audioPreviewUrl} label="Audio grabado" />
-                    ) : null}
-                  </div>
-                ) : (
-                  <p className="text-xs text-white/60">
-                    Sube un archivo o graba tu voz para acompañar la entrega.
-                  </p>
-                )}
               </div>
-            </div>
+            ) : (
+              <div className="mt-3 space-y-2 text-sm text-white/90">
+                <p className="font-semibold text-white">Enviar un audio</p>
+                <div className="space-y-3 rounded-2xl border border-dashed border-white/20 bg-white/5 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleAudioRecording}
+                      disabled={uploading}
+                      className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold ${
+                        recording ? "bg-red-600 text-white" : "bg-white/10 text-white hover:bg-white/20"
+                      }`}
+                    >
+                      <ControlIcon name="audio" />
+                      {recording ? "Detener grabación" : "Grabar audio"}
+                    </button>
+                    <input
+                      type="file"
+                      accept="audio/*,.wav,.wave,.mp3,.m4a,.aac,.ogg,.oga,.flac,.opus,.weba,.mpeg"
+                      disabled={uploading}
+                      onChange={(e) => onAudioChange(e.target.files?.[0] ?? null)}
+                      className="w-full cursor-pointer rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white placeholder:text-white/50 transition hover:border-blue-400 focus:border-blue-500 focus:outline-none"
+                    />
+                  </div>
+                  {recordingError ? <p className="text-xs text-red-300">{recordingError}</p> : null}
+                  {audioFile ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-xs text-white/70">
+                        <span className="truncate">{audioFile.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => onAudioChange(null)}
+                          className="text-xs font-semibold text-red-300 hover:text-red-200"
+                        >
+                          Quitar
+                        </button>
+                      </div>
+                      {audioPreviewUrl ? (
+                        <StyledAudioPreview src={audioPreviewUrl} label="Audio grabado" />
+                      ) : null}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-white/60">
+                      Sube un archivo o graba tu voz para esta entrega.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
             <button
               type="button"
               onClick={onSubmit}

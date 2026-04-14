@@ -39,6 +39,21 @@ type StudyRouteCourse = {
   weeks: StudyRouteWeek[];
 };
 
+type DailyPointsRow = {
+  dateKey: string;
+  dateLabel: string;
+  dailyPoints: number;
+  cumulativePoints: number;
+  gradedCount: number;
+  submissionsCount: number;
+};
+
+type DailyPointsCourse = {
+  courseKey: string;
+  courseLabel: string;
+  rows: DailyPointsRow[];
+};
+
 export default function StudentProfilePage() {
   const [user, setUser] = useState<User | null>(auth.currentUser);
   const [name, setName] = useState(auth.currentUser?.displayName ?? "");
@@ -53,9 +68,32 @@ export default function StudentProfilePage() {
   const [programCourses, setProgramCourses] = useState<{ id: string; title: string; coverUrl?: string }[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [studyRoute, setStudyRoute] = useState<StudyRouteCourse[]>([]);
+  const [dailyPoints, setDailyPoints] = useState<DailyPointsRow[]>([]);
+  const [dailyPointsByCourse, setDailyPointsByCourse] = useState<DailyPointsCourse[]>([]);
+  const [selectedPointsCourse, setSelectedPointsCourse] = useState<string>("ALL");
   const [groupId, setGroupId] = useState<string | null>(null);
   const [loadingSubs, setLoadingSubs] = useState(false);
   const [expandedFeedback, setExpandedFeedback] = useState<Set<string>>(new Set());
+
+  const selectedDailyPointsRows = useMemo(() => {
+    if (selectedPointsCourse === "ALL") return dailyPoints;
+    return dailyPointsByCourse.find((course) => course.courseKey === selectedPointsCourse)?.rows ?? [];
+  }, [dailyPoints, dailyPointsByCourse, selectedPointsCourse]);
+
+  const selectedPointsCourseLabel = useMemo(() => {
+    if (selectedPointsCourse === "ALL") return "Todas las materias";
+    return (
+      dailyPointsByCourse.find((course) => course.courseKey === selectedPointsCourse)?.courseLabel ??
+      "Materia"
+    );
+  }, [dailyPointsByCourse, selectedPointsCourse]);
+
+  useEffect(() => {
+    setSelectedPointsCourse((current) => {
+      if (current === "ALL") return current;
+      return dailyPointsByCourse.some((course) => course.courseKey === current) ? current : "ALL";
+    });
+  }, [dailyPointsByCourse]);
 
   const coursesForMap = useMemo(() => {
     if (programCourses.length) return programCourses;
@@ -162,6 +200,8 @@ export default function StudentProfilePage() {
         if (enrSnap.empty) {
           setTasks([]);
           setStudyRoute([]);
+          setDailyPoints([]);
+          setDailyPointsByCourse([]);
           setGroupId(null);
           return;
         }
@@ -228,6 +268,8 @@ export default function StudentProfilePage() {
         if (!enrollmentGroupIds.length) {
           setTasks([]);
           setStudyRoute([]);
+          setDailyPoints([]);
+          setDailyPointsByCourse([]);
           return;
         }
 
@@ -420,12 +462,121 @@ export default function StudentProfilePage() {
           })
           .sort((a, b) => a.course.localeCompare(b.course));
 
+        const formatDateKey = (date: Date) =>
+          `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(
+            2,
+            "0",
+          )}`;
+
+        const pointsByDay = new Map<
+          string,
+          { date: Date; dailyPoints: number; gradedCount: number; submissionsCount: number }
+        >();
+        const pointsByCourse = new Map<
+          string,
+          {
+            courseLabel: string;
+            pointsByDay: Map<
+              string,
+              { date: Date; dailyPoints: number; gradedCount: number; submissionsCount: number }
+            >;
+          }
+        >();
+        ordered.forEach((submission) => {
+          const baseDate = submission.submittedAt ?? submission.gradedAt ?? null;
+          if (!baseDate) return;
+          const date = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate());
+          const dateKey = formatDateKey(date);
+          if (!pointsByDay.has(dateKey)) {
+            pointsByDay.set(dateKey, {
+              date,
+              dailyPoints: 0,
+              gradedCount: 0,
+              submissionsCount: 0,
+            });
+          }
+          const entry = pointsByDay.get(dateKey)!;
+          entry.submissionsCount += 1;
+          if (typeof submission.grade === "number" && Number.isFinite(submission.grade)) {
+            entry.dailyPoints += submission.grade;
+            entry.gradedCount += 1;
+          }
+
+          const courseId = (submission.courseId ?? "").trim();
+          const courseLabel = (submission.courseTitle ?? "Materia sin identificar").trim() || "Materia sin identificar";
+          const courseKey = `${courseId || "sin-curso"}::${courseLabel}`;
+          if (!pointsByCourse.has(courseKey)) {
+            pointsByCourse.set(courseKey, {
+              courseLabel,
+              pointsByDay: new Map(),
+            });
+          }
+          const courseEntry = pointsByCourse.get(courseKey)!;
+          if (!courseEntry.pointsByDay.has(dateKey)) {
+            courseEntry.pointsByDay.set(dateKey, {
+              date,
+              dailyPoints: 0,
+              gradedCount: 0,
+              submissionsCount: 0,
+            });
+          }
+          const dailyCourseEntry = courseEntry.pointsByDay.get(dateKey)!;
+          dailyCourseEntry.submissionsCount += 1;
+          if (typeof submission.grade === "number" && Number.isFinite(submission.grade)) {
+            dailyCourseEntry.dailyPoints += submission.grade;
+            dailyCourseEntry.gradedCount += 1;
+          }
+        });
+
+        let cumulative = 0;
+        const dailyPointsRows: DailyPointsRow[] = Array.from(pointsByDay.entries())
+          .sort((a, b) => a[0].localeCompare(b[0]))
+          .map(([dateKey, entry]) => {
+            cumulative += entry.dailyPoints;
+            return {
+              dateKey,
+              dateLabel: new Intl.DateTimeFormat("es-MX").format(entry.date),
+              dailyPoints: entry.dailyPoints,
+              cumulativePoints: cumulative,
+              gradedCount: entry.gradedCount,
+              submissionsCount: entry.submissionsCount,
+            };
+          });
+
+        const dailyPointsByCourseRows: DailyPointsCourse[] = Array.from(pointsByCourse.entries())
+          .map(([courseKey, courseEntry]) => {
+            let courseCumulative = 0;
+            const rows = Array.from(courseEntry.pointsByDay.entries())
+              .sort((a, b) => a[0].localeCompare(b[0]))
+              .map(([dateKey, entry]) => {
+                courseCumulative += entry.dailyPoints;
+                return {
+                  dateKey,
+                  dateLabel: new Intl.DateTimeFormat("es-MX").format(entry.date),
+                  dailyPoints: entry.dailyPoints,
+                  cumulativePoints: courseCumulative,
+                  gradedCount: entry.gradedCount,
+                  submissionsCount: entry.submissionsCount,
+                };
+              });
+            return {
+              courseKey,
+              courseLabel: courseEntry.courseLabel,
+              rows,
+            };
+          })
+          .sort((a, b) => a.courseLabel.localeCompare(b.courseLabel));
+
         setStudyRoute(route);
+        setDailyPoints(dailyPointsRows);
+        setDailyPointsByCourse(dailyPointsByCourseRows);
       } catch (err) {
         console.error("No se pudieron cargar las entregas:", err);
         toast.error("No se pudieron cargar tus entregas");
         setTasks([]);
         setStudyRoute([]);
+        setDailyPoints([]);
+        setDailyPointsByCourse([]);
         setGroupId(null);
       } finally {
         setLoadingSubs(false);
@@ -778,6 +929,76 @@ export default function StudentProfilePage() {
                         </div>
                       </div>
                     ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-semibold text-white">Sumatoria diaria de puntos</p>
+                  <span className="text-xs text-white/60">
+                    {selectedDailyPointsRows.length
+                      ? `${selectedDailyPointsRows[selectedDailyPointsRows.length - 1].cumulativePoints.toFixed(1)} acumulados`
+                      : "Sin puntos registrados"}
+                  </span>
+                </div>
+                <p className="mt-1 text-[11px] text-white/60">
+                  Vista: {selectedPointsCourseLabel}. Los puntos del día se suman por clases calificadas.
+                </p>
+                {dailyPointsByCourse.length > 0 ? (
+                  <div className="mt-3 flex items-center gap-2">
+                    <label htmlFor="points-course-filter" className="text-xs text-white/70">
+                      Filtrar por materia:
+                    </label>
+                    <select
+                      id="points-course-filter"
+                      value={selectedPointsCourse}
+                      onChange={(e) => setSelectedPointsCourse(e.target.value)}
+                      className="rounded-lg border border-white/10 bg-neutral-900 px-2 py-1 text-xs text-white focus:border-white/30 focus:outline-none"
+                    >
+                      <option value="ALL">Todas las materias</option>
+                      {dailyPointsByCourse.map((course) => (
+                        <option key={course.courseKey} value={course.courseKey}>
+                          {course.courseLabel}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+                {loadingSubs ? (
+                  <p className="mt-2 text-sm text-white/70">Calculando sumatoria...</p>
+                ) : selectedDailyPointsRows.length === 0 ? (
+                  <p className="mt-2 text-sm text-white/70">
+                    Aún no hay calificaciones suficientes para construir la sumatoria diaria.
+                  </p>
+                ) : (
+                  <div className="mt-3 overflow-x-auto rounded-lg border border-white/10">
+                    <table className="min-w-full divide-y divide-white/10 text-left text-xs text-white/80">
+                      <thead className="bg-white/5 text-[11px] uppercase tracking-[0.12em] text-white/60">
+                        <tr>
+                          <th className="px-3 py-2 font-semibold">Fecha</th>
+                          <th className="px-3 py-2 font-semibold text-right">Puntos del día</th>
+                          <th className="px-3 py-2 font-semibold text-right">Acumulado</th>
+                          <th className="px-3 py-2 font-semibold text-right">Clases calificadas</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/10">
+                        {selectedDailyPointsRows.map((row) => (
+                          <tr key={row.dateKey} className="bg-neutral-950/30">
+                            <td className="px-3 py-2 text-white">{row.dateLabel}</td>
+                            <td className="px-3 py-2 text-right font-semibold text-emerald-100">
+                              {row.dailyPoints.toFixed(1)}
+                            </td>
+                            <td className="px-3 py-2 text-right font-semibold text-white">
+                              {row.cumulativePoints.toFixed(1)}
+                            </td>
+                            <td className="px-3 py-2 text-right text-white/70">
+                              {row.gradedCount}/{row.submissionsCount}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>

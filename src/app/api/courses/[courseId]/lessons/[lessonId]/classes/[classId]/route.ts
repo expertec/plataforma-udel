@@ -12,6 +12,7 @@ type TeacherRole =
 
 type CourseClassType = "video" | "text" | "audio" | "quiz" | "image";
 type ForumRequiredFormat = "text" | "audio" | "video" | null;
+type AssignmentSubmissionType = "file" | "audio";
 
 type UpdateClassRequest = {
   title?: unknown;
@@ -24,6 +25,9 @@ type UpdateClassRequest = {
   imageUrls?: unknown;
   hasAssignment?: unknown;
   assignmentTemplateUrl?: unknown;
+  assignmentSubmissionType?: unknown;
+  isClassroomActivity?: unknown;
+  showInStudentPlatform?: unknown;
   forumEnabled?: unknown;
   forumRequiredFormat?: unknown;
 };
@@ -113,6 +117,12 @@ function normalizeForumRequiredFormat(value: unknown): ForumRequiredFormat {
   if (value === "text" || value === "audio" || value === "video") return value;
   if (value === null) return null;
   throw new RouteAccessError(400, "forumRequiredFormat inválido");
+}
+
+function normalizeAssignmentSubmissionType(value: unknown): AssignmentSubmissionType {
+  if (value === "file") return "file";
+  if (value === "audio") return "audio";
+  throw new RouteAccessError(400, "assignmentSubmissionType inválido");
 }
 
 function normalizePositiveInt(value: unknown, fieldName: string): number {
@@ -303,6 +313,20 @@ export async function PATCH(
         "assignmentTemplateUrl",
       );
     }
+    if (hasOwn(body, "assignmentSubmissionType")) {
+      payload.assignmentSubmissionType = normalizeAssignmentSubmissionType(
+        body.assignmentSubmissionType,
+      );
+    }
+    if (hasOwn(body, "isClassroomActivity")) {
+      payload.isClassroomActivity = asBoolean(body.isClassroomActivity, "isClassroomActivity");
+    }
+    if (hasOwn(body, "showInStudentPlatform")) {
+      payload.showInStudentPlatform = asBoolean(
+        body.showInStudentPlatform,
+        "showInStudentPlatform",
+      );
+    }
     if (hasOwn(body, "forumEnabled")) {
       payload.forumEnabled = asBoolean(body.forumEnabled, "forumEnabled");
     }
@@ -335,6 +359,25 @@ export async function PATCH(
     const classSnap = await classRef.get();
     if (!classSnap.exists) {
       throw new RouteAccessError(404, "Clase no encontrada");
+    }
+    const classData = classSnap.data() ?? {};
+
+    const nextHasAssignment =
+      typeof payload.hasAssignment === "boolean"
+        ? payload.hasAssignment
+        : classData.hasAssignment === true;
+    const nextIsClassroomActivity = nextHasAssignment
+      ? typeof payload.isClassroomActivity === "boolean"
+        ? payload.isClassroomActivity
+        : classData.isClassroomActivity === true
+      : false;
+
+    if (!nextHasAssignment) {
+      payload.assignmentSubmissionType = "file";
+      payload.isClassroomActivity = false;
+      payload.showInStudentPlatform = true;
+    } else if (!nextIsClassroomActivity) {
+      payload.showInStudentPlatform = true;
     }
 
     const nextMentorIds = access.shouldBackfillMentor

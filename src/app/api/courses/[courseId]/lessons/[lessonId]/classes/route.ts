@@ -13,6 +13,7 @@ type TeacherRole =
 
 type CourseClassType = "video" | "text" | "audio" | "quiz" | "image";
 type ForumRequiredFormat = "text" | "audio" | "video" | null;
+type AssignmentSubmissionType = "file" | "audio";
 
 type CreateClassRequest = {
   title?: unknown;
@@ -25,6 +26,9 @@ type CreateClassRequest = {
   imageUrls?: unknown;
   hasAssignment?: unknown;
   assignmentTemplateUrl?: unknown;
+  assignmentSubmissionType?: unknown;
+  isClassroomActivity?: unknown;
+  showInStudentPlatform?: unknown;
   forumEnabled?: unknown;
   forumRequiredFormat?: unknown;
 };
@@ -111,6 +115,12 @@ function normalizeForumRequiredFormat(value: unknown): ForumRequiredFormat {
   if (value === "text" || value === "audio" || value === "video") return value;
   if (value === null || value === undefined) return null;
   throw new RouteAccessError(400, "forumRequiredFormat inválido");
+}
+
+function normalizeAssignmentSubmissionType(value: unknown): AssignmentSubmissionType {
+  if (value === undefined || value === null || value === "file") return "file";
+  if (value === "audio") return "audio";
+  throw new RouteAccessError(400, "assignmentSubmissionType inválido");
 }
 
 function normalizePositiveInt(value: unknown, fieldName: string): number {
@@ -277,6 +287,16 @@ export async function POST(
       "assignmentTemplateUrl",
       "",
     );
+    const assignmentSubmissionType = hasAssignment
+      ? normalizeAssignmentSubmissionType(body?.assignmentSubmissionType)
+      : "file";
+    const isClassroomActivity = hasAssignment
+      ? asBoolean(body?.isClassroomActivity, "isClassroomActivity", false)
+      : false;
+    const showInStudentPlatform =
+      hasAssignment && isClassroomActivity
+        ? asBoolean(body?.showInStudentPlatform, "showInStudentPlatform", true)
+        : true;
     const forumEnabled = asBoolean(body?.forumEnabled, "forumEnabled", false);
     const forumRequiredFormat = forumEnabled
       ? normalizeForumRequiredFormat(body?.forumRequiredFormat)
@@ -315,6 +335,9 @@ export async function POST(
       imageUrls,
       hasAssignment,
       assignmentTemplateUrl,
+      assignmentSubmissionType,
+      isClassroomActivity,
+      showInStudentPlatform,
       forumEnabled,
       forumRequiredFormat,
       createdAt: FieldValue.serverTimestamp(),

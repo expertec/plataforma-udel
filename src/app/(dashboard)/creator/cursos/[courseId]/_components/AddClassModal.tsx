@@ -79,14 +79,30 @@ type AddClassModalProps = {
   nextOrder: number;
   onCreated: (
     classId: string,
-    payload: { title: string; type: string; duration?: number; hasAssignment?: boolean },
+    payload: {
+      title: string;
+      type: string;
+      duration?: number;
+      hasAssignment?: boolean;
+      assignmentSubmissionType?: "file" | "audio";
+      isClassroomActivity?: boolean;
+      showInStudentPlatform?: boolean;
+    },
   ) => void;
   mode?: "create" | "edit";
   classId?: string;
   initialData?: ClassItem;
   onUpdated?: (
     classId: string,
-    payload: { title: string; type: string; duration?: number; hasAssignment?: boolean },
+    payload: {
+      title: string;
+      type: string;
+      duration?: number;
+      hasAssignment?: boolean;
+      assignmentSubmissionType?: "file" | "audio";
+      isClassroomActivity?: boolean;
+      showInStudentPlatform?: boolean;
+    },
   ) => void;
 };
 
@@ -117,7 +133,10 @@ export function AddClassModal({
   const [imageMode, setImageMode] = useState<"single" | "carousel">("single");
   const [loadingQuiz, setLoadingQuiz] = useState(false);
   const [hasAssignment, setHasAssignment] = useState(false);
+  const [isClassroomActivity, setIsClassroomActivity] = useState(false);
+  const [showInStudentPlatform, setShowInStudentPlatform] = useState(true);
   const [templateUrl, setTemplateUrl] = useState("");
+  const [assignmentSubmissionType, setAssignmentSubmissionType] = useState<"file" | "audio">("file");
   const [templateUploading, setTemplateUploading] = useState(false);
   const [videoDescription, setVideoDescription] = useState("");
   const [showVideoPreview, setShowVideoPreview] = useState(false);
@@ -173,7 +192,12 @@ export function AddClassModal({
         setAudioCoverUrl("");
       }
       setHasAssignment(initialData.hasAssignment ?? false);
+      setIsClassroomActivity(initialData.isClassroomActivity ?? false);
+      setShowInStudentPlatform(initialData.showInStudentPlatform ?? true);
       setTemplateUrl(initialData.assignmentTemplateUrl ?? "");
+      setAssignmentSubmissionType(
+        initialData.assignmentSubmissionType === "audio" ? "audio" : "file",
+      );
       setForumEnabled(initialData.forumEnabled ?? false);
       setForumFormat(
         initialData.forumRequiredFormat === "audio" || initialData.forumRequiredFormat === "video"
@@ -227,7 +251,10 @@ export function AddClassModal({
       setImageMode("single");
       setQuestions([makeEmptyQuestion()]);
       setHasAssignment(false);
+      setIsClassroomActivity(false);
+      setShowInStudentPlatform(true);
       setTemplateUrl("");
+      setAssignmentSubmissionType("file");
       setShowVideoPreview(false);
       setVideoDescription("");
       setForumEnabled(false);
@@ -240,6 +267,19 @@ export function AddClassModal({
       setShowAudioPreview(false);
     }
   }, [type]);
+
+  useEffect(() => {
+    if (!hasAssignment) {
+      setIsClassroomActivity(false);
+      setShowInStudentPlatform(true);
+    }
+  }, [hasAssignment]);
+
+  useEffect(() => {
+    if (!isClassroomActivity) {
+      setShowInStudentPlatform(true);
+    }
+  }, [isClassroomActivity]);
 
   const handleImageUpload = async (file: File) => {
     const user = auth.currentUser;
@@ -326,6 +366,10 @@ export function AddClassModal({
           imageUrls: coverImageUrls,
           hasAssignment,
           assignmentTemplateUrl: hasAssignment ? templateUrl : "",
+          assignmentSubmissionType: hasAssignment ? assignmentSubmissionType : "file",
+          isClassroomActivity: hasAssignment ? isClassroomActivity : false,
+          showInStudentPlatform:
+            hasAssignment && isClassroomActivity ? showInStudentPlatform : true,
           forumEnabled,
           forumRequiredFormat: forumEnabled ? forumFormat : null,
         });
@@ -348,6 +392,10 @@ export function AddClassModal({
           imageUrls: coverImageUrls,
           hasAssignment,
           assignmentTemplateUrl: hasAssignment ? templateUrl : "",
+          assignmentSubmissionType: hasAssignment ? assignmentSubmissionType : "file",
+          isClassroomActivity: hasAssignment ? isClassroomActivity : false,
+          showInStudentPlatform:
+            hasAssignment && isClassroomActivity ? showInStudentPlatform : true,
           forumEnabled,
           forumRequiredFormat: forumEnabled ? forumFormat : null,
         });
@@ -454,9 +502,27 @@ export function AddClassModal({
         );
       }
       if (mode === "edit" && savedClassId && onUpdated) {
-        onUpdated(savedClassId, { title: title.trim(), type, duration, hasAssignment });
+        onUpdated(savedClassId, {
+          title: title.trim(),
+          type,
+          duration,
+          hasAssignment,
+          assignmentSubmissionType: hasAssignment ? assignmentSubmissionType : "file",
+          isClassroomActivity: hasAssignment ? isClassroomActivity : false,
+          showInStudentPlatform:
+            hasAssignment && isClassroomActivity ? showInStudentPlatform : true,
+        });
       } else if (savedClassId) {
-        onCreated(savedClassId, { title: title.trim(), type, duration, hasAssignment });
+        onCreated(savedClassId, {
+          title: title.trim(),
+          type,
+          duration,
+          hasAssignment,
+          assignmentSubmissionType: hasAssignment ? assignmentSubmissionType : "file",
+          isClassroomActivity: hasAssignment ? isClassroomActivity : false,
+          showInStudentPlatform:
+            hasAssignment && isClassroomActivity ? showInStudentPlatform : true,
+        });
       }
       toast.success(mode === "edit" ? "Clase actualizada" : "Clase creada");
       setTitle("");
@@ -466,7 +532,10 @@ export function AddClassModal({
       setImageUrls([]);
       setQuestions([makeEmptyQuestion()]);
       setHasAssignment(false);
+      setIsClassroomActivity(false);
+      setShowInStudentPlatform(true);
       setTemplateUrl("");
+      setAssignmentSubmissionType("file");
       onClose();
     } catch (err) {
       console.error(err);
@@ -717,6 +786,97 @@ export function AddClassModal({
 
             {hasAssignment ? (
               <div className="space-y-2">
+                <label className="inline-flex items-center gap-2 text-sm text-slate-800">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    checked={assignmentSubmissionType === "audio"}
+                    onChange={(event) =>
+                      setAssignmentSubmissionType(event.target.checked ? "audio" : "file")
+                    }
+                  />
+                  <span>La tarea será de audio (solo grabar/adjuntar audio)</span>
+                </label>
+                <p className="text-xs text-slate-600">
+                  Por defecto la tarea permite solo archivo. Si activas esta opción, el alumno verá solo envío de audio.
+                </p>
+
+                <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">Actividad en clase</p>
+                      <p className="text-xs text-slate-600">
+                        Marca esta tarea como actividad realizada durante la clase.
+                      </p>
+                    </div>
+                    <label className="flex cursor-pointer items-center gap-2">
+                      <span className="text-xs text-slate-600">No</span>
+                      <div
+                        role="switch"
+                        aria-checked={isClassroomActivity}
+                        tabIndex={0}
+                        onClick={() => setIsClassroomActivity((prev) => !prev)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setIsClassroomActivity((prev) => !prev);
+                          }
+                        }}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
+                          isClassroomActivity ? "bg-blue-500" : "bg-slate-300"
+                        }`}
+                      >
+                        <span
+                          className={`inline-block h-5 w-5 rounded-full bg-white shadow transition ${
+                            isClassroomActivity ? "translate-x-5" : "translate-x-1"
+                          }`}
+                        />
+                      </div>
+                      <span className="text-xs text-slate-600">Sí</span>
+                    </label>
+                  </div>
+
+                  {isClassroomActivity ? (
+                    <div className="mt-3 border-t border-slate-100 pt-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">
+                            Mostrar clase en plataforma
+                          </p>
+                          <p className="text-xs text-slate-600">
+                            Si desactivas esta opción, la clase no se mostrará en el feed del alumno.
+                          </p>
+                        </div>
+                        <label className="flex cursor-pointer items-center gap-2">
+                          <span className="text-xs text-slate-600">No</span>
+                          <div
+                            role="switch"
+                            aria-checked={showInStudentPlatform}
+                            tabIndex={0}
+                            onClick={() => setShowInStudentPlatform((prev) => !prev)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                setShowInStudentPlatform((prev) => !prev);
+                              }
+                            }}
+                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
+                              showInStudentPlatform ? "bg-blue-500" : "bg-slate-300"
+                            }`}
+                          >
+                            <span
+                              className={`inline-block h-5 w-5 rounded-full bg-white shadow transition ${
+                                showInStudentPlatform ? "translate-x-5" : "translate-x-1"
+                              }`}
+                            />
+                          </div>
+                          <span className="text-xs text-slate-600">Sí</span>
+                        </label>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+
                 <label className="text-sm font-medium text-slate-800">
                   Plantilla opcional (doc/pdf)
                 </label>
