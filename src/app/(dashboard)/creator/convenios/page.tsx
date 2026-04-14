@@ -9,11 +9,16 @@ import {
   getPaymentAgreements,
   isAgreementActiveOnDate,
 } from "@/lib/firebase/payment-agreements-service";
-import { StudentUser, getStudentUsers } from "@/lib/firebase/students-service";
+import {
+  StudentUser,
+  getStudentUsers,
+  getStudentUsersPaginated,
+} from "@/lib/firebase/students-service";
 import { getTodayDateKeyMonterrey } from "@/lib/finance/payment-agreements-utils";
 import type { User } from "firebase/auth";
 import { onAuthStateChanged } from "firebase/auth";
-import { useEffect, useMemo, useState } from "react";
+import type { DocumentSnapshot } from "firebase/firestore";
+import { useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 
 const toLocalDateKey = (date: Date): string => {
@@ -93,7 +98,10 @@ export default function ConveniosPage() {
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [createStep, setCreateStep] = useState<1 | 2>(1);
   const [searchStudent, setSearchStudent] = useState("");
+  const [searchStudentResults, setSearchStudentResults] = useState<StudentUser[]>([]);
+  const [searchingStudents, setSearchingStudents] = useState(false);
   const [searchAgreement, setSearchAgreement] = useState("");
+  const searchStudentTokenRef = useRef(0);
 
   const todayDateKey = getTodayDateKeyMonterrey();
   const [selectedStudentId, setSelectedStudentId] = useState("");
@@ -133,18 +141,86 @@ export default function ConveniosPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!createModalOpen) {
+      setSearchStudentResults([]);
+      setSearchingStudents(false);
+      return;
+    }
+
+    const rawQuery = searchStudent.trim();
+    if (!rawQuery) {
+      setSearchStudentResults([]);
+      setSearchingStudents(false);
+      return;
+    }
+
+    const token = ++searchStudentTokenRef.current;
+    const timer = setTimeout(async () => {
+      setSearchingStudents(true);
+      try {
+        const normalized = rawQuery.toLowerCase();
+        const results = new Map<string, StudentUser>();
+        let last: DocumentSnapshot | null = null;
+        let hasMore = true;
+        let pageCount = 0;
+        const MAX_PAGES = 60;
+        const PAGE_SIZE = 50;
+
+        while (hasMore && pageCount < MAX_PAGES) {
+          const page = await getStudentUsersPaginated(PAGE_SIZE, last, normalized);
+          if (searchStudentTokenRef.current !== token) return;
+
+          page.students.forEach((student) => {
+            results.set(student.id, student);
+          });
+
+          last = page.lastDoc;
+          hasMore = page.hasMore;
+          pageCount += 1;
+
+          if (results.size >= 50) break;
+        }
+
+        if (searchStudentTokenRef.current !== token) return;
+        setSearchStudentResults(Array.from(results.values()));
+      } catch (error) {
+        console.error("No se pudo ejecutar búsqueda global de alumnos:", error);
+        if (searchStudentTokenRef.current === token) {
+          setSearchStudentResults([]);
+        }
+      } finally {
+        if (searchStudentTokenRef.current === token) {
+          setSearchingStudents(false);
+        }
+      }
+    }, 350);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [createModalOpen, searchStudent]);
+
   const filteredStudents = useMemo(() => {
     const term = searchStudent.trim().toLowerCase();
     if (!term) return students;
-    return students.filter((student) => {
+    const searchBase = searchingStudents ? students : searchStudentResults;
+    return searchBase.filter((student) => {
       const searchable = `${student.name} ${student.email} ${student.program ?? ""}`.toLowerCase();
       return searchable.includes(term);
     });
-  }, [searchStudent, students]);
+  }, [searchStudent, students, searchStudentResults, searchingStudents]);
+
+  const studentLookup = useMemo(() => {
+    const map = new Map<string, StudentUser>();
+    students.forEach((student) => map.set(student.id, student));
+    searchStudentResults.forEach((student) => map.set(student.id, student));
+    return map;
+  }, [students, searchStudentResults]);
 
   const selectedStudent = useMemo(
-    () => students.find((student) => student.id === selectedStudentId) ?? null,
-    [selectedStudentId, students],
+    () => studentLookup.get(selectedStudentId) ?? null,
+    [selectedStudentId, studentLookup],
   );
 
   const filteredAgreements = useMemo(() => {
@@ -175,6 +251,8 @@ export default function ConveniosPage() {
   const resetCreateForm = () => {
     setCreateStep(1);
     setSearchStudent("");
+    setSearchStudentResults([]);
+    setSearchingStudents(false);
     setReason("");
     setStartDate(todayDateKey);
     setEndDate(addDays(todayDateKey, 7));
@@ -196,6 +274,9 @@ export default function ConveniosPage() {
 
   const closeCreateModal = () => {
     if (saving) return;
+    searchStudentTokenRef.current += 1;
+    setSearchStudentResults([]);
+    setSearchingStudents(false);
     setCreateModalOpen(false);
     setCreateStep(1);
   };
@@ -436,7 +517,11 @@ export default function ConveniosPage() {
                   </label>
 
                   <div className="max-h-72 overflow-auto rounded-lg border border-slate-200">
-                    {filteredStudents.length === 0 ? (
+                    {searchStudent.trim() && searchingStudents && filteredStudents.length === 0 ? (
+                      <p className="p-3 text-sm text-slate-600">
+                        Buscando en todos los alumnos...
+                      </p>
+                    ) : filteredStudents.length === 0 ? (
                       <p className="p-3 text-sm text-slate-600">
                         No hay alumnos con ese criterio.
                       </p>

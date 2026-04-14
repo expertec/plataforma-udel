@@ -208,21 +208,24 @@ const mapSurveyResponse = (id: string, data: Record<string, unknown>): SurveyRes
 
 const sanitizeQuestionsForSave = (questions: SurveyQuestion[]): SurveyQuestion[] =>
   questions
-    .map((question) => ({
-      id: normalizeText(question.id),
-      type: normalizeQuestionType(question.type),
-      label: normalizeText(question.label),
-      required: Boolean(question.required),
-      options:
-        question.type === "single_choice"
-          ? (question.options ?? [])
-              .map((option) => ({
-                id: normalizeText(option.id),
-                label: normalizeText(option.label),
-              }))
-              .filter((option) => option.id && option.label)
-          : undefined,
-    }))
+    .map((question) => {
+      const type = normalizeQuestionType(question.type);
+      const normalized: SurveyQuestion = {
+        id: normalizeText(question.id),
+        type,
+        label: normalizeText(question.label),
+        required: Boolean(question.required),
+      };
+      if (type === "single_choice") {
+        normalized.options = (question.options ?? [])
+          .map((option) => ({
+            id: normalizeText(option.id),
+            label: normalizeText(option.label),
+          }))
+          .filter((option) => option.id && option.label);
+      }
+      return normalized;
+    })
     .filter((question) => question.id && question.label);
 
 export function buildSurveyResponseId(surveyId: string, studentId: string): string {
