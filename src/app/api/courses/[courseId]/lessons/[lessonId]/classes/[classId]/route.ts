@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
+import { mergeTeacherEditableLiveSession } from "@/lib/live-classes/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,7 +11,7 @@ type TeacherRole =
   | "superAdminTeacher"
   | "coordinadorPlantel";
 
-type CourseClassType = "video" | "text" | "audio" | "quiz" | "image";
+type CourseClassType = "video" | "text" | "audio" | "quiz" | "image" | "live";
 type ForumRequiredFormat = "text" | "audio" | "video" | null;
 type AssignmentSubmissionType = "file" | "audio";
 
@@ -30,6 +31,7 @@ type UpdateClassRequest = {
   showInStudentPlatform?: unknown;
   forumEnabled?: unknown;
   forumRequiredFormat?: unknown;
+  liveSession?: unknown;
 };
 
 class RouteAccessError extends Error {
@@ -107,7 +109,14 @@ function asNullableStringArray(value: unknown, fieldName: string): string[] | nu
 }
 
 function normalizeClassType(value: unknown): CourseClassType {
-  if (value === "video" || value === "text" || value === "audio" || value === "quiz" || value === "image") {
+  if (
+    value === "video" ||
+    value === "text" ||
+    value === "audio" ||
+    value === "quiz" ||
+    value === "image" ||
+    value === "live"
+  ) {
     return value;
   }
   throw new RouteAccessError(400, "type inválido");
@@ -277,6 +286,7 @@ export async function PATCH(
     const body = rawBody as Record<string, unknown>;
 
     const payload: Record<string, unknown> = {};
+    let requestedLiveSession: unknown = undefined;
 
     if (hasOwn(body, "title")) {
       const title = asTrimmedString(body.title);
@@ -333,9 +343,8 @@ export async function PATCH(
     if (hasOwn(body, "forumRequiredFormat")) {
       payload.forumRequiredFormat = normalizeForumRequiredFormat(body.forumRequiredFormat);
     }
-
-    if (Object.keys(payload).length === 0) {
-      throw new RouteAccessError(400, "No hay cambios para guardar");
+    if (hasOwn(body, "liveSession")) {
+      requestedLiveSession = body.liveSession;
     }
 
     const access = await canUserManageCourse({
@@ -366,6 +375,14 @@ export async function PATCH(
       typeof payload.hasAssignment === "boolean"
         ? payload.hasAssignment
         : classData.hasAssignment === true;
+    const currentType = (() => {
+      try {
+        return normalizeClassType(classData.type);
+      } catch {
+        return "video" as CourseClassType;
+      }
+    })();
+    const nextType = (payload.type as CourseClassType | undefined) ?? currentType;
     const nextIsClassroomActivity = nextHasAssignment
       ? typeof payload.isClassroomActivity === "boolean"
         ? payload.isClassroomActivity
@@ -378,6 +395,24 @@ export async function PATCH(
       payload.showInStudentPlatform = true;
     } else if (!nextIsClassroomActivity) {
       payload.showInStudentPlatform = true;
+    }
+
+    if (nextType === "live") {
+      if (requestedLiveSession !== undefined || hasOwn(body, "type")) {
+        payload.liveSession = mergeTeacherEditableLiveSession({
+          courseId: normalizedCourseId,
+          lessonId: normalizedLessonId,
+          classId: normalizedClassId,
+          current: classData.liveSession,
+          input: requestedLiveSession,
+        });
+      }
+    } else if (hasOwn(body, "type")) {
+      payload.liveSession = null;
+    }
+
+    if (Object.keys(payload).length === 0) {
+      throw new RouteAccessError(400, "No hay cambios para guardar");
     }
 
     const nextMentorIds = access.shouldBackfillMentor

@@ -11,6 +11,7 @@ import {
   getQuizQuestions,
   updateClass,
 } from "@/lib/firebase/courses-service";
+import { normalizeLiveSession, type LiveClassSession } from "@/lib/live-classes/types";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { auth } from "@/lib/firebase/client";
 import { v4 as uuidv4 } from "uuid";
@@ -60,6 +61,15 @@ const classTypes = [
     ),
   },
   {
+    key: "live",
+    label: "En vivo",
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={1.6}>
+        <path d="M12 18a6 6 0 100-12 6 6 0 000 12zm7-6h1m-16 0H3m12.95 4.95l.7.7M7.35 7.35l-.7-.7m9.3 0l.7-.7m-9.3 9.3l-.7.7" />
+      </svg>
+    ),
+  },
+  {
     key: "quiz",
     label: "Quiz",
     icon: (
@@ -83,6 +93,7 @@ type AddClassModalProps = {
       title: string;
       type: string;
       duration?: number;
+      liveSession?: LiveClassSession | null;
       hasAssignment?: boolean;
       assignmentSubmissionType?: "file" | "audio";
       isClassroomActivity?: boolean;
@@ -98,6 +109,7 @@ type AddClassModalProps = {
       title: string;
       type: string;
       duration?: number;
+      liveSession?: LiveClassSession | null;
       hasAssignment?: boolean;
       assignmentSubmissionType?: "file" | "audio";
       isClassroomActivity?: boolean;
@@ -119,7 +131,7 @@ export function AddClassModal({
   initialData,
   onUpdated,
 }: AddClassModalProps) {
-  const [type, setType] = useState<"video" | "text" | "audio" | "quiz" | "image">("video");
+  const [type, setType] = useState<"video" | "text" | "audio" | "quiz" | "image" | "live">("video");
   const [title, setTitle] = useState("");
   const [duration, setDuration] = useState<number | undefined>(undefined);
   const [url, setUrl] = useState("");
@@ -145,6 +157,10 @@ export function AddClassModal({
   const [coverUploading, setCoverUploading] = useState(false);
   const [forumEnabled, setForumEnabled] = useState(false);
   const [forumFormat, setForumFormat] = useState<"text" | "audio" | "video">("text");
+  const [liveScheduledStartAt, setLiveScheduledStartAt] = useState("");
+  const [liveScheduledEndAt, setLiveScheduledEndAt] = useState("");
+  const [liveTimezone, setLiveTimezone] = useState("America/Monterrey");
+  const [liveAutoRecording, setLiveAutoRecording] = useState(true);
   const makeEmptyQuestion = () => ({
     id: uuidv4(),
     prompt: "",
@@ -204,6 +220,19 @@ export function AddClassModal({
           ? initialData.forumRequiredFormat
           : "text",
       );
+      const currentLiveSession = normalizeLiveSession(initialData.liveSession);
+      setLiveScheduledStartAt(
+        currentLiveSession?.scheduledStartAt
+          ? currentLiveSession.scheduledStartAt.slice(0, 16)
+          : "",
+      );
+      setLiveScheduledEndAt(
+        currentLiveSession?.scheduledEndAt
+          ? currentLiveSession.scheduledEndAt.slice(0, 16)
+          : "",
+      );
+      setLiveTimezone(currentLiveSession?.timezone || "America/Monterrey");
+      setLiveAutoRecording(currentLiveSession?.recording.auto !== false);
       if (initialData.type === "image" && (initialData.imageUrls?.length ?? 0) > 1) {
         setImageMode("carousel");
       } else {
@@ -259,6 +288,10 @@ export function AddClassModal({
       setVideoDescription("");
       setForumEnabled(false);
       setForumFormat("text");
+      setLiveScheduledStartAt("");
+      setLiveScheduledEndAt("");
+      setLiveTimezone("America/Monterrey");
+      setLiveAutoRecording(true);
     }
   }, [mode, initialData, open, courseId, lessonId, classId]);
 
@@ -344,6 +377,36 @@ export function AddClassModal({
         : type === "audio" && audioCoverUrl
         ? [audioCoverUrl]
         : [];
+    const toIsoOrNull = (value: string): string | null => {
+      const normalized = value.trim();
+      if (!normalized) return null;
+      const parsed = new Date(normalized);
+      if (Number.isNaN(parsed.getTime())) return null;
+      return parsed.toISOString();
+    };
+    const currentLiveSession = normalizeLiveSession(initialData?.liveSession);
+    const liveSessionPayload: LiveClassSession | null =
+      type === "live"
+        ? {
+            provider: "livekit",
+            roomName: currentLiveSession?.roomName ?? "",
+            status: currentLiveSession?.status ?? "scheduled",
+            scheduledStartAt: toIsoOrNull(liveScheduledStartAt),
+            scheduledEndAt: toIsoOrNull(liveScheduledEndAt),
+            timezone: liveTimezone.trim() || "America/Monterrey",
+            teacherActive: currentLiveSession?.teacherActive ?? false,
+            recording: {
+              auto: liveAutoRecording,
+              egressId: currentLiveSession?.recording.egressId ?? null,
+              status: currentLiveSession?.recording.status ?? "idle",
+              storagePath: currentLiveSession?.recording.storagePath ?? null,
+              playbackReadyAt: currentLiveSession?.recording.playbackReadyAt ?? null,
+              durationSec: currentLiveSession?.recording.durationSec ?? null,
+            },
+            lastStartedAt: currentLiveSession?.lastStartedAt ?? null,
+            lastEndedAt: currentLiveSession?.lastEndedAt ?? null,
+          }
+        : null;
     setLoading(true);
     try {
       let savedClassId = classId;
@@ -354,7 +417,7 @@ export function AddClassModal({
           classId,
           title: title.trim(),
           type,
-          duration: type === "text" ? null : duration ?? null,
+          duration: type === "text" || type === "live" ? null : duration ?? null,
           videoUrl: type === "video" ? url : "",
           audioUrl: type === "audio" ? url : "",
           content:
@@ -364,6 +427,7 @@ export function AddClassModal({
               ? content
               : "",
           imageUrls: coverImageUrls,
+          liveSession: liveSessionPayload,
           hasAssignment,
           assignmentTemplateUrl: hasAssignment ? templateUrl : "",
           assignmentSubmissionType: hasAssignment ? assignmentSubmissionType : "file",
@@ -380,7 +444,7 @@ export function AddClassModal({
           title: title.trim(),
           type,
           order: nextOrder,
-          duration: type === "text" ? undefined : duration,
+          duration: type === "text" || type === "live" ? undefined : duration,
           videoUrl: type === "video" ? url : "",
           audioUrl: type === "audio" ? url : "",
           content:
@@ -390,6 +454,7 @@ export function AddClassModal({
               ? content
               : "",
           imageUrls: coverImageUrls,
+          liveSession: liveSessionPayload,
           hasAssignment,
           assignmentTemplateUrl: hasAssignment ? templateUrl : "",
           assignmentSubmissionType: hasAssignment ? assignmentSubmissionType : "file",
@@ -506,6 +571,7 @@ export function AddClassModal({
           title: title.trim(),
           type,
           duration,
+          liveSession: liveSessionPayload,
           hasAssignment,
           assignmentSubmissionType: hasAssignment ? assignmentSubmissionType : "file",
           isClassroomActivity: hasAssignment ? isClassroomActivity : false,
@@ -517,6 +583,7 @@ export function AddClassModal({
           title: title.trim(),
           type,
           duration,
+          liveSession: liveSessionPayload,
           hasAssignment,
           assignmentSubmissionType: hasAssignment ? assignmentSubmissionType : "file",
           isClassroomActivity: hasAssignment ? isClassroomActivity : false,
@@ -536,6 +603,10 @@ export function AddClassModal({
       setShowInStudentPlatform(true);
       setTemplateUrl("");
       setAssignmentSubmissionType("file");
+      setLiveScheduledStartAt("");
+      setLiveScheduledEndAt("");
+      setLiveTimezone("America/Monterrey");
+      setLiveAutoRecording(true);
       onClose();
     } catch (err) {
       console.error(err);
@@ -687,7 +758,7 @@ export function AddClassModal({
         </div>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
-                <div className="grid grid-cols-5 gap-2">
+                <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
                   {classTypes.map((t) => (
                     <button
                       key={t.key}
@@ -721,6 +792,50 @@ export function AddClassModal({
               className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
+
+          {type === "live" ? (
+            <div className="space-y-3 rounded-lg border border-sky-200 bg-sky-50 p-3">
+              <p className="text-sm font-semibold text-slate-900">Configuración de clase en vivo</p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="text-sm font-medium text-slate-800">Inicio programado</label>
+                  <input
+                    type="datetime-local"
+                    value={liveScheduledStartAt}
+                    onChange={(e) => setLiveScheduledStartAt(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-slate-800">Fin programado</label>
+                  <input
+                    type="datetime-local"
+                    value={liveScheduledEndAt}
+                    onChange={(e) => setLiveScheduledEndAt(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-slate-800">Zona horaria</label>
+                  <input
+                    value={liveTimezone}
+                    onChange={(e) => setLiveTimezone(e.target.value)}
+                    placeholder="America/Monterrey"
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+                <label className="flex items-end gap-2 text-sm text-slate-800">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    checked={liveAutoRecording}
+                    onChange={(event) => setLiveAutoRecording(event.target.checked)}
+                  />
+                  <span>Iniciar grabación automática al abrir clase</span>
+                </label>
+              </div>
+            </div>
+          ) : null}
 
           {type === "video" ? (
             <div className="space-y-2">
@@ -1827,7 +1942,7 @@ function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTex
         { type: "paragraph" },
       ]).run();
       // Seleccionar la imagen recién insertada para mostrar controles
-      const { doc, selection } = editor.state;
+      const { selection } = editor.state;
       const pos = selection.from;
       const imagePos = Math.max(0, pos - 1);
       editor.commands.setNodeSelection(imagePos);

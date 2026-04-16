@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
+import { createLiveSessionForClass } from "@/lib/live-classes/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,7 +12,7 @@ type TeacherRole =
   | "superAdminTeacher"
   | "coordinadorPlantel";
 
-type CourseClassType = "video" | "text" | "audio" | "quiz" | "image";
+type CourseClassType = "video" | "text" | "audio" | "quiz" | "image" | "live";
 type ForumRequiredFormat = "text" | "audio" | "video" | null;
 type AssignmentSubmissionType = "file" | "audio";
 
@@ -31,6 +32,7 @@ type CreateClassRequest = {
   showInStudentPlatform?: unknown;
   forumEnabled?: unknown;
   forumRequiredFormat?: unknown;
+  liveSession?: unknown;
 };
 
 class RouteAccessError extends Error {
@@ -105,7 +107,14 @@ function asStringArray(value: unknown, fieldName: string): string[] {
 }
 
 function normalizeClassType(value: unknown): CourseClassType {
-  if (value === "video" || value === "text" || value === "audio" || value === "quiz" || value === "image") {
+  if (
+    value === "video" ||
+    value === "text" ||
+    value === "audio" ||
+    value === "quiz" ||
+    value === "image" ||
+    value === "live"
+  ) {
     return value;
   }
   throw new RouteAccessError(400, "type inválido");
@@ -319,6 +328,15 @@ export async function POST(
       .doc(normalizedLessonId)
       .collection("classes")
       .doc();
+    const liveSession =
+      classType === "live"
+        ? createLiveSessionForClass({
+            courseId: normalizedCourseId,
+            lessonId: normalizedLessonId,
+            classId: classRef.id,
+            input: body?.liveSession,
+          })
+        : null;
     const nextMentorIds = access.shouldBackfillMentor
       ? Array.from(new Set([...access.mentorIds, teacherContext.uid]))
       : access.mentorIds;
@@ -340,6 +358,7 @@ export async function POST(
       showInStudentPlatform,
       forumEnabled,
       forumRequiredFormat,
+      liveSession,
       createdAt: FieldValue.serverTimestamp(),
     });
     if (access.shouldBackfillMentor) {

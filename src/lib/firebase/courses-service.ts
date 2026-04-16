@@ -19,6 +19,12 @@ import {
 import { db } from "./firestore";
 import { syncCourseProgram } from "./programs-service";
 import { auth } from "./client";
+import {
+  createLiveSessionForClass,
+  mergeTeacherEditableLiveSession,
+  normalizeLiveSession,
+  type LiveClassSession,
+} from "@/lib/live-classes/types";
 
 export type Course = {
   id: string;
@@ -38,7 +44,7 @@ export type Course = {
   teacherId?: string; // ID del profesor creador del curso
 };
 
-type CourseClassType = "video" | "text" | "audio" | "quiz" | "image";
+type CourseClassType = "video" | "text" | "audio" | "quiz" | "image" | "live";
 type ForumRequiredFormat = "text" | "audio" | "video" | null;
 type AssignmentSubmissionType = "file" | "audio";
 type QuizQuestionType = "multiple" | "truefalse" | "open";
@@ -70,7 +76,14 @@ const asRecord = (value: unknown): Record<string, unknown> =>
     : {};
 
 const normalizeClassType = (value: unknown): CourseClassType => {
-  if (value === "video" || value === "text" || value === "audio" || value === "quiz" || value === "image") {
+  if (
+    value === "video" ||
+    value === "text" ||
+    value === "audio" ||
+    value === "quiz" ||
+    value === "image" ||
+    value === "live"
+  ) {
     return value;
   }
   return "video";
@@ -386,6 +399,7 @@ export async function duplicateCourse(input: DuplicateCourseInput): Promise<stri
 
     for (let classIndex = 0; classIndex < sourceClasses.length; classIndex += 1) {
       const classItem = sourceClasses[classIndex];
+      const duplicatedClassType = normalizeClassType(classItem.data.type);
       const duplicatedClassRef = await addDoc(
         collection(
           db,
@@ -397,7 +411,7 @@ export async function duplicateCourse(input: DuplicateCourseInput): Promise<stri
         ),
         {
           title: asString(classItem.data.title, "Clase sin título"),
-          type: normalizeClassType(classItem.data.type),
+          type: duplicatedClassType,
           order: asNumber(classItem.data.order, classIndex),
           duration: asFiniteNumberOrNull(classItem.data.duration),
           videoUrl: asString(classItem.data.videoUrl),
@@ -417,6 +431,17 @@ export async function duplicateCourse(input: DuplicateCourseInput): Promise<stri
           createdAt: serverTimestamp(),
         },
       );
+
+      if (duplicatedClassType === "live") {
+        await updateDoc(duplicatedClassRef, {
+          liveSession: createLiveSessionForClass({
+            courseId: duplicatedCourseRef.id,
+            lessonId: duplicatedLessonRef.id,
+            classId: duplicatedClassRef.id,
+            input: classItem.data.liveSession,
+          }),
+        });
+      }
 
       const questionsSnap = await getDocs(
         collection(
@@ -698,7 +723,7 @@ export async function deleteLesson(courseId: string, lessonId: string): Promise<
 export type ClassItem = {
   id: string;
   title: string;
-  type: "video" | "text" | "audio" | "quiz" | "image";
+  type: "video" | "text" | "audio" | "quiz" | "image" | "live";
   order: number;
   duration?: number | null;
   videoUrl?: string | null;
@@ -712,6 +737,7 @@ export type ClassItem = {
   showInStudentPlatform?: ClassroomPlatformVisibility;
   forumEnabled?: boolean;
   forumRequiredFormat?: "text" | "audio" | "video" | null;
+  liveSession?: LiveClassSession | null;
 };
 
 export async function getClasses(courseId: string, lessonId: string): Promise<ClassItem[]> {
@@ -723,7 +749,7 @@ export async function getClasses(courseId: string, lessonId: string): Promise<Cl
     return {
       id: doc.id,
       title: data.title ?? "Clase sin título",
-      type: data.type ?? "video",
+      type: normalizeClassType(data.type),
       order: data.order ?? 0,
       duration: data.duration,
       videoUrl: data.videoUrl ?? "",
@@ -737,6 +763,7 @@ export async function getClasses(courseId: string, lessonId: string): Promise<Cl
       showInStudentPlatform: normalizeShowInStudentPlatform(data.showInStudentPlatform),
       forumEnabled: data.forumEnabled ?? false,
       forumRequiredFormat: data.forumRequiredFormat ?? null,
+      liveSession: normalizeLiveSession(data.liveSession),
     };
   });
 }
@@ -745,7 +772,7 @@ type CreateClassInput = {
   courseId: string;
   lessonId: string;
   title: string;
-  type: "video" | "text" | "audio" | "quiz" | "image";
+  type: "video" | "text" | "audio" | "quiz" | "image" | "live";
   order: number;
   duration?: number;
   videoUrl?: string;
@@ -759,6 +786,7 @@ type CreateClassInput = {
   showInStudentPlatform?: ClassroomPlatformVisibility;
   forumEnabled?: boolean;
   forumRequiredFormat?: "text" | "audio" | "video" | null;
+  liveSession?: LiveClassSession | null;
 };
 
 async function createClassViaApiFallback(input: CreateClassInput): Promise<string> {
@@ -792,6 +820,7 @@ async function createClassViaApiFallback(input: CreateClassInput): Promise<strin
         showInStudentPlatform: input.showInStudentPlatform ?? true,
         forumEnabled: input.forumEnabled ?? false,
         forumRequiredFormat: input.forumRequiredFormat ?? null,
+        liveSession: input.type === "live" ? input.liveSession ?? null : null,
       }),
     },
   );
@@ -816,8 +845,18 @@ export async function createClass(input: CreateClassInput): Promise<string> {
     input.lessonId,
     "classes",
   );
+  const classRef = doc(classesRef);
+  const liveSession =
+    input.type === "live"
+      ? createLiveSessionForClass({
+          courseId: input.courseId,
+          lessonId: input.lessonId,
+          classId: classRef.id,
+          input: input.liveSession,
+        })
+      : null;
   try {
-    const docRef = await addDoc(classesRef, {
+    await setDoc(classRef, {
       title: input.title,
       type: input.type,
       order: input.order,
@@ -833,9 +872,10 @@ export async function createClass(input: CreateClassInput): Promise<string> {
       showInStudentPlatform: input.showInStudentPlatform ?? true,
       forumEnabled: input.forumEnabled ?? false,
       forumRequiredFormat: input.forumRequiredFormat ?? null,
+      liveSession,
       createdAt: serverTimestamp(),
     });
-    return docRef.id;
+    return classRef.id;
   } catch (error) {
     if (isPermissionDeniedError(error)) {
       return createClassViaApiFallback(input);
@@ -849,7 +889,7 @@ type UpdateClassInput = {
   lessonId: string;
   classId: string;
   title?: string;
-  type?: "video" | "text" | "audio" | "quiz" | "image";
+  type?: "video" | "text" | "audio" | "quiz" | "image" | "live";
   order?: number;
   duration?: number | null;
   videoUrl?: string | null;
@@ -863,6 +903,7 @@ type UpdateClassInput = {
   showInStudentPlatform?: ClassroomPlatformVisibility;
   forumEnabled?: boolean;
   forumRequiredFormat?: "text" | "audio" | "video" | null;
+  liveSession?: LiveClassSession | null;
 };
 
 async function updateClassViaApiFallback(
@@ -906,6 +947,17 @@ export async function updateClass(input: UpdateClassInput): Promise<void> {
     "classes",
     input.classId,
   );
+  let currentType: CourseClassType | null = null;
+  let currentLiveSession: LiveClassSession | null = null;
+  if (input.liveSession !== undefined || input.type !== undefined) {
+    const classSnap = await getDoc(classRef);
+    if (classSnap.exists()) {
+      const classData = classSnap.data() as Record<string, unknown>;
+      currentType = normalizeClassType(classData.type);
+      currentLiveSession = normalizeLiveSession(classData.liveSession);
+    }
+  }
+
   const payload: Record<string, unknown> = {};
   if (input.title !== undefined) payload.title = input.title;
   if (input.type !== undefined) payload.type = input.type;
@@ -926,6 +978,22 @@ export async function updateClass(input: UpdateClassInput): Promise<void> {
     payload.showInStudentPlatform = input.showInStudentPlatform;
   if (input.forumEnabled !== undefined) payload.forumEnabled = input.forumEnabled;
   if (input.forumRequiredFormat !== undefined) payload.forumRequiredFormat = input.forumRequiredFormat;
+
+  const nextType = input.type ?? currentType;
+  if (nextType === "live") {
+    if (input.liveSession !== undefined || input.type === "live") {
+      payload.liveSession = mergeTeacherEditableLiveSession({
+        courseId: input.courseId,
+        lessonId: input.lessonId,
+        classId: input.classId,
+        current: currentLiveSession,
+        input: input.liveSession,
+      });
+    }
+  } else if (input.type !== undefined && input.type !== "live") {
+    payload.liveSession = null;
+  }
+
   if (Object.keys(payload).length === 0) return;
   try {
     await updateDoc(classRef, payload);

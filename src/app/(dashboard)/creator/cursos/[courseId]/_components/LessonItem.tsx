@@ -16,6 +16,9 @@ type LessonItemProps = {
   onEditClass: (lesson: Lesson, classItem: ClassData) => void;
   onOpenComments: (lesson: Lesson, classItem: ClassData) => void;
   onReorderClass: (lessonId: string, fromIndex: number, toIndex: number) => void;
+  onStartLiveClass?: (lesson: Lesson, classItem: ClassData) => void;
+  onJoinLiveClass?: (lesson: Lesson, classItem: ClassData) => void;
+  liveActionLoadingMap?: Record<string, boolean>;
   showCreationMetadata?: boolean;
 };
 
@@ -42,6 +45,9 @@ export function LessonItem({
   onEditClass,
   onOpenComments,
   onReorderClass,
+  onStartLiveClass,
+  onJoinLiveClass,
+  liveActionLoadingMap = {},
   showCreationMetadata = false,
 }: LessonItemProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -129,6 +135,9 @@ export function LessonItem({
                 onDelete={(classId) => onDeleteClass(lesson.id, classId)}
                 onEditClass={(classItem) => onEditClass(lesson, classItem)}
                 onOpenComments={(classItem) => onOpenComments(lesson, classItem)}
+                onStartLiveClass={(classItem) => onStartLiveClass?.(lesson, classItem)}
+                onJoinLiveClass={(classItem) => onJoinLiveClass?.(lesson, classItem)}
+                liveActionLoading={liveActionLoadingMap[cls.id] ?? false}
                 dragProps={{
                   draggable: true,
                   isDragging: draggingIndex === idx,

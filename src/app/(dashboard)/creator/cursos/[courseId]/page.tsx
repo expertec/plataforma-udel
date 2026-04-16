@@ -38,6 +38,7 @@ import {
 } from "@/lib/firebase/roles";
 import { EntregasTab } from "@/app/(dashboard)/creator/grupos/[groupId]/_components/EntregasTab";
 import { getPrograms } from "@/lib/firebase/programs-service";
+import { normalizeLiveSession } from "@/lib/live-classes/types";
 
 type ConfirmState =
   | { open: false }
@@ -142,6 +143,7 @@ export default function CourseBuilderPage() {
     studentsCount: number;
   } | null>(null);
   const [groupLinkModalOpen, setGroupLinkModalOpen] = useState(false);
+  const [liveActionLoadingMap, setLiveActionLoadingMap] = useState<Record<string, boolean>>({});
 
   const lessonsDeduped = useMemo(() => {
     const map = new Map<string, Lesson>();
@@ -308,6 +310,7 @@ export default function CourseBuilderPage() {
             showInStudentPlatform: d.showInStudentPlatform ?? true,
             forumEnabled: d.forumEnabled ?? false,
             forumRequiredFormat: d.forumRequiredFormat ?? null,
+            liveSession: normalizeLiveSession(d.liveSession),
           };
         });
         setClassesMap((prev) => ({ ...prev, [lessonId]: data }));
@@ -582,6 +585,7 @@ export default function CourseBuilderPage() {
       title: string;
       type: string;
       duration?: number;
+      liveSession?: ClassData["liveSession"];
       hasAssignment?: boolean;
       assignmentSubmissionType?: "file" | "audio";
       isClassroomActivity?: boolean;
@@ -603,6 +607,7 @@ export default function CourseBuilderPage() {
           type: payload.type as ClassData["type"],
           order: selectedClassesCount(selectedLesson.id),
           duration: payload.duration,
+          liveSession: payload.liveSession ?? null,
           hasAssignment: payload.hasAssignment ?? false,
           assignmentSubmissionType: payload.assignmentSubmissionType ?? "file",
           isClassroomActivity: payload.isClassroomActivity ?? false,
@@ -665,6 +670,46 @@ export default function CourseBuilderPage() {
       ensureClassListener(lesson.id);
     }
   };
+
+  const handleJoinLiveClass = useCallback((classItem: ClassData) => {
+    window.open(`/live/${encodeURIComponent(classItem.id)}?role=teacher`, "_blank", "noopener,noreferrer");
+  }, []);
+
+  const handleStartLiveClass = useCallback(
+    async (_lesson: Lesson, classItem: ClassData) => {
+      if (!courseId || classItem.type !== "live") return;
+      const user = auth.currentUser;
+      if (!user) {
+        toast.error("Inicia sesión para iniciar la clase en vivo");
+        return;
+      }
+
+      setLiveActionLoadingMap((prev) => ({ ...prev, [classItem.id]: true }));
+      try {
+        const token = await user.getIdToken();
+        const response = await fetch(`/api/live/classes/${encodeURIComponent(classItem.id)}/start`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        const payload = (await response.json().catch(() => null)) as
+          | { success?: boolean; error?: string }
+          | null;
+        if (!response.ok || !payload?.success) {
+          throw new Error(payload?.error || "No se pudo iniciar la clase en vivo");
+        }
+        toast.success("Clase en vivo iniciada");
+        handleJoinLiveClass(classItem);
+      } catch (error) {
+        console.error(error);
+        toast.error(error instanceof Error ? error.message : "No se pudo iniciar la clase en vivo");
+      } finally {
+        setLiveActionLoadingMap((prev) => ({ ...prev, [classItem.id]: false }));
+      }
+    },
+    [courseId, handleJoinLiveClass],
+  );
 
   return (
     <div className="space-y-6">
@@ -938,6 +983,9 @@ export default function CourseBuilderPage() {
                         setCommentsTarget({ open: true, lesson: lessonItem, classItem })
                       }
                       onReorderClass={handleReorderClasses}
+                      onStartLiveClass={handleStartLiveClass}
+                      onJoinLiveClass={(_lessonItem, classItem) => handleJoinLiveClass(classItem)}
+                      liveActionLoadingMap={liveActionLoadingMap}
                       showCreationMetadata={showCreationMetadata}
                     />
                 ))}

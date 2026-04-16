@@ -18,6 +18,9 @@ type ClassItemProps = {
   onDelete: (id: string) => void;
   onEditClass?: (item: ClassData) => void;
   onOpenComments?: (item: ClassData) => void;
+  onStartLiveClass?: (item: ClassData) => void;
+  onJoinLiveClass?: (item: ClassData) => void;
+  liveActionLoading?: boolean;
   dragProps?: DragProps;
 };
 
@@ -42,6 +45,7 @@ const iconMap: Record<ClassData["type"], string> = {
   audio: "M9 17V7l7-2v10m0 0a2 2 0 11-4 0 2 2 0 114 0z",
   quiz: "M9 7l6 4-6 4V7z",
   image: "M4 7.5A1.5 1.5 0 015.5 6h13A1.5 1.5 0 0120 7.5v9a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 16.5v-9zm0 8l4-4 3 3 4-4 5 5",
+  live: "M12 18a6 6 0 100-12 6 6 0 000 12zm7-6h1m-16 0H3m12.95 4.95l.7.7M7.35 7.35l-.7-.7m9.3 0l.7-.7m-9.3 9.3l-.7.7",
 };
 
 // Detecta si la clase tiene contenido incompleto según su tipo
@@ -49,6 +53,7 @@ function hasContentError(item: ClassData): boolean {
   if (item.type === "video" && !item.videoUrl?.trim()) return true;
   if (item.type === "audio" && !item.audioUrl?.trim()) return true;
   if (item.type === "image" && (!item.imageUrls || item.imageUrls.length === 0)) return true;
+  if (item.type === "live" && !item.liveSession?.roomName?.trim()) return true;
   return false;
 }
 
@@ -57,9 +62,14 @@ export function ClassItem({
   onDelete,
   onEditClass,
   onOpenComments,
+  onStartLiveClass,
+  onJoinLiveClass,
+  liveActionLoading = false,
   dragProps,
 }: ClassItemProps) {
   const hasError = hasContentError(item);
+  const liveStatus = item.liveSession?.status ?? "scheduled";
+  const isLiveClass = item.type === "live";
 
   const dragStyles = [
     dragProps?.isDragging ? "opacity-70" : "",
@@ -103,6 +113,21 @@ export function ClassItem({
                 Oculta en plataforma
               </span>
             ) : null}
+            {isLiveClass && liveStatus === "scheduled" ? (
+              <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-semibold text-sky-700">
+                Sala de espera
+              </span>
+            ) : null}
+            {isLiveClass && liveStatus === "live" ? (
+              <span className="rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-semibold text-green-700">
+                En vivo
+              </span>
+            ) : null}
+            {isLiveClass && liveStatus === "recording_ready" ? (
+              <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+                Grabación lista
+              </span>
+            ) : null}
           </div>
           {item.duration ? (
             <p className="text-xs text-slate-500">{item.duration} min</p>
@@ -110,6 +135,25 @@ export function ClassItem({
         </div>
       </div>
       <div className="flex items-center gap-2 text-sm text-slate-500">
+        {isLiveClass && liveStatus !== "live" ? (
+          <button
+            type="button"
+            disabled={liveActionLoading}
+            onClick={() => onStartLiveClass?.(item)}
+            className="rounded-md bg-green-600 px-2 py-1 text-xs font-semibold text-white hover:bg-green-500 disabled:opacity-60"
+          >
+            {liveActionLoading ? "Iniciando..." : "Iniciar clase"}
+          </button>
+        ) : null}
+        {isLiveClass && liveStatus === "live" ? (
+          <button
+            type="button"
+            onClick={() => onJoinLiveClass?.(item)}
+            className="rounded-md bg-blue-600 px-2 py-1 text-xs font-semibold text-white hover:bg-blue-500"
+          >
+            Entrar en vivo
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={() => onOpenComments?.(item)}

@@ -53,6 +53,7 @@ import {
 } from "@/lib/firebase/satisfaction-surveys-service";
 import { v4 as uuidv4 } from "uuid";
 import sanitizeHtml from "sanitize-html";
+import { normalizeLiveSession, type LiveClassSession } from "@/lib/live-classes/types";
 
 type FeedClass = {
   id: string;
@@ -80,6 +81,7 @@ type FeedClass = {
   likesCount?: number;
   forumEnabled?: boolean;
   forumRequiredFormat?: "text" | "audio" | "video" | null;
+  liveSession?: LiveClassSession | null;
 };
 
 type FinanceStatus = {
@@ -125,7 +127,11 @@ type FinanceStatus = {
 const VIDEO_COMPLETION_THRESHOLD = 80;
 const ENFORCE_VIDEO_GATE = true;
 const HEAVY_CARD_RENDER_RADIUS = 1;
-const getRequiredPct = (type?: string) => (type === "image" ? 100 : VIDEO_COMPLETION_THRESHOLD);
+const getRequiredPct = (type?: string) => {
+  if (type === "live") return 0;
+  if (type === "image") return 100;
+  return VIDEO_COMPLETION_THRESHOLD;
+};
 const localProgressKey = (uid: string) => `classProgress:${uid}`;
 const UNIVERSITY_LOGO_SRC = "/university-logo.jpg";
 const FINANCE_STATUS_ENDPOINT = "/api/finance/customer-status";
@@ -235,6 +241,7 @@ const normalizeClassType = (rawType: unknown) => {
   if (["image", "imagen", "photo", "foto", "picture", "gallery"].includes(value)) return "image";
   if (["audio", "podcast", "sonido"].includes(value)) return "audio";
   if (["quiz", "test", "assessment", "examen"].includes(value)) return "quiz";
+  if (["live", "en vivo", "envivo"].includes(value)) return "live";
   return value;
 };
 
@@ -403,6 +410,7 @@ export default function StudentFeedPageClient() {
   const [likedMap, setLikedMap] = useState<Record<string, boolean>>({});
   const likedLoadCacheRef = useRef<Record<string, boolean>>({});
   const [likePendingMap, setLikePendingMap] = useState<Record<string, boolean>>({});
+  const [recordingLoadingMap, setRecordingLoadingMap] = useState<Record<string, boolean>>({});
   const commentsCountLoadCacheRef = useRef<Record<string, boolean>>({});
   const [loadingCommentsMap, setLoadingCommentsMap] = useState<Record<string, boolean>>({});
   const [mobileClassesOpen, setMobileClassesOpen] = useState(false);
@@ -1237,6 +1245,48 @@ export default function StudentFeedPageClient() {
     [currentUser?.uid, likePendingMap, likedMap, previewMode],
   );
 
+  const handleOpenLiveRecording = useCallback(
+    async (cls: FeedClass) => {
+      if (previewMode) {
+        toast.error("La vista previa es de solo lectura.");
+        return;
+      }
+      if (!currentUser) {
+        toast.error("Inicia sesión para ver la grabación.");
+        return;
+      }
+      const baseClassId = (cls.classDocId ?? cls.id).trim();
+      if (!baseClassId) {
+        toast.error("No se pudo identificar la clase.");
+        return;
+      }
+
+      setRecordingLoadingMap((prev) => ({ ...prev, [cls.id]: true }));
+      try {
+        const token = await currentUser.getIdToken();
+        const response = await fetch(`/api/live/classes/${encodeURIComponent(baseClassId)}/recording`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        const payload = (await response.json().catch(() => null)) as
+          | { success?: boolean; data?: { url?: string }; error?: string }
+          | null;
+        if (!response.ok || !payload?.success || !payload.data?.url) {
+          throw new Error(payload?.error || "La grabación no está disponible");
+        }
+        window.open(payload.data.url, "_blank", "noopener,noreferrer");
+      } catch (error) {
+        console.error("No se pudo abrir la grabación", error);
+        toast.error(error instanceof Error ? error.message : "No se pudo abrir la grabación");
+      } finally {
+        setRecordingLoadingMap((prev) => ({ ...prev, [cls.id]: false }));
+      }
+    },
+    [currentUser, previewMode],
+  );
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setCurrentUser(u);
@@ -1587,6 +1637,7 @@ export default function StudentFeedPageClient() {
                 likesCount: c.likesCount ?? 0,
                 forumEnabled: c.forumEnabled ?? false,
                 forumRequiredFormat: c.forumRequiredFormat ?? null,
+                liveSession: normalizeLiveSession(c.liveSession),
               });
             });
           }
@@ -2011,6 +2062,7 @@ export default function StudentFeedPageClient() {
                         likesCount: c.likesCount ?? 0,
                         forumEnabled: c.forumEnabled ?? false,
                         forumRequiredFormat: c.forumRequiredFormat ?? null,
+                        liveSession: normalizeLiveSession(c.liveSession),
                       });
                     });
                   } catch (lessonErr) {
@@ -3031,6 +3083,65 @@ export default function StudentFeedPageClient() {
       );
     }
 
+    if (cls.type === "live") {
+      const session = normalizeLiveSession(cls.liveSession);
+      const sessionStatus = session?.status ?? "scheduled";
+      const isRoomLive = session?.teacherActive === true || sessionStatus === "live";
+      const recordingReady =
+        sessionStatus === "recording_ready" || session?.recording.status === "ready";
+      const baseClassId = encodeURIComponent((cls.classDocId ?? cls.id).trim());
+
+      return (
+        <div className="flex h-full w-full items-center justify-center bg-neutral-950 px-4">
+          <div className="w-full max-w-2xl rounded-2xl border border-slate-700 bg-slate-900/80 p-6 text-slate-100 shadow-2xl">
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-sky-300">Clase en vivo</p>
+            <h3 className="mt-2 text-xl font-semibold text-white">{cls.title}</h3>
+            {session?.scheduledStartAt ? (
+              <p className="mt-1 text-sm text-slate-300">
+                Inicio programado:{" "}
+                {new Date(session.scheduledStartAt).toLocaleString("es-MX", {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                })}{" "}
+                ({session.timezone})
+              </p>
+            ) : null}
+
+            {!isRoomLive ? (
+              <div className="mt-4 rounded-lg border border-sky-300/20 bg-sky-400/10 px-4 py-3 text-sm text-sky-100">
+                {sessionStatus === "ended" || sessionStatus === "recording_ready"
+                  ? "La sesión en vivo terminó."
+                  : "Sala de espera: el profesor aún no inicia la clase."}
+              </div>
+            ) : (
+              <div className="mt-4 rounded-lg border border-green-300/20 bg-green-400/10 px-4 py-3 text-sm text-green-100">
+                La clase está en vivo ahora.
+              </div>
+            )}
+
+            <div className="mt-5 flex flex-wrap gap-3">
+              <Link
+                href={`/live/${baseClassId}`}
+                className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-500"
+              >
+                {isRoomLive ? "Entrar a la clase" : "Abrir sala de espera"}
+              </Link>
+              {recordingReady ? (
+                <button
+                  type="button"
+                  onClick={() => handleOpenLiveRecording(cls)}
+                  disabled={recordingLoadingMap[cls.id] === true}
+                  className="rounded-lg border border-slate-500 px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-800 disabled:opacity-60"
+                >
+                  {recordingLoadingMap[cls.id] ? "Abriendo..." : "Ver grabación"}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     if (cls.type === "text" && !cls.content) {
       return (
         <div className="flex w-full h-full items-center justify-center bg-neutral-950 text-neutral-200">
@@ -3252,7 +3363,7 @@ export default function StudentFeedPageClient() {
                     ? 100
                     : 0,
                 );
-                return pct >= 100;
+                return pct >= getRequiredPct(it.type);
               })(),
           ).length,
         0,
@@ -3301,7 +3412,7 @@ export default function StudentFeedPageClient() {
                         ? 100
                         : 0,
                     );
-                    return pct >= 100;
+                    return pct >= getRequiredPct(it.type);
                   })(),
               ).length;
               const collapsed = collapsedLessons[lesson.lessonId] ?? false;
@@ -3348,7 +3459,7 @@ export default function StudentFeedPageClient() {
                         );
                         const isActive = activeId === item.id;
                         const isLast = itemIdx === lesson.items.length - 1;
-                        const isCompleted = pct >= 100;
+                        const isCompleted = pct >= getRequiredPct(item.type);
                         return (
                           <div key={item.id} className="relative pl-5">
                             <span
