@@ -2,13 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  arrayUnion,
   collection,
   collectionGroup,
+  type DocumentData,
   doc,
   documentId,
   getDocs,
   limit,
   orderBy,
+  type QueryDocumentSnapshot,
   query,
   serverTimestamp,
   setDoc,
@@ -16,6 +19,8 @@ import {
 } from "firebase/firestore";
 import toast from "react-hot-toast";
 import * as XLSX from "xlsx";
+import { auth } from "@/lib/firebase/client";
+import { getGroupsForTeacher } from "@/lib/firebase/groups-service";
 import { db } from "@/lib/firebase/firestore";
 
 const ACTIVITY_DAYS_THRESHOLD = 7;
@@ -25,6 +30,7 @@ const QUERY_BATCH_SIZE = 20;
 const FIRESTORE_IN_QUERY_LIMIT = 30;
 
 type DropoutRiskLevel = "none" | "medium" | "high";
+type DropoutRiskTag = "Baja" | "Egresado" | null;
 
 type StudentEnrollmentSummary = {
   studentId: string;
@@ -48,7 +54,19 @@ type RiskRow = {
   lastSubmissionAt: Date | null;
   daysWithoutActivity: number | null;
   daysWithoutSubmission: number | null;
-  isTaggedAsBaja: boolean;
+  dropoutRiskTag: DropoutRiskTag;
+  notes: DropoutRiskNote[];
+};
+
+type DropoutRiskNote = {
+  id: string;
+  text: string;
+  createdAt: Date | null;
+  createdBy: string;
+};
+
+type StudentDropoutRiskTabProps = {
+  scopeTeacherId?: string | null;
 };
 
 function toDate(value: unknown): Date | null {
@@ -157,15 +175,75 @@ function resolveStudentWhatsApp(data: Record<string, unknown>): string {
   return "";
 }
 
-function hasBajaTag(value: unknown): boolean {
-  return typeof value === "string" && value.trim().toLowerCase() === "baja";
+function buildWhatsAppLink(phone: string): string | null {
+  if (!phone.trim()) return null;
+  const normalizedPhone = phone.replace(/[^\d]/g, "");
+  if (!normalizedPhone) return null;
+  return `https://wa.me/${normalizedPhone}`;
 }
 
-export function StudentDropoutRiskTab() {
+function resolveDropoutRiskTag(value: unknown): DropoutRiskTag {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "baja") return "Baja";
+  if (normalized === "egresado") return "Egresado";
+  return null;
+}
+
+function shouldExcludeFromRiskReport(tag: DropoutRiskTag): boolean {
+  return tag === "Baja" || tag === "Egresado";
+}
+
+function resolveDropoutRiskNotes(value: unknown): DropoutRiskNote[] {
+  if (!Array.isArray(value)) return [];
+
+  const parsed = value
+    .map((rawItem, index) => {
+      const item = typeof rawItem === "object" && rawItem !== null ? (rawItem as Record<string, unknown>) : null;
+      if (!item) return null;
+
+      const textCandidate =
+        (typeof item.text === "string" && item.text.trim().length > 0 && item.text.trim()) ||
+        (typeof item.note === "string" && item.note.trim().length > 0 && item.note.trim()) ||
+        (typeof item.message === "string" && item.message.trim().length > 0 && item.message.trim()) ||
+        "";
+      if (!textCandidate) return null;
+
+      const createdBy =
+        (typeof item.createdBy === "string" && item.createdBy.trim().length > 0 && item.createdBy.trim()) ||
+        (typeof item.author === "string" && item.author.trim().length > 0 && item.author.trim()) ||
+        "Sin autor";
+
+      const createdAt = toDate(item.createdAt);
+      const stableId =
+        (typeof item.id === "string" && item.id.trim().length > 0 && item.id.trim()) ||
+        `${createdAt?.getTime() ?? "no-date"}-${index}`;
+
+      return {
+        id: stableId,
+        text: textCandidate,
+        createdAt,
+        createdBy,
+      } satisfies DropoutRiskNote;
+    })
+    .filter((item): item is DropoutRiskNote => item !== null)
+    .sort((a, b) => {
+      const aTime = a.createdAt?.getTime() ?? 0;
+      const bTime = b.createdAt?.getTime() ?? 0;
+      return bTime - aTime;
+    });
+
+  return parsed;
+}
+
+export function StudentDropoutRiskTab({ scopeTeacherId = null }: StudentDropoutRiskTabProps) {
   const [rows, setRows] = useState<RiskRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [taggingStudents, setTaggingStudents] = useState<Record<string, boolean>>({});
+  const [savingNotes, setSavingNotes] = useState<Record<string, boolean>>({});
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
+  const [notesModalStudentId, setNotesModalStudentId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
 
   const loadRiskReport = useCallback(async () => {
@@ -173,10 +251,30 @@ export function StudentDropoutRiskTab() {
     setErrorMessage(null);
 
     try {
-      const enrollmentsSnap = await getDocs(collection(db, "studentEnrollments"));
+      let enrollmentsDocs: QueryDocumentSnapshot<DocumentData>[] = [];
+      if (scopeTeacherId) {
+        const relatedGroups = await getGroupsForTeacher(scopeTeacherId);
+        const relatedGroupIds = Array.from(
+          new Set(relatedGroups.map((group) => group.id).filter((groupId) => groupId.trim().length > 0)),
+        );
+
+        if (relatedGroupIds.length === 0) {
+          setRows([]);
+          return;
+        }
+
+        const enrollmentTasks = chunkArray(relatedGroupIds, FIRESTORE_IN_QUERY_LIMIT).map((groupIdsBatch) => async () =>
+          getDocs(query(collection(db, "studentEnrollments"), where("groupId", "in", groupIdsBatch))),
+        );
+        const enrollmentSnaps = await runInBatches(enrollmentTasks, QUERY_BATCH_SIZE);
+        enrollmentsDocs = enrollmentSnaps.flatMap((snapshot) => snapshot.docs);
+      } else {
+        const enrollmentsSnap = await getDocs(collection(db, "studentEnrollments"));
+        enrollmentsDocs = enrollmentsSnap.docs;
+      }
 
       const byStudent = new Map<string, StudentEnrollmentSummary>();
-      enrollmentsSnap.docs.forEach((docSnap) => {
+      enrollmentsDocs.forEach((docSnap) => {
         const data = docSnap.data() as {
           studentId?: unknown;
           studentName?: unknown;
@@ -251,7 +349,10 @@ export function StudentDropoutRiskTab() {
         return;
       }
 
-      const profileByStudent = new Map<string, { whatsapp: string; isTaggedAsBaja: boolean }>();
+      const profileByStudent = new Map<
+        string,
+        { whatsapp: string; dropoutRiskTag: DropoutRiskTag; notes: DropoutRiskNote[] }
+      >();
       const profileTasks = chunkArray(
         students.map((student) => student.studentId),
         FIRESTORE_IN_QUERY_LIMIT,
@@ -264,7 +365,8 @@ export function StudentDropoutRiskTab() {
           const data = userDoc.data() as Record<string, unknown>;
           profileByStudent.set(userDoc.id, {
             whatsapp: resolveStudentWhatsApp(data),
-            isTaggedAsBaja: hasBajaTag(data.dropoutRiskTag),
+            dropoutRiskTag: resolveDropoutRiskTag(data.dropoutRiskTag),
+            notes: resolveDropoutRiskNotes(data.dropoutRiskNotes),
           });
         });
       });
@@ -367,7 +469,8 @@ export function StudentDropoutRiskTab() {
           lastSubmissionAt: lastSubmission,
           daysWithoutActivity: daysNoActivity,
           daysWithoutSubmission: daysNoSubmission,
-          isTaggedAsBaja: profileByStudent.get(student.studentId)?.isTaggedAsBaja ?? false,
+          dropoutRiskTag: profileByStudent.get(student.studentId)?.dropoutRiskTag ?? null,
+          notes: profileByStudent.get(student.studentId)?.notes ?? [],
         } satisfies RiskRow;
       });
 
@@ -378,7 +481,7 @@ export function StudentDropoutRiskTab() {
       };
 
       const atRiskRows = computed
-        .filter((row) => row.riskLevel !== "none" && !row.isTaggedAsBaja)
+        .filter((row) => row.riskLevel !== "none" && !shouldExcludeFromRiskReport(row.dropoutRiskTag))
         .sort((a, b) => {
           const bySeverity = riskWeight[b.riskLevel] - riskWeight[a.riskLevel];
           if (bySeverity !== 0) return bySeverity;
@@ -394,30 +497,30 @@ export function StudentDropoutRiskTab() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [scopeTeacherId]);
 
   useEffect(() => {
     void loadRiskReport();
   }, [loadRiskReport]);
 
-  const handleTagAsBaja = useCallback(async (row: RiskRow) => {
+  const handleTagStudent = useCallback(async (row: RiskRow, tag: Exclude<DropoutRiskTag, null>) => {
     setTaggingStudents((prev) => ({ ...prev, [row.studentId]: true }));
 
     try {
       await setDoc(
         doc(db, "users", row.studentId),
         {
-          dropoutRiskTag: "Baja",
+          dropoutRiskTag: tag,
           dropoutRiskTaggedAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         },
         { merge: true },
       );
       setRows((prev) => prev.filter((current) => current.studentId !== row.studentId));
-      toast.success(`${row.studentName} etiquetado como Baja.`);
+      toast.success(`${row.studentName} etiquetado como ${tag}.`);
     } catch (error) {
-      console.error("Error etiquetando alumno como baja:", error);
-      toast.error("No se pudo etiquetar al alumno como Baja.");
+      console.error("Error etiquetando alumno:", error);
+      toast.error(`No se pudo etiquetar al alumno como ${tag}.`);
     } finally {
       setTaggingStudents((prev) => {
         const next = { ...prev };
@@ -426,6 +529,70 @@ export function StudentDropoutRiskTab() {
       });
     }
   }, []);
+
+  const handleSaveNote = useCallback(async (row: RiskRow) => {
+    const rawText = noteDrafts[row.studentId] ?? "";
+    const noteText = rawText.trim();
+    if (!noteText) {
+      toast.error("Escribe una nota antes de guardar.");
+      return;
+    }
+
+    const currentUser = auth.currentUser;
+    const noteAuthor =
+      currentUser?.displayName?.trim() ||
+      currentUser?.email?.trim() ||
+      currentUser?.uid ||
+      "Sistema";
+    const nowIso = new Date().toISOString();
+
+    setSavingNotes((prev) => ({ ...prev, [row.studentId]: true }));
+    try {
+      await setDoc(
+        doc(db, "users", row.studentId),
+        {
+          dropoutRiskNotes: arrayUnion({
+            id: `${Date.now()}-${row.studentId}`,
+            text: noteText,
+            createdAt: nowIso,
+            createdBy: noteAuthor,
+          }),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      setRows((prev) =>
+        prev.map((current) =>
+          current.studentId === row.studentId
+            ? {
+                ...current,
+                notes: [
+                  {
+                    id: `local-${Date.now()}-${row.studentId}`,
+                    text: noteText,
+                    createdAt: new Date(nowIso),
+                    createdBy: noteAuthor,
+                  },
+                  ...current.notes,
+                ],
+              }
+            : current,
+        ),
+      );
+      setNoteDrafts((prev) => ({ ...prev, [row.studentId]: "" }));
+      toast.success("Nota guardada.");
+    } catch (error) {
+      console.error("Error guardando nota de riesgo:", error);
+      toast.error("No se pudo guardar la nota.");
+    } finally {
+      setSavingNotes((prev) => {
+        const next = { ...prev };
+        delete next[row.studentId];
+        return next;
+      });
+    }
+  }, [noteDrafts]);
 
   const handleExportToExcel = useCallback(() => {
     if (rows.length === 0) {
@@ -444,6 +611,9 @@ export function StudentDropoutRiskTab() {
         "Ultima actividad": formatDateTime(row.lastActivityAt),
         "Ultima tarea": formatDateTime(row.lastSubmissionAt),
         Motivos: row.reasons.join(" | "),
+        "Notas historial": row.notes
+          .map((note) => `${formatDateTime(note.createdAt)} - ${note.createdBy}: ${note.text}`)
+          .join(" || "),
       }));
 
       const sheet = XLSX.utils.json_to_sheet(exportRows);
@@ -469,6 +639,17 @@ export function StudentDropoutRiskTab() {
     };
   }, [rows]);
 
+  const notesModalStudent = useMemo(
+    () => rows.find((row) => row.studentId === notesModalStudentId) ?? null,
+    [rows, notesModalStudentId],
+  );
+
+  useEffect(() => {
+    if (!notesModalStudentId) return;
+    if (rows.some((row) => row.studentId === notesModalStudentId)) return;
+    setNotesModalStudentId(null);
+  }, [rows, notesModalStudentId]);
+
   return (
     <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -477,8 +658,11 @@ export function StudentDropoutRiskTab() {
           <h2 className="text-lg font-semibold text-slate-900">Reporte global de alumnos en riesgo</h2>
           <p className="text-sm text-slate-600">
             Reglas: actividad &gt;= {ACTIVITY_DAYS_THRESHOLD} días sin registrar o tareas sin envío por{" "}
-            {SUBMISSION_DAYS_THRESHOLD}+ días. Los alumnos etiquetados como Baja se excluyen del reporte.
+            {SUBMISSION_DAYS_THRESHOLD}+ días. Los alumnos etiquetados como Baja o Egresado se excluyen del reporte.
           </p>
+          {scopeTeacherId ? (
+            <p className="text-xs text-slate-500">Vista de coordinador: solo alumnos vinculados a tus grupos.</p>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -529,31 +713,48 @@ export function StudentDropoutRiskTab() {
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-slate-200">
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm text-slate-800">
-              <thead className="bg-slate-50 text-xs font-semibold text-slate-600">
-                <tr>
-                  <th className="px-4 py-2 text-left">Alumno</th>
-                  <th className="px-4 py-2 text-left">WhatsApp</th>
-                  <th className="px-4 py-2 text-left">Riesgo</th>
-                  <th className="px-4 py-2 text-left">Grupo</th>
-                  <th className="px-4 py-2 text-left">Última actividad</th>
-                  <th className="px-4 py-2 text-left">Última tarea</th>
-                  <th className="px-4 py-2 text-left">Motivo</th>
-                  <th className="px-4 py-2 text-left">Etiqueta</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 bg-white">
-                {rows.map((row) => (
+          <table className="w-full table-fixed text-xs text-slate-800">
+            <thead className="bg-slate-50 font-semibold text-slate-600">
+              <tr>
+                <th className="w-[18%] px-2 py-2 text-left">Alumno</th>
+                <th className="w-[10%] px-2 py-2 text-left">WhatsApp</th>
+                <th className="w-[8%] px-2 py-2 text-left">Riesgo</th>
+                <th className="w-[14%] px-2 py-2 text-left">Grupo</th>
+                <th className="w-[16%] px-2 py-2 text-left">Seguimiento</th>
+                <th className="w-[16%] px-2 py-2 text-left">Motivo</th>
+                <th className="w-[8%] px-2 py-2 text-left">Notas</th>
+                <th className="w-[10%] px-2 py-2 text-left">Etiqueta</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 bg-white">
+              {rows.map((row) => {
+                const whatsappLink = buildWhatsAppLink(row.studentWhatsapp);
+
+                return (
                   <tr key={row.studentId}>
-                    <td className="px-4 py-3">
+                    <td className="break-words px-2 py-2">
                       <p className="font-medium text-slate-900">{row.studentName}</p>
-                      <p className="text-xs text-slate-500">{row.studentEmail || "Sin correo"}</p>
+                      <p className="text-[11px] text-slate-500">{row.studentEmail || "Sin correo"}</p>
                     </td>
-                    <td className="px-4 py-3 text-slate-700">{row.studentWhatsapp || "Sin registro"}</td>
-                    <td className="px-4 py-3">
+                    <td className="px-2 py-2 text-slate-700">
+                      {row.studentWhatsapp && whatsappLink ? (
+                        <a
+                          href={whatsappLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[11px] font-medium text-emerald-700 underline underline-offset-2 hover:text-emerald-800"
+                        >
+                          {row.studentWhatsapp}
+                        </a>
+                      ) : row.studentWhatsapp ? (
+                        <p className="text-[11px] text-slate-500">{row.studentWhatsapp}</p>
+                      ) : (
+                        <p className="text-[11px] text-slate-400">Sin WhatsApp</p>
+                      )}
+                    </td>
+                    <td className="px-2 py-2">
                       <span
-                        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${
+                        className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${
                           row.riskLevel === "high"
                             ? "bg-red-100 text-red-700"
                             : "bg-amber-100 text-amber-700"
@@ -562,48 +763,126 @@ export function StudentDropoutRiskTab() {
                         {row.riskLevel === "high" ? "Alto" : "Medio"}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-slate-700">
+                    <td className="break-words px-2 py-2 text-slate-700">
                       {row.groupNames.length > 0 ? (
                         row.groupNames.map((groupName) => (
-                          <p key={`${row.studentId}-${groupName}`} className="text-xs">
+                          <p key={`${row.studentId}-${groupName}`} className="text-[11px]">
                             {groupName}
                           </p>
                         ))
                       ) : (
-                        <p className="text-xs">Sin grupo</p>
+                        <p className="text-[11px]">Sin grupo</p>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-slate-700">{formatDateTime(row.lastActivityAt)}</td>
-                    <td className="px-4 py-3 text-slate-700">{formatDateTime(row.lastSubmissionAt)}</td>
-                    <td className="px-4 py-3 text-slate-700">
+                    <td className="px-2 py-2 text-[11px] text-slate-700">
+                      <p>
+                        <span className="font-medium">Act:</span> {formatDateTime(row.lastActivityAt)}
+                      </p>
+                      <p>
+                        <span className="font-medium">Tarea:</span> {formatDateTime(row.lastSubmissionAt)}
+                      </p>
+                    </td>
+                    <td className="break-words px-2 py-2 text-[11px] text-slate-700">
                       {row.reasons.map((reason, idx) => (
-                        <p key={`${row.studentId}-${idx}`} className="text-xs">
-                          {reason}
-                        </p>
+                        <p key={`${row.studentId}-${idx}`}>{reason}</p>
                       ))}
                     </td>
-                    <td className="px-4 py-3 text-slate-700">
+                    <td className="px-2 py-2 text-slate-700">
+                      <button
+                        type="button"
+                        onClick={() => setNotesModalStudentId(row.studentId)}
+                        className="rounded-md border border-slate-300 px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                      >
+                        Ver notas
+                      </button>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        {row.notes.length} nota{row.notes.length === 1 ? "" : "s"}
+                      </p>
+                    </td>
+                    <td className="px-2 py-2 text-slate-700">
                       <select
                         value=""
                         onChange={(event) => {
-                          if (event.target.value === "Baja") {
-                            void handleTagAsBaja(row);
+                          if (event.target.value === "Baja" || event.target.value === "Egresado") {
+                            void handleTagStudent(row, event.target.value);
                           }
                         }}
                         disabled={Boolean(taggingStudents[row.studentId])}
-                        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 disabled:opacity-60"
+                        className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-700 disabled:opacity-60"
                       >
                         <option value="">Seleccionar</option>
                         <option value="Baja">Baja</option>
+                        <option value="Egresado">Egresado</option>
                       </select>
                     </td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
+
+      {notesModalStudent ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+          onClick={() => setNotesModalStudentId(null)}
+        >
+          <div
+            className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Notas</p>
+                <h3 className="text-sm font-semibold text-slate-900">{notesModalStudent.studentName}</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setNotesModalStudentId(null)}
+                className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+              >
+                Cerrar
+              </button>
+            </div>
+
+            <div className="space-y-3 p-4">
+              <textarea
+                value={noteDrafts[notesModalStudent.studentId] ?? ""}
+                onChange={(event) =>
+                  setNoteDrafts((prev) => ({ ...prev, [notesModalStudent.studentId]: event.target.value }))
+                }
+                rows={3}
+                placeholder="Escribe una nota..."
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-700"
+              />
+              <button
+                type="button"
+                onClick={() => void handleSaveNote(notesModalStudent)}
+                disabled={Boolean(savingNotes[notesModalStudent.studentId])}
+                className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                {savingNotes[notesModalStudent.studentId] ? "Guardando..." : "Guardar nota"}
+              </button>
+
+              <div className="max-h-[40vh] space-y-2 overflow-y-auto pr-1">
+                {notesModalStudent.notes.length === 0 ? (
+                  <p className="text-sm text-slate-500">Sin notas registradas.</p>
+                ) : (
+                  notesModalStudent.notes.map((note) => (
+                    <div key={`${notesModalStudent.studentId}-${note.id}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-sm text-slate-800">{note.text}</p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {formatDateTime(note.createdAt)} · {note.createdBy}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

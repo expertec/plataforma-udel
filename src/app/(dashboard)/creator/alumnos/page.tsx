@@ -142,7 +142,7 @@ export default function AlumnosPage() {
   }, []);
 
   useEffect(() => {
-    if (!isAdminTeacherRole(userRole)) {
+    if (!isAdminTeacherRole(userRole) && !isCampusCoordinatorRole(userRole)) {
       setActiveTab("gestion");
     }
     setOpenActionMenu(null);
@@ -618,6 +618,7 @@ export default function AlumnosPage() {
 
   const isAdmin = isAdminTeacherRole(userRole);
   const isCoordinator = isCampusCoordinatorRole(userRole);
+  const canViewRiskReport = isAdmin || isCoordinator;
   const canViewAllStudents = isAdmin || isCampusCoordinatorRole(userRole);
   const adminTabs: { key: "gestion" | "altas" | "passwords" | "riesgo"; label: string; helper?: string }[] = isAdmin
     ? [
@@ -626,7 +627,12 @@ export default function AlumnosPage() {
         { key: "altas", label: "Altas e importación" },
         { key: "passwords", label: "Contraseñas" },
       ]
-    : [];
+    : isCoordinator
+      ? [
+          { key: "gestion", label: "Listado y acciones" },
+          { key: "riesgo", label: "Riesgo deserción" },
+        ]
+      : [];
 
   const parsePasswordFile = async (file: File) => {
     setPasswordResults([]);
@@ -894,7 +900,7 @@ export default function AlumnosPage() {
         </p>
       </div>
 
-      {isAdmin ? (
+      {canViewRiskReport ? (
         <div className="flex flex-wrap gap-2 rounded-xl border border-slate-200 bg-white p-2 text-sm shadow-sm">
           {adminTabs.map((tab) => (
             <button
@@ -913,7 +919,7 @@ export default function AlumnosPage() {
         </div>
       ) : null}
 
-      {(activeTab === "gestion" || !isAdmin) && (
+      {(activeTab === "gestion" || !canViewRiskReport) && (
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
@@ -1358,11 +1364,11 @@ export default function AlumnosPage() {
         </div>
       ) : null}
 
-      {isAdmin && activeTab === "riesgo" ? (
-        <StudentDropoutRiskTab />
+      {canViewRiskReport && activeTab === "riesgo" ? (
+        <StudentDropoutRiskTab scopeTeacherId={isCoordinator ? currentUser?.uid ?? null : null} />
       ) : null}
 
-      {(activeTab === "gestion" || !isAdmin) && (
+      {(activeTab === "gestion" || !canViewRiskReport) && (
         <>
           {loading ? (
             <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
