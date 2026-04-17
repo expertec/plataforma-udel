@@ -4,19 +4,25 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   collection,
   collectionGroup,
+  doc,
+  documentId,
   getDocs,
   limit,
   orderBy,
   query,
+  serverTimestamp,
+  setDoc,
   where,
 } from "firebase/firestore";
 import toast from "react-hot-toast";
+import * as XLSX from "xlsx";
 import { db } from "@/lib/firebase/firestore";
 
 const ACTIVITY_DAYS_THRESHOLD = 7;
 const SUBMISSION_DAYS_THRESHOLD = 14;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const QUERY_BATCH_SIZE = 20;
+const FIRESTORE_IN_QUERY_LIMIT = 30;
 
 type DropoutRiskLevel = "none" | "medium" | "high";
 
@@ -26,6 +32,7 @@ type StudentEnrollmentSummary = {
   studentEmail: string;
   enrollmentIds: string[];
   groupIds: string[];
+  groupNames: string[];
   firstEnrollmentAt: Date | null;
 };
 
@@ -33,13 +40,15 @@ type RiskRow = {
   studentId: string;
   studentName: string;
   studentEmail: string;
-  groupsCount: number;
+  studentWhatsapp: string;
+  groupNames: string[];
   riskLevel: DropoutRiskLevel;
   reasons: string[];
   lastActivityAt: Date | null;
   lastSubmissionAt: Date | null;
   daysWithoutActivity: number | null;
   daysWithoutSubmission: number | null;
+  isTaggedAsBaja: boolean;
 };
 
 function toDate(value: unknown): Date | null {
@@ -121,10 +130,43 @@ async function runInBatches<T>(tasks: Array<() => Promise<T>>, batchSize: number
   return results;
 }
 
+function chunkArray<T>(items: T[], chunkSize: number): T[][] {
+  if (chunkSize <= 0) return [items];
+  const chunks: T[][] = [];
+  for (let idx = 0; idx < items.length; idx += chunkSize) {
+    chunks.push(items.slice(idx, idx + chunkSize));
+  }
+  return chunks;
+}
+
+function resolveStudentWhatsApp(data: Record<string, unknown>): string {
+  const candidates = [
+    data.whatsapp,
+    data.whatsApp,
+    data.whatsappPhone,
+    data.whatsappNumber,
+    data.phone,
+    data.telefono,
+    data.tel,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+  }
+  return "";
+}
+
+function hasBajaTag(value: unknown): boolean {
+  return typeof value === "string" && value.trim().toLowerCase() === "baja";
+}
+
 export function StudentDropoutRiskTab() {
   const [rows, setRows] = useState<RiskRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [taggingStudents, setTaggingStudents] = useState<Record<string, boolean>>({});
+  const [exporting, setExporting] = useState(false);
 
   const loadRiskReport = useCallback(async () => {
     setLoading(true);
@@ -140,6 +182,7 @@ export function StudentDropoutRiskTab() {
           studentName?: unknown;
           studentEmail?: unknown;
           groupId?: unknown;
+          groupName?: unknown;
           enrolledAt?: unknown;
           createdAt?: unknown;
         };
@@ -163,6 +206,10 @@ export function StudentDropoutRiskTab() {
           typeof data.groupId === "string" && data.groupId.trim().length > 0
             ? data.groupId.trim()
             : "";
+        const groupName =
+          typeof data.groupName === "string" && data.groupName.trim().length > 0
+            ? data.groupName.trim()
+            : groupId;
 
         const enrolledAt = toDate(data.enrolledAt) ?? toDate(data.createdAt);
 
@@ -174,6 +221,7 @@ export function StudentDropoutRiskTab() {
             studentEmail,
             enrollmentIds: [docSnap.id],
             groupIds: groupId ? [groupId] : [],
+            groupNames: groupName ? [groupName] : [],
             firstEnrollmentAt: enrolledAt,
           });
           return;
@@ -183,6 +231,8 @@ export function StudentDropoutRiskTab() {
         enrollmentSet.add(docSnap.id);
         const groupSet = new Set(current.groupIds);
         if (groupId) groupSet.add(groupId);
+        const groupNameSet = new Set(current.groupNames);
+        if (groupName) groupNameSet.add(groupName);
 
         byStudent.set(studentId, {
           studentId,
@@ -190,6 +240,7 @@ export function StudentDropoutRiskTab() {
           studentEmail: current.studentEmail || studentEmail,
           enrollmentIds: Array.from(enrollmentSet),
           groupIds: Array.from(groupSet),
+          groupNames: Array.from(groupNameSet),
           firstEnrollmentAt: minDate(current.firstEnrollmentAt, enrolledAt),
         });
       });
@@ -199,6 +250,25 @@ export function StudentDropoutRiskTab() {
         setRows([]);
         return;
       }
+
+      const profileByStudent = new Map<string, { whatsapp: string; isTaggedAsBaja: boolean }>();
+      const profileTasks = chunkArray(
+        students.map((student) => student.studentId),
+        FIRESTORE_IN_QUERY_LIMIT,
+      ).map((studentIds) => async () => {
+        if (studentIds.length === 0) return;
+        const usersSnap = await getDocs(
+          query(collection(db, "users"), where(documentId(), "in", studentIds)),
+        );
+        usersSnap.docs.forEach((userDoc) => {
+          const data = userDoc.data() as Record<string, unknown>;
+          profileByStudent.set(userDoc.id, {
+            whatsapp: resolveStudentWhatsApp(data),
+            isTaggedAsBaja: hasBajaTag(data.dropoutRiskTag),
+          });
+        });
+      });
+      await runInBatches(profileTasks, QUERY_BATCH_SIZE);
 
       const lastProgressByStudent = new Map<string, Date>();
       const progressTasks = students.flatMap((student) =>
@@ -289,13 +359,15 @@ export function StudentDropoutRiskTab() {
           studentId: student.studentId,
           studentName: student.studentName,
           studentEmail: student.studentEmail,
-          groupsCount: student.groupIds.length,
+          studentWhatsapp: profileByStudent.get(student.studentId)?.whatsapp ?? "",
+          groupNames: student.groupNames,
           riskLevel,
           reasons,
           lastActivityAt: lastActivity,
           lastSubmissionAt: lastSubmission,
           daysWithoutActivity: daysNoActivity,
           daysWithoutSubmission: daysNoSubmission,
+          isTaggedAsBaja: profileByStudent.get(student.studentId)?.isTaggedAsBaja ?? false,
         } satisfies RiskRow;
       });
 
@@ -306,7 +378,7 @@ export function StudentDropoutRiskTab() {
       };
 
       const atRiskRows = computed
-        .filter((row) => row.riskLevel !== "none")
+        .filter((row) => row.riskLevel !== "none" && !row.isTaggedAsBaja)
         .sort((a, b) => {
           const bySeverity = riskWeight[b.riskLevel] - riskWeight[a.riskLevel];
           if (bySeverity !== 0) return bySeverity;
@@ -328,6 +400,65 @@ export function StudentDropoutRiskTab() {
     void loadRiskReport();
   }, [loadRiskReport]);
 
+  const handleTagAsBaja = useCallback(async (row: RiskRow) => {
+    setTaggingStudents((prev) => ({ ...prev, [row.studentId]: true }));
+
+    try {
+      await setDoc(
+        doc(db, "users", row.studentId),
+        {
+          dropoutRiskTag: "Baja",
+          dropoutRiskTaggedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+      setRows((prev) => prev.filter((current) => current.studentId !== row.studentId));
+      toast.success(`${row.studentName} etiquetado como Baja.`);
+    } catch (error) {
+      console.error("Error etiquetando alumno como baja:", error);
+      toast.error("No se pudo etiquetar al alumno como Baja.");
+    } finally {
+      setTaggingStudents((prev) => {
+        const next = { ...prev };
+        delete next[row.studentId];
+        return next;
+      });
+    }
+  }, []);
+
+  const handleExportToExcel = useCallback(() => {
+    if (rows.length === 0) {
+      toast.error("No hay datos para exportar.");
+      return;
+    }
+
+    setExporting(true);
+    try {
+      const exportRows = rows.map((row) => ({
+        Alumno: row.studentName,
+        Correo: row.studentEmail || "Sin correo",
+        WhatsApp: row.studentWhatsapp || "Sin registro",
+        Grupo: row.groupNames.length > 0 ? row.groupNames.join(" | ") : "Sin grupo",
+        Riesgo: row.riskLevel === "high" ? "Alto" : "Medio",
+        "Ultima actividad": formatDateTime(row.lastActivityAt),
+        "Ultima tarea": formatDateTime(row.lastSubmissionAt),
+        Motivos: row.reasons.join(" | "),
+      }));
+
+      const sheet = XLSX.utils.json_to_sheet(exportRows);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, sheet, "Riesgo");
+      XLSX.writeFile(workbook, `reporte-riesgo-desercion-${new Date().toISOString().slice(0, 10)}.xlsx`);
+      toast.success("Reporte exportado.");
+    } catch (error) {
+      console.error("Error exportando reporte de riesgo:", error);
+      toast.error("No se pudo exportar el reporte.");
+    } finally {
+      setExporting(false);
+    }
+  }, [rows]);
+
   const summary = useMemo(() => {
     const high = rows.filter((row) => row.riskLevel === "high").length;
     const medium = rows.filter((row) => row.riskLevel === "medium").length;
@@ -346,17 +477,27 @@ export function StudentDropoutRiskTab() {
           <h2 className="text-lg font-semibold text-slate-900">Reporte global de alumnos en riesgo</h2>
           <p className="text-sm text-slate-600">
             Reglas: actividad &gt;= {ACTIVITY_DAYS_THRESHOLD} días sin registrar o tareas sin envío por{" "}
-            {SUBMISSION_DAYS_THRESHOLD}+ días.
+            {SUBMISSION_DAYS_THRESHOLD}+ días. Los alumnos etiquetados como Baja se excluyen del reporte.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => void loadRiskReport()}
-          disabled={loading}
-          className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-        >
-          {loading ? "Calculando..." : "Recalcular reporte"}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleExportToExcel}
+            disabled={loading || rows.length === 0 || exporting}
+            className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
+          >
+            {exporting ? "Exportando..." : "Exportar a Excel"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void loadRiskReport()}
+            disabled={loading}
+            className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+          >
+            {loading ? "Calculando..." : "Recalcular reporte"}
+          </button>
+        </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
@@ -393,11 +534,13 @@ export function StudentDropoutRiskTab() {
               <thead className="bg-slate-50 text-xs font-semibold text-slate-600">
                 <tr>
                   <th className="px-4 py-2 text-left">Alumno</th>
+                  <th className="px-4 py-2 text-left">WhatsApp</th>
                   <th className="px-4 py-2 text-left">Riesgo</th>
-                  <th className="px-4 py-2 text-left">Grupos</th>
+                  <th className="px-4 py-2 text-left">Grupo</th>
                   <th className="px-4 py-2 text-left">Última actividad</th>
                   <th className="px-4 py-2 text-left">Última tarea</th>
                   <th className="px-4 py-2 text-left">Motivo</th>
+                  <th className="px-4 py-2 text-left">Etiqueta</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
@@ -407,6 +550,7 @@ export function StudentDropoutRiskTab() {
                       <p className="font-medium text-slate-900">{row.studentName}</p>
                       <p className="text-xs text-slate-500">{row.studentEmail || "Sin correo"}</p>
                     </td>
+                    <td className="px-4 py-3 text-slate-700">{row.studentWhatsapp || "Sin registro"}</td>
                     <td className="px-4 py-3">
                       <span
                         className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${
@@ -418,7 +562,17 @@ export function StudentDropoutRiskTab() {
                         {row.riskLevel === "high" ? "Alto" : "Medio"}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-slate-700">{row.groupsCount}</td>
+                    <td className="px-4 py-3 text-slate-700">
+                      {row.groupNames.length > 0 ? (
+                        row.groupNames.map((groupName) => (
+                          <p key={`${row.studentId}-${groupName}`} className="text-xs">
+                            {groupName}
+                          </p>
+                        ))
+                      ) : (
+                        <p className="text-xs">Sin grupo</p>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-slate-700">{formatDateTime(row.lastActivityAt)}</td>
                     <td className="px-4 py-3 text-slate-700">{formatDateTime(row.lastSubmissionAt)}</td>
                     <td className="px-4 py-3 text-slate-700">
@@ -427,6 +581,21 @@ export function StudentDropoutRiskTab() {
                           {reason}
                         </p>
                       ))}
+                    </td>
+                    <td className="px-4 py-3 text-slate-700">
+                      <select
+                        value=""
+                        onChange={(event) => {
+                          if (event.target.value === "Baja") {
+                            void handleTagAsBaja(row);
+                          }
+                        }}
+                        disabled={Boolean(taggingStudents[row.studentId])}
+                        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 disabled:opacity-60"
+                      >
+                        <option value="">Seleccionar</option>
+                        <option value="Baja">Baja</option>
+                      </select>
                     </td>
                   </tr>
                 ))}
