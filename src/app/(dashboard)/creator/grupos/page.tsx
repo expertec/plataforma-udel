@@ -11,6 +11,7 @@ import {
   getAllGroups,
   Group,
   deleteGroup,
+  getGroupsForTeacher,
   getGroupsWhereAssistant,
 } from "@/lib/firebase/groups-service";
 import toast from "react-hot-toast";
@@ -65,12 +66,16 @@ export default function GroupsPage() {
     }
     setLoading(true);
     try {
-      const hasGlobalGroupsView =
-        isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
+      const hasGlobalGroupsView = isAdminTeacherRole(userRole);
+      const isCampusCoordinator = isCampusCoordinatorRole(userRole);
 
       const [myGroups, myAssistantGroups, myCourses] = await Promise.all([
-        hasGlobalGroupsView ? getAllGroups() : Promise.resolve([]),
-        hasGlobalGroupsView ? Promise.resolve([]) : getGroupsWhereAssistant(currentUser.uid),
+        hasGlobalGroupsView
+          ? getAllGroups()
+          : isCampusCoordinator
+            ? getGroupsForTeacher(currentUser.uid)
+            : Promise.resolve([]),
+        hasGlobalGroupsView || isCampusCoordinator ? Promise.resolve([]) : getGroupsWhereAssistant(currentUser.uid),
         getCourses(),
       ]);
       setGroups(myGroups);
@@ -153,7 +158,7 @@ export default function GroupsPage() {
   const isAdminTeacher = isAdminTeacherRole(userRole);
   const isCampusCoordinator = isCampusCoordinatorRole(userRole);
   const canManageOwnGroups = isAdminTeacher || isCampusCoordinator;
-  const hasGlobalGroupsView = canManageOwnGroups;
+  const hasGlobalGroupsView = isAdminTeacher;
   const canDeleteGroup = (group: Group) =>
     isAdminTeacher || (isCampusCoordinator && group.teacherId === currentUser?.uid);
 

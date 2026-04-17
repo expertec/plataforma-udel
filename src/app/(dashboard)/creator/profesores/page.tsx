@@ -96,6 +96,8 @@ function mergeAuthHeaders(token: string, headers?: HeadersInit): Headers {
 
 export default function ProfesoresPage() {
   const [teachers, setTeachers] = useState<TeacherUser[]>([]);
+  const [activeTab, setActiveTab] = useState<"gestion" | "altas" | "reporte">("gestion");
+  const [teacherSearchQuery, setTeacherSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
@@ -553,6 +555,27 @@ export default function ProfesoresPage() {
     URL.revokeObjectURL(url);
   }, [reportRowsWithSalary, salaryConfig]);
 
+  const filteredTeachers = useMemo(() => {
+    const normalizedQuery = teacherSearchQuery.trim().toLowerCase();
+    if (!normalizedQuery) return teachers;
+
+    return teachers.filter((teacher) => {
+      const searchableRole = getTeacherRoleLabel(teacher.role).toLowerCase();
+      return (
+        teacher.name.toLowerCase().includes(normalizedQuery) ||
+        teacher.email.toLowerCase().includes(normalizedQuery) ||
+        (teacher.phone || "").toLowerCase().includes(normalizedQuery) ||
+        searchableRole.includes(normalizedQuery)
+      );
+    });
+  }, [teachers, teacherSearchQuery]);
+
+  const teacherTabs: { key: "gestion" | "altas" | "reporte"; label: string }[] = [
+    { key: "gestion", label: "Listado y acciones" },
+    { key: "altas", label: "Altas" },
+    { key: "reporte", label: "Reporte" },
+  ];
+
   return (
     <div className="space-y-4">
       {!roleReady ? (
@@ -569,96 +592,117 @@ export default function ProfesoresPage() {
         </p>
       </div>
 
-      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-        <form
-          onSubmit={handleCreateTeacher}
-          className="grid gap-3 md:grid-cols-2 md:items-end"
-        >
-          <div className="space-y-1">
-            <label className="text-sm font-medium text-slate-700">Nombre</label>
-            <input
-              type="text"
-              value={newTeacher.name}
-              onChange={(e) => setNewTeacher((prev) => ({ ...prev, name: e.target.value }))}
-              placeholder="Nombre del profesor"
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="text-sm font-medium text-slate-700">Teléfono / WhatsApp</label>
-            <input
-              type="text"
-              value={newTeacher.phone}
-              onChange={(e) => setNewTeacher((prev) => ({ ...prev, phone: e.target.value }))}
-              placeholder="+52..."
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="text-sm font-medium text-slate-700">Correo</label>
-            <input
-              type="email"
-              required
-              value={newTeacher.email}
-              onChange={(e) => setNewTeacher((prev) => ({ ...prev, email: e.target.value }))}
-              placeholder="correo@ejemplo.com"
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="text-sm font-medium text-slate-700">Contraseña</label>
-            <input
-              type="password"
-              required
-              minLength={6}
-              value={newTeacher.password}
-              onChange={(e) => setNewTeacher((prev) => ({ ...prev, password: e.target.value }))}
-              placeholder="Mínimo 6 caracteres"
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-            />
-          </div>
-          <div className="flex flex-col gap-3">
-            <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700">
-              <input
-                type="checkbox"
-                checked={newTeacher.admin}
-                onChange={(e) => setNewTeacher((prev) => ({ ...prev, admin: e.target.checked }))}
-                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-              />
-              Crear como AdminTeacher (acceso ampliado)
-            </label>
-            <button
-              type="submit"
-              disabled={creating}
-              className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              {creating ? "Creando..." : "Registrar profesor"}
-            </button>
-          </div>
-        </form>
-        <p className="mt-2 text-xs text-slate-600">
-          Esta acción crea el usuario en Firebase Auth y su documento en <code>users</code> con
-          rol docente.
-        </p>
+      <div className="flex flex-wrap gap-2 rounded-xl border border-slate-200 bg-white p-2 text-sm shadow-sm">
+        {teacherTabs.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => setActiveTab(tab.key)}
+            className={`rounded-lg px-4 py-2 font-semibold transition ${
+              activeTab === tab.key
+                ? "bg-blue-600 text-white shadow-sm"
+                : "text-slate-700 hover:bg-slate-100"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-900">Reporte de materias y grupos</h2>
-            <p className="text-sm text-slate-600">
-              Consulta detalle de cursos (materias), grupos y pago por materia en una modal.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={handleOpenReportModal}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
+      {activeTab === "altas" ? (
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <form
+            onSubmit={handleCreateTeacher}
+            className="grid gap-3 md:grid-cols-2 md:items-end"
           >
-            Abrir reporte
-          </button>
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-slate-700">Nombre</label>
+              <input
+                type="text"
+                value={newTeacher.name}
+                onChange={(e) => setNewTeacher((prev) => ({ ...prev, name: e.target.value }))}
+                placeholder="Nombre del profesor"
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-slate-700">Teléfono / WhatsApp</label>
+              <input
+                type="text"
+                value={newTeacher.phone}
+                onChange={(e) => setNewTeacher((prev) => ({ ...prev, phone: e.target.value }))}
+                placeholder="+52..."
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-slate-700">Correo</label>
+              <input
+                type="email"
+                required
+                value={newTeacher.email}
+                onChange={(e) => setNewTeacher((prev) => ({ ...prev, email: e.target.value }))}
+                placeholder="correo@ejemplo.com"
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-slate-700">Contraseña</label>
+              <input
+                type="password"
+                required
+                minLength={6}
+                value={newTeacher.password}
+                onChange={(e) => setNewTeacher((prev) => ({ ...prev, password: e.target.value }))}
+                placeholder="Mínimo 6 caracteres"
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+            <div className="flex flex-col gap-3">
+              <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={newTeacher.admin}
+                  onChange={(e) => setNewTeacher((prev) => ({ ...prev, admin: e.target.checked }))}
+                  className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                />
+                Crear como AdminTeacher (acceso ampliado)
+              </label>
+              <button
+                type="submit"
+                disabled={creating}
+                className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {creating ? "Creando..." : "Registrar profesor"}
+              </button>
+            </div>
+          </form>
+          <p className="mt-2 text-xs text-slate-600">
+            Esta acción crea el usuario en Firebase Auth y su documento en <code>users</code> con
+            rol docente.
+          </p>
         </div>
-      </div>
+      ) : null}
+
+      {activeTab === "reporte" ? (
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Reporte de materias y grupos</h2>
+              <p className="text-sm text-slate-600">
+                Consulta detalle de cursos (materias), grupos y pago por materia en una modal.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleOpenReportModal}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
+            >
+              Abrir reporte
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {reportModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 px-4 py-6">
@@ -868,84 +912,136 @@ export default function ProfesoresPage() {
         </div>
       ) : null}
 
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-slate-600">Listado de profesores, AdminTeacher y Coordinador de plantel.</p>
-        <button
-          type="button"
-          onClick={() => {
-            if (reportModalOpen) {
-              void refreshTeachersAndReport();
-              return;
-            }
-            void loadTeachers();
-          }}
-          disabled={loading || (reportModalOpen && reportLoading)}
-          className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed"
-        >
-          {loading || (reportModalOpen && reportLoading) ? "Actualizando..." : "Refrescar"}
-        </button>
-      </div>
+      {activeTab === "gestion" ? (
+        <>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                void loadTeachers();
+              }}
+              disabled={loading}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed"
+            >
+              {loading ? "Actualizando..." : "Refrescar"}
+            </button>
+            <span className="text-sm text-slate-600">
+              Listado de profesores, AdminTeacher y Coordinador de plantel.
+            </span>
+          </div>
 
-      {loading ? (
-        <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
-          Cargando profesores...
-        </div>
-      ) : teachers.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
-          No se encontraron profesores registrados.
-        </div>
-      ) : (
-        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div className="grid grid-cols-[1.3fr_2fr_1fr_0.95fr_0.8fr_1.5fr] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
-            <span>Nombre</span>
-            <span>Email</span>
-            <span>Teléfono</span>
-            <span>Rol</span>
-            <span>Estado</span>
-            <span className="text-right">Acciones</span>
-          </div>
-          <div className="divide-y divide-slate-200">
-            {teachers.map((teacher) => (
-              <div
-                key={teacher.id}
-                className="grid grid-cols-[1.3fr_2fr_1fr_0.95fr_0.8fr_1.5fr] gap-3 px-4 py-2 text-sm text-slate-800"
-              >
-                <span>{teacher.name}</span>
-                <span className="text-slate-600 break-words">{teacher.email}</span>
-                <span className="text-slate-600">{teacher.phone || "—"}</span>
-                <span className="font-medium capitalize text-blue-700">
-                  {getTeacherRoleLabel(teacher.role)}
-                </span>
-                <span className="font-medium text-green-600">Activo</span>
-                <span className="flex justify-end gap-2">
+          <div className="space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  value={teacherSearchQuery}
+                  onChange={(event) => setTeacherSearchQuery(event.target.value)}
+                  placeholder="Buscar por nombre, correo, teléfono o rol..."
+                  className="w-full rounded-lg border border-slate-300 px-4 py-2 pl-10 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                />
+                <svg
+                  className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                  />
+                </svg>
+                {teacherSearchQuery ? (
                   <button
                     type="button"
-                    onClick={() => handleOpenEditProfile(teacher)}
-                    className="rounded-lg border border-blue-200 px-3 py-1 text-xs font-semibold text-blue-600 hover:border-blue-400"
+                    onClick={() => setTeacherSearchQuery("")}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
                   >
-                    Editar
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M6 18L18 6M6 6l12 12"
+                      />
+                    </svg>
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => handleOpenChangePassword(teacher)}
-                    className="rounded-lg border border-amber-200 px-3 py-1 text-xs font-semibold text-amber-600 hover:border-amber-400"
-                  >
-                    Cambiar Contraseña
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteTeacher(teacher)}
-                    disabled={deletingTeacherId === teacher.id}
-                    className="rounded-lg border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 hover:border-red-400 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-300"
-                  >
-                    {deletingTeacherId === teacher.id ? "Eliminando..." : "Eliminar"}
-                  </button>
-                </span>
+                ) : null}
               </div>
-            ))}
+              <span className="text-sm text-slate-600">
+                {filteredTeachers.length} de {teachers.length}
+              </span>
+            </div>
+
+            {loading ? (
+              <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
+                Cargando profesores...
+              </div>
+            ) : teachers.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
+                No se encontraron profesores registrados.
+              </div>
+            ) : filteredTeachers.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
+                {`No se encontraron profesores que coincidan con "${teacherSearchQuery}".`}
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+                <div className="grid grid-cols-[1.3fr_2fr_1fr_0.95fr_0.8fr_1.5fr] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
+                  <span>Nombre</span>
+                  <span>Email</span>
+                  <span>Teléfono</span>
+                  <span>Rol</span>
+                  <span>Estado</span>
+                  <span className="text-right">Acciones</span>
+                </div>
+                <div className="divide-y divide-slate-200">
+                  {filteredTeachers.map((teacher) => (
+                    <div
+                      key={teacher.id}
+                      className="grid grid-cols-[1.3fr_2fr_1fr_0.95fr_0.8fr_1.5fr] gap-3 px-4 py-2 text-sm text-slate-800"
+                    >
+                      <span>{teacher.name}</span>
+                      <span className="text-slate-600 break-words">{teacher.email}</span>
+                      <span className="text-slate-600">{teacher.phone || "—"}</span>
+                      <span className="font-medium capitalize text-blue-700">
+                        {getTeacherRoleLabel(teacher.role)}
+                      </span>
+                      <span className="font-medium text-green-600">Activo</span>
+                      <span className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEditProfile(teacher)}
+                          className="rounded-lg border border-blue-200 px-3 py-1 text-xs font-semibold text-blue-600 hover:border-blue-400"
+                        >
+                          Editar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenChangePassword(teacher)}
+                          className="rounded-lg border border-amber-200 px-3 py-1 text-xs font-semibold text-amber-600 hover:border-amber-400"
+                        >
+                          Cambiar Contraseña
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteTeacher(teacher)}
+                          disabled={deletingTeacherId === teacher.id}
+                          className="rounded-lg border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 hover:border-red-400 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-300"
+                        >
+                          {deletingTeacherId === teacher.id ? "Eliminando..." : "Eliminar"}
+                        </button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        </>
+      ) : null}
 
       {/* Modal para editar perfil */}
       {editProfileModalOpen && selectedTeacher && (

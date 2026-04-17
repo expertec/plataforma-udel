@@ -158,7 +158,7 @@ export default function AlumnosPage() {
   const loadStudents = useCallback(async (loadMore = false) => {
     const userId = currentUser?.uid;
     if (!userId || !userRole) return;
-    const canViewAllStudents = isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
+    const canViewAllStudents = isAdminTeacherRole(userRole);
 
     if (loadMore) {
       setLoadingMore(true);
@@ -211,6 +211,7 @@ export default function AlumnosPage() {
         }),
       );
       setStudents(Array.from(studentMap.values()));
+      setTotalStudentsCount(null);
       setHasMoreStudents(false);
     } catch (err) {
       console.error(err);
@@ -619,7 +620,7 @@ export default function AlumnosPage() {
   const isAdmin = isAdminTeacherRole(userRole);
   const isCoordinator = isCampusCoordinatorRole(userRole);
   const canViewRiskReport = isAdmin || isCoordinator;
-  const canViewAllStudents = isAdmin || isCampusCoordinatorRole(userRole);
+  const canViewAllStudents = isAdmin;
   const adminTabs: { key: "gestion" | "altas" | "passwords" | "riesgo"; label: string; helper?: string }[] = isAdmin
     ? [
         { key: "gestion", label: "Listado y acciones" },

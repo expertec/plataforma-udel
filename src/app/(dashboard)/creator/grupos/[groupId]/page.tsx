@@ -28,7 +28,6 @@ import { onAuthStateChanged, User } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import {
   isAdminTeacherRole,
-  isCampusCoordinatorRole,
   resolveUserRole,
   UserRole,
 } from "@/lib/firebase/roles";
@@ -206,7 +205,7 @@ export default function GroupDetailPage() {
       (currentUserId === group.teacherId || isAdminTeacherRole(userRole)),
   );
   const canManageCampusGradeConfig = isAdminTeacherRole(userRole);
-  const hasFullGroupVisibility = isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
+  const hasFullGroupVisibility = isAdminTeacherRole(userRole);
   const isCurrentUserAssistant = Boolean(
     group &&
       currentUserId &&

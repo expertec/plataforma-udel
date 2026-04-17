@@ -48,6 +48,17 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    const syncSidebarStateWithViewport = () => {
+      if (window.innerWidth >= 1024) {
+        setOpen(true);
+      }
+    };
+    syncSidebarStateWithViewport();
+    window.addEventListener("resize", syncSidebarStateWithViewport);
+    return () => window.removeEventListener("resize", syncSidebarStateWithViewport);
+  }, []);
+
+  useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (userMenuOpen && userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
         setUserMenuOpen(false);
@@ -114,7 +125,7 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
       <div className="flex min-h-screen w-full bg-slate-100 text-slate-900">
         {/* Sidebar */}
         <aside
-          className={`fixed inset-y-0 left-0 z-20 w-64 shrink-0 border-r border-slate-200 bg-white px-4 py-6 transition transform lg:translate-x-0 ${
+          className={`fixed inset-y-0 left-0 z-20 w-64 shrink-0 border-r border-slate-200 bg-white px-4 py-6 transition transform ${
             open ? "translate-x-0" : "-translate-x-full"
           }`}
         >
@@ -139,7 +150,11 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
                     ? "bg-slate-200 text-slate-900"
                     : "text-slate-700 hover:bg-slate-100"
                 }`}
-                onClick={() => setOpen(false)}
+                onClick={() => {
+                  if (window.innerWidth < 1024) {
+                    setOpen(false);
+                  }
+                }}
               >
                 <span className="h-2 w-2 rounded-full bg-slate-400" />
                 {item.label}
@@ -158,13 +173,13 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
           />
         ) : null}
 
-        <main className="flex-1 overflow-auto px-4 py-6 sm:px-6 lg:pl-72 lg:pr-8">
+        <main className={`flex-1 overflow-auto px-4 py-6 sm:px-6 ${open ? "lg:pl-72 lg:pr-8" : "lg:px-8"}`}>
           <div className="mb-4 flex items-center gap-4 border-b border-slate-200 pb-4">
             <button
               type="button"
               className="flex h-12 w-12 items-center justify-center rounded-xl border-2 border-blue-500 bg-white text-blue-600 shadow-sm transition hover:shadow-md"
               onClick={() => setOpen((prev) => !prev)}
-              aria-label="Abrir menú"
+              aria-label={open ? "Ocultar menú" : "Abrir menú"}
             >
               <Menu size={22} strokeWidth={2.2} />
             </button>

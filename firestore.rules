@@ -182,7 +182,10 @@ service cloud.firestore {
     /* users */
     match /users/{userId} {
       allow read: if isSelf(userId) || isAdmin() || isAdminTeacher() || (
-        isCampusCoordinator() && resource.data.role == 'student'
+        isCampusCoordinator() && (
+          (resource.data.role is string && resource.data.role == 'student') ||
+          !('role' in resource.data)
+        )
       );
       allow create: if isAdmin() || isAdminTeacher() || canSelfUpsertProfile(userId);
       allow update: if isAdmin() || isAdminTeacher() || canSelfUpsertProfile(userId);
@@ -521,8 +524,9 @@ service cloud.firestore {
     }
 
     // Permitir collectionGroup queries de submissions para admins/docentes admin
+    // y coordinadores de plantel (necesario para el reporte de riesgo).
     match /{path=**}/submissions/{submissionId} {
-      allow read: if isAdmin() || isAdminTeacher();
+      allow read: if isAdmin() || isAdminTeacher() || isCampusCoordinator();
     }
 
     // Permitir collectionGroup queries de students para admins/docentes admin

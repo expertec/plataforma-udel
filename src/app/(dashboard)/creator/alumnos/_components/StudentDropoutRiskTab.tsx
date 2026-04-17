@@ -8,6 +8,7 @@ import {
   type DocumentData,
   doc,
   documentId,
+  getDoc,
   getDocs,
   limit,
   orderBy,
@@ -358,17 +359,39 @@ export function StudentDropoutRiskTab({ scopeTeacherId = null }: StudentDropoutR
         FIRESTORE_IN_QUERY_LIMIT,
       ).map((studentIds) => async () => {
         if (studentIds.length === 0) return;
-        const usersSnap = await getDocs(
-          query(collection(db, "users"), where(documentId(), "in", studentIds)),
-        );
-        usersSnap.docs.forEach((userDoc) => {
-          const data = userDoc.data() as Record<string, unknown>;
-          profileByStudent.set(userDoc.id, {
-            whatsapp: resolveStudentWhatsApp(data),
-            dropoutRiskTag: resolveDropoutRiskTag(data.dropoutRiskTag),
-            notes: resolveDropoutRiskNotes(data.dropoutRiskNotes),
+        try {
+          const usersSnap = await getDocs(
+            query(collection(db, "users"), where(documentId(), "in", studentIds)),
+          );
+          usersSnap.docs.forEach((userDoc) => {
+            const data = userDoc.data() as Record<string, unknown>;
+            profileByStudent.set(userDoc.id, {
+              whatsapp: resolveStudentWhatsApp(data),
+              dropoutRiskTag: resolveDropoutRiskTag(data.dropoutRiskTag),
+              notes: resolveDropoutRiskNotes(data.dropoutRiskNotes),
+            });
           });
-        });
+          return;
+        } catch (error) {
+          console.warn("No se pudo leer el bloque de perfiles de alumnos. Probando lectura individual.", error);
+        }
+
+        await Promise.all(
+          studentIds.map(async (studentId) => {
+            try {
+              const userSnap = await getDoc(doc(db, "users", studentId));
+              if (!userSnap.exists()) return;
+              const data = userSnap.data() as Record<string, unknown>;
+              profileByStudent.set(userSnap.id, {
+                whatsapp: resolveStudentWhatsApp(data),
+                dropoutRiskTag: resolveDropoutRiskTag(data.dropoutRiskTag),
+                notes: resolveDropoutRiskNotes(data.dropoutRiskNotes),
+              });
+            } catch {
+              // Si un alumno puntual no es legible por reglas, se omite sin romper el reporte completo.
+            }
+          }),
+        );
       });
       await runInBatches(profileTasks, QUERY_BATCH_SIZE);
 
