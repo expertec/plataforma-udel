@@ -414,6 +414,7 @@ export async function PATCH(
     if (Object.keys(payload).length === 0) {
       throw new RouteAccessError(400, "No hay cambios para guardar");
     }
+    payload.id = normalizedClassId;
 
     const nextMentorIds = access.shouldBackfillMentor
       ? Array.from(new Set([...access.mentorIds, teacherContext.uid]))

@@ -343,6 +343,7 @@ export async function POST(
 
     const batch = db.batch();
     batch.set(classRef, {
+      id: classRef.id,
       title,
       type: classType,
       order,

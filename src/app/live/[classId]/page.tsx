@@ -1,10 +1,19 @@
 "use client";
 
 import "@livekit/components-styles";
-import { LiveKitRoom, RoomAudioRenderer, VideoConference } from "@livekit/components-react";
+import {
+  ControlBar,
+  GridLayout,
+  LiveKitRoom,
+  ParticipantTile,
+  RoomAudioRenderer,
+  StartAudio,
+  useTracks,
+} from "@livekit/components-react";
 import { onAuthStateChanged, type User } from "firebase/auth";
+import { Track } from "livekit-client";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { auth } from "@/lib/firebase/client";
 
@@ -27,9 +36,33 @@ type LiveTokenResponse = {
   error?: string;
 };
 
+function LiveRoomConference() {
+  const tracks = useTracks([Track.Source.Camera, Track.Source.ScreenShare], {
+    onlySubscribed: false,
+  });
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1 p-2">
+        <GridLayout tracks={tracks} className="h-full">
+          <ParticipantTile />
+        </GridLayout>
+      </div>
+      <div className="border-t border-slate-800 bg-slate-950/80 px-2 py-2">
+        <ControlBar controls={{ leave: false, chat: false, settings: false }} />
+      </div>
+      <StartAudio label="Habilitar audio" />
+      <RoomAudioRenderer />
+    </div>
+  );
+}
+
 export default function LiveClassRoomPage() {
   const params = useParams<{ classId: string }>();
+  const searchParams = useSearchParams();
   const classId = useMemo(() => (params.classId ?? "").trim(), [params.classId]);
+  const courseId = useMemo(() => (searchParams.get("courseId") ?? "").trim(), [searchParams]);
+  const lessonId = useMemo(() => (searchParams.get("lessonId") ?? "").trim(), [searchParams]);
 
   const [user, setUser] = useState<User | null>(auth.currentUser);
   const [authLoading, setAuthLoading] = useState(!auth.currentUser);
@@ -42,6 +75,8 @@ export default function LiveClassRoomPage() {
   const [waitingReason, setWaitingReason] = useState<string | null>(null);
   const [scheduledStartAt, setScheduledStartAt] = useState<string | null>(null);
   const [timezone, setTimezone] = useState<string>("America/Monterrey");
+  const [asRole, setAsRole] = useState<"teacher" | "student" | null>(null);
+  const [endingSession, setEndingSession] = useState(false);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (nextUser) => {
@@ -65,7 +100,11 @@ export default function LiveClassRoomPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${idToken}`,
         },
-        body: JSON.stringify({ classId }),
+        body: JSON.stringify({
+          classId,
+          courseId: courseId || undefined,
+          lessonId: lessonId || undefined,
+        }),
       });
       const payload = (await response.json().catch(() => null)) as LiveTokenResponse | null;
       if (!response.ok || !payload?.success || !payload.data) {
@@ -76,6 +115,7 @@ export default function LiveClassRoomPage() {
       setRoomName(payload.data.roomName || null);
       setScheduledStartAt(payload.data.liveSession?.scheduledStartAt ?? null);
       setTimezone(payload.data.liveSession?.timezone ?? "America/Monterrey");
+      setAsRole(payload.data.asRole ?? null);
 
       if (!payload.data.joinAllowed || !payload.data.token || !payload.data.livekitUrl) {
         setToken(null);
@@ -94,7 +134,90 @@ export default function LiveClassRoomPage() {
       setError(requestError instanceof Error ? requestError.message : "No se pudo abrir la clase");
       setLoading(false);
     }
-  }, [classId, user]);
+  }, [classId, courseId, lessonId, user]);
+
+  const leaveRoom = useCallback(() => {
+    // Unmounting LiveKitRoom forces a clean disconnect and avoids internal
+    // VideoConference paging errors seen during leave.
+    setToken(null);
+    setLivekitUrl(null);
+    setWaitingReason("left_room");
+    setLoading(false);
+  }, []);
+
+  const pollJoinAccess = useCallback(async () => {
+    if (!classId || !user) return;
+
+    try {
+      const idToken = await user.getIdToken();
+      const response = await fetch("/api/livekit/token", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          classId,
+          courseId: courseId || undefined,
+          lessonId: lessonId || undefined,
+        }),
+      });
+      const payload = (await response.json().catch(() => null)) as LiveTokenResponse | null;
+      if (!response.ok || !payload?.success || !payload.data) {
+        return;
+      }
+
+      setAsRole(payload.data.asRole ?? null);
+      if (!payload.data.joinAllowed) {
+        setWaitingReason(payload.data.waitingReason || "session_ended");
+        setToken(null);
+        setLivekitUrl(null);
+        setLoading(false);
+      }
+    } catch {
+      // ignore polling transient errors while in-room
+    }
+  }, [classId, courseId, lessonId, user]);
+
+  const endSession = useCallback(async () => {
+    if (!classId || !user || asRole !== "teacher") return;
+
+    setEndingSession(true);
+    setError(null);
+    try {
+      const idToken = await user.getIdToken();
+      const search = new URLSearchParams();
+      if (courseId) search.set("courseId", courseId);
+      if (lessonId) search.set("lessonId", lessonId);
+      const query = search.toString();
+
+      const response = await fetch(
+        `/api/live/classes/${encodeURIComponent(classId)}/end${query ? `?${query}` : ""}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${idToken}`,
+          },
+        },
+      );
+      const payload = (await response.json().catch(() => null)) as
+        | { success?: boolean; error?: string }
+        | null;
+      if (!response.ok || !payload?.success) {
+        throw new Error(payload?.error || "No se pudo terminar la sesión");
+      }
+
+      setWaitingReason("session_ended");
+      setToken(null);
+      setLivekitUrl(null);
+      setLoading(false);
+    } catch (endError) {
+      console.error("No se pudo terminar la sesión", endError);
+      setError(endError instanceof Error ? endError.message : "No se pudo terminar la sesión");
+    } finally {
+      setEndingSession(false);
+    }
+  }, [asRole, classId, courseId, lessonId, user]);
 
   useEffect(() => {
     if (!user || !classId) return;
@@ -109,6 +232,16 @@ export default function LiveClassRoomPage() {
     }, 8000);
     return () => window.clearInterval(timer);
   }, [classId, requestToken, token, user, waitingReason]);
+
+  useEffect(() => {
+    if (!user || !classId) return;
+    if (!token || !livekitUrl) return;
+    if (asRole !== "student") return;
+    const timer = window.setInterval(() => {
+      pollJoinAccess();
+    }, 6000);
+    return () => window.clearInterval(timer);
+  }, [asRole, classId, livekitUrl, pollJoinAccess, token, user]);
 
   if (authLoading) {
     return <div className="flex min-h-screen items-center justify-center bg-slate-950 text-white">Verificando sesión...</div>;
@@ -152,7 +285,9 @@ export default function LiveClassRoomPage() {
         <p className="max-w-lg text-sm text-slate-200">
           {waitingReason === "session_ended"
             ? "La sesión terminó. Si la grabación está lista podrás verla desde la plataforma."
-            : "El profesor aún no inicia la sesión. Esta pantalla se actualizará automáticamente."}
+            : waitingReason === "left_room"
+              ? "Saliste de la sala. Puedes volver a entrar cuando quieras."
+              : "El profesor aún no inicia la sesión. Esta pantalla se actualizará automáticamente."}
         </p>
         {scheduledStartAt ? (
           <p className="text-xs text-slate-300">
@@ -169,7 +304,7 @@ export default function LiveClassRoomPage() {
           onClick={requestToken}
           className="rounded-lg border border-slate-400 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
         >
-          Actualizar estado
+          {waitingReason === "left_room" ? "Volver a entrar" : "Actualizar estado"}
         </button>
       </div>
     );
@@ -177,19 +312,54 @@ export default function LiveClassRoomPage() {
 
   return (
     <div className="h-screen w-full bg-slate-950">
-      <LiveKitRoom token={token} serverUrl={livekitUrl} connect={true} audio={true} video={true} data-lk-theme="default" className="h-full w-full">
-        <VideoConference />
-        <RoomAudioRenderer />
+      <LiveKitRoom
+        token={token}
+        serverUrl={livekitUrl}
+        connect={true}
+        audio={true}
+        video={true}
+        onDisconnected={() => {
+          setToken(null);
+          setLivekitUrl(null);
+          setWaitingReason((currentReason) =>
+            currentReason === "session_ended" ? "session_ended" : "left_room",
+          );
+          setLoading(false);
+        }}
+        data-lk-theme="default"
+        className="h-full w-full"
+      >
+        <LiveRoomConference />
       </LiveKitRoom>
       <div className="pointer-events-none fixed left-0 right-0 top-0 flex justify-between p-3">
-        <span className="pointer-events-auto rounded-full bg-black/70 px-3 py-1 text-xs font-semibold text-white">
-          {classTitle}
-        </span>
-        <span className="pointer-events-auto rounded-full bg-black/70 px-3 py-1 text-xs font-semibold text-white">
-          Sala: {roomName}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="pointer-events-auto rounded-full bg-black/70 px-3 py-1 text-xs font-semibold text-white">
+            {classTitle}
+          </span>
+          <span className="pointer-events-auto rounded-full bg-black/70 px-3 py-1 text-xs font-semibold text-white">
+            Sala: {roomName}
+          </span>
+        </div>
+        <div className="pointer-events-auto flex items-center gap-2">
+          {asRole === "teacher" ? (
+            <button
+              type="button"
+              disabled={endingSession}
+              onClick={endSession}
+              className="rounded-full bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-500 disabled:opacity-60"
+            >
+              {endingSession ? "Terminando..." : "Terminar sesión"}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={leaveRoom}
+            className="rounded-full bg-red-600 px-3 py-1 text-xs font-semibold text-white hover:bg-red-500"
+          >
+            Salir
+          </button>
+        </div>
       </div>
     </div>
   );
 }
-

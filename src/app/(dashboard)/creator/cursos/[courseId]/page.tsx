@@ -671,12 +671,24 @@ export default function CourseBuilderPage() {
     }
   };
 
-  const handleJoinLiveClass = useCallback((classItem: ClassData) => {
-    window.open(`/live/${encodeURIComponent(classItem.id)}?role=teacher`, "_blank", "noopener,noreferrer");
-  }, []);
+  const handleJoinLiveClass = useCallback(
+    (lesson: Lesson, classItem: ClassData) => {
+      const searchParams = new URLSearchParams();
+      searchParams.set("role", "teacher");
+      if (courseId) searchParams.set("courseId", courseId);
+      if (lesson.id.trim()) searchParams.set("lessonId", lesson.id.trim());
+      const query = searchParams.toString();
+      window.open(
+        `/live/${encodeURIComponent(classItem.id)}${query ? `?${query}` : ""}`,
+        "_blank",
+        "noopener,noreferrer",
+      );
+    },
+    [courseId],
+  );
 
   const handleStartLiveClass = useCallback(
-    async (_lesson: Lesson, classItem: ClassData) => {
+    async (lesson: Lesson, classItem: ClassData) => {
       if (!courseId || classItem.type !== "live") return;
       const user = auth.currentUser;
       if (!user) {
@@ -687,7 +699,11 @@ export default function CourseBuilderPage() {
       setLiveActionLoadingMap((prev) => ({ ...prev, [classItem.id]: true }));
       try {
         const token = await user.getIdToken();
-        const response = await fetch(`/api/live/classes/${encodeURIComponent(classItem.id)}/start`, {
+        const searchParams = new URLSearchParams();
+        searchParams.set("courseId", courseId);
+        if (lesson.id.trim()) searchParams.set("lessonId", lesson.id.trim());
+        const query = searchParams.toString();
+        const response = await fetch(`/api/live/classes/${encodeURIComponent(classItem.id)}/start${query ? `?${query}` : ""}`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${token}`,
@@ -700,7 +716,7 @@ export default function CourseBuilderPage() {
           throw new Error(payload?.error || "No se pudo iniciar la clase en vivo");
         }
         toast.success("Clase en vivo iniciada");
-        handleJoinLiveClass(classItem);
+        handleJoinLiveClass(lesson, classItem);
       } catch (error) {
         console.error(error);
         toast.error(error instanceof Error ? error.message : "No se pudo iniciar la clase en vivo");
@@ -709,6 +725,48 @@ export default function CourseBuilderPage() {
       }
     },
     [courseId, handleJoinLiveClass],
+  );
+
+  const handleEndLiveClass = useCallback(
+    async (lesson: Lesson, classItem: ClassData) => {
+      if (!courseId || classItem.type !== "live") return;
+      const user = auth.currentUser;
+      if (!user) {
+        toast.error("Inicia sesión para terminar la clase en vivo");
+        return;
+      }
+
+      setLiveActionLoadingMap((prev) => ({ ...prev, [classItem.id]: true }));
+      try {
+        const token = await user.getIdToken();
+        const searchParams = new URLSearchParams();
+        searchParams.set("courseId", courseId);
+        if (lesson.id.trim()) searchParams.set("lessonId", lesson.id.trim());
+        const query = searchParams.toString();
+        const response = await fetch(
+          `/api/live/classes/${encodeURIComponent(classItem.id)}/end${query ? `?${query}` : ""}`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          },
+        );
+        const payload = (await response.json().catch(() => null)) as
+          | { success?: boolean; error?: string }
+          | null;
+        if (!response.ok || !payload?.success) {
+          throw new Error(payload?.error || "No se pudo terminar la clase en vivo");
+        }
+        toast.success("Clase en vivo terminada");
+      } catch (error) {
+        console.error(error);
+        toast.error(error instanceof Error ? error.message : "No se pudo terminar la clase en vivo");
+      } finally {
+        setLiveActionLoadingMap((prev) => ({ ...prev, [classItem.id]: false }));
+      }
+    },
+    [courseId],
   );
 
   return (
@@ -984,7 +1042,8 @@ export default function CourseBuilderPage() {
                       }
                       onReorderClass={handleReorderClasses}
                       onStartLiveClass={handleStartLiveClass}
-                      onJoinLiveClass={(_lessonItem, classItem) => handleJoinLiveClass(classItem)}
+                      onEndLiveClass={handleEndLiveClass}
+                      onJoinLiveClass={handleJoinLiveClass}
                       liveActionLoadingMap={liveActionLoadingMap}
                       showCreationMetadata={showCreationMetadata}
                     />

@@ -19,6 +19,7 @@ type ClassItemProps = {
   onEditClass?: (item: ClassData) => void;
   onOpenComments?: (item: ClassData) => void;
   onStartLiveClass?: (item: ClassData) => void;
+  onEndLiveClass?: (item: ClassData) => void;
   onJoinLiveClass?: (item: ClassData) => void;
   liveActionLoading?: boolean;
   dragProps?: DragProps;
@@ -63,6 +64,7 @@ export function ClassItem({
   onEditClass,
   onOpenComments,
   onStartLiveClass,
+  onEndLiveClass,
   onJoinLiveClass,
   liveActionLoading = false,
   dragProps,
@@ -70,6 +72,10 @@ export function ClassItem({
   const hasError = hasContentError(item);
   const liveStatus = item.liveSession?.status ?? "scheduled";
   const isLiveClass = item.type === "live";
+  const liveFinalized =
+    Boolean(item.liveSession?.lastEndedAt) ||
+    liveStatus === "ended" ||
+    liveStatus === "recording_ready";
 
   const dragStyles = [
     dragProps?.isDragging ? "opacity-70" : "",
@@ -128,6 +134,11 @@ export function ClassItem({
                 Grabación lista
               </span>
             ) : null}
+            {isLiveClass && liveFinalized && liveStatus !== "recording_ready" ? (
+              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
+                Sesión finalizada
+              </span>
+            ) : null}
           </div>
           {item.duration ? (
             <p className="text-xs text-slate-500">{item.duration} min</p>
@@ -135,7 +146,7 @@ export function ClassItem({
         </div>
       </div>
       <div className="flex items-center gap-2 text-sm text-slate-500">
-        {isLiveClass && liveStatus !== "live" ? (
+        {isLiveClass && !liveFinalized && liveStatus === "scheduled" ? (
           <button
             type="button"
             disabled={liveActionLoading}
@@ -145,14 +156,24 @@ export function ClassItem({
             {liveActionLoading ? "Iniciando..." : "Iniciar clase"}
           </button>
         ) : null}
-        {isLiveClass && liveStatus === "live" ? (
-          <button
-            type="button"
-            onClick={() => onJoinLiveClass?.(item)}
-            className="rounded-md bg-blue-600 px-2 py-1 text-xs font-semibold text-white hover:bg-blue-500"
-          >
-            Entrar en vivo
-          </button>
+        {isLiveClass && !liveFinalized && liveStatus === "live" ? (
+          <>
+            <button
+              type="button"
+              disabled={liveActionLoading}
+              onClick={() => onEndLiveClass?.(item)}
+              className="rounded-md bg-amber-600 px-2 py-1 text-xs font-semibold text-white hover:bg-amber-500 disabled:opacity-60"
+            >
+              {liveActionLoading ? "Terminando..." : "Terminar clase"}
+            </button>
+            <button
+              type="button"
+              onClick={() => onJoinLiveClass?.(item)}
+              className="rounded-md bg-blue-600 px-2 py-1 text-xs font-semibold text-white hover:bg-blue-500"
+            >
+              Entrar en vivo
+            </button>
+          </>
         ) : null}
         <button
           type="button"

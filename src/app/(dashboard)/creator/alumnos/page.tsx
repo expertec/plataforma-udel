@@ -158,7 +158,7 @@ export default function AlumnosPage() {
   const loadStudents = useCallback(async (loadMore = false) => {
     const userId = currentUser?.uid;
     if (!userId || !userRole) return;
-    const canViewAllStudents = isAdminTeacherRole(userRole);
+    const canViewAllStudents = isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
 
     if (loadMore) {
       setLoadingMore(true);
@@ -171,7 +171,7 @@ export default function AlumnosPage() {
 
     try {
       if (canViewAllStudents) {
-        // Usar paginación para admins (reduce lecturas de ~10,000 a ~50 por página)
+        // Usar paginación para admin teachers y coordinadores (reduce lecturas de ~10,000 a ~50 por página)
         const result = await getStudentUsersPaginated(
           50, // Cargar 50 estudiantes por página
           loadMore ? lastDocRef.current : null
@@ -488,9 +488,9 @@ export default function AlumnosPage() {
   }, [parsedRows, previewFilter]);
 
   const isSearchActive = searchQuery.trim().length > 0;
-  const canRunGlobalSearch = isAdminTeacherRole(userRole);
+  const canRunGlobalSearch = isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
 
-  // Búsqueda global en Firestore solo para admins.
+  // Búsqueda global en Firestore para admin teachers y coordinadores.
   useEffect(() => {
     if (!canRunGlobalSearch) {
       setSearchResults([]);
@@ -620,7 +620,7 @@ export default function AlumnosPage() {
   const isAdmin = isAdminTeacherRole(userRole);
   const isCoordinator = isCampusCoordinatorRole(userRole);
   const canViewRiskReport = isAdmin || isCoordinator;
-  const canViewAllStudents = isAdmin;
+  const canViewAllStudents = isAdmin || isCoordinator;
   const adminTabs: { key: "gestion" | "altas" | "passwords" | "riesgo"; label: string; helper?: string }[] = isAdmin
     ? [
         { key: "gestion", label: "Listado y acciones" },
@@ -1366,7 +1366,7 @@ export default function AlumnosPage() {
       ) : null}
 
       {canViewRiskReport && activeTab === "riesgo" ? (
-        <StudentDropoutRiskTab scopeTeacherId={isCoordinator ? currentUser?.uid ?? null : null} />
+        <StudentDropoutRiskTab scopeTeacherId={null} />
       ) : null}
 
       {(activeTab === "gestion" || !canViewRiskReport) && (

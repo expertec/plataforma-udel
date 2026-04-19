@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import {
+  LiveAccessError,
   resolveAuthorizedLiveClassAccess,
   toLiveAccessErrorResponse,
 } from "@/lib/live-classes/access";
@@ -15,15 +16,23 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function asTrimmedString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 export async function POST(
   request: NextRequest,
   context: { params: Promise<{ classId: string }> },
 ) {
   try {
     const { classId } = await context.params;
+    const courseId = asTrimmedString(request.nextUrl.searchParams.get("courseId"));
+    const lessonId = asTrimmedString(request.nextUrl.searchParams.get("lessonId"));
     const access = await resolveAuthorizedLiveClassAccess({
       request,
       classId,
+      courseId: courseId || undefined,
+      lessonId: lessonId || undefined,
       requireTeacher: true,
     });
 
@@ -49,6 +58,17 @@ export async function POST(
         classId: access.classContext.classId,
         current: classData.liveSession,
       });
+
+      const isFinalized =
+        Boolean(session.lastEndedAt) ||
+        session.status === "ended" ||
+        session.status === "recording_ready";
+      if (isFinalized) {
+        throw new LiveAccessError(
+          409,
+          "Esta clase en vivo ya fue finalizada y no puede volver a iniciarse.",
+        );
+      }
 
       roomName = session.roomName;
       const recordingAlreadyRunning =
@@ -159,4 +179,3 @@ export async function POST(
     );
   }
 }
-

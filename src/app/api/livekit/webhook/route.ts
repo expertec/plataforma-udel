@@ -109,6 +109,11 @@ export async function POST(request: NextRequest) {
       if (role === "teacher") {
         nextSession.teacherActive = false;
         nextSession.lastEndedAt = now;
+        if (nextSession.recording.status === "ready") {
+          nextSession.status = "recording_ready";
+        } else if (nextSession.status !== "recording_ready") {
+          nextSession.status = "ended";
+        }
       }
     } else if (event.event === "egress_started" || event.event === "egress_updated") {
       const egress = event.egressInfo;
@@ -175,4 +180,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-

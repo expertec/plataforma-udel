@@ -1264,7 +1264,11 @@ export default function StudentFeedPageClient() {
       setRecordingLoadingMap((prev) => ({ ...prev, [cls.id]: true }));
       try {
         const token = await currentUser.getIdToken();
-        const response = await fetch(`/api/live/classes/${encodeURIComponent(baseClassId)}/recording`, {
+        const searchParams = new URLSearchParams();
+        if (cls.courseId?.trim()) searchParams.set("courseId", cls.courseId.trim());
+        if (cls.lessonId?.trim()) searchParams.set("lessonId", cls.lessonId.trim());
+        const query = searchParams.toString();
+        const response = await fetch(`/api/live/classes/${encodeURIComponent(baseClassId)}/recording${query ? `?${query}` : ""}`, {
           method: "GET",
           headers: {
             Authorization: `Bearer ${token}`,
@@ -3086,10 +3090,20 @@ export default function StudentFeedPageClient() {
     if (cls.type === "live") {
       const session = normalizeLiveSession(cls.liveSession);
       const sessionStatus = session?.status ?? "scheduled";
+      const sessionFinalized =
+        Boolean(session?.lastEndedAt) ||
+        sessionStatus === "ended" ||
+        sessionStatus === "recording_ready";
       const isRoomLive = session?.teacherActive === true || sessionStatus === "live";
       const recordingReady =
         sessionStatus === "recording_ready" || session?.recording.status === "ready";
       const baseClassId = encodeURIComponent((cls.classDocId ?? cls.id).trim());
+      const liveSearchParams = new URLSearchParams();
+      if (cls.courseId?.trim()) liveSearchParams.set("courseId", cls.courseId.trim());
+      if (cls.lessonId?.trim()) liveSearchParams.set("lessonId", cls.lessonId.trim());
+      const liveHref = `/live/${baseClassId}${
+        liveSearchParams.toString() ? `?${liveSearchParams.toString()}` : ""
+      }`;
 
       return (
         <div className="flex h-full w-full items-center justify-center bg-neutral-950 px-4">
@@ -3109,8 +3123,10 @@ export default function StudentFeedPageClient() {
 
             {!isRoomLive ? (
               <div className="mt-4 rounded-lg border border-sky-300/20 bg-sky-400/10 px-4 py-3 text-sm text-sky-100">
-                {sessionStatus === "ended" || sessionStatus === "recording_ready"
-                  ? "La sesión en vivo terminó."
+                {sessionFinalized
+                  ? recordingReady
+                    ? "La sesión en vivo terminó. Ya puedes ver la grabación."
+                    : "La sesión en vivo terminó. La grabación se está procesando."
                   : "Sala de espera: el profesor aún no inicia la clase."}
               </div>
             ) : (
@@ -3120,12 +3136,14 @@ export default function StudentFeedPageClient() {
             )}
 
             <div className="mt-5 flex flex-wrap gap-3">
-              <Link
-                href={`/live/${baseClassId}`}
-                className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-500"
-              >
-                {isRoomLive ? "Entrar a la clase" : "Abrir sala de espera"}
-              </Link>
+              {!sessionFinalized ? (
+                <Link
+                  href={liveHref}
+                  className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-500"
+                >
+                  {isRoomLive ? "Entrar a la clase" : "Abrir sala de espera"}
+                </Link>
+              ) : null}
               {recordingReady ? (
                 <button
                   type="button"

@@ -432,16 +432,19 @@ export async function duplicateCourse(input: DuplicateCourseInput): Promise<stri
         },
       );
 
+      const duplicatedClassPatch: Record<string, unknown> = {
+        id: duplicatedClassRef.id,
+      };
       if (duplicatedClassType === "live") {
-        await updateDoc(duplicatedClassRef, {
-          liveSession: createLiveSessionForClass({
-            courseId: duplicatedCourseRef.id,
-            lessonId: duplicatedLessonRef.id,
-            classId: duplicatedClassRef.id,
-            input: classItem.data.liveSession,
-          }),
+        duplicatedClassPatch.liveSession = createLiveSessionForClass({
+          courseId: duplicatedCourseRef.id,
+          lessonId: duplicatedLessonRef.id,
+          classId: duplicatedClassRef.id,
+          input: classItem.data.liveSession,
         });
       }
+
+      await updateDoc(duplicatedClassRef, duplicatedClassPatch);
 
       const questionsSnap = await getDocs(
         collection(
@@ -857,6 +860,7 @@ export async function createClass(input: CreateClassInput): Promise<string> {
       : null;
   try {
     await setDoc(classRef, {
+      id: classRef.id,
       title: input.title,
       type: input.type,
       order: input.order,
@@ -995,6 +999,7 @@ export async function updateClass(input: UpdateClassInput): Promise<void> {
   }
 
   if (Object.keys(payload).length === 0) return;
+  payload.id = input.classId;
   try {
     await updateDoc(classRef, payload);
   } catch (error) {

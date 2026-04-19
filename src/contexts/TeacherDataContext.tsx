@@ -4,8 +4,13 @@ import { createContext, useContext, useState, useCallback, useEffect, ReactNode 
 import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import { Course, getCourses } from "@/lib/firebase/courses-service";
-import { Group, getGroupsForTeacher } from "@/lib/firebase/groups-service";
-import { resolveUserRole, UserRole, isAdminTeacherRole } from "@/lib/firebase/roles";
+import { Group, getAllGroups, getGroupsForTeacher } from "@/lib/firebase/groups-service";
+import {
+  resolveUserRole,
+  UserRole,
+  isAdminTeacherRole,
+  isCampusCoordinatorRole,
+} from "@/lib/firebase/roles";
 
 type TeacherDataContextType = {
   currentUser: User | null;
@@ -71,13 +76,16 @@ export function TeacherDataProvider({ children }: { children: ReactNode }) {
 
     try {
       // Límite razonable para caché
-      const data = await getGroupsForTeacher(currentUser.uid, 50);
+      const data =
+        userRole && (isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole))
+          ? await getAllGroups(50)
+          : await getGroupsForTeacher(currentUser.uid, 50);
       setGroups(data);
     } catch (err) {
       console.error("Error cargando grupos:", err);
       setError("No se pudieron cargar los grupos");
     }
-  }, [currentUser]);
+  }, [currentUser, userRole]);
 
   // Refrescar todo
   const refreshAll = useCallback(async () => {

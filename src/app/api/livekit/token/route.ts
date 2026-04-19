@@ -9,13 +9,20 @@ import {
   createLiveSessionForClass,
   normalizeLiveSession,
 } from "@/lib/live-classes/types";
-import { createJoinToken, ensureLiveKitRoom, getLiveKitConfig } from "@/lib/server/livekit";
+import {
+  createJoinToken,
+  ensureLiveKitRoom,
+  getLiveKitConfig,
+  isTeacherConnectedInRoom,
+} from "@/lib/server/livekit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type TokenRequestBody = {
   classId?: unknown;
+  courseId?: unknown;
+  lessonId?: unknown;
 };
 
 function asTrimmedString(value: unknown): string {
@@ -26,6 +33,8 @@ export async function POST(request: NextRequest) {
   try {
     const body = (await request.json().catch(() => ({}))) as TokenRequestBody;
     const classId = asTrimmedString(body.classId);
+    const courseId = asTrimmedString(body.courseId);
+    const lessonId = asTrimmedString(body.lessonId);
     if (!classId) {
       return NextResponse.json(
         { success: false, error: "classId es requerido" },
@@ -36,6 +45,8 @@ export async function POST(request: NextRequest) {
     const access = await resolveAuthorizedLiveClassAccess({
       request,
       classId,
+      courseId: courseId || undefined,
+      lessonId: lessonId || undefined,
       requireTeacher: false,
     });
 
@@ -55,14 +66,33 @@ export async function POST(request: NextRequest) {
         classId: access.classContext.classId,
       });
 
-    const session = {
+    let session = {
       ...fallbackSession,
       roomName,
     };
 
     const isTeacher = access.accessRole === "teacher";
-    const isSessionLive = session.status === "live" || session.teacherActive;
-    const joinAllowed = isTeacher || isSessionLive;
+    const isSessionFinalized =
+      Boolean(session.lastEndedAt) ||
+      session.status === "ended" ||
+      session.status === "recording_ready";
+    let isSessionLive = session.status === "live" || session.teacherActive;
+    // Only use room participant probing as a recovery path for stale "scheduled" state.
+    // Once a session is ended/recording_ready we should never re-open it from room state.
+    if (!isTeacher && !isSessionLive && !isSessionFinalized && session.status === "scheduled") {
+      const teacherConnected = await isTeacherConnectedInRoom(session.roomName);
+      if (teacherConnected) {
+        const nowIso = new Date().toISOString();
+        session = {
+          ...session,
+          status: "live",
+          teacherActive: true,
+          lastStartedAt: session.lastStartedAt || nowIso,
+        };
+        isSessionLive = true;
+      }
+    }
+    const joinAllowed = !isSessionFinalized && isSessionLive;
 
     if (!joinAllowed) {
       if (!currentSession || currentSession.roomName !== session.roomName) {
@@ -85,7 +115,7 @@ export async function POST(request: NextRequest) {
             roomName: session.roomName,
             joinAllowed: false,
             waitingReason:
-              session.status === "recording_ready" || session.status === "ended"
+              isSessionFinalized
                 ? "session_ended"
                 : "waiting_teacher",
             asRole: access.accessRole,
@@ -129,7 +159,7 @@ export async function POST(request: NextRequest) {
         success: true,
         data: {
           token,
-          livekitUrl: getLiveKitConfig().url,
+          livekitUrl: getLiveKitConfig().clientUrl,
           roomName: session.roomName,
           classId: access.classContext.classId,
           classTitle:

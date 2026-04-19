@@ -5,10 +5,14 @@ import {
   toLiveAccessErrorResponse,
   LiveAccessError,
 } from "@/lib/live-classes/access";
-import { getLiveKitConfig } from "@/lib/server/livekit";
+import { getLiveKitEgressConfig } from "@/lib/server/livekit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+function asTrimmedString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
 
 function normalizeObjectPath(value: string): string {
   return value.replace(/^\/+/, "").trim();
@@ -40,9 +44,13 @@ export async function GET(
 ) {
   try {
     const { classId } = await context.params;
+    const courseId = asTrimmedString(request.nextUrl.searchParams.get("courseId"));
+    const lessonId = asTrimmedString(request.nextUrl.searchParams.get("lessonId"));
     const access = await resolveAuthorizedLiveClassAccess({
       request,
       classId,
+      courseId: courseId || undefined,
+      lessonId: lessonId || undefined,
       requireTeacher: false,
     });
 
@@ -57,13 +65,13 @@ export async function GET(
       throw new LiveAccessError(404, "La grabación aún no está disponible");
     }
 
-    const config = getLiveKitConfig();
-    const objectPath = extractObjectPath(storagePath, config.egressBucket);
+    const egressConfig = getLiveKitEgressConfig();
+    const objectPath = extractObjectPath(storagePath, egressConfig.egressBucket);
     if (!objectPath) {
       throw new LiveAccessError(404, "No se encontró un archivo válido de grabación");
     }
 
-    const bucket = getAdminApp().storage().bucket(config.egressBucket);
+    const bucket = getAdminApp().storage().bucket(egressConfig.egressBucket);
     const expiresAt = Date.now() + 10 * 60 * 1000;
     const [signedUrl] = await bucket.file(objectPath).getSignedUrl({
       action: "read",
