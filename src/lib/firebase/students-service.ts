@@ -25,6 +25,8 @@ export type StudentUser = {
   estado?: string;
   phone?: string | null;
   program?: string;
+  plantelIds?: string[];
+  plantelNames?: string[];
 };
 
 export type PaginatedStudentsResult = {
@@ -45,13 +47,17 @@ const DEFAULT_PAGE_SIZE = 50;
 export async function getStudentUsersPaginated(
   pageSize: number = DEFAULT_PAGE_SIZE,
   lastDoc?: DocumentSnapshot | null,
-  searchQuery?: string
+  searchQuery?: string,
+  plantelId?: string,
 ): Promise<PaginatedStudentsResult> {
   const usersRef = collection(db, "users");
-  const constraints: QueryConstraint[] = [
-    where("role", "==", "student"),
-    orderBy("createdAt", "desc"),
-  ];
+  const normalizedPlantelId = plantelId?.trim() ?? "";
+  const constraints: QueryConstraint[] = normalizedPlantelId
+    ? [where("plantelIds", "array-contains", normalizedPlantelId)]
+    : [
+        where("role", "==", "student"),
+        orderBy("createdAt", "desc"),
+      ];
 
   if (lastDoc) {
     constraints.push(startAfter(lastDoc));
@@ -64,7 +70,8 @@ export async function getStudentUsersPaginated(
   const hasMore = snap.docs.length > pageSize;
   const docs = hasMore ? snap.docs.slice(0, pageSize) : snap.docs;
 
-  let students = docs.map((docSnap) => {
+  let students = docs
+    .map((docSnap) => {
     const d = docSnap.data();
     return {
       id: docSnap.id,
@@ -73,8 +80,14 @@ export async function getStudentUsersPaginated(
       estado: d.estado ?? d.status,
       phone: d.phone ?? null,
       program: d.program ?? "",
+      plantelIds: Array.isArray(d.plantelIds) ? d.plantelIds : [],
+      plantelNames: Array.isArray(d.plantelNames) ? d.plantelNames : [],
     };
-  });
+    })
+    .filter((student) => {
+      if (!normalizedPlantelId) return true;
+      return student.plantelIds.includes(normalizedPlantelId);
+    });
 
   // Filtrar localmente si hay búsqueda (para búsquedas simples)
   if (searchQuery) {
@@ -97,9 +110,12 @@ export async function getStudentUsersPaginated(
 /**
  * Obtiene el conteo total de estudiantes (para mostrar en UI)
  */
-export async function getStudentsCount(): Promise<number> {
+export async function getStudentsCount(plantelId?: string): Promise<number> {
   const usersRef = collection(db, "users");
-  const q = query(usersRef, where("role", "==", "student"));
+  const normalizedPlantelId = plantelId?.trim() ?? "";
+  const q = normalizedPlantelId
+    ? query(usersRef, where("plantelIds", "array-contains", normalizedPlantelId))
+    : query(usersRef, where("role", "==", "student"));
   const snapshot = await getCountFromServer(q);
   return snapshot.data().count;
 }
@@ -125,6 +141,8 @@ export async function getStudentUsers(maxResults: number = DEFAULT_PAGE_SIZE): P
       estado: d.estado ?? d.status,
       phone: d.phone ?? null,
       program: d.program ?? "",
+      plantelIds: Array.isArray(d.plantelIds) ? d.plantelIds : [],
+      plantelNames: Array.isArray(d.plantelNames) ? d.plantelNames : [],
     };
   });
 }

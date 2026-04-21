@@ -11,23 +11,68 @@ service cloud.firestore {
         ? request.auth.token.role
         : null;
     }
+    function isLegacyAdminTeacherRole(roleValue) {
+      return roleValue == 'adminteacher' ||
+        roleValue == 'superadminteacher' ||
+        roleValue == 'admin_teacher' ||
+        roleValue == 'super_admin_teacher';
+    }
+    function isKnownRoleValue(roleValue) {
+      return roleValue == 'superAdmin' ||
+        roleValue == 'admin' ||
+        roleValue == 'adminTeacher' ||
+        roleValue == 'superAdminTeacher' ||
+        roleValue == 'teacher' ||
+        roleValue == 'student' ||
+        roleValue == 'coordinadorPlantel' ||
+        isLegacyAdminTeacherRole(roleValue);
+    }
     function userRole() {
-      return isSignedIn() &&
+      let firestoreRole = isSignedIn() &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         userDoc().data.role is string
           ? userDoc().data.role
-          : tokenRole();
+          : null;
+      return isKnownRoleValue(firestoreRole) ? firestoreRole : tokenRole();
     }
     function isSuperAdmin() { return isSignedIn() && userRole() == 'superAdmin'; }
     function isAdmin() { return isSignedIn() && (userRole() == 'admin' || userRole() == 'superAdmin'); }
     // Admin-level teachers (including super-admin teachers) share elevated permissions.
-    function isAdminTeacher() { return isSignedIn() && (userRole() == 'adminTeacher' || userRole() == 'superAdminTeacher'); }
+    function isAdminTeacher() {
+      return isSignedIn() &&
+        (userRole() == 'adminTeacher' ||
+          userRole() == 'superAdminTeacher' ||
+          isLegacyAdminTeacherRole(userRole()));
+    }
     function isStrictAdminTeacher() { return isSignedIn() && userRole() == 'adminTeacher'; }
-    function isSuperAdminTeacher() { return isSignedIn() && userRole() == 'superAdminTeacher'; }
     function isTeacher() { return isSignedIn() && userRole() == 'teacher'; }
-    function isTeacherLike() { return isSignedIn() && (userRole() == 'teacher' || userRole() == 'adminTeacher' || userRole() == 'superAdminTeacher' || userRole() == 'coordinadorPlantel'); }
+    function isTeacherLike() {
+      return isSignedIn() &&
+        (userRole() == 'teacher' ||
+          userRole() == 'adminTeacher' ||
+          userRole() == 'superAdminTeacher' ||
+          isLegacyAdminTeacherRole(userRole()) ||
+          userRole() == 'coordinadorPlantel');
+    }
     function isCampusCoordinator() { return isSignedIn() && userRole() == 'coordinadorPlantel'; }
     function isAdminOrCampusCoordinator() { return isSignedIn() && (isAdmin() || isCampusCoordinator()); }
+    function userPlantelId() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        userDoc().data.plantelId is string &&
+        userDoc().data.plantelId.size() > 0
+          ? userDoc().data.plantelId
+          : null;
+    }
+    function isGroupDataInUserPlantel(groupData) {
+      return isCampusCoordinator() &&
+        userPlantelId() != null &&
+        groupData.plantelId is string &&
+        groupData.plantelId == userPlantelId();
+    }
+    function isGroupInUserPlantel(groupPath) {
+      return exists(groupPath) && isGroupDataInUserPlantel(get(groupPath).data);
+    }
     function isApproved() { return isSignedIn() && userDoc().data.approved == true; }
     function isSelf(userId) { return isSignedIn() && request.auth.uid == userId; }
     function absVal(x) { return x >= 0 ? x : -x; }
@@ -42,12 +87,48 @@ service cloud.firestore {
           isAssistantInGroup(get(groupPath).data)
         );
     }
-    function isGroupStudent(groupPath) {
-      return exists(groupPath) &&
-        exists(concat(groupPath, "/students/", request.auth.uid));
+    function canAccessEnrollmentGroup(groupId) {
+      let groupPath = /databases/$(database)/documents/groups/$(groupId);
+      return groupId is string &&
+        groupId.size() > 0 &&
+        exists(groupPath) &&
+        (
+          isTeacherAssignedToGroup(groupPath) ||
+          isGroupInUserPlantel(groupPath)
+        );
     }
-    function isEnrolledInGroup(groupId) {
-      return exists(/databases/$(database)/documents/studentEnrollments/$(groupId + "_" + request.auth.uid));
+    function canReadEnrollmentData(enrollmentData) {
+      return isAdmin() ||
+        isAdminTeacher() ||
+        (
+          isSignedIn() &&
+          enrollmentData.studentId is string &&
+          enrollmentData.studentId == request.auth.uid
+        ) ||
+        (
+          isCampusCoordinator() &&
+          userPlantelId() != null &&
+          enrollmentData.plantelId is string &&
+          enrollmentData.plantelId == userPlantelId()
+        ) ||
+        (
+          enrollmentData.groupId is string &&
+          canAccessEnrollmentGroup(enrollmentData.groupId)
+        );
+    }
+    function canCampusCoordinatorUpdateStudentRisk() {
+      return isCampusCoordinator() &&
+        userPlantelId() != null &&
+        resource.data.role is string &&
+        resource.data.role == 'student' &&
+        resource.data.plantelIds is list &&
+        resource.data.plantelIds.hasAny([userPlantelId()]) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'dropoutRiskTag',
+          'dropoutRiskTaggedAt',
+          'dropoutRiskNotes',
+          'updatedAt'
+        ]);
     }
     function isOptionalString(x) {
       return x is string || x == null;
@@ -144,12 +225,6 @@ service cloud.firestore {
         ("grade" in resource.data && resource.data.grade is number) ||
         ("gradedAt" in resource.data && resource.data.gradedAt is timestamp);
     }
-    function isSubmissionOwner() {
-      // Verificar que studentId existe y coincide con el usuario actual
-      return "studentId" in resource.data &&
-        resource.data.studentId is string &&
-        request.auth.uid == resource.data.studentId;
-    }
     function isMentorOfCourse(courseId) {
       // Verifica si el usuario es mentor del curso consultando el array mentorIds
       let courseData = get(/databases/$(database)/documents/courses/$(courseId)).data;
@@ -182,13 +257,16 @@ service cloud.firestore {
     /* users */
     match /users/{userId} {
       allow read: if isSelf(userId) || isAdmin() || isAdminTeacher() || (
-        isCampusCoordinator() && (
-          (resource.data.role is string && resource.data.role == 'student') ||
-          !('role' in resource.data)
+        isCampusCoordinator() &&
+        userPlantelId() != null && (
+          resource.data.role is string &&
+          resource.data.role == 'student' &&
+          resource.data.plantelIds is list &&
+          resource.data.plantelIds.hasAny([userPlantelId()])
         )
       );
       allow create: if isAdmin() || isAdminTeacher() || canSelfUpsertProfile(userId);
-      allow update: if isAdmin() || isAdminTeacher() || canSelfUpsertProfile(userId);
+      allow update: if isAdmin() || isAdminTeacher() || canSelfUpsertProfile(userId) || canCampusCoordinatorUpdateStudentRisk();
       allow delete: if isAdmin();
 
       // Subcolección para progreso visto por alumno
@@ -245,7 +323,7 @@ service cloud.firestore {
     /* planteles */
     match /planteles/{plantelId} {
       allow read: if isSignedIn();
-      allow write: if isSuperAdmin();
+      allow write: if isAdmin() || isAdminTeacher();
     }
 
     /* courses y subcolecciones */
@@ -360,19 +438,42 @@ service cloud.firestore {
 
     /* groups */
     match /groups/{groupId} {
-      allow read: if isSignedIn();
+      allow read: if isAdmin() || isAdminTeacher() ||
+        isGroupDataInUserPlantel(resource.data) ||
+        (
+          isSignedIn() &&
+          (
+            resource.data.teacherId == request.auth.uid ||
+            isAssistantInGroup(resource.data) ||
+            exists(/databases/$(database)/documents/groups/$(groupId)/students/$(request.auth.uid))
+          )
+        );
       allow create: if isAdmin() || isAdminTeacher() ||
-        (isCampusCoordinator() && request.resource.data.teacherId == request.auth.uid);
+        (
+          isCampusCoordinator() &&
+          request.resource.data.teacherId == request.auth.uid &&
+          request.resource.data.plantelId is string &&
+          request.resource.data.plantelId == userPlantelId()
+        );
       allow update: if isAdmin() || isAdminTeacher() ||
-        (isCampusCoordinator() && resource.data.teacherId == request.auth.uid) ||
+        (
+          isCampusCoordinator() &&
+          isGroupDataInUserPlantel(resource.data) &&
+          request.resource.data.plantelId == resource.data.plantelId &&
+          resource.data.teacherId == request.auth.uid
+        ) ||
         canTeacherLinkCourseToGroup() ||
         canTeacherUnlinkCourseFromGroup(/databases/$(database)/documents/groups/$(groupId));
       allow delete: if isAdmin() || isAdminTeacher() ||
-        (isCampusCoordinator() && resource.data.teacherId == request.auth.uid);
+        (
+          isCampusCoordinator() &&
+          isGroupDataInUserPlantel(resource.data) &&
+          resource.data.teacherId == request.auth.uid
+        );
 
       match /students/{studentId} {
         allow read: if isAdmin() || isAdminTeacher() ||
-          isCampusCoordinator() ||
+          isGroupInUserPlantel(/databases/$(database)/documents/groups/$(groupId)) ||
           (isSignedIn() &&
             (
               isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId)) ||
@@ -383,13 +484,24 @@ service cloud.firestore {
           isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
           isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId))
+        ) || (
+          isCampusCoordinator() &&
+          isGroupInUserPlantel(/databases/$(database)/documents/groups/$(groupId))
         );
       }
 
       match /submissions/{submissionId} {
-        allow read: if isAdmin() || isAdminTeacher() || (
+        allow read: if isAdmin() || isAdminTeacher() ||
+          isGroupInUserPlantel(/databases/$(database)/documents/groups/$(groupId)) || (
           isSignedIn() &&
-          exists(/databases/$(database)/documents/groups/$(groupId))
+          exists(/databases/$(database)/documents/groups/$(groupId)) &&
+          (
+            isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId)) ||
+            (
+              resource.data.studentId is string &&
+              resource.data.studentId == request.auth.uid
+            )
+          )
         );
         // Permitir crear submission si el usuario está autenticado y es el estudiante del submission
         // Ya no verificamos isGroupStudent o isEnrolledInGroup porque con múltiples grupos esto falla
@@ -419,7 +531,8 @@ service cloud.firestore {
       }
 
       match /grades/{studentId} {
-        allow read: if isAdmin() || isAdminTeacher() || isCampusCoordinator() || (
+        allow read: if isAdmin() || isAdminTeacher() ||
+          isGroupInUserPlantel(/databases/$(database)/documents/groups/$(groupId)) || (
           isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
           isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId))
@@ -434,14 +547,35 @@ service cloud.firestore {
 
     /* studentEnrollments */
     match /studentEnrollments/{enrollmentId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn();
-      allow update, delete: if isAdmin() || isSignedIn();
+      allow read: if canReadEnrollmentData(resource.data);
+      allow create: if isAdmin() || isAdminTeacher() || (
+        request.resource.data.studentId is string &&
+        request.resource.data.studentId == request.auth.uid
+      ) || (
+        request.resource.data.groupId is string &&
+        canAccessEnrollmentGroup(request.resource.data.groupId)
+      );
+      allow update: if isAdmin() || isAdminTeacher() || (
+        resource.data.studentId is string &&
+        resource.data.studentId == request.auth.uid &&
+        request.resource.data.studentId is string &&
+        request.resource.data.studentId == request.auth.uid
+      ) || (
+        resource.data.groupId is string &&
+        canAccessEnrollmentGroup(resource.data.groupId)
+      );
+      allow delete: if isAdmin() || isAdminTeacher() || (
+        resource.data.studentId is string &&
+        resource.data.studentId == request.auth.uid
+      ) || (
+        resource.data.groupId is string &&
+        canAccessEnrollmentGroup(resource.data.groupId)
+      );
 
       // Progreso por clase (para alumnos y admins)
-      // Simplificado para evitar errores cuando userDoc() no existe
       match /classProgress/{classId} {
-        allow read, write: if isSignedIn();
+        allow read, write: if exists(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)) &&
+          canReadEnrollmentData(get(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)).data);
       }
     }
 
@@ -523,10 +657,10 @@ service cloud.firestore {
       allow read: if isSignedIn();
     }
 
-    // Permitir collectionGroup queries de submissions para admins/docentes admin
-    // y coordinadores de plantel (necesario para el reporte de riesgo).
+    // Permitir collectionGroup queries de submissions solo para admins/docentes admin.
+    // Los coordinadores consultan entregas por grupo de su plantel.
     match /{path=**}/submissions/{submissionId} {
-      allow read: if isAdmin() || isAdminTeacher() || isCampusCoordinator();
+      allow read: if isAdmin() || isAdminTeacher();
     }
 
     // Permitir collectionGroup queries de students para admins/docentes admin

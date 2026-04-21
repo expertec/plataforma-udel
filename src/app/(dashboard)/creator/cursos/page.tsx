@@ -221,6 +221,8 @@ export default function CoursesPage() {
                       alt={course.title}
                       fill
                       className="object-cover"
+                      sizes="(min-width: 1280px) 30vw, (min-width: 768px) 45vw, 100vw"
+                      unoptimized
                     />
                   ) : (
                     <div className="flex h-full items-center justify-center text-sm text-slate-500">

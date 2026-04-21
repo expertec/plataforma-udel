@@ -11,8 +11,10 @@ import {
   getAllGroups,
   Group,
   deleteGroup,
+  getGroupsByPlantel,
   getGroupsWhereAssistant,
 } from "@/lib/firebase/groups-service";
+import { getPlanteles, getUserPlantelAssignment, Plantel, PlantelAssignment } from "@/lib/firebase/planteles-service";
 import toast from "react-hot-toast";
 import { RoleGate } from "@/components/auth/RoleGate";
 import {
@@ -26,6 +28,8 @@ export default function GroupsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [assistantGroups, setAssistantGroups] = useState<Group[]>([]);
   const [courses, setCourses] = useState<{ id: string; title: string }[]>([]);
+  const [planteles, setPlanteles] = useState<Plantel[]>([]);
+  const [plantelAssignment, setPlantelAssignment] = useState<PlantelAssignment | null>(null);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [bulkModalOpen, setBulkModalOpen] = useState(false);
@@ -34,6 +38,7 @@ export default function GroupsPage() {
   const [deletingGroupId, setDeletingGroupId] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [search, setSearch] = useState("");
+  const [plantelFilter, setPlantelFilter] = useState("all");
 
   useEffect(() => {
     let cancelled = false;
@@ -44,9 +49,19 @@ export default function GroupsPage() {
         try {
           const role = await resolveUserRole(u);
           if (!cancelled) setUserRole(role);
+          if (role === "coordinadorPlantel") {
+            const assignment = await getUserPlantelAssignment(u.uid);
+            if (!cancelled) setPlantelAssignment(assignment);
+          } else if (!cancelled) {
+            setPlantelAssignment(null);
+          }
         } catch {
           if (!cancelled) setUserRole(null);
+          if (!cancelled) setPlantelAssignment(null);
         }
+      } else if (!cancelled) {
+        setUserRole(null);
+        setPlantelAssignment(null);
       }
     });
     return () => {
@@ -65,23 +80,30 @@ export default function GroupsPage() {
     }
     setLoading(true);
     try {
-      const hasGlobalGroupsView = isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
+      const isAdminTeacher = isAdminTeacherRole(userRole);
+      const isCoordinator = isCampusCoordinatorRole(userRole);
 
-      const [myGroups, myAssistantGroups, myCourses] = await Promise.all([
-        hasGlobalGroupsView ? getAllGroups() : Promise.resolve([]),
-        hasGlobalGroupsView ? Promise.resolve([]) : getGroupsWhereAssistant(currentUser.uid),
+      const [myGroups, myAssistantGroups, myCourses, campusOptions] = await Promise.all([
+        isAdminTeacher
+          ? getAllGroups()
+          : isCoordinator && plantelAssignment?.plantelId
+            ? getGroupsByPlantel(plantelAssignment.plantelId)
+            : Promise.resolve([]),
+        isAdminTeacher || isCoordinator ? Promise.resolve([]) : getGroupsWhereAssistant(currentUser.uid),
         getCourses(),
+        isAdminTeacher ? getPlanteles() : Promise.resolve([]),
       ]);
       setGroups(myGroups);
       setAssistantGroups(myAssistantGroups);
       setCourses(myCourses.map((c) => ({ id: c.id, title: c.title })));
+      setPlanteles(campusOptions);
     } catch (err) {
       console.error(err);
       toast.error("No se pudieron cargar los grupos");
     } finally {
       setLoading(false);
     }
-  }, [currentUser?.uid, userRole]);
+  }, [currentUser?.uid, plantelAssignment?.plantelId, userRole]);
 
   useEffect(() => {
     if (!authLoading) {
@@ -115,6 +137,7 @@ export default function GroupsPage() {
         group.groupName,
         group.courseName,
         group.program,
+        group.plantelName,
         group.teacherName,
         group.semester,
       ]
@@ -124,8 +147,14 @@ export default function GroupsPage() {
       return searchableText.includes(searchTerm);
     };
 
-    const active = groups.filter((g) => g.status !== "finished" && matchesSearch(g));
-    const finished = groups.filter((g) => g.status === "finished" && matchesSearch(g));
+    const matchesPlantel = (group: Group) => {
+      if (plantelFilter === "all") return true;
+      if (plantelFilter === "unassigned") return !group.plantelId;
+      return group.plantelId === plantelFilter;
+    };
+
+    const active = groups.filter((g) => g.status !== "finished" && matchesSearch(g) && matchesPlantel(g));
+    const finished = groups.filter((g) => g.status === "finished" && matchesSearch(g) && matchesPlantel(g));
     const activeAssistant = assistantGroups.filter((g) => g.status !== "finished" && matchesSearch(g));
     const finishedAssistant = assistantGroups.filter((g) => g.status === "finished" && matchesSearch(g));
     return {
@@ -134,7 +163,7 @@ export default function GroupsPage() {
       activeAssistantGroups: activeAssistant,
       finishedAssistantGroups: finishedAssistant,
     };
-  }, [groups, assistantGroups, searchTerm]);
+  }, [groups, assistantGroups, plantelFilter, searchTerm]);
 
   const formatRange = (start?: Date | null, end?: Date | null) => {
     if (!start || !end) return "Sin fechas";
@@ -151,10 +180,23 @@ export default function GroupsPage() {
     activeGroups.length + finishedGroups.length + activeAssistantGroups.length + finishedAssistantGroups.length;
   const isAdminTeacher = isAdminTeacherRole(userRole);
   const isCampusCoordinator = isCampusCoordinatorRole(userRole);
-  const canManageOwnGroups = isAdminTeacher || isCampusCoordinator;
-  const hasGlobalGroupsView = isAdminTeacher || isCampusCoordinator;
+  const coordinatorHasPlantel = !isCampusCoordinator || Boolean(plantelAssignment?.plantelId);
+  const canManageOwnGroups = isAdminTeacher || (isCampusCoordinator && coordinatorHasPlantel);
+  const hasGlobalGroupsView = isAdminTeacher;
   const canDeleteGroup = (group: Group) =>
     isAdminTeacher || (isCampusCoordinator && group.teacherId === currentUser?.uid);
+  const availablePlanteles = useMemo<Plantel[]>(() => {
+    if (isAdminTeacher) return planteles;
+    if (!plantelAssignment) return [];
+    return [
+      {
+        id: plantelAssignment.plantelId,
+        name: plantelAssignment.plantelName,
+        normalizedName: "",
+        status: "active",
+      },
+    ];
+  }, [isAdminTeacher, plantelAssignment, planteles]);
 
   return (
     <RoleGate allowedRole={["teacher", "adminTeacher", "superAdminTeacher", "coordinadorPlantel"]}>
@@ -165,7 +207,11 @@ export default function GroupsPage() {
               Grupos
             </p>
             <h1 className="text-2xl font-semibold text-slate-900">
-              {hasGlobalGroupsView ? "Todos los grupos" : "Grupos asignados"}
+              {hasGlobalGroupsView
+                ? "Todos los grupos"
+                : isCampusCoordinator
+                  ? `Grupos de ${plantelAssignment?.plantelName || "tu plantel"}`
+                  : "Grupos asignados"}
             </h1>
           </div>
           {canManageOwnGroups ? (
@@ -194,7 +240,9 @@ export default function GroupsPage() {
           </div>
         ) : totalGroups === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-600 shadow-sm">
-            {canManageOwnGroups
+            {isCampusCoordinator && !plantelAssignment?.plantelId
+              ? "Tu cuenta de coordinador todavía no tiene plantel asignado."
+              : canManageOwnGroups
               ? "Aún no hay grupos registrados."
               : "Aún no te han asignado como mentor de ningún grupo."}
           </div>
@@ -211,6 +259,21 @@ export default function GroupsPage() {
                   className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                 />
               </label>
+              {isAdminTeacher ? (
+                <select
+                  value={plantelFilter}
+                  onChange={(event) => setPlantelFilter(event.target.value)}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                >
+                  <option value="all">Todos los planteles</option>
+                  <option value="unassigned">Sin plantel</option>
+                  {planteles.map((plantel) => (
+                    <option key={plantel.id} value={plantel.id}>
+                      {plantel.name}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
               {hasSearch ? (
                 <button
                   type="button"
@@ -316,19 +379,39 @@ export default function GroupsPage() {
           open={modalOpen}
           onClose={() => setModalOpen(false)}
           courses={courses}
+          planteles={availablePlanteles}
+          defaultPlantelId={plantelAssignment?.plantelId ?? ""}
+          lockPlantel={isCampusCoordinator}
           teacherId={currentUser?.uid ?? ""}
           teacherName={currentUser?.displayName ?? "Profesor"}
           onCreated={handleCreated}
+          onPlantelCreated={(plantel) =>
+            setPlanteles((prev) =>
+              prev.some((item) => item.id === plantel.id)
+                ? prev
+                : [...prev, plantel].sort((a, b) => a.name.localeCompare(b.name, "es")),
+            )
+          }
         />
         <BulkCreateGroupsModal
           open={bulkModalOpen}
           onClose={() => setBulkModalOpen(false)}
           courses={courses}
+          planteles={availablePlanteles}
+          defaultPlantelId={plantelAssignment?.plantelId ?? ""}
+          lockPlantel={isCampusCoordinator}
           teacherId={currentUser?.uid ?? ""}
           teacherName={currentUser?.displayName ?? "Profesor"}
           onImported={() => {
             loadGroupsData();
           }}
+          onPlantelCreated={(plantel) =>
+            setPlanteles((prev) =>
+              prev.some((item) => item.id === plantel.id)
+                ? prev
+                : [...prev, plantel].sort((a, b) => a.name.localeCompare(b.name, "es")),
+            )
+          }
         />
       </div>
     </RoleGate>
@@ -371,6 +454,9 @@ function GroupCard({
               {group.program}
             </span>
           ) : null}
+          <p className="mt-1 text-xs text-slate-500">
+            Plantel: {group.plantelName || "Sin plantel"}
+          </p>
           {isMentor ? (
             <p className="mt-1 text-xs text-slate-500">
               Profesor: {group.teacherName}

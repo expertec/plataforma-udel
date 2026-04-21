@@ -99,8 +99,11 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
       { href: "/creator", label: "Dashboard" },
       { href: "/creator/cursos", label: "Cursos" },
       { href: "/creator/grupos", label: "Grupos" },
-      { href: "/creator/alumnos", label: "Alumnos" },
     ];
+    if (isAdminTeacherRole(userRole)) {
+      items.push({ href: "/creator/planteles", label: "Planteles" });
+    }
+    items.push({ href: "/creator/alumnos", label: "Alumnos" });
     if (isAdminTeacherRole(userRole)) {
       items.push({ href: "/creator/encuestas", label: "Encuestas" });
     }
@@ -200,6 +203,7 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
                         width={48}
                         height={48}
                         className="h-full w-full object-cover"
+                        unoptimized
                       />
                     ) : (
                       <span className="text-base font-semibold text-slate-800">

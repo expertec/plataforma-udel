@@ -21,7 +21,7 @@ import {
 import toast from "react-hot-toast";
 import * as XLSX from "xlsx";
 import { auth } from "@/lib/firebase/client";
-import { getGroupsForTeacher } from "@/lib/firebase/groups-service";
+import { getGroupsByPlantel, getGroupsForTeacher } from "@/lib/firebase/groups-service";
 import { db } from "@/lib/firebase/firestore";
 
 const ACTIVITY_DAYS_THRESHOLD = 7;
@@ -68,6 +68,7 @@ type DropoutRiskNote = {
 
 type StudentDropoutRiskTabProps = {
   scopeTeacherId?: string | null;
+  scopePlantelId?: string | null;
 };
 
 function toDate(value: unknown): Date | null {
@@ -237,7 +238,7 @@ function resolveDropoutRiskNotes(value: unknown): DropoutRiskNote[] {
   return parsed;
 }
 
-export function StudentDropoutRiskTab({ scopeTeacherId = null }: StudentDropoutRiskTabProps) {
+export function StudentDropoutRiskTab({ scopeTeacherId = null, scopePlantelId = null }: StudentDropoutRiskTabProps) {
   const [rows, setRows] = useState<RiskRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -252,12 +253,27 @@ export function StudentDropoutRiskTab({ scopeTeacherId = null }: StudentDropoutR
     setErrorMessage(null);
 
     try {
+      const normalizedTeacherScope = typeof scopeTeacherId === "string" ? scopeTeacherId.trim() : "";
+      const normalizedPlantelScope = typeof scopePlantelId === "string" ? scopePlantelId.trim() : "";
+      const hasTeacherScope = normalizedTeacherScope.length > 0;
+      const hasPlantelScope = normalizedPlantelScope.length > 0;
+
+      // Si el caller envía explícitamente un scope vacío, cerramos en vacío para evitar lecturas globales por accidente.
+      if (scopePlantelId !== null && scopePlantelId !== undefined && !hasPlantelScope && !hasTeacherScope) {
+        setRows([]);
+        return;
+      }
+
       let enrollmentsDocs: QueryDocumentSnapshot<DocumentData>[] = [];
-      if (scopeTeacherId) {
-        const relatedGroups = await getGroupsForTeacher(scopeTeacherId);
+      const scopedGroupIds = new Set<string>();
+      if (hasTeacherScope || hasPlantelScope) {
+        const relatedGroups = hasPlantelScope
+          ? await getGroupsByPlantel(normalizedPlantelScope)
+          : await getGroupsForTeacher(normalizedTeacherScope);
         const relatedGroupIds = Array.from(
           new Set(relatedGroups.map((group) => group.id).filter((groupId) => groupId.trim().length > 0)),
         );
+        relatedGroupIds.forEach((groupId) => scopedGroupIds.add(groupId));
 
         if (relatedGroupIds.length === 0) {
           setRows([]);
@@ -427,6 +443,34 @@ export function StudentDropoutRiskTab({ scopeTeacherId = null }: StudentDropoutR
 
       const lastSubmissionByStudent = new Map<string, Date>();
       const submissionTasks = students.map((student) => async () => {
+        if (scopedGroupIds.size > 0) {
+          const snaps = await Promise.all(
+            student.groupIds
+              .filter((groupId) => scopedGroupIds.has(groupId))
+              .map((groupId) =>
+                getDocs(
+                  query(
+                    collection(db, "groups", groupId, "submissions"),
+                    where("studentId", "==", student.studentId),
+                    orderBy("submittedAt", "desc"),
+                    limit(1),
+                  ),
+                ),
+              ),
+          );
+          snaps.forEach((submissionsSnap) => {
+            if (submissionsSnap.empty) return;
+            const submissionData = submissionsSnap.docs[0].data() as { submittedAt?: unknown };
+            const latest = toDate(submissionData.submittedAt);
+            if (!latest) return;
+            const current = lastSubmissionByStudent.get(student.studentId);
+            if (!current || latest > current) {
+              lastSubmissionByStudent.set(student.studentId, latest);
+            }
+          });
+          return;
+        }
+
         const submissionsSnap = await getDocs(
           query(
             collectionGroup(db, "submissions"),
@@ -520,7 +564,7 @@ export function StudentDropoutRiskTab({ scopeTeacherId = null }: StudentDropoutR
     } finally {
       setLoading(false);
     }
-  }, [scopeTeacherId]);
+  }, [scopePlantelId, scopeTeacherId]);
 
   useEffect(() => {
     void loadRiskReport();
@@ -683,8 +727,8 @@ export function StudentDropoutRiskTab({ scopeTeacherId = null }: StudentDropoutR
             Reglas: actividad &gt;= {ACTIVITY_DAYS_THRESHOLD} días sin registrar o tareas sin envío por{" "}
             {SUBMISSION_DAYS_THRESHOLD}+ días. Los alumnos etiquetados como Baja o Egresado se excluyen del reporte.
           </p>
-          {scopeTeacherId ? (
-            <p className="text-xs text-slate-500">Vista de coordinador: solo alumnos vinculados a tus grupos.</p>
+          {scopeTeacherId || scopePlantelId ? (
+            <p className="text-xs text-slate-500">Vista de coordinador: solo alumnos vinculados a tu plantel.</p>
           ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">

@@ -14,6 +14,7 @@ import {
   TeacherUser,
   TeacherWorkloadReportRow,
 } from "@/lib/firebase/teachers-service";
+import { createPlantel, getPlanteles, Plantel } from "@/lib/firebase/planteles-service";
 
 type EditableTeacherRole = "teacher" | "adminTeacher" | "coordinadorPlantel";
 
@@ -122,6 +123,10 @@ export default function ProfesoresPage() {
   const [newName, setNewName] = useState("");
   const [newPhone, setNewPhone] = useState("");
   const [newRole, setNewRole] = useState<EditableTeacherRole>("teacher");
+  const [planteles, setPlanteles] = useState<Plantel[]>([]);
+  const [selectedPlantelId, setSelectedPlantelId] = useState("");
+  const [newPlantelName, setNewPlantelName] = useState("");
+  const [creatingPlantel, setCreatingPlantel] = useState(false);
   const [changingPassword, setChangingPassword] = useState(false);
   const [updatingProfile, setUpdatingProfile] = useState(false);
   const [reportRows, setReportRows] = useState<TeacherWorkloadReportRow[]>([]);
@@ -160,6 +165,16 @@ export default function ProfesoresPage() {
       toast.error("No se pudieron cargar los profesores.");
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const loadPlanteles = useCallback(async () => {
+    try {
+      const data = await getPlanteles();
+      setPlanteles(data);
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudieron cargar los planteles.");
     }
   }, []);
 
@@ -253,8 +268,9 @@ export default function ProfesoresPage() {
 
   useEffect(() => {
     if (!isAdminTeacher) return;
-    loadTeachers();
-  }, [isAdminTeacher, loadTeachers]);
+    void loadTeachers();
+    void loadPlanteles();
+  }, [isAdminTeacher, loadPlanteles, loadTeachers]);
 
   const handleCreateTeacher = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -314,6 +330,8 @@ export default function ProfesoresPage() {
     setNewName(teacher.name);
     setNewPhone(teacher.phone || "");
     setNewRole(isEditableTeacherRole(teacher.role) ? teacher.role : "teacher");
+    setSelectedPlantelId(teacher.plantelId ?? "");
+    setNewPlantelName("");
     setEditProfileModalOpen(true);
   };
 
@@ -332,21 +350,32 @@ export default function ProfesoresPage() {
     const phoneChanged = newPhone.trim() !== (selectedTeacher.phone || "");
     const roleChanged =
       isEditableTeacherRole(selectedTeacher.role) && newRole !== selectedTeacher.role;
+    const selectedPlantel = planteles.find((plantel) => plantel.id === selectedPlantelId);
+    const plantelChanged =
+      newRole === "coordinadorPlantel" &&
+      selectedPlantelId !== (selectedTeacher.plantelId ?? "");
 
-    if (!emailChanged && !nameChanged && !phoneChanged && !roleChanged) {
+    if (newRole === "coordinadorPlantel" && !selectedPlantel) {
+      toast.error("Selecciona un plantel para el coordinador.");
+      return;
+    }
+
+    if (!emailChanged && !nameChanged && !phoneChanged && !roleChanged && !plantelChanged) {
       toast("No hay cambios para guardar");
       return;
     }
 
     setUpdatingProfile(true);
     try {
-      if (roleChanged) {
+      if (roleChanged || plantelChanged) {
         const roleResponse = await fetchWithToken("/api/admin/teachers/update-role", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             teacherId: selectedTeacher.id,
             newRole,
+            plantelId: newRole === "coordinadorPlantel" ? selectedPlantel?.id : null,
+            plantelName: newRole === "coordinadorPlantel" ? selectedPlantel?.name : null,
           }),
         });
         const roleData = (await roleResponse.json().catch(() => ({}))) as { error?: string };
@@ -385,6 +414,30 @@ export default function ProfesoresPage() {
       toast.error(message);
     } finally {
       setUpdatingProfile(false);
+    }
+  };
+
+  const handleCreatePlantel = async () => {
+    const trimmed = newPlantelName.trim();
+    if (!trimmed) {
+      toast.error("Escribe el nombre del plantel.");
+      return;
+    }
+    setCreatingPlantel(true);
+    try {
+      const plantel = await createPlantel(trimmed);
+      setPlanteles((prev) => {
+        if (prev.some((item) => item.id === plantel.id)) return prev;
+        return [...prev, plantel].sort((a, b) => a.name.localeCompare(b.name, "es"));
+      });
+      setSelectedPlantelId(plantel.id);
+      setNewPlantelName("");
+      toast.success("Plantel agregado.");
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo crear el plantel.");
+    } finally {
+      setCreatingPlantel(false);
     }
   };
 
@@ -565,6 +618,7 @@ export default function ProfesoresPage() {
         teacher.name.toLowerCase().includes(normalizedQuery) ||
         teacher.email.toLowerCase().includes(normalizedQuery) ||
         (teacher.phone || "").toLowerCase().includes(normalizedQuery) ||
+        (teacher.plantelName || "").toLowerCase().includes(normalizedQuery) ||
         searchableRole.includes(normalizedQuery)
       );
     });
@@ -1006,8 +1060,13 @@ export default function ProfesoresPage() {
                       <span>{teacher.name}</span>
                       <span className="text-slate-600 break-words">{teacher.email}</span>
                       <span className="text-slate-600">{teacher.phone || "—"}</span>
-                      <span className="font-medium capitalize text-blue-700">
+                      <span className="font-medium text-blue-700">
                         {getTeacherRoleLabel(teacher.role)}
+                        {teacher.role === "coordinadorPlantel" ? (
+                          <span className="mt-0.5 block text-[11px] font-normal text-slate-500">
+                            {teacher.plantelName || "Sin plantel"}
+                          </span>
+                        ) : null}
                       </span>
                       <span className="font-medium text-green-600">Activo</span>
                       <span className="flex justify-end gap-2">
@@ -1098,6 +1157,43 @@ export default function ProfesoresPage() {
                   </p>
                 ) : null}
               </div>
+              {newRole === "coordinadorPlantel" ? (
+                <div className="space-y-2 rounded-lg border border-blue-100 bg-blue-50 p-3">
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">Plantel asignado</label>
+                    <select
+                      value={selectedPlantelId}
+                      onChange={(e) => setSelectedPlantelId(e.target.value)}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                      required
+                    >
+                      <option value="">Seleccionar plantel</option>
+                      {planteles.map((plantel) => (
+                        <option key={plantel.id} value={plantel.id}>
+                          {plantel.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newPlantelName}
+                      onChange={(e) => setNewPlantelName(e.target.value)}
+                      placeholder="Agregar nuevo plantel"
+                      className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleCreatePlantel}
+                      disabled={creatingPlantel}
+                      className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {creatingPlantel ? "Agregando..." : "Agregar"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               <div className="flex gap-3">
                 <button
                   type="button"

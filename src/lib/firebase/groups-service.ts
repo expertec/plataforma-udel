@@ -1,6 +1,7 @@
 import {
   DocumentData,
   addDoc,
+  arrayUnion,
   collection,
   doc,
   getDocs,
@@ -27,6 +28,8 @@ export type Group = {
   courseId: string;
   courseName: string;
   program?: string;
+  plantelId?: string;
+  plantelName?: string;
   courses?: Array<{ courseId: string; courseName: string }>;
   courseIds?: string[];
   groupName: string;
@@ -53,6 +56,8 @@ type CreateGroupData = {
   courseId?: string;
   courseName?: string;
   program?: string;
+  plantelId?: string;
+  plantelName?: string;
   courses?: Array<{ courseId: string; courseName: string }>;
   courseIds?: string[];
   groupName: string;
@@ -241,6 +246,8 @@ const toGroup = (id: string, data: DocumentData): Group => {
     courseId: typeof data.courseId === "string" ? data.courseId : "",
     courseName: typeof data.courseName === "string" ? data.courseName : "",
     program: typeof data.program === "string" ? data.program : "",
+    plantelId: typeof data.plantelId === "string" ? data.plantelId : "",
+    plantelName: typeof data.plantelName === "string" ? data.plantelName : "",
     courses,
     courseIds,
     groupName: typeof data.groupName === "string" ? data.groupName : "",
@@ -304,6 +311,8 @@ export async function createGroup(data: CreateGroupData): Promise<string> {
     courseId: primaryCourseId,
     courseName: primaryCourseName,
     program: data.program ?? "",
+    plantelId: data.plantelId ?? "",
+    plantelName: data.plantelName ?? "",
     courses: coursesList,
     courseIds: courseIdsList,
     groupName: data.groupName,
@@ -352,6 +361,56 @@ export async function updateGroupCampusGradeSettings(params: {
   });
 }
 
+export async function updateGroupPlantel(params: {
+  groupId: string;
+  plantelId: string;
+  plantelName: string;
+}): Promise<void> {
+  const groupId = params.groupId.trim();
+  const plantelId = params.plantelId.trim();
+  const plantelName = params.plantelName.trim();
+  if (!groupId || !plantelId || !plantelName) {
+    throw new Error("Grupo y plantel son requeridos");
+  }
+
+  const groupRef = doc(db, "groups", groupId);
+  const studentsSnap = await getDocs(collection(db, "groups", groupId, "students"));
+  const enrollmentsSnap = await getDocs(
+    query(collection(db, "studentEnrollments"), where("groupId", "==", groupId)),
+  );
+  const studentIds = new Set<string>();
+  studentsSnap.docs.forEach((studentDoc) => studentIds.add(studentDoc.id));
+  enrollmentsSnap.docs.forEach((enrollmentDoc) => {
+    const data = enrollmentDoc.data();
+    if (typeof data.studentId === "string" && data.studentId.trim()) {
+      studentIds.add(data.studentId.trim());
+    }
+  });
+
+  const batch = writeBatch(db);
+  batch.update(groupRef, {
+    plantelId,
+    plantelName,
+    updatedAt: serverTimestamp(),
+  });
+  studentsSnap.docs.forEach((studentDoc) => {
+    batch.update(studentDoc.ref, {
+      plantelId,
+      plantelName,
+      updatedAt: serverTimestamp(),
+    });
+  });
+  enrollmentsSnap.docs.forEach((enrollmentDoc) => {
+    batch.update(enrollmentDoc.ref, {
+      plantelId,
+      plantelName,
+      updatedAt: serverTimestamp(),
+    });
+  });
+  await batch.commit();
+  await syncStudentPlantelAccess(Array.from(studentIds));
+}
+
 export async function getGroups(teacherId: string): Promise<Group[]> {
   const ref = collection(db, "groups");
   const q = query(ref, where("teacherId", "==", teacherId), orderBy("createdAt", "desc"));
@@ -369,6 +428,28 @@ export async function getAllGroups(maxResults?: number): Promise<Group[]> {
   return snap.docs.map((docSnap) => toGroup(docSnap.id, docSnap.data()));
 }
 
+const sortGroupsByCreatedAtDesc = (groups: Group[]): Group[] =>
+  [...groups].sort(
+    (a, b) => (b.createdAt?.getTime?.() ?? 0) - (a.createdAt?.getTime?.() ?? 0),
+  );
+
+export async function getGroupsByPlantel(plantelId: string, maxResults?: number): Promise<Group[]> {
+  const normalizedPlantelId = plantelId.trim();
+  if (!normalizedPlantelId) return [];
+  const snap = await getDocs(
+    query(collection(db, "groups"), where("plantelId", "==", normalizedPlantelId)),
+  );
+  const groups = sortGroupsByCreatedAtDesc(
+    snap.docs.map((docSnap) => toGroup(docSnap.id, docSnap.data())),
+  );
+  return typeof maxResults === "number" && maxResults > 0 ? groups.slice(0, maxResults) : groups;
+}
+
+export async function getActiveGroupsByPlantel(plantelId: string, maxResults?: number): Promise<Group[]> {
+  const groups = await getGroupsByPlantel(plantelId, maxResults);
+  return groups.filter((group) => group.status === "active");
+}
+
 export async function getGroup(groupId: string): Promise<Group | null> {
   const ref = doc(db, "groups", groupId);
   let snap;
@@ -381,14 +462,18 @@ export async function getGroup(groupId: string): Promise<Group | null> {
   return toGroup(snap.id, snap.data());
 }
 
-export async function getGroupsByCourse(courseId: string, teacherId?: string): Promise<Group[]> {
+export async function getGroupsByCourse(courseId: string, teacherId?: string, plantelId?: string): Promise<Group[]> {
   const ref = collection(db, "groups");
-  const constraintsBase: QueryConstraint[] = [orderBy("createdAt", "desc")];
+  const constraintsBase: QueryConstraint[] = plantelId ? [] : [orderBy("createdAt", "desc")];
   const constraintsByCourseId: QueryConstraint[] = [where("courseId", "==", courseId), ...constraintsBase];
   const constraintsByArray: QueryConstraint[] = [where("courseIds", "array-contains", courseId), ...constraintsBase];
   if (teacherId) {
     constraintsByCourseId.push(where("teacherId", "==", teacherId));
     constraintsByArray.push(where("teacherId", "==", teacherId));
+  }
+  if (plantelId) {
+    constraintsByCourseId.push(where("plantelId", "==", plantelId));
+    constraintsByArray.push(where("plantelId", "==", plantelId));
   }
 
   // Ejecutar ambas consultas para cubrir documentos antiguos (courseId) y nuevos (courseIds)
@@ -404,10 +489,13 @@ export async function getGroupsByCourse(courseId: string, teacherId?: string): P
   };
   consume(snapCourseId);
   consume(snapArray);
-  return Array.from(map.values());
+  return sortGroupsByCreatedAtDesc(Array.from(map.values()));
 }
 
-export async function getActiveGroups(teacherId?: string): Promise<Group[]> {
+export async function getActiveGroups(teacherId?: string, plantelId?: string): Promise<Group[]> {
+  if (plantelId) {
+    return getActiveGroupsByPlantel(plantelId);
+  }
   const ref = collection(db, "groups");
   const constraints: QueryConstraint[] = [orderBy("createdAt", "desc")];
   if (teacherId) {
@@ -417,6 +505,35 @@ export async function getActiveGroups(teacherId?: string): Promise<Group[]> {
   return snap.docs
     .map((docSnap) => toGroup(docSnap.id, docSnap.data()))
     .filter((g) => g.status === "active");
+}
+
+async function syncStudentPlantelAccess(studentIds: string[]): Promise<void> {
+  const uniqueIds = Array.from(new Set(studentIds.filter(Boolean)));
+  await Promise.all(
+    uniqueIds.map(async (studentId) => {
+      try {
+        const enrollmentsSnap = await getDocs(
+          query(collection(db, "studentEnrollments"), where("studentId", "==", studentId)),
+        );
+        const plantelNameById = new Map<string, string>();
+        enrollmentsSnap.docs.forEach((enrollmentDoc) => {
+          const data = enrollmentDoc.data();
+          if (data.status && data.status !== "active") return;
+          const plantelId = typeof data.plantelId === "string" ? data.plantelId.trim() : "";
+          if (!plantelId) return;
+          const plantelName = typeof data.plantelName === "string" ? data.plantelName.trim() : "";
+          plantelNameById.set(plantelId, plantelName);
+        });
+        await updateDoc(doc(db, "users", studentId), {
+          plantelIds: Array.from(plantelNameById.keys()),
+          plantelNames: Array.from(plantelNameById.values()).filter(Boolean),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        console.warn("No se pudo sincronizar acceso de plantel del alumno", studentId, error);
+      }
+    }),
+  );
 }
 
 type AddStudentsInput = {
@@ -430,6 +547,8 @@ export async function addStudentsToGroup({ groupId, students }: AddStudentsInput
   const groupSnap = await getDoc(doc(db, "groups", groupId));
   if (!groupSnap.exists()) return;
   const groupData = groupSnap.data();
+  const plantelId = typeof groupData.plantelId === "string" ? groupData.plantelId : "";
+  const plantelName = typeof groupData.plantelName === "string" ? groupData.plantelName : "";
 
   const existingSnap = await getDocs(collection(db, "groups", groupId, "students"));
   const existingIds = new Set(existingSnap.docs.map((d) => d.id));
@@ -444,6 +563,8 @@ export async function addStudentsToGroup({ groupId, students }: AddStudentsInput
       studentId: student.id,
       studentName: student.nombre,
       studentEmail: student.email,
+      plantelId,
+      plantelName,
       enrolledAt: serverTimestamp(),
       status: "active",
     });
@@ -468,12 +589,28 @@ export async function addStudentsToGroup({ groupId, students }: AddStudentsInput
       courseId: groupData.courseId ?? "",
       courseName: groupData.courseName ?? "",
       teacherName: groupData.teacherName ?? "",
+      plantelId,
+      plantelName,
       status: "active",
       enrolledAt: serverTimestamp(),
       finalGrade: null,
     });
   });
   await batch.commit();
+
+  if (plantelId) {
+    await Promise.all(
+      newStudents.map((student) =>
+        updateDoc(doc(db, "users", student.id), {
+          plantelIds: arrayUnion(plantelId),
+          ...(plantelName ? { plantelNames: arrayUnion(plantelName) } : {}),
+          updatedAt: serverTimestamp(),
+        }).catch((error) => {
+          console.warn("No se pudo actualizar plantelIds del alumno", student.id, error);
+        }),
+      ),
+    );
+  }
 }
 
 export type GroupStudent = {
@@ -550,6 +687,7 @@ export async function deleteGroup(groupId: string): Promise<void> {
   if (!groupId) return;
   const batch = writeBatch(db);
   const studentsSnap = await getDocs(collection(db, "groups", groupId, "students"));
+  const studentIds = studentsSnap.docs.map((studentDoc) => studentDoc.id);
   studentsSnap.forEach((studentDoc) => batch.delete(studentDoc.ref));
   const enrollmentsSnap = await getDocs(
     query(collection(db, "studentEnrollments"), where("groupId", "==", groupId)),
@@ -557,6 +695,7 @@ export async function deleteGroup(groupId: string): Promise<void> {
   enrollmentsSnap.forEach((enrollmentDoc) => batch.delete(enrollmentDoc.ref));
   batch.delete(doc(db, "groups", groupId));
   await batch.commit();
+  await syncStudentPlantelAccess(studentIds);
 }
 
 export async function removeStudentFromGroup(groupId: string, studentId: string): Promise<void> {
@@ -585,6 +724,7 @@ export async function removeStudentFromGroup(groupId: string, studentId: string)
     batch.delete(doc(db, "studentEnrollments", docSnap.id));
   });
   await batch.commit();
+  await syncStudentPlantelAccess([studentId]);
 }
 
 export async function linkCourseToGroup(params: {

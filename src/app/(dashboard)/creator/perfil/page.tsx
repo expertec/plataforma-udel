@@ -112,6 +112,7 @@ export default function PerfilPage() {
                 width={80}
                 height={80}
                 className="h-full w-full object-cover"
+                unoptimized
               />
             ) : (
               <span className="text-xl font-semibold text-slate-800">

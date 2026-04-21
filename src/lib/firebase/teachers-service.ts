@@ -9,6 +9,8 @@ export type TeacherUser = {
   email: string;
   role: "teacher" | "adminTeacher" | "superAdminTeacher" | "coordinadorPlantel";
   phone?: string | null;
+  plantelId?: string | null;
+  plantelName?: string | null;
 };
 
 export type TeacherWorkloadReportRow = {
@@ -346,6 +348,8 @@ export async function getTeacherUsers(max = 100): Promise<TeacherUser[]> {
           ? d.role
           : "teacher",
       phone: d.phone ?? null,
+      plantelId: typeof d.plantelId === "string" ? d.plantelId : null,
+      plantelName: typeof d.plantelName === "string" ? d.plantelName : null,
     };
   });
 }

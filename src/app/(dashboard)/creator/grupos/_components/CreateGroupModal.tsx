@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import { createGroup, Group } from "@/lib/firebase/groups-service";
+import { createPlantel, Plantel } from "@/lib/firebase/planteles-service";
 
 type CourseOption = { id: string; title: string };
 
@@ -10,16 +11,35 @@ type Props = {
   open: boolean;
   onClose: () => void;
   courses: CourseOption[];
+  planteles: Plantel[];
+  defaultPlantelId?: string;
+  lockPlantel?: boolean;
   teacherId: string;
   teacherName: string;
   onCreated: (group: Group) => void;
+  onPlantelCreated?: (plantel: Plantel) => void;
 };
 
-export function CreateGroupModal({ open, onClose, courses, teacherId, teacherName, onCreated }: Props) {
+export function CreateGroupModal({
+  open,
+  onClose,
+  courses,
+  planteles,
+  defaultPlantelId = "",
+  lockPlantel = false,
+  teacherId,
+  teacherName,
+  onCreated,
+  onPlantelCreated,
+}: Props) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectedPlantelId, setSelectedPlantelId] = useState(defaultPlantelId);
+  const [localPlanteles, setLocalPlanteles] = useState<Plantel[]>(planteles);
   const [groupName, setGroupName] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [saving, setSaving] = useState(false);
+  const [newPlantelName, setNewPlantelName] = useState("");
+  const [creatingPlantel, setCreatingPlantel] = useState(false);
   const [programOptions, setProgramOptions] = useState([
     "Licenciatura",
     "Preparatoria",
@@ -32,13 +52,52 @@ export function CreateGroupModal({ open, onClose, courses, teacherId, teacherNam
     if (!normalized) return courses;
     return courses.filter((c) => c.title.toLowerCase().includes(normalized));
   }, [courses, searchTerm]);
+  const selectedPlantel = useMemo(
+    () => localPlanteles.find((plantel) => plantel.id === selectedPlantelId) ?? null,
+    [localPlanteles, selectedPlantelId],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    setLocalPlanteles(planteles);
+    setSelectedPlantelId(defaultPlantelId);
+  }, [defaultPlantelId, open, planteles]);
 
   if (!open) return null;
+
+  const handleCreatePlantel = async () => {
+    const trimmed = newPlantelName.trim();
+    if (!trimmed) {
+      toast.error("Escribe el nombre del plantel");
+      return;
+    }
+    setCreatingPlantel(true);
+    try {
+      const plantel = await createPlantel(trimmed);
+      setLocalPlanteles((prev) => {
+        if (prev.some((item) => item.id === plantel.id)) return prev;
+        return [...prev, plantel].sort((a, b) => a.name.localeCompare(b.name, "es"));
+      });
+      onPlantelCreated?.(plantel);
+      setSelectedPlantelId(plantel.id);
+      setNewPlantelName("");
+      toast.success("Plantel agregado");
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo crear el plantel");
+    } finally {
+      setCreatingPlantel(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!groupName.trim()) {
       toast.error("El nombre del grupo es obligatorio");
+      return;
+    }
+    if (!selectedPlantel) {
+      toast.error("Selecciona un plantel");
       return;
     }
     const uniqueIds = Array.from(new Set(selectedIds.filter(Boolean)));
@@ -60,6 +119,8 @@ export function CreateGroupModal({ open, onClose, courses, teacherId, teacherNam
         teacherId,
         teacherName,
         program,
+        plantelId: selectedPlantel.id,
+        plantelName: selectedPlantel.name,
         maxStudents: 0,
       });
 
@@ -78,11 +139,14 @@ export function CreateGroupModal({ open, onClose, courses, teacherId, teacherNam
         studentsCount: 0,
         maxStudents: 0,
         program,
+        plantelId: selectedPlantel.id,
+        plantelName: selectedPlantel.name,
       });
       toast.success("Grupo creado");
       onClose();
       setGroupName("");
       setSelectedIds([]);
+      setSelectedPlantelId(defaultPlantelId);
     } catch (err) {
       console.error(err);
       toast.error("No se pudo crear el grupo");
@@ -158,6 +222,43 @@ export function CreateGroupModal({ open, onClose, courses, teacherId, teacherNam
                 Agregar
               </button>
             </div>
+          </div>
+
+          <div>
+            <label className="text-sm font-medium text-slate-800">Plantel</label>
+            <select
+              value={selectedPlantelId}
+              onChange={(e) => setSelectedPlantelId(e.target.value)}
+              disabled={lockPlantel}
+              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+              required
+            >
+              <option value="">Seleccionar plantel</option>
+              {localPlanteles.map((plantel) => (
+                <option key={plantel.id} value={plantel.id}>
+                  {plantel.name}
+                </option>
+              ))}
+            </select>
+            {!lockPlantel ? (
+              <div className="mt-2 flex gap-2">
+                <input
+                  type="text"
+                  value={newPlantelName}
+                  onChange={(e) => setNewPlantelName(e.target.value)}
+                  placeholder="Agregar otro plantel"
+                  className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleCreatePlantel}
+                  disabled={creatingPlantel}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-blue-600 transition hover:border-blue-400 hover:text-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {creatingPlantel ? "Agregando..." : "Agregar"}
+                </button>
+              </div>
+            ) : null}
           </div>
 
           <div>

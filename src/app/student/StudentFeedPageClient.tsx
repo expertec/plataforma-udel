@@ -3199,6 +3199,7 @@ export default function StudentFeedPageClient() {
               width={64}
               height={64}
               className="h-12 w-12 object-contain"
+              unoptimized
               priority
             />
           </div>
@@ -3240,6 +3241,7 @@ export default function StudentFeedPageClient() {
             width={64}
             height={64}
             className="h-12 w-12 object-contain"
+            unoptimized
             priority
           />
         </div>
@@ -5716,6 +5718,8 @@ function AudioPlayer({ src, title, onProgress, onComplete, coverUrl }: AudioPlay
             width={640}
             height={360}
             className="h-32 w-full object-cover"
+            sizes="(min-width: 1024px) 768px, 100vw"
+            unoptimized
             priority={false}
           />
         </div>

@@ -68,6 +68,7 @@ export function LoginCard({
             width={48}
             height={48}
             className="object-cover"
+            unoptimized
             priority
           />
         </div>

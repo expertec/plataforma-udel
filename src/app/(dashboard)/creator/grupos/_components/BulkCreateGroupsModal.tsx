@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import * as XLSX from "xlsx";
 import { createGroup } from "@/lib/firebase/groups-service";
+import { createPlantel, normalizePlantelName, Plantel } from "@/lib/firebase/planteles-service";
 
 type CourseOption = { id: string; title: string };
 
@@ -11,15 +12,20 @@ type Props = {
   open: boolean;
   onClose: () => void;
   courses: CourseOption[];
+  planteles: Plantel[];
+  defaultPlantelId?: string;
+  lockPlantel?: boolean;
   teacherId: string;
   teacherName: string;
   onImported: () => void;
+  onPlantelCreated?: (plantel: Plantel) => void;
 };
 
 type ParsedRow = {
   row: number;
   groupName: string;
   program: string;
+  plantelName: string;
   courseIds: string[];
 };
 
@@ -33,11 +39,29 @@ type ImportResult = {
 const normalize = (value: unknown) =>
   typeof value === "string" ? value.trim() : `${value ?? ""}`.trim();
 
-export function BulkCreateGroupsModal({ open, onClose, courses, teacherId, teacherName, onImported }: Props) {
+export function BulkCreateGroupsModal({
+  open,
+  onClose,
+  courses,
+  planteles,
+  defaultPlantelId = "",
+  lockPlantel = false,
+  teacherId,
+  teacherName,
+  onImported,
+  onPlantelCreated,
+}: Props) {
   const [parsedRows, setParsedRows] = useState<ParsedRow[]>([]);
   const [importResults, setImportResults] = useState<ImportResult[]>([]);
   const [fileName, setFileName] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const [createdPlanteles, setCreatedPlanteles] = useState<Plantel[]>([]);
+  const availablePlanteles = useMemo(() => {
+    const map = new Map<string, Plantel>();
+    planteles.forEach((plantel) => map.set(plantel.id, plantel));
+    createdPlanteles.forEach((plantel) => map.set(plantel.id, plantel));
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, "es"));
+  }, [createdPlanteles, planteles]);
 
   if (!open) return null;
 
@@ -60,6 +84,7 @@ export function BulkCreateGroupsModal({ open, onClose, courses, teacherId, teach
             normalize(row.Nombre || row.name || row["Nombre del grupo"] || row["Group Name"]);
           const program =
             normalize(row.Programa || row.program || row["Programa"] || "Licenciatura") || "Licenciatura";
+          const plantelName = normalize(row.Plantel || row.plantel || row.Campus || row.campus);
           const courseStr = normalize(row.Cursos || row.courses || row["Cursos"]);
           const courseIds = courseStr
             .split(/[,;|]/)
@@ -70,6 +95,7 @@ export function BulkCreateGroupsModal({ open, onClose, courses, teacherId, teach
             row: index + 2,
             groupName,
             program,
+            plantelName,
             courseIds,
           };
         })
@@ -88,14 +114,43 @@ export function BulkCreateGroupsModal({ open, onClose, courses, teacherId, teach
 
   const handleDownloadTemplate = () => {
     const rows = [
-      ["Nombre del grupo", "Programa", "Cursos (IDs separados por coma)"],
-      ["Grupo A", "Licenciatura", "courseId1,courseId2"],
-      ["Grupo B", "Maestría", "courseId3"],
+      ["Nombre del grupo", "Programa", "Plantel", "Cursos (IDs separados por coma)"],
+      ["Grupo A", "Licenciatura", "UDEL Online", "courseId1,courseId2"],
+      ["Grupo B", "Maestría", "UDEL Los Cabos", "courseId3"],
     ];
     const sheet = XLSX.utils.aoa_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, sheet, "Plantilla");
     XLSX.writeFile(workbook, "plantilla-grupos.xlsx");
+  };
+
+  const resolvePlantelForRow = async (row: ParsedRow): Promise<Plantel> => {
+    const defaultPlantel = availablePlanteles.find((plantel) => plantel.id === defaultPlantelId);
+    const rawPlantel = row.plantelName.trim();
+    if (!rawPlantel && defaultPlantel) return defaultPlantel;
+    if (!rawPlantel) {
+      throw new Error("Plantel requerido");
+    }
+
+    const normalized = normalizePlantelName(rawPlantel);
+    const found = availablePlanteles.find(
+      (plantel) =>
+        plantel.id === rawPlantel ||
+        normalizePlantelName(plantel.name) === normalized ||
+        plantel.normalizedName === normalized,
+    );
+    if (found) return found;
+    if (lockPlantel) {
+      throw new Error("El plantel no coincide con tu asignación");
+    }
+
+    const created = await createPlantel(rawPlantel);
+    setCreatedPlanteles((prev) => {
+      if (prev.some((item) => item.id === created.id)) return prev;
+      return [...prev, created].sort((a, b) => a.name.localeCompare(b.name, "es"));
+    });
+    onPlantelCreated?.(created);
+    return created;
   };
 
   const handleImport = async () => {
@@ -107,6 +162,7 @@ export function BulkCreateGroupsModal({ open, onClose, courses, teacherId, teach
     const results: ImportResult[] = [];
     for (const row of parsedRows) {
       try {
+        const plantel = await resolvePlantelForRow(row);
         const coursesPayload = row.courseIds
           .map((cid) => {
             const found = courses.find((c) => c.id === cid);
@@ -116,6 +172,8 @@ export function BulkCreateGroupsModal({ open, onClose, courses, teacherId, teach
         await createGroup({
           groupName: row.groupName,
           program: row.program,
+          plantelId: plantel.id,
+          plantelName: plantel.name,
           courses: coursesPayload,
           courseIds: coursesPayload.map((c) => c.courseId),
           teacherId,
@@ -161,7 +219,7 @@ export function BulkCreateGroupsModal({ open, onClose, courses, teacherId, teach
         </div>
         <div className="mt-4 space-y-4">
           <div>
-            <p className="text-sm text-slate-700">Sube un archivo .xlsx con columnas Nombre del grupo, Programa y Cursos (IDs separados por coma)</p>
+            <p className="text-sm text-slate-700">Sube un archivo .xlsx con columnas Nombre del grupo, Programa, Plantel y Cursos (IDs separados por coma)</p>
             <label className="mt-2 inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50">
               <input type="file" accept=".xlsx,.xls" onChange={handleFileChange} className="hidden" />
               {fileName ? "Cambiar archivo" : "Seleccionar archivo"}
@@ -184,7 +242,9 @@ export function BulkCreateGroupsModal({ open, onClose, courses, teacherId, teach
                 {parsedRows.slice(0, 5).map((row) => (
                   <div key={row.row} className="flex items-center justify-between">
                     <span>{row.groupName}</span>
-                    <span className="text-xs text-slate-500">Fila {row.row}</span>
+                    <span className="text-xs text-slate-500">
+                      {row.plantelName || "Plantel por defecto"} · Fila {row.row}
+                    </span>
                   </div>
                 ))}
                 {parsedRows.length > 5 ? (

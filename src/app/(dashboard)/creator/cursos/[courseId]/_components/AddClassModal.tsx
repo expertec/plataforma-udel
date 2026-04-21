@@ -1204,6 +1204,7 @@ export function AddClassModal({
                         width={64}
                         height={64}
                         className="h-16 w-16 rounded object-cover border border-slate-200"
+                        unoptimized
                       />
                       <button
                         type="button"
@@ -1318,6 +1319,7 @@ export function AddClassModal({
                             width={80}
                             height={80}
                             className="h-full w-full object-cover"
+                            unoptimized
                           />
                         </div>
                         <div className="flex-1 text-sm text-slate-700">

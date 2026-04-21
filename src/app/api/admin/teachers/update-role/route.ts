@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import * as admin from "firebase-admin";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 import {
   requireAdminTeacher,
@@ -13,6 +14,8 @@ type ManageableRole = "teacher" | "adminTeacher" | "coordinadorPlantel";
 type UpdateTeacherRoleRequest = {
   teacherId?: string;
   newRole?: ManageableRole;
+  plantelId?: string | null;
+  plantelName?: string | null;
 };
 
 const MANAGEABLE_ROLES: ManageableRole[] = [
@@ -48,6 +51,15 @@ export async function POST(request: NextRequest) {
     if (!isManageableRole(body?.newRole)) {
       return NextResponse.json(
         { success: false, error: "newRole inválido" },
+        { status: 400 },
+      );
+    }
+
+    const requestedPlantelId = asText(body.plantelId);
+    const requestedPlantelName = asText(body.plantelName);
+    if (body.newRole === "coordinadorPlantel" && (!requestedPlantelId || !requestedPlantelName)) {
+      return NextResponse.json(
+        { success: false, error: "Selecciona un plantel para el coordinador" },
         { status: 400 },
       );
     }
@@ -96,7 +108,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (currentRole === body.newRole) {
+    const currentPlantelId = asText(userSnap.data()?.plantelId);
+    const plantelChanged =
+      body.newRole === "coordinadorPlantel" && currentPlantelId !== requestedPlantelId;
+
+    if (currentRole === body.newRole && !plantelChanged) {
       return NextResponse.json(
         {
           success: true,
@@ -107,14 +123,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    await userRef.set(
-      {
-        role: body.newRole,
-        updatedAt: new Date(),
-        updatedBy: adminContext.uid,
-      },
-      { merge: true },
-    );
+    const updateData: Record<string, unknown> = {
+      role: body.newRole,
+      updatedAt: new Date(),
+      updatedBy: adminContext.uid,
+    };
+    if (body.newRole === "coordinadorPlantel") {
+      updateData.plantelId = requestedPlantelId;
+      updateData.plantelName = requestedPlantelName;
+    } else {
+      updateData.plantelId = admin.firestore.FieldValue.delete();
+      updateData.plantelName = admin.firestore.FieldValue.delete();
+    }
+
+    await userRef.set(updateData, { merge: true });
 
     await auth.setCustomUserClaims(teacherId, {
       ...(userRecord.customClaims ?? {}),

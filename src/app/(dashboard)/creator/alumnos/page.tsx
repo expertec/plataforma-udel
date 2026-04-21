@@ -25,6 +25,7 @@ import {
   checkStudentExists,
 } from "@/lib/firebase/students-service";
 import { getGroupStudents, getGroupsForTeacher } from "@/lib/firebase/groups-service";
+import { getUserPlantelAssignment, PlantelAssignment } from "@/lib/firebase/planteles-service";
 import { StudentAllSubmissionsModal } from "./_components/StudentAllSubmissionsModal";
 import { StudentGradesModal } from "./_components/StudentGradesModal";
 import { StudentDropoutRiskTab } from "./_components/StudentDropoutRiskTab";
@@ -85,6 +86,7 @@ export default function AlumnosPage() {
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
+  const [plantelAssignment, setPlantelAssignment] = useState<PlantelAssignment | null>(null);
   const [deletingStudentId, setDeletingStudentId] = useState<string | null>(null);
   const [previewFilter, setPreviewFilter] = useState<"all" | "invalid" | "new" | "existing">("all");
 
@@ -129,13 +131,20 @@ export default function AlumnosPage() {
       setCurrentUser(user);
       if (!user) {
         setUserRole(null);
+        setPlantelAssignment(null);
         return;
       }
       try {
         const role = await resolveUserRole(user);
         setUserRole(role);
+        if (role === "coordinadorPlantel") {
+          setPlantelAssignment(await getUserPlantelAssignment(user.uid));
+        } else {
+          setPlantelAssignment(null);
+        }
       } catch {
         setUserRole(null);
+        setPlantelAssignment(null);
       }
     });
     return () => unsub();
@@ -158,7 +167,10 @@ export default function AlumnosPage() {
   const loadStudents = useCallback(async (loadMore = false) => {
     const userId = currentUser?.uid;
     if (!userId || !userRole) return;
-    const canViewAllStudents = isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
+    const isAdmin = isAdminTeacherRole(userRole);
+    const isCoordinator = isCampusCoordinatorRole(userRole);
+    const coordinatorPlantelId = isCoordinator ? plantelAssignment?.plantelId ?? "" : "";
+    const canViewAllStudents = isAdmin || isCoordinator;
 
     if (loadMore) {
       setLoadingMore(true);
@@ -171,10 +183,18 @@ export default function AlumnosPage() {
 
     try {
       if (canViewAllStudents) {
-        // Usar paginación para admin teachers y coordinadores (reduce lecturas de ~10,000 a ~50 por página)
+        if (isCoordinator && !coordinatorPlantelId) {
+          setStudents([]);
+          setTotalStudentsCount(0);
+          setHasMoreStudents(false);
+          return;
+        }
+        // Usar paginación para admin teachers y coordinadores.
         const result = await getStudentUsersPaginated(
           50, // Cargar 50 estudiantes por página
-          loadMore ? lastDocRef.current : null
+          loadMore ? lastDocRef.current : null,
+          undefined,
+          coordinatorPlantelId,
         );
 
         if (loadMore) {
@@ -182,7 +202,7 @@ export default function AlumnosPage() {
         } else {
           setStudents(result.students);
           // Obtener conteo total solo en la primera carga
-          const count = await getStudentsCount();
+          const count = await getStudentsCount(coordinatorPlantelId);
           setTotalStudentsCount(count);
         }
 
@@ -224,7 +244,7 @@ export default function AlumnosPage() {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [currentUser?.uid, userRole]);
+  }, [currentUser?.uid, plantelAssignment?.plantelId, userRole]);
 
   useEffect(() => {
     loadStudents(false);
@@ -489,6 +509,7 @@ export default function AlumnosPage() {
 
   const isSearchActive = searchQuery.trim().length > 0;
   const canRunGlobalSearch = isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
+  const coordinatorPlantelId = isCampusCoordinatorRole(userRole) ? plantelAssignment?.plantelId ?? "" : "";
 
   // Búsqueda global en Firestore para admin teachers y coordinadores.
   useEffect(() => {
@@ -499,6 +520,11 @@ export default function AlumnosPage() {
     }
     const rawQuery = searchQuery.trim();
     if (!rawQuery) {
+      setSearchResults([]);
+      setSearching(false);
+      return;
+    }
+    if (isCampusCoordinatorRole(userRole) && !coordinatorPlantelId) {
       setSearchResults([]);
       setSearching(false);
       return;
@@ -518,7 +544,7 @@ export default function AlumnosPage() {
         const PAGE_SIZE = 50;
 
         while (hasMore && pageCount < MAX_PAGES) {
-          const page = await getStudentUsersPaginated(PAGE_SIZE, last, normalized);
+          const page = await getStudentUsersPaginated(PAGE_SIZE, last, normalized, coordinatorPlantelId);
           if (searchTokenRef.current !== token) return;
 
           page.students.forEach((s) => {
@@ -549,7 +575,7 @@ export default function AlumnosPage() {
     return () => {
       clearTimeout(timer);
     };
-  }, [searchQuery, canRunGlobalSearch]);
+  }, [searchQuery, canRunGlobalSearch, coordinatorPlantelId, userRole]);
 
   // Filtrar alumnos según búsqueda
   const filteredStudents = useMemo(() => {
@@ -619,7 +645,8 @@ export default function AlumnosPage() {
 
   const isAdmin = isAdminTeacherRole(userRole);
   const isCoordinator = isCampusCoordinatorRole(userRole);
-  const canViewRiskReport = isAdmin || isCoordinator;
+  const hasCoordinatorPlantel = !isCoordinator || coordinatorPlantelId.length > 0;
+  const canViewRiskReport = isAdmin || (isCoordinator && hasCoordinatorPlantel);
   const canViewAllStudents = isAdmin || isCoordinator;
   const adminTabs: { key: "gestion" | "altas" | "passwords" | "riesgo"; label: string; helper?: string }[] = isAdmin
     ? [
@@ -1365,8 +1392,18 @@ export default function AlumnosPage() {
         </div>
       ) : null}
 
+      {isCoordinator && !hasCoordinatorPlantel ? (
+        <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50 p-5 text-sm text-amber-800">
+          Tu cuenta de coordinador no tiene un plantel asignado. Solicita a un AdminTeacher que te asigne un plantel
+          para ver alumnos, grupos y riesgo de deserción.
+        </div>
+      ) : null}
+
       {canViewRiskReport && activeTab === "riesgo" ? (
-        <StudentDropoutRiskTab scopeTeacherId={null} />
+        <StudentDropoutRiskTab
+          scopeTeacherId={null}
+          scopePlantelId={isCoordinator ? coordinatorPlantelId || null : null}
+        />
       ) : null}
 
       {(activeTab === "gestion" || !canViewRiskReport) && (
@@ -1802,6 +1839,7 @@ export default function AlumnosPage() {
           studentId={selectedStudentForGrades.id}
           studentName={selectedStudentForGrades.name}
           studentEmail={selectedStudentForGrades.email}
+          scopePlantelId={isCoordinator ? coordinatorPlantelId || "" : ""}
           isOpen={gradesModalOpen}
           onClose={() => {
             setGradesModalOpen(false);

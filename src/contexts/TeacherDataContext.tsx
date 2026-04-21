@@ -4,7 +4,8 @@ import { createContext, useContext, useState, useCallback, useEffect, ReactNode 
 import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import { Course, getCourses } from "@/lib/firebase/courses-service";
-import { Group, getAllGroups, getGroupsForTeacher } from "@/lib/firebase/groups-service";
+import { Group, getAllGroups, getGroupsByPlantel, getGroupsForTeacher } from "@/lib/firebase/groups-service";
+import { getUserPlantelAssignment, PlantelAssignment } from "@/lib/firebase/planteles-service";
 import {
   resolveUserRole,
   UserRole,
@@ -46,6 +47,7 @@ export function TeacherDataProvider({ children }: { children: ReactNode }) {
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [courses, setCourses] = useState<Course[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
+  const [plantelAssignment, setPlantelAssignment] = useState<PlantelAssignment | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cacheTimestamp, setCacheTimestamp] = useState<number>(0);
@@ -77,15 +79,17 @@ export function TeacherDataProvider({ children }: { children: ReactNode }) {
     try {
       // Límite razonable para caché
       const data =
-        userRole && (isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole))
+        userRole && isAdminTeacherRole(userRole)
           ? await getAllGroups(50)
-          : await getGroupsForTeacher(currentUser.uid, 50);
+          : userRole && isCampusCoordinatorRole(userRole) && plantelAssignment?.plantelId
+            ? await getGroupsByPlantel(plantelAssignment.plantelId, 50)
+            : await getGroupsForTeacher(currentUser.uid, 50);
       setGroups(data);
     } catch (err) {
       console.error("Error cargando grupos:", err);
       setError("No se pudieron cargar los grupos");
     }
-  }, [currentUser, userRole]);
+  }, [currentUser, plantelAssignment?.plantelId, userRole]);
 
   // Refrescar todo
   const refreshAll = useCallback(async () => {
@@ -117,6 +121,7 @@ export function TeacherDataProvider({ children }: { children: ReactNode }) {
 
       if (!user) {
         setUserRole(null);
+        setPlantelAssignment(null);
         setCourses([]);
         setGroups([]);
         setLoading(false);
@@ -127,9 +132,15 @@ export function TeacherDataProvider({ children }: { children: ReactNode }) {
       try {
         const role = await resolveUserRole(user);
         setUserRole(role);
+        if (role && isCampusCoordinatorRole(role)) {
+          setPlantelAssignment(await getUserPlantelAssignment(user.uid));
+        } else {
+          setPlantelAssignment(null);
+        }
       } catch (err) {
         console.error("Error obteniendo rol:", err);
         setUserRole(null);
+        setPlantelAssignment(null);
       }
     });
 

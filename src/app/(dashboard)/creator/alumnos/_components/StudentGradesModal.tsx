@@ -10,6 +10,7 @@ type Props = {
   studentId: string;
   studentName: string;
   studentEmail: string;
+  scopePlantelId?: string;
   isOpen: boolean;
   onClose: () => void;
 };
@@ -80,6 +81,7 @@ export function StudentGradesModal({
   studentId,
   studentName,
   studentEmail,
+  scopePlantelId = "",
   isOpen,
   onClose,
 }: Props) {
@@ -93,8 +95,12 @@ export function StudentGradesModal({
     const loadGrades = async () => {
       setLoading(true);
       try {
+        const enrollmentConstraints = [where("studentId", "==", studentId)];
+        if (scopePlantelId) {
+          enrollmentConstraints.push(where("plantelId", "==", scopePlantelId));
+        }
         const enrollmentsSnap = await getDocs(
-          query(collection(db, "studentEnrollments"), where("studentId", "==", studentId)),
+          query(collection(db, "studentEnrollments"), ...enrollmentConstraints),
         );
 
         const closureRows = new Map<string, GradeRow>();
@@ -300,7 +306,7 @@ export function StudentGradesModal({
     return () => {
       active = false;
     };
-  }, [isOpen, studentId]);
+  }, [isOpen, scopePlantelId, studentId]);
 
   const summary = useMemo(() => {
     const closed = rows.filter((row) => row.status === "closed");

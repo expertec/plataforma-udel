@@ -13,7 +13,9 @@ import {
   setAssistantTeachers,
   setMentorCourseAccess,
   updateGroupCampusGradeSettings,
+  updateGroupPlantel,
 } from "@/lib/firebase/groups-service";
+import { getPlanteles, getUserPlantelAssignment, Plantel, PlantelAssignment } from "@/lib/firebase/planteles-service";
 import { Course, getCourses } from "@/lib/firebase/courses-service";
 import { getStudentUsersPaginated, StudentUser } from "@/lib/firebase/students-service";
 import { getTeacherUsers, TeacherUser } from "@/lib/firebase/teachers-service";
@@ -28,6 +30,7 @@ import { onAuthStateChanged, User } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import {
   isAdminTeacherRole,
+  isCampusCoordinatorRole,
   resolveUserRole,
   UserRole,
 } from "@/lib/firebase/roles";
@@ -49,6 +52,10 @@ export default function GroupDetailPage() {
   const [savingTeachers, setSavingTeachers] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
+  const [plantelAssignment, setPlantelAssignment] = useState<PlantelAssignment | null>(null);
+  const [planteles, setPlanteles] = useState<Plantel[]>([]);
+  const [selectedPlantelId, setSelectedPlantelId] = useState("");
+  const [savingPlantel, setSavingPlantel] = useState(false);
   const [removingAssistantId, setRemovingAssistantId] = useState<string | null>(null);
   const [savingMentorAccessIds, setSavingMentorAccessIds] = useState<Set<string>>(new Set());
   const [unlinkingCourseId, setUnlinkingCourseId] = useState<string | null>(null);
@@ -140,13 +147,20 @@ export default function GroupDetailPage() {
       setCurrentUser(u);
       if (!u) {
         setUserRole(null);
+        setPlantelAssignment(null);
         return;
       }
       try {
         const role = await resolveUserRole(u);
         setUserRole(role);
+        if (role === "coordinadorPlantel") {
+          setPlantelAssignment(await getUserPlantelAssignment(u.uid));
+        } else {
+          setPlantelAssignment(null);
+        }
       } catch {
         setUserRole(null);
+        setPlantelAssignment(null);
       }
     });
     return () => unsub();
@@ -160,7 +174,18 @@ export default function GroupDetailPage() {
       enableGlobalExamGrade: group.enableGlobalExamGrade === true,
       enableExtraordinaryExamGrade: group.enableExtraordinaryExamGrade === true,
     });
+    setSelectedPlantelId(group.plantelId ?? "");
   }, [group]);
+
+  useEffect(() => {
+    if (!isAdminTeacherRole(userRole)) return;
+    getPlanteles()
+      .then(setPlanteles)
+      .catch((err) => {
+        console.error(err);
+        toast.error("No se pudieron cargar los planteles");
+      });
+  }, [userRole]);
 
   const headerInfo = useMemo(() => {
     if (!group) return "";
@@ -199,12 +224,19 @@ export default function GroupDetailPage() {
     [assignedCourseIds, explicitCourseIds, group?.courseId],
   );
   const currentUserId = currentUser?.uid ?? null;
+  const isCoordinatorForGroup = Boolean(
+    group &&
+      isCampusCoordinatorRole(userRole) &&
+      plantelAssignment?.plantelId &&
+      group.plantelId === plantelAssignment.plantelId,
+  );
   const canManageMentors = Boolean(
     group &&
       currentUserId &&
       (currentUserId === group.teacherId || isAdminTeacherRole(userRole)),
   );
   const canManageCampusGradeConfig = isAdminTeacherRole(userRole);
+  const canManageGroupPlantel = isAdminTeacherRole(userRole);
   const hasFullGroupVisibility = isAdminTeacherRole(userRole);
   const isCurrentUserAssistant = Boolean(
     group &&
@@ -218,12 +250,13 @@ export default function GroupDetailPage() {
         isAdminTeacherRole(userRole) ||
         (group.assistantTeacherIds ?? []).includes(currentUserId)),
   );
-  const canViewDropoutRisk = isAdminTeacherRole(userRole);
+  const canViewDropoutRisk = isAdminTeacherRole(userRole) || isCoordinatorForGroup;
 
   const visibleCourseIdsForCurrentUser = useMemo(() => {
     if (!group || !currentUserId) return [];
     if (
       currentUserId === group.teacherId ||
+      isCoordinatorForGroup ||
       hasFullGroupVisibility
     ) {
       return courseIdsForGroup;
@@ -243,7 +276,7 @@ export default function GroupDetailPage() {
     if (!Array.isArray(explicitAccess)) return [];
     const allowedSet = new Set(explicitAccess.filter((id): id is string => typeof id === "string"));
     return courseIdsForGroup.filter((courseId) => allowedSet.has(courseId));
-  }, [courseIdsForGroup, currentUserId, group, hasFullGroupVisibility, isCurrentUserAssistant]);
+  }, [courseIdsForGroup, currentUserId, group, hasFullGroupVisibility, isCoordinatorForGroup, isCurrentUserAssistant]);
 
   const visibleCourseIdsSet = useMemo(
     () => new Set(visibleCourseIdsForCurrentUser),
@@ -262,6 +295,7 @@ export default function GroupDetailPage() {
       currentUserId &&
       (currentUserId === group.teacherId ||
         hasFullGroupVisibility ||
+        isCoordinatorForGroup ||
         isCurrentUserAssistant),
   );
   const campusGradeConfigChanged = Boolean(
@@ -276,10 +310,11 @@ export default function GroupDetailPage() {
   useEffect(() => {
     if (loading) return;
     if (!group || !currentUserId) return;
+    if (isCampusCoordinatorRole(userRole) && !plantelAssignment?.plantelId) return;
     if (canAccessGroupContent) return;
     toast("Tu acceso a este grupo fue retirado.");
     router.replace("/creator/grupos");
-  }, [canAccessGroupContent, currentUserId, group, loading, router]);
+  }, [canAccessGroupContent, currentUserId, group, loading, plantelAssignment?.plantelId, router, userRole]);
 
   const getMentorAllowedCourseIds = (mentorId: string): string[] => {
     if (!group) return [];
@@ -528,6 +563,42 @@ export default function GroupDetailPage() {
     }
   };
 
+  const handleSavePlantel = async () => {
+    if (!group) return;
+    if (!canManageGroupPlantel) {
+      toast.error("No tienes permisos para cambiar el plantel del grupo.");
+      return;
+    }
+    const selectedPlantel = planteles.find((plantel) => plantel.id === selectedPlantelId);
+    if (!selectedPlantel) {
+      toast.error("Selecciona un plantel.");
+      return;
+    }
+    setSavingPlantel(true);
+    try {
+      await updateGroupPlantel({
+        groupId: group.id,
+        plantelId: selectedPlantel.id,
+        plantelName: selectedPlantel.name,
+      });
+      setGroup((prev) =>
+        prev
+          ? {
+              ...prev,
+              plantelId: selectedPlantel.id,
+              plantelName: selectedPlantel.name,
+            }
+          : prev,
+      );
+      toast.success("Plantel del grupo actualizado.");
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo actualizar el plantel del grupo.");
+    } finally {
+      setSavingPlantel(false);
+    }
+  };
+
   return (
     <div className="space-y-6 p-8">
       <div className="flex items-center justify-between">
@@ -576,6 +647,9 @@ export default function GroupDetailPage() {
               <span className="font-medium">
                 {group.program || "Sin programa definido"}
               </span>
+            </p>
+            <p className="mt-1 text-sm text-slate-600">
+              Plantel: <span className="font-medium">{group.plantelName || "Sin plantel asignado"}</span>
             </p>
             {assignedCourses.length > 0 ? (
               <div className="mt-2 text-sm text-slate-600">
@@ -687,6 +761,41 @@ export default function GroupDetailPage() {
 
             <TabsContent value="config">
               <div className="rounded-lg bg-white p-6 shadow-sm space-y-4">
+                {canManageGroupPlantel ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Plantel</p>
+                    <h3 className="mt-1 text-lg font-semibold text-slate-900">Asignación del grupo</h3>
+                    <p className="text-sm text-slate-600">
+                      Los coordinadores solo podrán ver los grupos vinculados a su plantel.
+                    </p>
+                    <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                      <select
+                        value={selectedPlantelId}
+                        onChange={(event) => setSelectedPlantelId(event.target.value)}
+                        className="min-w-64 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      >
+                        <option value="">Seleccionar plantel</option>
+                        {planteles.map((plantel) => (
+                          <option key={plantel.id} value={plantel.id}>
+                            {plantel.name}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={handleSavePlantel}
+                        disabled={
+                          savingPlantel ||
+                          !selectedPlantelId ||
+                          selectedPlantelId === (group.plantelId ?? "")
+                        }
+                        className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {savingPlantel ? "Guardando..." : "Guardar plantel"}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
                 {canManageCampusGradeConfig ? (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
                     <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
@@ -933,6 +1042,7 @@ export default function GroupDetailPage() {
           open={studentsModalOpen}
           onClose={() => setStudentsModalOpen(false)}
           groupId={group.id}
+          scopePlantelId={isCoordinatorForGroup ? plantelAssignment?.plantelId ?? "" : ""}
           onReload={async () => {
             setLoadingStudents(true);
             try {
@@ -1219,6 +1329,7 @@ type SelectStudentsModalProps = {
   open: boolean;
   onClose: () => void;
   groupId: string;
+  scopePlantelId?: string;
   onAdded: (count: number) => void;
   onReload: () => Promise<void>;
   existingIds: string[];
@@ -1228,6 +1339,7 @@ function SelectStudentsModal({
   open,
   onClose,
   groupId,
+  scopePlantelId = "",
   onAdded,
   onReload,
   existingIds,
@@ -1247,7 +1359,7 @@ function SelectStudentsModal({
   const loadInitialStudents = async () => {
     setLoading(true);
     try {
-      const result = await getStudentUsersPaginated(50);
+      const result = await getStudentUsersPaginated(50, null, undefined, scopePlantelId);
       setStudents(result.students);
       lastDocRef.current = result.lastDoc;
       setHasMore(result.hasMore);
@@ -1270,7 +1382,7 @@ function SelectStudentsModal({
     setSearching(false);
     searchTokenRef.current += 1;
     void loadInitialStudents();
-  }, [open]);
+  }, [open, scopePlantelId]);
 
   const isSearchActive = search.trim().length > 0;
 
@@ -1297,7 +1409,7 @@ function SelectStudentsModal({
         const PAGE_SIZE = 50;
 
         while (hasMorePages && pageCount < MAX_PAGES) {
-          const page = await getStudentUsersPaginated(PAGE_SIZE, last, normalized);
+          const page = await getStudentUsersPaginated(PAGE_SIZE, last, normalized, scopePlantelId);
           if (searchTokenRef.current !== token) return;
 
           page.students.forEach((student) => {
@@ -1326,7 +1438,7 @@ function SelectStudentsModal({
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [open, search, isSearchActive]);
+  }, [open, scopePlantelId, search, isSearchActive]);
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -1349,7 +1461,7 @@ function SelectStudentsModal({
     if (loadingMore || !hasMore || isSearchActive) return;
     setLoadingMore(true);
     try {
-      const result = await getStudentUsersPaginated(50, lastDocRef.current);
+      const result = await getStudentUsersPaginated(50, lastDocRef.current, undefined, scopePlantelId);
       setStudents((prev) => [...prev, ...result.students]);
       lastDocRef.current = result.lastDoc;
       setHasMore(result.hasMore);

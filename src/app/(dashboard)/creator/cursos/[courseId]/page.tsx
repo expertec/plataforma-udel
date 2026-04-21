@@ -29,6 +29,7 @@ import {
   linkCourseToGroup,
   Group,
 } from "@/lib/firebase/groups-service";
+import { getPlanteles, getUserPlantelAssignment, Plantel, PlantelAssignment } from "@/lib/firebase/planteles-service";
 import { getAlumnos } from "@/lib/firebase/alumnos-service";
 import {
   isAdminTeacherRole,
@@ -118,6 +119,7 @@ export default function CourseBuilderPage() {
       status: string;
       studentsCount: number;
       maxStudents: number;
+      plantelName?: string;
     }>
   >([]);
   const [loadingGroups, setLoadingGroups] = useState(false);
@@ -136,6 +138,9 @@ export default function CourseBuilderPage() {
   const [groupSearch, setGroupSearch] = useState("");
   const [currentUser, setCurrentUser] = useState(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
+  const [plantelAssignment, setPlantelAssignment] = useState<PlantelAssignment | null>(null);
+  const [planteles, setPlanteles] = useState<Plantel[]>([]);
+  const [newGroupPlantelId, setNewGroupPlantelId] = useState("");
   const [roleLoading, setRoleLoading] = useState(true);
   const [submissionsGroup, setSubmissionsGroup] = useState<{
     id: string;
@@ -153,6 +158,22 @@ export default function CourseBuilderPage() {
   const canManageGroups = isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
   const canLinkGroups = canManageGroups || userRole === "teacher";
   const showCreationMetadata = isAdminTeacherRole(userRole);
+  const availablePlanteles = useMemo<Plantel[]>(() => {
+    if (isAdminTeacherRole(userRole)) return planteles;
+    if (!plantelAssignment) return [];
+    return [
+      {
+        id: plantelAssignment.plantelId,
+        name: plantelAssignment.plantelName,
+        normalizedName: "",
+        status: "active",
+      },
+    ];
+  }, [plantelAssignment, planteles, userRole]);
+  const selectedNewGroupPlantel = useMemo(
+    () => availablePlanteles.find((plantel) => plantel.id === newGroupPlantelId) ?? null,
+    [availablePlanteles, newGroupPlantelId],
+  );
 
   const handleThumbnailFile = async (file: File) => {
     if (!courseId) return;
@@ -184,6 +205,7 @@ export default function CourseBuilderPage() {
       setCurrentUser(u);
       if (!u) {
         setUserRole(null);
+        setPlantelAssignment(null);
         setRoleLoading(false);
         return;
       }
@@ -191,6 +213,15 @@ export default function CourseBuilderPage() {
       try {
         const role = await resolveUserRole(u);
         if (!cancelled) setUserRole(role);
+        if (role === "coordinadorPlantel") {
+          const assignment = await getUserPlantelAssignment(u.uid);
+          if (!cancelled) {
+            setPlantelAssignment(assignment);
+            setNewGroupPlantelId(assignment?.plantelId ?? "");
+          }
+        } else if (!cancelled) {
+          setPlantelAssignment(null);
+        }
       } catch {
         if (!cancelled) setUserRole(null);
       } finally {
@@ -259,6 +290,19 @@ export default function CourseBuilderPage() {
       unsubAuth();
     };
   }, [courseId]);
+
+  useEffect(() => {
+    if (!isAdminTeacherRole(userRole)) return;
+    getPlanteles()
+      .then((data) => {
+        setPlanteles(data);
+        setNewGroupPlantelId((current) => current || data[0]?.id || "");
+      })
+      .catch((err) => {
+        console.error(err);
+        toast.error("No se pudieron cargar los planteles");
+      });
+  }, [userRole]);
 
   useEffect(() => {
     let active = true;
@@ -341,9 +385,17 @@ export default function CourseBuilderPage() {
     setLoadingGroups(true);
     setLoadError(null);
     try {
+      const coordinatorPlantelId = isCampusCoordinatorRole(userRole) ? plantelAssignment?.plantelId ?? "" : "";
       const [groups, activeGroups] = await Promise.all([
-        getGroupsByCourse(courseId, isAdminTeacherRole(userRole) ? undefined : currentUser.uid),
-        getActiveGroups(isAdminTeacherRole(userRole) ? undefined : currentUser.uid),
+        getGroupsByCourse(
+          courseId,
+          isAdminTeacherRole(userRole) || coordinatorPlantelId ? undefined : currentUser.uid,
+          coordinatorPlantelId,
+        ),
+        getActiveGroups(
+          isAdminTeacherRole(userRole) || coordinatorPlantelId ? undefined : currentUser.uid,
+          coordinatorPlantelId,
+        ),
       ]);
       setCourseGroups(
         groups.map((g) => ({
@@ -353,6 +405,7 @@ export default function CourseBuilderPage() {
           status: g.status,
           studentsCount: g.studentsCount,
           maxStudents: g.maxStudents,
+          plantelName: g.plantelName,
         })),
       );
       setAllGroups(activeGroups);
@@ -391,6 +444,10 @@ export default function CourseBuilderPage() {
       toast.error("Selecciona o agrega un programa");
       return;
     }
+    if (!selectedNewGroupPlantel) {
+      toast.error("Selecciona un plantel");
+      return;
+    }
     setCreatingGroup(true);
     try {
       const courseTitle = courseInfo?.title ?? "Curso";
@@ -404,6 +461,8 @@ export default function CourseBuilderPage() {
         semester: "",
         maxStudents: 0,
         program: newGroupProgram,
+        plantelId: selectedNewGroupPlantel.id,
+        plantelName: selectedNewGroupPlantel.name,
       });
       setCourseGroups((prev) => [
         {
@@ -413,6 +472,7 @@ export default function CourseBuilderPage() {
           status: "active",
           studentsCount: 0,
           maxStudents: 0,
+          plantelName: selectedNewGroupPlantel.name,
         },
         ...prev,
       ]);
@@ -477,7 +537,8 @@ export default function CourseBuilderPage() {
       (g) =>
         g.groupName.toLowerCase().includes(term) ||
         g.semester.toLowerCase().includes(term) ||
-        g.courseName?.toLowerCase?.()?.includes(term),
+        g.courseName?.toLowerCase?.()?.includes(term) ||
+        g.plantelName?.toLowerCase?.()?.includes(term),
     );
   }, [allGroups, groupSearch]);
 
@@ -970,6 +1031,7 @@ export default function CourseBuilderPage() {
                           width={96}
                           height={56}
                           className="h-14 w-24 rounded object-cover border border-slate-200"
+                          unoptimized
                         />
                         <span className="text-xs font-semibold text-blue-700">
                           Imagen subida
@@ -1110,6 +1172,22 @@ export default function CourseBuilderPage() {
                     </button>
                   </div>
                 </div>
+                <div className="flex-1">
+                  <label className="text-sm font-semibold text-slate-800">Plantel</label>
+                  <select
+                    value={newGroupPlantelId}
+                    onChange={(event) => setNewGroupPlantelId(event.target.value)}
+                    disabled={isCampusCoordinatorRole(userRole)}
+                    className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+                  >
+                    <option value="">Seleccionar plantel</option>
+                    {availablePlanteles.map((plantel) => (
+                      <option key={plantel.id} value={plantel.id}>
+                        {plantel.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <button
                   type="button"
                   onClick={handleCreateGroupFromCourse}
@@ -1163,6 +1241,7 @@ export default function CourseBuilderPage() {
                   <p className="text-sm text-slate-600">
                     {g.studentsCount}/{g.maxStudents} estudiantes
                   </p>
+                  <p className="text-xs text-slate-500">Plantel: {g.plantelName || "Sin plantel"}</p>
                 </div>
                 <span className="text-xs font-semibold text-green-700 bg-green-50 rounded-full px-2 py-1">
                   {g.status}
@@ -1280,7 +1359,7 @@ export default function CourseBuilderPage() {
                           <div>
                             <p className="font-semibold text-slate-800">{g.groupName}</p>
                             <p className="text-xs text-slate-500">
-                              {g.semester} • {g.courseName || "—"}
+                              {g.semester} • {g.courseName || "—"} • {g.plantelName || "Sin plantel"}
                             </p>
                           </div>
                           {selectedGroupId === g.id ? (
