@@ -35,6 +35,7 @@ export type Submission = {
   content?: string;
   status: SubmissionStatus;
   grade?: number;
+  answers?: unknown[];
   feedback?: string;
   gradedAt?: Date | null;
 };
@@ -194,6 +195,7 @@ type SubmissionData = {
   content?: string;
   status?: SubmissionStatus | string;
   grade?: number;
+  answers?: unknown[];
   feedback?: string;
   gradedAt?: { toDate?: () => Date };
 };
@@ -220,6 +222,7 @@ function toSubmission(id: string, data: SubmissionData): Submission {
     content: data.content ?? "",
     status,
     grade: data.grade ?? undefined,
+    answers: Array.isArray(data.answers) ? data.answers : undefined,
     feedback: data.feedback ?? "",
     gradedAt: data.gradedAt?.toDate?.() ?? null,
   };

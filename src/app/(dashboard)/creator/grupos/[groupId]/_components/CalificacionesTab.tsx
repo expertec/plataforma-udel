@@ -16,6 +16,7 @@ import { jsPDF } from "jspdf";
 import { db } from "@/lib/firebase/firestore";
 import { auth } from "@/lib/firebase/client";
 import { Submission, getAllSubmissions } from "@/lib/firebase/submissions-service";
+import { getForumPosts } from "@/lib/firebase/forum-service";
 import { UserRole, isAdminTeacherRole } from "@/lib/firebase/roles";
 
 type CalificacionesTabProps = {
@@ -37,6 +38,19 @@ type Student = { id: string; name: string };
 type Task = {
   id: string;
   title: string;
+  classType: "quiz" | "assignment" | "forum" | "activity";
+};
+
+type AutoBreakdownEntry = {
+  classId: string;
+  classTitle: string;
+  classType: Task["classType"];
+  grade: number | null;
+  hasSubmission: boolean;
+  isMarkedGraded: boolean;
+  submissionId?: string;
+  submittedAt?: Date | null;
+  gradedAt?: Date | null;
 };
 
 type CourseClosureState = {
@@ -72,6 +86,7 @@ type StudentCourseRow = {
   studentName: string;
   enrollmentId: string;
   autoGrade: number | null;
+  autoBreakdown: AutoBreakdownEntry[];
   pendingUngradedCount: number;
   gradedCount: number;
   totalEvaluable: number;
@@ -146,6 +161,13 @@ const formatDateTime = (value?: Date | null) => {
   }).format(value);
 };
 
+const taskTypeLabel = (classType: Task["classType"]) => {
+  if (classType === "quiz") return "Quiz";
+  if (classType === "forum") return "Foro";
+  if (classType === "assignment") return "Tarea";
+  return "Actividad";
+};
+
 export function CalificacionesTab({
   groupId,
   courses,
@@ -173,6 +195,7 @@ export function CalificacionesTab({
   const [processingStudentId, setProcessingStudentId] = useState<string | null>(null);
   const [processingNotifyStudentId, setProcessingNotifyStudentId] = useState<string | null>(null);
   const [processingAll, setProcessingAll] = useState(false);
+  const [breakdownStudentId, setBreakdownStudentId] = useState<string | null>(null);
   const [signatureModalContext, setSignatureModalContext] = useState<SignatureModalContext | null>(null);
   const [signerNameInput, setSignerNameInput] = useState("");
   const [signatureError, setSignatureError] = useState<string | null>(null);
@@ -218,6 +241,7 @@ export function CalificacionesTab({
           id: d.id,
           name: d.data().studentName ?? "",
         }));
+        const studentIdSet = new Set(nextStudents.map((student) => student.id));
 
         const submissions = await getAllSubmissions(groupId);
 
@@ -330,6 +354,13 @@ export function CalificacionesTab({
           }
         });
 
+        const forumClasses: Array<{
+          courseId: string;
+          lessonId: string;
+          classId: string;
+          className: string;
+        }> = [];
+
         const courseTasksEntries = await Promise.all(
           courses.map(async (course) => {
             const lessonsSnap = await getDocs(
@@ -344,22 +375,88 @@ export function CalificacionesTab({
                 ),
               );
               classesSnap.forEach((cls) => {
-                const data = cls.data() as { type?: string; hasAssignment?: boolean; title?: string };
-                const evaluable = data.type === "quiz" || data.hasAssignment === true;
+                const data = cls.data() as {
+                  type?: string;
+                  hasAssignment?: boolean;
+                  forumEnabled?: boolean;
+                  title?: string;
+                };
+                const evaluable = data.type === "quiz" || data.hasAssignment === true || data.forumEnabled === true;
                 if (!evaluable) return;
                 tasks.push({
                   id: cls.id,
                   title: data.title ?? "Sin título",
+                  classType:
+                    data.forumEnabled === true
+                      ? "forum"
+                      : data.type === "quiz"
+                      ? "quiz"
+                      : data.hasAssignment === true
+                      ? "assignment"
+                      : "activity",
                 });
+                if (data.forumEnabled === true) {
+                  forumClasses.push({
+                    courseId: course.courseId,
+                    lessonId: lesson.id,
+                    classId: cls.id,
+                    className: data.title ?? "Sin título",
+                  });
+                }
               });
             }
             return [course.courseId, tasks] as const;
           }),
         );
 
+        const forumSubmissionsByClass = await Promise.all(
+          forumClasses.map(async (forumClass) => {
+            try {
+              const posts = await getForumPosts(
+                forumClass.courseId,
+                forumClass.lessonId,
+                forumClass.classId,
+              );
+              return posts
+                .map((post) => {
+                  const authorId = (post.authorId ?? "").trim() || post.id;
+                  if (!authorId || !studentIdSet.has(authorId)) return null;
+                  return {
+                    id: post.id,
+                    classId: forumClass.classId,
+                    classDocId: forumClass.classId,
+                    courseId: forumClass.courseId,
+                    className: forumClass.className,
+                    classType: "forum",
+                    studentId: authorId,
+                    studentName: post.authorName ?? "",
+                    submittedAt: post.createdAt ?? null,
+                    fileUrl: post.mediaUrl ?? "",
+                    content: post.text ?? "",
+                    status:
+                      post.status === "graded" || typeof post.grade === "number"
+                        ? "graded"
+                        : "pending",
+                    grade: typeof post.grade === "number" ? post.grade : undefined,
+                    feedback: post.feedback ?? "",
+                    gradedAt: post.gradedAt ?? null,
+                  } satisfies Submission;
+                })
+                .filter((submission): submission is Submission => submission !== null);
+            } catch (error) {
+              console.warn(
+                `No se pudieron cargar aportes de foro para ${forumClass.courseId}/${forumClass.lessonId}/${forumClass.classId}`,
+                error,
+              );
+              return [];
+            }
+          }),
+        );
+        const mergedSubmissions = [...submissions, ...forumSubmissionsByClass.flat()];
+
         if (cancelled) return;
         setStudents(nextStudents);
-        setAllSubmissions(submissions);
+        setAllSubmissions(mergedSubmissions);
         setEnrollmentByStudent(enrollmentsMap);
         setTasksByCourse(Object.fromEntries(courseTasksEntries));
       } catch (err) {
@@ -392,20 +489,63 @@ export function CalificacionesTab({
         if ((submission.courseId ?? "") !== selectedCourseId) return;
         const classId = (submission.classDocId ?? submission.classId ?? "").trim();
         if (!classId || !classIdSet.has(classId)) return;
-        if (latestByClass.has(classId)) return;
-        latestByClass.set(classId, submission);
+        const current = latestByClass.get(classId);
+        if (!current) {
+          latestByClass.set(classId, submission);
+          return;
+        }
+        const currentTs = current.submittedAt?.getTime() ?? current.gradedAt?.getTime() ?? 0;
+        const incomingTs = submission.submittedAt?.getTime() ?? submission.gradedAt?.getTime() ?? 0;
+        if (incomingTs >= currentTs) {
+          latestByClass.set(classId, submission);
+        }
       });
 
       const latestSubmissions = Array.from(latestByClass.values());
       const gradedSubmissions = latestSubmissions.filter(
         (sub) => sub.status === "graded" || typeof sub.grade === "number",
       );
-      const gradedWithNumericGrade = gradedSubmissions.filter(
-        (sub) => typeof sub.grade === "number",
-      );
+      const normalizeTaskGrade = (task: Task, submission?: Submission): number | null => {
+        if (!submission || typeof submission.grade !== "number" || !Number.isFinite(submission.grade)) {
+          return null;
+        }
+        const rawGrade = submission.grade;
+        if (task.classType !== "quiz") {
+          return Math.round(rawGrade * 10) / 10;
+        }
+
+        const answersCount = Array.isArray(submission.answers) ? submission.answers.length : 0;
+        if (answersCount <= 0) {
+          return Math.round(rawGrade * 10) / 10;
+        }
+
+        // Compatibilidad: quizzes antiguos se guardaban como porcentaje 0-100.
+        if (rawGrade > answersCount && rawGrade <= 100) {
+          return Math.round(((rawGrade / 100) * answersCount) * 10) / 10;
+        }
+        return Math.round(rawGrade * 10) / 10;
+      };
+      const autoBreakdown = selectedCourseTasks.map<AutoBreakdownEntry>((task) => {
+        const matched = latestByClass.get(task.id);
+        const normalizedGrade = normalizeTaskGrade(task, matched);
+        return {
+          classId: task.id,
+          classTitle: task.title,
+          classType: task.classType,
+          grade: normalizedGrade,
+          hasSubmission: Boolean(matched),
+          isMarkedGraded: matched?.status === "graded",
+          submissionId: matched?.id,
+          submittedAt: matched?.submittedAt ?? null,
+          gradedAt: matched?.gradedAt ?? null,
+        };
+      });
+      const numericBreakdownGrades = autoBreakdown
+        .map((item) => item.grade)
+        .filter((grade): grade is number => typeof grade === "number" && Number.isFinite(grade));
       const autoGrade =
-        gradedWithNumericGrade.length > 0
-          ? gradedWithNumericGrade.reduce((acc, item) => acc + (item.grade ?? 0), 0) / gradedWithNumericGrade.length
+        numericBreakdownGrades.length > 0
+          ? Math.round(numericBreakdownGrades.reduce((acc, grade) => acc + grade, 0) * 10) / 10
           : null;
       const pendingUngradedCount = Math.max(selectedCourseTasks.length - gradedSubmissions.length, 0);
 
@@ -417,6 +557,7 @@ export function CalificacionesTab({
         studentName: student.name,
         enrollmentId: enrollment?.id ?? `${groupId}_${student.id}`,
         autoGrade,
+        autoBreakdown,
         pendingUngradedCount,
         gradedCount: gradedSubmissions.length,
         totalEvaluable: selectedCourseTasks.length,
@@ -430,6 +571,17 @@ export function CalificacionesTab({
     [rows],
   );
 
+  const breakdownRow = useMemo(
+    () => (breakdownStudentId ? rows.find((row) => row.studentId === breakdownStudentId) ?? null : null),
+    [breakdownStudentId, rows],
+  );
+
+  useEffect(() => {
+    if (!breakdownStudentId) return;
+    if (rows.some((row) => row.studentId === breakdownStudentId)) return;
+    setBreakdownStudentId(null);
+  }, [breakdownStudentId, rows]);
+
   const getDraftKey = (studentId: string) => `${selectedCourseId}::${studentId}`;
   const formatGradeInput = (value?: number | null) =>
     typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "";
@@ -442,6 +594,11 @@ export function CalificacionesTab({
   };
 
   const roundGrade = (value: number) => Math.round(value * 10) / 10;
+  const areNullableGradesEqual = (a?: number | null, b?: number | null) => {
+    const normalizedA = typeof a === "number" && Number.isFinite(a) ? roundGrade(a) : null;
+    const normalizedB = typeof b === "number" && Number.isFinite(b) ? roundGrade(b) : null;
+    return normalizedA === normalizedB;
+  };
 
   const getCampusTasksGradeInput = (row: StudentCourseRow) => {
     if (!enableCampusTasksGrade) return "";
@@ -595,7 +752,17 @@ export function CalificacionesTab({
       };
     }
 
-    if (row.closure?.manualOverride === true && typeof row.closure.finalGrade === "number") {
+    const campusGradesChangedSinceClosure =
+      !areNullableGradesEqual(campusGrades.campusTasksGrade, row.closure?.campusTasksGrade) ||
+      !areNullableGradesEqual(campusGrades.campusFinalExamGrade, row.closure?.campusFinalExamGrade) ||
+      !areNullableGradesEqual(campusGrades.globalExamGrade, row.closure?.globalExamGrade) ||
+      !areNullableGradesEqual(campusGrades.extraordinaryExamGrade, row.closure?.extraordinaryExamGrade);
+
+    if (
+      row.closure?.manualOverride === true &&
+      typeof row.closure.finalGrade === "number" &&
+      !campusGradesChangedSinceClosure
+    ) {
       const persistedManual = roundGrade(row.closure.finalGrade);
       if (!Number.isFinite(persistedManual) || persistedManual < 0 || persistedManual > 100) {
         return {
@@ -1831,7 +1998,7 @@ export function CalificacionesTab({
 
       {selectedCourseTasks.length === 0 ? (
         <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-          Esta materia no tiene actividades evaluables (quiz/tarea).
+          Esta materia no tiene actividades evaluables (quiz/tarea/foro).
         </div>
       ) : (
         <div className="space-y-2">
@@ -2044,6 +2211,14 @@ export function CalificacionesTab({
                       </div>
                     </td>
                     <td className="px-3 py-2">
+                      <div className="flex flex-col items-start gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setBreakdownStudentId(row.studentId)}
+                          className="rounded-lg border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                        >
+                          Ver desglose
+                        </button>
                       {isClosed ? (
                         <div className="flex items-center gap-2">
                           <button
@@ -2103,6 +2278,7 @@ export function CalificacionesTab({
                           </button>
                         </div>
                       )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -2111,10 +2287,99 @@ export function CalificacionesTab({
             </table>
           </div>
           <p className="px-1 text-xs text-slate-500">
-            Final se calcula automáticamente como sumatoria de Auto y campos adicionales activos.
+            Auto es la suma de puntos ganados en tareas, foros y quizzes con calificación numérica.
           </p>
         </div>
       )}
+
+      {breakdownRow ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 px-4 py-6">
+          <div className="w-full max-w-4xl rounded-xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">Desglose de Auto</h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  Alumno: <span className="font-medium">{breakdownRow.studentName || "Sin nombre"}</span> | Materia:{" "}
+                  <span className="font-medium">{selectedCourse?.courseName ?? "Sin materia"}</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBreakdownStudentId(null)}
+                className="rounded-lg border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                Cerrar
+              </button>
+            </div>
+            <div className="space-y-4 px-5 py-4">
+              <div className="grid gap-3 sm:grid-cols-4">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-[0.08em] text-slate-500">Auto (suma)</p>
+                  <p className="mt-1 text-base font-semibold text-slate-900">
+                    {typeof breakdownRow.autoGrade === "number" ? breakdownRow.autoGrade.toFixed(1) : "—"}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-[0.08em] text-slate-500">Actividades</p>
+                  <p className="mt-1 text-base font-semibold text-slate-900">{breakdownRow.totalEvaluable}</p>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-[0.08em] text-slate-500">Con puntos</p>
+                  <p className="mt-1 text-base font-semibold text-slate-900">
+                    {breakdownRow.autoBreakdown.filter((item) => typeof item.grade === "number").length}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-[0.08em] text-slate-500">Pendientes</p>
+                  <p className="mt-1 text-base font-semibold text-slate-900">
+                    {breakdownRow.pendingUngradedCount}/{breakdownRow.totalEvaluable}
+                  </p>
+                </div>
+              </div>
+
+              <div className="max-h-[52vh] overflow-auto rounded-lg border border-slate-200">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-slate-50 text-slate-600">
+                    <tr>
+                      <th className="px-3 py-2 text-left">Actividad</th>
+                      <th className="px-3 py-2 text-left">Tipo</th>
+                      <th className="px-3 py-2 text-left">Estado</th>
+                      <th className="px-3 py-2 text-left">Puntos sumados</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {breakdownRow.autoBreakdown.map((item) => (
+                      <tr key={`${breakdownRow.studentId}-${item.classId}`}>
+                        <td className="px-3 py-2 text-slate-900">
+                          <p className="font-medium">{item.classTitle || "Sin título"}</p>
+                          <p className="text-xs text-slate-500">{item.classId}</p>
+                        </td>
+                        <td className="px-3 py-2 text-slate-700">{taskTypeLabel(item.classType)}</td>
+                        <td className="px-3 py-2 text-slate-700">
+                          {!item.hasSubmission
+                            ? "Sin entrega"
+                            : typeof item.grade === "number"
+                            ? "Con calificación"
+                            : item.isMarkedGraded
+                            ? "Calificada sin puntaje"
+                            : "Sin calificar"}
+                        </td>
+                        <td className="px-3 py-2 text-slate-900">
+                          {typeof item.grade === "number" ? item.grade.toFixed(1) : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <p className="text-xs text-slate-500">
+                Solo se suman las actividades que tienen calificación numérica.
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {signatureModalContext ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 px-4 py-6">

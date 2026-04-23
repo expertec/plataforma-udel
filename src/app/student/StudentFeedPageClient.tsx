@@ -6172,8 +6172,7 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, les
           return opt?.isCorrect === true;
         }).length
       : 0;
-    const total = Math.max(questions.length, 1);
-    const gradeValue = autogradable ? Math.round((correctCount / total) * 100) : null;
+    const gradeValue = autogradable ? correctCount : null;
     const statusValue: "graded" | "pending" = autogradable ? "graded" : "pending";
     try {
       const progressDoc = doc(db, "studentEnrollments", enrollmentId, "classProgress", classId);
@@ -6250,30 +6249,42 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, les
 
   // Si el quiz ya fue enviado y tiene calificación, solo mostrar la tarjeta de calificación
   if (submitted && typeof submissionGrade === "number") {
+    const questionsCount = Math.max(questions.length, 1);
+    const isLegacyPercentScore = submissionGrade > questionsCount && submissionGrade <= 100;
+    const normalizedRatio = isLegacyPercentScore
+      ? Math.max(0, Math.min(submissionGrade / 100, 1))
+      : Math.max(0, Math.min(submissionGrade / questionsCount, 1));
+    const normalizedPct = normalizedRatio * 100;
+    const correctAnswers = isLegacyPercentScore
+      ? Math.round((submissionGrade / 100) * questions.length)
+      : Math.min(Math.round(submissionGrade), questions.length);
+    const scoreLabel = isLegacyPercentScore
+      ? `${submissionGrade}`
+      : `${submissionGrade}/${questionsCount}`;
     return (
       <div className="flex h-full w-full items-center justify-center px-0 lg:px-10">
         <div className="w-[90%] lg:w-full lg:max-w-md px-4 sm:px-6">
           <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-neutral-800/90 to-neutral-900/90 p-6 shadow-xl">
             <div className="flex flex-col items-center gap-4 text-center">
               <div className={`flex h-20 w-20 items-center justify-center rounded-full ${
-                submissionGrade >= 80 ? "bg-emerald-500/20 text-emerald-400" :
-                submissionGrade >= 60 ? "bg-amber-500/20 text-amber-400" :
+                normalizedPct >= 80 ? "bg-emerald-500/20 text-emerald-400" :
+                normalizedPct >= 60 ? "bg-amber-500/20 text-amber-400" :
                 "bg-red-500/20 text-red-400"
               }`}>
-                <span className="text-3xl font-bold">{submissionGrade}</span>
+                <span className="text-3xl font-bold">{scoreLabel}</span>
               </div>
               <div>
                 <p className="text-lg font-semibold text-white">Tu calificación</p>
                 <p className="text-sm text-neutral-400">
-                  {submissionGrade >= 80 ? "¡Excelente trabajo!" :
-                   submissionGrade >= 60 ? "Buen intento, puedes mejorar" :
+                  {normalizedPct >= 80 ? "¡Excelente trabajo!" :
+                   normalizedPct >= 60 ? "Buen intento, puedes mejorar" :
                    "Necesitas repasar el material"}
                 </p>
               </div>
               <div className="mt-2 rounded-lg bg-white/5 px-4 py-2">
                 <p className="text-xs text-neutral-500">Respondidas correctamente</p>
                 <p className="text-lg font-semibold text-white">
-                  {Math.round((submissionGrade / 100) * questions.length)} de {questions.length}
+                  {correctAnswers} de {questions.length}
                 </p>
               </div>
               <p className="mt-2 text-xs text-neutral-500">Quiz completado</p>

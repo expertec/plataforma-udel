@@ -56,7 +56,13 @@ function QuizDetailModal({ submission, questions, onClose, onGrade }: QuizDetail
   const needsManualGrade = existingGrade == null;
 
   const handleSaveGrade = async () => {
-    if (manualGrade == null || Number.isNaN(manualGrade) || !onGrade) return;
+    if (
+      manualGrade == null ||
+      Number.isNaN(manualGrade) ||
+      manualGrade < 0 ||
+      manualGrade > quizPointsMax ||
+      !onGrade
+    ) return;
     setSaving(true);
     try {
       await onGrade(manualGrade, feedback);
@@ -72,6 +78,23 @@ function QuizDetailModal({ submission, questions, onClose, onGrade }: QuizDetail
     const opt = q?.options?.find((o) => o.id === a.selectedOptionId);
     return opt?.isCorrect === true;
   }).length : 0;
+  const quizPointsMax = questions.length > 0 ? questions.length : 100;
+  const normalizeQuizRatio = (grade: number) => {
+    if (grade <= quizPointsMax) return Math.max(0, Math.min(grade / quizPointsMax, 1));
+    if (grade <= 100) return Math.max(0, Math.min(grade / 100, 1));
+    return Math.max(0, Math.min(grade / quizPointsMax, 1));
+  };
+  const existingGradeRatio = typeof existingGrade === "number" ? normalizeQuizRatio(existingGrade) : 0;
+  const existingGradeBadgeClass =
+    existingGradeRatio >= 0.8
+      ? "bg-emerald-100 text-emerald-700"
+      : existingGradeRatio >= 0.6
+      ? "bg-amber-100 text-amber-700"
+      : "bg-red-100 text-red-700";
+  const existingGradeLabel =
+    typeof existingGrade === "number" && existingGrade <= quizPointsMax && questions.length > 0
+      ? `${existingGrade}/${quizPointsMax}`
+      : existingGrade;
 
   return (
     <Dialog open onOpenChange={(open) => (!open ? onClose() : null)}>
@@ -80,12 +103,8 @@ function QuizDetailModal({ submission, questions, onClose, onGrade }: QuizDetail
           <div className="flex items-center justify-between gap-3">
             <DialogTitle>Respuestas de {submission.studentName}</DialogTitle>
             {existingGrade != null ? (
-              <span className={`rounded-full px-3 py-1 text-sm font-bold ${
-                existingGrade >= 80 ? "bg-emerald-100 text-emerald-700" :
-                existingGrade >= 60 ? "bg-amber-100 text-amber-700" :
-                "bg-red-100 text-red-700"
-              }`}>
-                {existingGrade}
+              <span className={`rounded-full px-3 py-1 text-sm font-bold ${existingGradeBadgeClass}`}>
+                {existingGradeLabel}
               </span>
             ) : (
               <span className="rounded-full bg-blue-100 px-3 py-1 text-sm font-bold text-blue-700">
@@ -203,11 +222,11 @@ function QuizDetailModal({ submission, questions, onClose, onGrade }: QuizDetail
               <h4 className="mb-3 text-sm font-semibold text-blue-900">Calificación Manual</h4>
               <div className="space-y-3">
                 <div>
-                  <label className="text-xs font-medium text-blue-800">Calificación (0-100)</label>
+                  <label className="text-xs font-medium text-blue-800">Calificación (0-{quizPointsMax})</label>
                   <input
                     type="number"
                     min={0}
-                    max={100}
+                    max={quizPointsMax}
                     value={manualGrade ?? ""}
                     onChange={(e) => setManualGrade(e.target.value ? Number(e.target.value) : undefined)}
                     className="mt-1 w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
@@ -234,7 +253,13 @@ function QuizDetailModal({ submission, questions, onClose, onGrade }: QuizDetail
                   </button>
                   <button
                     type="button"
-                    disabled={saving || manualGrade == null || Number.isNaN(manualGrade)}
+                    disabled={
+                      saving ||
+                      manualGrade == null ||
+                      Number.isNaN(manualGrade) ||
+                      manualGrade < 0 ||
+                      manualGrade > quizPointsMax
+                    }
                     onClick={handleSaveGrade}
                     className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
                   >
@@ -899,7 +924,25 @@ export function SubmissionsModal({
     );
   };
 
-  const inlineGradeMax = isForumClass ? 5 : 100;
+  const quizInlineGradeMax = isQuizClass
+    ? (quizQuestions.length > 0 ? quizQuestions.length : 100)
+    : 100;
+  const inlineGradeMax = isForumClass ? 5 : isQuizClass ? quizInlineGradeMax : 100;
+  const getQuizGradeRatio = (grade: number) => {
+    if (grade <= quizInlineGradeMax) return Math.max(0, Math.min(grade / quizInlineGradeMax, 1));
+    if (grade <= 100) return Math.max(0, Math.min(grade / 100, 1));
+    return Math.max(0, Math.min(grade / quizInlineGradeMax, 1));
+  };
+  const getQuizGradeBadgeClass = (grade: number) => {
+    const ratio = getQuizGradeRatio(grade);
+    if (ratio >= 0.8) return "bg-emerald-100 text-emerald-700";
+    if (ratio >= 0.6) return "bg-amber-100 text-amber-700";
+    return "bg-red-100 text-red-700";
+  };
+  const formatQuizGradeLabel = (grade: number) =>
+    quizQuestions.length > 0 && grade <= quizInlineGradeMax
+      ? `${grade}/${quizInlineGradeMax}`
+      : `${grade}`;
 
   const parseInlineGrade = (raw: string): number | null => {
     const normalized = raw.trim().replace(",", ".");
@@ -925,6 +968,8 @@ export function SubmissionsModal({
       toast.error(
         isForumClass
           ? "La calificación debe estar entre 0 y 5."
+          : isQuizClass
+          ? `La calificación debe estar entre 0 y ${inlineGradeMax}.`
           : "La calificación debe estar entre 0 y 100.",
       );
       return;
@@ -1219,11 +1264,9 @@ export function SubmissionsModal({
                             <td className="px-3 py-2">
                               {sub?.grade != null ? (
                                 <span className={`rounded-full px-2 py-1 text-xs font-semibold ${
-                                  sub.grade >= 80 ? "bg-emerald-100 text-emerald-700" :
-                                  sub.grade >= 60 ? "bg-amber-100 text-amber-700" :
-                                  "bg-red-100 text-red-700"
+                                  getQuizGradeBadgeClass(sub.grade)
                                 }`}>
-                                  {sub.grade}
+                                  {formatQuizGradeLabel(sub.grade)}
                                 </span>
                               ) : sub ? (
                                 <input
@@ -1239,7 +1282,7 @@ export function SubmissionsModal({
                                       void handleSaveInlineGrade(row);
                                     }
                                   }}
-                                  placeholder="0-100"
+                                  placeholder={`0-${inlineGradeMax}`}
                                   disabled={isInlineSaving}
                                   className={`w-24 rounded-lg border px-2 py-1 text-sm ${
                                     inlineGradeInvalid ? "border-red-400" : "border-slate-300"

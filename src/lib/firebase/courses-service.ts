@@ -172,7 +172,7 @@ export async function getCourses(teacherId?: string, maxResults?: number): Promi
     });
   }
 
-  // Con teacherId: obtener cursos propios + cursos de grupos donde es mentor
+  // Con teacherId: obtener cursos propios + cursos de grupos donde está asignado
   const constraints: QueryConstraint[] = [
     where("teacherId", "==", teacherId),
     orderBy("createdAt", "desc"),
@@ -203,49 +203,68 @@ export async function getCourses(teacherId?: string, maxResults?: number): Promi
     };
   });
 
-  // Obtener grupos donde es mentor
+  // Obtener grupos donde es profesor titular y donde es mentor
   const groupsRef = collection(db, "groups");
+  const teacherGroupsQuery = query(groupsRef, where("teacherId", "==", teacherId));
   const mentorGroupsQuery = query(
     groupsRef,
-    where("assistantTeacherIds", "array-contains", teacherId)
+    where("assistantTeacherIds", "array-contains", teacherId),
   );
 
-  const mentorGroupsSnap = await getDocs(mentorGroupsQuery);
+  const [teacherGroupsSnap, mentorGroupsSnap] = await Promise.all([
+    getDocs(teacherGroupsQuery),
+    getDocs(mentorGroupsQuery),
+  ]);
 
-  // Recolectar IDs únicos de cursos de los grupos donde es mentor
+  // Recolectar IDs únicos de cursos asignados en grupos
+  const teacherAssignedCourseIds = new Set<string>();
   const mentorCourseIds = new Set<string>();
+
+  teacherGroupsSnap.docs.forEach((groupDoc) => {
+    const data = groupDoc.data() as Record<string, unknown>;
+    const groupCourseIds = getGroupCourseIds(data);
+    groupCourseIds.forEach((id) => teacherAssignedCourseIds.add(id));
+  });
+
   mentorGroupsSnap.docs.forEach((groupDoc) => {
     const data = groupDoc.data() as Record<string, unknown>;
     const allowedCourseIds = getMentorAllowedCourseIds(data, teacherId);
     allowedCourseIds.forEach((id) => mentorCourseIds.add(id));
   });
 
-  // Si no hay cursos de mentoría, retornar solo los propios
-  if (mentorCourseIds.size === 0) {
+  const assignedCourseIds = new Set<string>([
+    ...Array.from(teacherAssignedCourseIds),
+    ...Array.from(mentorCourseIds),
+  ]);
+
+  // Si no hay cursos asignados por grupo, retornar solo los propios
+  if (assignedCourseIds.size === 0) {
     return ownCourses;
   }
 
-  // Obtener los cursos de mentoría (en lotes de 30 porque Firestore tiene límite de 30 en 'in')
-  const mentorCourseIdsArray = Array.from(mentorCourseIds);
-  const mentorCourses: Course[] = [];
+  // Obtener los cursos asignados por grupo (en lotes de 30 por límite de Firestore en 'in')
+  const assignedCourseIdsArray = Array.from(assignedCourseIds);
+  const assignedCourses: Course[] = [];
 
   // Filtrar los cursos que ya son propios para evitar duplicados
-  const ownCourseIds = new Set(ownCourses.map(c => c.id));
-  const uniqueMentorCourseIds = mentorCourseIdsArray.filter(id => !ownCourseIds.has(id));
+  const ownCourseIds = new Set(ownCourses.map((c) => c.id));
+  const uniqueAssignedCourseIds = assignedCourseIdsArray.filter((id) => !ownCourseIds.has(id));
 
   // Procesar en lotes de 30
-  for (let i = 0; i < uniqueMentorCourseIds.length; i += 30) {
-    const batch = uniqueMentorCourseIds.slice(i, i + 30);
-    const mentorCoursesQuery = query(
+  for (let i = 0; i < uniqueAssignedCourseIds.length; i += 30) {
+    const batch = uniqueAssignedCourseIds.slice(i, i + 30);
+    const assignedCoursesQuery = query(
       coursesRef,
-      where("__name__", "in", batch)
+      where("__name__", "in", batch),
     );
 
-    const mentorCoursesSnap = await getDocs(mentorCoursesQuery);
-    mentorCoursesSnap.docs.forEach((doc) => {
-      const data = doc.data();
-      mentorCourses.push({
-        id: doc.id,
+    const assignedCoursesSnap = await getDocs(assignedCoursesQuery);
+    assignedCoursesSnap.docs.forEach((courseDoc) => {
+      const data = courseDoc.data();
+      const isMentorOnlyCourse =
+        mentorCourseIds.has(courseDoc.id) && !teacherAssignedCourseIds.has(courseDoc.id);
+      assignedCourses.push({
+        id: courseDoc.id,
         title: data.title ?? "Curso sin título",
         description: data.description ?? "",
         thumbnail: data.thumbnail ?? "",
@@ -258,13 +277,13 @@ export async function getCourses(teacherId?: string, maxResults?: number): Promi
         category: data.category ?? data.program ?? "",
         createdAt: data.createdAt?.toDate?.() ?? undefined,
         teacherId: data.teacherId,
-        isMentorCourse: true,
+        isMentorCourse: isMentorOnlyCourse,
       });
     });
   }
 
   // Combinar y ordenar por fecha
-  const allCourses = [...ownCourses, ...mentorCourses];
+  const allCourses = [...ownCourses, ...assignedCourses];
   allCourses.sort((a, b) => {
     const dateA = a.createdAt?.getTime() ?? 0;
     const dateB = b.createdAt?.getTime() ?? 0;

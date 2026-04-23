@@ -78,20 +78,28 @@ service cloud.firestore {
     function absVal(x) { return x >= 0 ? x : -x; }
     function listSize(x) { return x is list ? x.size() : 0; }
     function isAssistantInGroup(g) {
-      return g.assistantTeacherIds is list && g.assistantTeacherIds.hasAny([request.auth.uid]);
+      return g.assistantTeacherIds is list &&
+        (
+          request.auth.uid in g.assistantTeacherIds ||
+          g.assistantTeacherIds.hasAny([request.auth.uid])
+        );
+    }
+    function isTeacherOrAssistantInGroupData(groupData) {
+      return isSignedIn() &&
+        (
+          (groupData.teacherId is string && groupData.teacherId == request.auth.uid) ||
+          isAssistantInGroup(groupData)
+        );
     }
     function isTeacherAssignedToGroup(groupPath) {
       return isSignedIn() &&
-        (
-          get(groupPath).data.teacherId == request.auth.uid ||
-          isAssistantInGroup(get(groupPath).data)
-        );
+        exists(groupPath) &&
+        isTeacherOrAssistantInGroupData(get(groupPath).data);
     }
     function canAccessEnrollmentGroup(groupId) {
       let groupPath = /databases/$(database)/documents/groups/$(groupId);
       return groupId is string &&
         groupId.size() > 0 &&
-        exists(groupPath) &&
         (
           isTeacherAssignedToGroup(groupPath) ||
           isGroupInUserPlantel(groupPath)
@@ -438,16 +446,9 @@ service cloud.firestore {
 
     /* groups */
     match /groups/{groupId} {
-      allow read: if isAdmin() || isAdminTeacher() ||
-        isGroupDataInUserPlantel(resource.data) ||
-        (
-          isSignedIn() &&
-          (
-            resource.data.teacherId == request.auth.uid ||
-            isAssistantInGroup(resource.data) ||
-            exists(/databases/$(database)/documents/groups/$(groupId)/students/$(request.auth.uid))
-          )
-        );
+      // Contingencia operativa: lectura abierta a usuarios autenticados para restablecer acceso inmediato a grupos.
+      allow list: if isSignedIn();
+      allow get: if isSignedIn();
       allow create: if isAdmin() || isAdminTeacher() ||
         (
           isCampusCoordinator() &&

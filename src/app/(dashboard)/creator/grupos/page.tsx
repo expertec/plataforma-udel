@@ -11,6 +11,7 @@ import {
   getAllGroups,
   Group,
   deleteGroup,
+  getGroups,
   getGroupsByPlantel,
   getGroupsWhereAssistant,
 } from "@/lib/firebase/groups-service";
@@ -82,24 +83,62 @@ export default function GroupsPage() {
     try {
       const isAdminTeacher = isAdminTeacherRole(userRole);
       const isCoordinator = isCampusCoordinatorRole(userRole);
+      const ownGroupsPromise = isAdminTeacher
+        ? getAllGroups()
+        : isCoordinator && plantelAssignment?.plantelId
+          ? getGroupsByPlantel(plantelAssignment.plantelId)
+          : getGroups(currentUser.uid);
+      const assistantGroupsPromise =
+        isAdminTeacher || isCoordinator ? Promise.resolve([]) : getGroupsWhereAssistant(currentUser.uid);
 
-      const [myGroups, myAssistantGroups, myCourses, campusOptions] = await Promise.all([
-        isAdminTeacher
-          ? getAllGroups()
-          : isCoordinator && plantelAssignment?.plantelId
-            ? getGroupsByPlantel(plantelAssignment.plantelId)
-            : Promise.resolve([]),
-        isAdminTeacher || isCoordinator ? Promise.resolve([]) : getGroupsWhereAssistant(currentUser.uid),
-        getCourses(),
-        isAdminTeacher ? getPlanteles() : Promise.resolve([]),
-      ]);
-      setGroups(myGroups);
-      setAssistantGroups(myAssistantGroups);
-      setCourses(myCourses.map((c) => ({ id: c.id, title: c.title })));
-      setPlanteles(campusOptions);
+      const [myGroupsResult, myAssistantGroupsResult, myCoursesResult, campusOptionsResult] = await Promise.allSettled(
+        [
+          ownGroupsPromise,
+          assistantGroupsPromise,
+          getCourses(),
+          isAdminTeacher ? getPlanteles() : Promise.resolve([]),
+        ],
+      );
+
+      if (myGroupsResult.status === "fulfilled") {
+        setGroups(myGroupsResult.value);
+      } else {
+        console.error(myGroupsResult.reason);
+        setGroups([]);
+      }
+
+      if (myAssistantGroupsResult.status === "fulfilled") {
+        setAssistantGroups(myAssistantGroupsResult.value);
+      } else {
+        console.error(myAssistantGroupsResult.reason);
+        setAssistantGroups([]);
+      }
+
+      if (myCoursesResult.status === "fulfilled") {
+        setCourses(myCoursesResult.value.map((c) => ({ id: c.id, title: c.title })));
+      } else {
+        console.error(myCoursesResult.reason);
+        setCourses([]);
+        toast.error("No se pudieron cargar los cursos para asignación.");
+      }
+
+      if (campusOptionsResult.status === "fulfilled") {
+        setPlanteles(campusOptionsResult.value);
+      } else {
+        console.error(campusOptionsResult.reason);
+        setPlanteles([]);
+      }
+
+      if (myGroupsResult.status === "rejected" && myAssistantGroupsResult.status === "rejected") {
+        toast.error("No se pudieron cargar los grupos");
+      } else if (myGroupsResult.status === "rejected") {
+        toast.error("No se pudieron cargar tus grupos principales.");
+      } else if (myAssistantGroupsResult.status === "rejected") {
+        toast.error("No se pudieron cargar tus grupos de mentor.");
+      }
     } catch (err) {
       console.error(err);
-      toast.error("No se pudieron cargar los grupos");
+      toast.error("No se pudieron cargar tus datos de grupos.");
     } finally {
       setLoading(false);
     }
@@ -180,8 +219,10 @@ export default function GroupsPage() {
     activeGroups.length + finishedGroups.length + activeAssistantGroups.length + finishedAssistantGroups.length;
   const isAdminTeacher = isAdminTeacherRole(userRole);
   const isCampusCoordinator = isCampusCoordinatorRole(userRole);
+  const isTeacher = userRole === "teacher";
   const coordinatorHasPlantel = !isCampusCoordinator || Boolean(plantelAssignment?.plantelId);
-  const canManageOwnGroups = isAdminTeacher || (isCampusCoordinator && coordinatorHasPlantel);
+  const canCreateGroups = isAdminTeacher || (isCampusCoordinator && coordinatorHasPlantel);
+  const canViewPrimaryGroups = isAdminTeacher || isCampusCoordinator || isTeacher;
   const hasGlobalGroupsView = isAdminTeacher;
   const canDeleteGroup = (group: Group) =>
     isAdminTeacher || (isCampusCoordinator && group.teacherId === currentUser?.uid);
@@ -211,10 +252,10 @@ export default function GroupsPage() {
                 ? "Todos los grupos"
                 : isCampusCoordinator
                   ? `Grupos de ${plantelAssignment?.plantelName || "tu plantel"}`
-                  : "Grupos asignados"}
+                  : "Mis grupos asignados"}
             </h1>
           </div>
-          {canManageOwnGroups ? (
+          {canCreateGroups ? (
             <div className="flex gap-2">
               <button
                 type="button"
@@ -242,9 +283,9 @@ export default function GroupsPage() {
           <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-600 shadow-sm">
             {isCampusCoordinator && !plantelAssignment?.plantelId
               ? "Tu cuenta de coordinador todavía no tiene plantel asignado."
-              : canManageOwnGroups
-              ? "Aún no hay grupos registrados."
-              : "Aún no te han asignado como mentor de ningún grupo."}
+              : canCreateGroups
+                ? "Aún no hay grupos registrados."
+                : "Aún no te han asignado grupos ni mentorías."}
           </div>
         ) : (
           <div className="space-y-6">
@@ -292,7 +333,7 @@ export default function GroupsPage() {
             ) : null}
 
             {/* Grupos propios */}
-            {filteredTotalGroups > 0 && canManageOwnGroups && activeGroups.length > 0 ? (
+            {filteredTotalGroups > 0 && canViewPrimaryGroups && activeGroups.length > 0 ? (
               <section className="space-y-3">
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-semibold text-slate-800">
@@ -318,7 +359,7 @@ export default function GroupsPage() {
               <section className="space-y-3">
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-semibold text-slate-800">
-                    {canManageOwnGroups ? "Grupos como Mentor - Activos" : "Grupos Activos"}
+                    {canViewPrimaryGroups ? "Grupos como Mentor - Activos" : "Grupos Activos"}
                   </h2>
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -335,7 +376,7 @@ export default function GroupsPage() {
             ) : null}
 
             {/* Grupos finalizados propios */}
-            {filteredTotalGroups > 0 && canManageOwnGroups && finishedGroups.length > 0 ? (
+            {filteredTotalGroups > 0 && canViewPrimaryGroups && finishedGroups.length > 0 ? (
               <section className="space-y-3">
                 <h2 className="text-sm font-semibold text-slate-800">
                   {hasGlobalGroupsView ? "Grupos Finalizados" : "Mis Grupos Finalizados"}
@@ -358,7 +399,7 @@ export default function GroupsPage() {
             {filteredTotalGroups > 0 && finishedAssistantGroups.length > 0 ? (
               <section className="space-y-3">
                 <h2 className="text-sm font-semibold text-slate-800">
-                  {canManageOwnGroups ? "Grupos como Mentor - Finalizados" : "Grupos Finalizados"}
+                  {canViewPrimaryGroups ? "Grupos como Mentor - Finalizados" : "Grupos Finalizados"}
                 </h2>
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                   {finishedAssistantGroups.map((group) => (
