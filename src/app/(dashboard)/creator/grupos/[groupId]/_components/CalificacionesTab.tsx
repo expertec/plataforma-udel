@@ -418,7 +418,7 @@ export function CalificacionesTab({
                 forumClass.classId,
               );
               return posts
-                .map((post) => {
+                .map((post): Submission | null => {
                   const authorId = (post.authorId ?? "").trim() || post.id;
                   if (!authorId || !studentIdSet.has(authorId)) return null;
                   return {
@@ -440,7 +440,7 @@ export function CalificacionesTab({
                     grade: typeof post.grade === "number" ? post.grade : undefined,
                     feedback: post.feedback ?? "",
                     gradedAt: post.gradedAt ?? null,
-                  } satisfies Submission;
+                  };
                 })
                 .filter((submission): submission is Submission => submission !== null);
             } catch (error) {

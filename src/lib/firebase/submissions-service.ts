@@ -17,6 +17,15 @@ import { db } from "@/lib/firebase/firestore";
 
 export type SubmissionStatus = "pending" | "graded" | "late";
 
+export type SubmissionAnswer = {
+  questionId?: string;
+  question?: string;
+  selectedOptionId?: string;
+  selectedOptionText?: string;
+  isCorrect?: boolean;
+  [key: string]: unknown;
+};
+
 export type Submission = {
   id: string;
   classId: string;
@@ -35,7 +44,7 @@ export type Submission = {
   content?: string;
   status: SubmissionStatus;
   grade?: number;
-  answers?: unknown[];
+  answers?: SubmissionAnswer[];
   feedback?: string;
   gradedAt?: Date | null;
 };
@@ -57,7 +66,7 @@ type CreateSubmissionInput = {
   content?: string;
   status?: SubmissionStatus;
   grade?: number;
-  answers?: unknown[];
+  answers?: SubmissionAnswer[];
 };
 
 export async function createSubmission(
@@ -195,7 +204,7 @@ type SubmissionData = {
   content?: string;
   status?: SubmissionStatus | string;
   grade?: number;
-  answers?: unknown[];
+  answers?: SubmissionAnswer[];
   feedback?: string;
   gradedAt?: { toDate?: () => Date };
 };
@@ -222,7 +231,7 @@ function toSubmission(id: string, data: SubmissionData): Submission {
     content: data.content ?? "",
     status,
     grade: data.grade ?? undefined,
-    answers: Array.isArray(data.answers) ? data.answers : undefined,
+    answers: Array.isArray(data.answers) ? (data.answers as SubmissionAnswer[]) : undefined,
     feedback: data.feedback ?? "",
     gradedAt: data.gradedAt?.toDate?.() ?? null,
   };
