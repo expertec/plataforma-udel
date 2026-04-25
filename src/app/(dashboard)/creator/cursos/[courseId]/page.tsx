@@ -748,6 +748,40 @@ export default function CourseBuilderPage() {
     [courseId],
   );
 
+  const handleCopyLiveClassLink = useCallback(
+    async (lesson: Lesson, classItem: ClassData) => {
+      if (!courseId || classItem.type !== "live") return;
+
+      const searchParams = new URLSearchParams();
+      searchParams.set("courseId", courseId);
+      if (lesson.id.trim()) searchParams.set("lessonId", lesson.id.trim());
+      const query = searchParams.toString();
+      const path = `/live/${encodeURIComponent(classItem.id)}${query ? `?${query}` : ""}`;
+      const url = `${window.location.origin}${path}`;
+
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(url);
+        } else {
+          const textarea = document.createElement("textarea");
+          textarea.value = url;
+          textarea.setAttribute("readonly", "");
+          textarea.style.position = "fixed";
+          textarea.style.left = "-9999px";
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand("copy");
+          document.body.removeChild(textarea);
+        }
+        toast.success("Enlace para alumnos copiado");
+      } catch (error) {
+        console.error("No se pudo copiar el enlace de clase en vivo", error);
+        toast.error("No se pudo copiar el enlace");
+      }
+    },
+    [courseId],
+  );
+
   const handleStartLiveClass = useCallback(
     async (lesson: Lesson, classItem: ClassData) => {
       if (!courseId || classItem.type !== "live") return;
@@ -1118,6 +1152,7 @@ export default function CourseBuilderPage() {
                       onStartLiveClass={handleStartLiveClass}
                       onEndLiveClass={handleEndLiveClass}
                       onJoinLiveClass={handleJoinLiveClass}
+                      onCopyLiveLink={handleCopyLiveClassLink}
                       liveActionLoadingMap={liveActionLoadingMap}
                       showCreationMetadata={showCreationMetadata}
                     />

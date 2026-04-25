@@ -21,6 +21,7 @@ type ClassItemProps = {
   onStartLiveClass?: (item: ClassData) => void;
   onEndLiveClass?: (item: ClassData) => void;
   onJoinLiveClass?: (item: ClassData) => void;
+  onCopyLiveLink?: (item: ClassData) => void;
   liveActionLoading?: boolean;
   dragProps?: DragProps;
 };
@@ -66,6 +67,7 @@ export function ClassItem({
   onStartLiveClass,
   onEndLiveClass,
   onJoinLiveClass,
+  onCopyLiveLink,
   liveActionLoading = false,
   dragProps,
 }: ClassItemProps) {
@@ -174,6 +176,15 @@ export function ClassItem({
               Entrar en vivo
             </button>
           </>
+        ) : null}
+        {isLiveClass && !liveFinalized ? (
+          <button
+            type="button"
+            onClick={() => onCopyLiveLink?.(item)}
+            className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+          >
+            Copiar enlace
+          </button>
         ) : null}
         <button
           type="button"
