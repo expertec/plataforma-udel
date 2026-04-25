@@ -12,9 +12,9 @@ import {
 } from "@livekit/components-react";
 import { onAuthStateChanged, type User } from "firebase/auth";
 import { Track } from "livekit-client";
-import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { LoginCard } from "@/components/auth/LoginCard";
 import { auth } from "@/lib/firebase/client";
 
 type LiveTokenResponse = {
@@ -63,6 +63,10 @@ export default function LiveClassRoomPage() {
   const classId = useMemo(() => (params.classId ?? "").trim(), [params.classId]);
   const courseId = useMemo(() => (searchParams.get("courseId") ?? "").trim(), [searchParams]);
   const lessonId = useMemo(() => (searchParams.get("lessonId") ?? "").trim(), [searchParams]);
+  const returnTo = useMemo(() => {
+    const query = searchParams.toString();
+    return `/live/${encodeURIComponent(classId)}${query ? `?${query}` : ""}`;
+  }, [classId, searchParams]);
 
   const [user, setUser] = useState<User | null>(auth.currentUser);
   const [authLoading, setAuthLoading] = useState(!auth.currentUser);
@@ -299,11 +303,12 @@ export default function LiveClassRoomPage() {
 
   if (!user) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-950 text-white">
-        <p>Inicia sesión para entrar a esta clase en vivo.</p>
-        <Link href="/auth/login" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white">
-          Ir a login
-        </Link>
+      <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 py-10 text-white">
+        <LoginCard
+          title="Entrar a clase en vivo"
+          subtitle="Inicia sesión para acceder con tu cuenta de alumno."
+          redirectTo={returnTo}
+        />
       </div>
     );
   }

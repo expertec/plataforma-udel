@@ -13,11 +13,13 @@ import Image from "next/image";
 type LoginCardProps = {
   title?: string;
   subtitle?: string;
+  redirectTo?: string;
 };
 
 export function LoginCard({
   title = "Acceder",
   subtitle = "Ingresa con tu correo y contraseña.",
+  redirectTo,
 }: LoginCardProps) {
   const router = useRouter();
   const [email, setEmail] = useState("");
@@ -41,12 +43,13 @@ export function LoginCard({
           toast.error("No se encontró un rol asignado.");
           return;
         }
-        const destination = role === "student" ? "/feed" : "/creator";
+        const destination =
+          redirectTo && redirectTo.startsWith("/") ? redirectTo : role === "student" ? "/feed" : "/creator";
         toast.success("Inicio de sesión correcto");
         if (remember) {
           // noop placeholder; add persistence here si se requiere.
         }
-        router.push(destination);
+        router.replace(destination);
       })
       .catch((error) => {
         const message =
