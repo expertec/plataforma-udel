@@ -14,7 +14,7 @@ import { onAuthStateChanged, type User } from "firebase/auth";
 import { Track } from "livekit-client";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { auth } from "@/lib/firebase/client";
 
 type LiveTokenResponse = {
@@ -76,7 +76,9 @@ export default function LiveClassRoomPage() {
   const [scheduledStartAt, setScheduledStartAt] = useState<string | null>(null);
   const [timezone, setTimezone] = useState<string>("America/Monterrey");
   const [asRole, setAsRole] = useState<"teacher" | "student" | null>(null);
+  const [startingSession, setStartingSession] = useState(false);
   const [endingSession, setEndingSession] = useState(false);
+  const autoStartAttemptedRef = useRef(false);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (nextUser) => {
@@ -179,6 +181,44 @@ export default function LiveClassRoomPage() {
     }
   }, [classId, courseId, lessonId, user]);
 
+  const startSession = useCallback(async () => {
+    if (!classId || !user || asRole !== "teacher") return;
+
+    setStartingSession(true);
+    setError(null);
+    try {
+      const idToken = await user.getIdToken();
+      const search = new URLSearchParams();
+      if (courseId) search.set("courseId", courseId);
+      if (lessonId) search.set("lessonId", lessonId);
+      const query = search.toString();
+
+      const response = await fetch(
+        `/api/live/classes/${encodeURIComponent(classId)}/start${query ? `?${query}` : ""}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${idToken}`,
+          },
+        },
+      );
+      const payload = (await response.json().catch(() => null)) as
+        | { success?: boolean; error?: string }
+        | null;
+      if (!response.ok || !payload?.success) {
+        throw new Error(payload?.error || "No se pudo iniciar la sesión");
+      }
+
+      await requestToken();
+    } catch (startError) {
+      console.error("No se pudo iniciar la sesión", startError);
+      setError(startError instanceof Error ? startError.message : "No se pudo iniciar la sesión");
+      setLoading(false);
+    } finally {
+      setStartingSession(false);
+    }
+  }, [asRole, classId, courseId, lessonId, requestToken, user]);
+
   const endSession = useCallback(async () => {
     if (!classId || !user || asRole !== "teacher") return;
 
@@ -227,11 +267,21 @@ export default function LiveClassRoomPage() {
   useEffect(() => {
     if (!user || !classId) return;
     if (token || waitingReason !== "waiting_teacher") return;
+    if (asRole === "teacher") return;
     const timer = window.setInterval(() => {
       requestToken();
     }, 8000);
     return () => window.clearInterval(timer);
-  }, [classId, requestToken, token, user, waitingReason]);
+  }, [asRole, classId, requestToken, token, user, waitingReason]);
+
+  useEffect(() => {
+    if (!user || !classId) return;
+    if (token || waitingReason !== "waiting_teacher" || asRole !== "teacher") return;
+    if (startingSession) return;
+    if (autoStartAttemptedRef.current) return;
+    autoStartAttemptedRef.current = true;
+    startSession();
+  }, [asRole, classId, startSession, startingSession, token, user, waitingReason]);
 
   useEffect(() => {
     if (!user || !classId) return;
@@ -287,7 +337,9 @@ export default function LiveClassRoomPage() {
             ? "La sesión terminó. Si la grabación está lista podrás verla desde la plataforma."
             : waitingReason === "left_room"
               ? "Saliste de la sala. Puedes volver a entrar cuando quieras."
-              : "El profesor aún no inicia la sesión. Esta pantalla se actualizará automáticamente."}
+              : asRole === "teacher"
+                ? "La sesión todavía no está iniciada."
+                : "El profesor aún no inicia la sesión. Esta pantalla se actualizará automáticamente."}
         </p>
         {scheduledStartAt ? (
           <p className="text-xs text-slate-300">
@@ -299,13 +351,24 @@ export default function LiveClassRoomPage() {
             ({timezone})
           </p>
         ) : null}
-        <button
-          type="button"
-          onClick={requestToken}
-          className="rounded-lg border border-slate-400 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-        >
-          {waitingReason === "left_room" ? "Volver a entrar" : "Actualizar estado"}
-        </button>
+        {asRole === "teacher" && waitingReason === "waiting_teacher" ? (
+          <button
+            type="button"
+            disabled={startingSession}
+            onClick={startSession}
+            className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-500 disabled:opacity-60"
+          >
+            {startingSession ? "Iniciando..." : "Iniciar sesión"}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={requestToken}
+            className="rounded-lg border border-slate-400 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+          >
+            {waitingReason === "left_room" ? "Volver a entrar" : "Actualizar estado"}
+          </button>
+        )}
       </div>
     );
   }

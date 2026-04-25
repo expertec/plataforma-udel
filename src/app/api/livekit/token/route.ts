@@ -51,6 +51,7 @@ export async function POST(request: NextRequest) {
     });
 
     const currentSession = access.classContext.liveSession;
+    const normalizedCurrentSession = normalizeLiveSession(currentSession);
     const fallbackSession = createLiveSessionForClass({
       courseId: access.classContext.courseId,
       lessonId: access.classContext.lessonId,
@@ -59,7 +60,7 @@ export async function POST(request: NextRequest) {
     });
 
     const roomName =
-      normalizeLiveSession(currentSession)?.roomName ||
+      normalizedCurrentSession?.roomName ||
       buildLiveRoomName({
         courseId: access.classContext.courseId,
         lessonId: access.classContext.lessonId,
@@ -67,7 +68,7 @@ export async function POST(request: NextRequest) {
       });
 
     let session = {
-      ...fallbackSession,
+      ...(normalizedCurrentSession ?? fallbackSession),
       roomName,
     };
 

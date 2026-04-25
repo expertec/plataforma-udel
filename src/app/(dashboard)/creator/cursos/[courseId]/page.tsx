@@ -757,13 +757,20 @@ export default function CourseBuilderPage() {
         return;
       }
 
+      const searchParams = new URLSearchParams();
+      searchParams.set("role", "teacher");
+      searchParams.set("courseId", courseId);
+      if (lesson.id.trim()) searchParams.set("lessonId", lesson.id.trim());
+      const query = searchParams.toString();
+      const liveUrl = `/live/${encodeURIComponent(classItem.id)}${query ? `?${query}` : ""}`;
+      const liveWindow = window.open("about:blank", "_blank");
+      if (liveWindow) {
+        liveWindow.opener = null;
+      }
+
       setLiveActionLoadingMap((prev) => ({ ...prev, [classItem.id]: true }));
       try {
         const token = await user.getIdToken();
-        const searchParams = new URLSearchParams();
-        searchParams.set("courseId", courseId);
-        if (lesson.id.trim()) searchParams.set("lessonId", lesson.id.trim());
-        const query = searchParams.toString();
         const response = await fetch(`/api/live/classes/${encodeURIComponent(classItem.id)}/start${query ? `?${query}` : ""}`, {
           method: "POST",
           headers: {
@@ -777,15 +784,20 @@ export default function CourseBuilderPage() {
           throw new Error(payload?.error || "No se pudo iniciar la clase en vivo");
         }
         toast.success("Clase en vivo iniciada");
-        handleJoinLiveClass(lesson, classItem);
+        if (liveWindow) {
+          liveWindow.location.href = liveUrl;
+        } else {
+          window.open(liveUrl, "_blank", "noopener,noreferrer");
+        }
       } catch (error) {
+        liveWindow?.close();
         console.error(error);
         toast.error(error instanceof Error ? error.message : "No se pudo iniciar la clase en vivo");
       } finally {
         setLiveActionLoadingMap((prev) => ({ ...prev, [classItem.id]: false }));
       }
     },
-    [courseId, handleJoinLiveClass],
+    [courseId],
   );
 
   const handleEndLiveClass = useCallback(
