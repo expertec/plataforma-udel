@@ -13,6 +13,7 @@ import {
   setAssistantTeachers,
   setMentorCourseAccess,
   updateGroupCampusGradeSettings,
+  updateGroupInPersonMode,
   updateGroupPlantel,
 } from "@/lib/firebase/groups-service";
 import { getPlanteles, getUserPlantelAssignment, Plantel, PlantelAssignment } from "@/lib/firebase/planteles-service";
@@ -70,7 +71,9 @@ export default function GroupDetailPage() {
     enableGlobalExamGrade: false,
     enableExtraordinaryExamGrade: false,
   });
+  const [inPersonMode, setInPersonMode] = useState(false);
   const [savingCampusGradeConfig, setSavingCampusGradeConfig] = useState(false);
+  const [savingInPersonMode, setSavingInPersonMode] = useState(false);
   const [studentSubmissionsModal, setStudentSubmissionsModal] = useState<{
     open: boolean;
     studentId: string;
@@ -174,6 +177,7 @@ export default function GroupDetailPage() {
       enableGlobalExamGrade: group.enableGlobalExamGrade === true,
       enableExtraordinaryExamGrade: group.enableExtraordinaryExamGrade === true,
     });
+    setInPersonMode(group.isInPerson === true);
     setSelectedPlantelId(group.plantelId ?? "");
   }, [group]);
 
@@ -236,6 +240,7 @@ export default function GroupDetailPage() {
       (currentUserId === group.teacherId || isAdminTeacherRole(userRole)),
   );
   const canManageCampusGradeConfig = isAdminTeacherRole(userRole);
+  const canManageInPersonMode = canManageMentors;
   const canManageGroupPlantel = isAdminTeacherRole(userRole);
   const hasFullGroupVisibility = isAdminTeacherRole(userRole);
   const isCurrentUserAssistant = Boolean(
@@ -305,6 +310,9 @@ export default function GroupDetailPage() {
         campusGradeConfig.enableGlobalExamGrade !== (group.enableGlobalExamGrade === true) ||
         campusGradeConfig.enableExtraordinaryExamGrade !==
           (group.enableExtraordinaryExamGrade === true)),
+  );
+  const inPersonModeChanged = Boolean(
+    group && inPersonMode !== (group.isInPerson === true),
   );
 
   useEffect(() => {
@@ -563,6 +571,28 @@ export default function GroupDetailPage() {
     }
   };
 
+  const handleSaveInPersonMode = async () => {
+    if (!group) return;
+    if (!canManageInPersonMode) {
+      toast.error("No tienes permisos para cambiar el modo del grupo.");
+      return;
+    }
+    setSavingInPersonMode(true);
+    try {
+      await updateGroupInPersonMode({
+        groupId: group.id,
+        isInPerson: inPersonMode,
+      });
+      setGroup((prev) => (prev ? { ...prev, isInPerson: inPersonMode } : prev));
+      toast.success("Modo del grupo actualizado.");
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo guardar el modo del grupo.");
+    } finally {
+      setSavingInPersonMode(false);
+    }
+  };
+
   const handleSavePlantel = async () => {
     if (!group) return;
     if (!canManageGroupPlantel) {
@@ -718,6 +748,7 @@ export default function GroupDetailPage() {
                   groupId={group.id}
                   courseIds={visibleCourseIdsForCurrentUser}
                   studentsCount={group.studentsCount}
+                  isInPerson={group.isInPerson === true}
                 />
               )}
             </TabsContent>
@@ -878,6 +909,44 @@ export default function GroupDetailPage() {
                       </button>
                       <p className="text-xs text-slate-500">
                         Estos campos se mostrarán en la pestaña de calificaciones.
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+                {canManageInPersonMode ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                      Modalidad del grupo
+                    </p>
+                    <h3 className="mt-1 text-lg font-semibold text-slate-900">
+                      Grupo presencial
+                    </h3>
+                    <p className="text-sm text-slate-600">
+                      En modo presencial el alumno solo ve tareas y el profesor puede capturar
+                      calificaciones manuales sin archivo.
+                    </p>
+
+                    <label className="mt-4 flex items-center gap-2 text-sm text-slate-800">
+                      <input
+                        type="checkbox"
+                        checked={inPersonMode}
+                        onChange={(event) => setInPersonMode(event.target.checked)}
+                        className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span>Activar modo presencial para este grupo</span>
+                    </label>
+
+                    <div className="mt-4 flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={handleSaveInPersonMode}
+                        disabled={!inPersonModeChanged || savingInPersonMode}
+                        className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {savingInPersonMode ? "Guardando..." : "Guardar modalidad"}
+                      </button>
+                      <p className="text-xs text-slate-500">
+                        Puedes cambiar este ajuste cuando lo necesites.
                       </p>
                     </div>
                   </div>

@@ -44,6 +44,7 @@ export type Group = {
   status: "active" | "finished" | "archived";
   studentsCount: number;
   maxStudents: number;
+  isInPerson?: boolean;
   enableCampusTasksGrade?: boolean;
   enableCampusFinalExamGrade?: boolean;
   enableGlobalExamGrade?: boolean;
@@ -67,6 +68,7 @@ type CreateGroupData = {
   startDate?: Date;
   endDate?: Date;
   maxStudents: number;
+  isInPerson?: boolean;
   enableCampusTasksGrade?: boolean;
   enableCampusFinalExamGrade?: boolean;
   enableGlobalExamGrade?: boolean;
@@ -284,6 +286,7 @@ const toGroup = (id: string, data: DocumentData): Group => {
         : "active",
     studentsCount: typeof data.studentsCount === "number" ? data.studentsCount : 0,
     maxStudents: typeof data.maxStudents === "number" ? data.maxStudents : 0,
+    isInPerson: data.isInPerson === true,
     enableCampusTasksGrade: data.enableCampusTasksGrade === true,
     enableCampusFinalExamGrade: data.enableCampusFinalExamGrade === true,
     enableGlobalExamGrade: data.enableGlobalExamGrade === true,
@@ -327,6 +330,7 @@ export async function createGroup(data: CreateGroupData): Promise<string> {
     status: "active",
     studentsCount: 0,
     maxStudents: data.maxStudents,
+    isInPerson: data.isInPerson === true,
     enableCampusTasksGrade: data.enableCampusTasksGrade === true,
     enableCampusFinalExamGrade: data.enableCampusFinalExamGrade === true,
     enableGlobalExamGrade: data.enableGlobalExamGrade === true,
@@ -357,6 +361,18 @@ export async function updateGroupCampusGradeSettings(params: {
     enableCampusFinalExamGrade: Boolean(enableCampusFinalExamGrade),
     enableGlobalExamGrade: Boolean(enableGlobalExamGrade),
     enableExtraordinaryExamGrade: Boolean(enableExtraordinaryExamGrade),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function updateGroupInPersonMode(params: {
+  groupId: string;
+  isInPerson: boolean;
+}): Promise<void> {
+  const { groupId, isInPerson } = params;
+  if (!groupId) return;
+  await updateDoc(doc(db, "groups", groupId), {
+    isInPerson: Boolean(isInPerson),
     updatedAt: serverTimestamp(),
   });
 }

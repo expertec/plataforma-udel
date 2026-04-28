@@ -66,6 +66,7 @@ type FeedClass = {
   enrollmentId?: string;
   groupId?: string;
   groupName?: string;
+  groupIsInPerson?: boolean;
   classTitle?: string;
   videoUrl?: string;
   audioUrl?: string;
@@ -709,7 +710,13 @@ export default function StudentFeedPageClient() {
   }, [activePendingSurvey?.id, activePendingSurvey]);
 
   const visibleClasses = useMemo(() => {
-    const platformVisible = classes.filter((cls) => cls.showInStudentPlatform !== false);
+    const platformVisible = classes.filter((cls) => {
+      if (cls.showInStudentPlatform === false) return false;
+      if (cls.groupIsInPerson === true) {
+        return cls.hasAssignment === true;
+      }
+      return true;
+    });
     if (previewMode) return platformVisible;
     return platformVisible.filter((cls) => {
       const courseClosed = isCourseClosedForClass(cls);
@@ -1623,6 +1630,7 @@ export default function StudentFeedPageClient() {
                 lessonId: lesson.id,
                 enrollmentId: undefined,
                 groupId: undefined,
+                groupIsInPerson: false,
                 classTitle: c.title ?? "Clase sin título",
                 videoUrl: trimSafeString(c.videoUrl),
                 audioUrl: trimSafeString(c.audioUrl),
@@ -1982,6 +1990,7 @@ export default function StudentFeedPageClient() {
 
             const groupData = groupDoc.data();
             const currentGroupName = groupData.groupName ?? "Grupo";
+            const isGroupInPerson = groupData.isInPerson === true;
             groupNames.push(currentGroupName);
 
             const coursesArray: Array<{ courseId: string; courseName: string }> =
@@ -2048,6 +2057,7 @@ export default function StudentFeedPageClient() {
                         enrollmentId: currentEnrollmentId,
                         groupId: currentGroupId,
                         groupName: currentGroupName,
+                        groupIsInPerson: isGroupInPerson,
                         classTitle: c.title ?? "Clase sin título",
                         videoUrl: trimSafeString(c.videoUrl),
                         audioUrl: trimSafeString(c.audioUrl),
@@ -2903,6 +2913,14 @@ export default function StudentFeedPageClient() {
   }, [activeIndex, visibleClasses, handleProgress, previewMode]);
 
   useEffect(() => {
+    if (previewMode) return;
+    const cls = visibleClasses[activeIndex];
+    if (!cls || cls.groupIsInPerson !== true) return;
+    if (completedRef.current[cls.id] || seenRef.current[cls.id]) return;
+    handleProgress(cls.id, 100, cls.type, false, cls.assignmentTemplateUrl);
+  }, [activeIndex, visibleClasses, handleProgress, previewMode]);
+
+  useEffect(() => {
     if (previewMode) {
       setForumsReady(true);
       return;
@@ -2912,6 +2930,28 @@ export default function StudentFeedPageClient() {
   }, [classes, currentUser?.uid, loadForumStatusesForAll, previewMode]);
 
   const renderContent = (cls: FeedClass, idx: number) => {
+    if (!previewMode && cls.groupIsInPerson === true) {
+      return (
+        <div className="flex h-full w-full items-center justify-center bg-neutral-950 px-6 text-center">
+          <div className="max-w-md rounded-2xl border border-white/10 bg-neutral-900/70 p-6">
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">
+              Grupo presencial
+            </p>
+            <h3 className="mt-2 text-xl font-semibold text-white">{cls.title}</h3>
+            <p className="mt-2 text-sm text-neutral-300">
+              Este grupo se gestiona presencialmente. Aquí solo verás y enviarás tareas.
+            </p>
+            {cls.hasAssignment ? (
+              <p className="mt-3 text-xs text-neutral-400">
+                Usa el botón <span className="font-semibold text-white">Tarea</span> para
+                descargar o subir tu entrega.
+              </p>
+            ) : null}
+          </div>
+        </div>
+      );
+    }
+
     if (cls.type === "video" && cls.videoUrl) {
       const sanitizedDescription = cls.content && cls.id ? sanitizedContentMap[cls.id] ?? "" : "";
       const plainDescription = sanitizedDescription.replace(/<[^>]+>/g, "").trim();

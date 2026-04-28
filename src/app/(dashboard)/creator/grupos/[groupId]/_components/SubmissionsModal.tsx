@@ -5,7 +5,12 @@ import { ArrowLeft } from "lucide-react";
 import { getDocs, collection, doc, getDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { auth } from "@/lib/firebase/client";
-import { getSubmissionsByClass, Submission, deleteSubmission } from "@/lib/firebase/submissions-service";
+import {
+  createSubmission,
+  getSubmissionsByClass,
+  Submission,
+  deleteSubmission,
+} from "@/lib/firebase/submissions-service";
 import { gradeSubmission } from "@/lib/firebase/submissions-service";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { GradeModal } from "./GradeModal";
@@ -684,6 +689,7 @@ type Props = {
   courseId?: string;
   lessonId?: string;
   classType?: string;
+  isInPerson?: boolean;
   className: string;
   isOpen: boolean;
   onClose: () => void;
@@ -706,6 +712,7 @@ export function SubmissionsModal({
   courseId,
   lessonId,
   classType,
+  isInPerson = false,
   isOpen,
   onClose,
 }: Props) {
@@ -841,7 +848,7 @@ export function SubmissionsModal({
     });
   };
 
-  const notifyGradeByWhatsApp = async (submission: Submission, grade: number) => {
+  const notifyGradeByWhatsApp = async (submissionId: string, grade: number) => {
     try {
       const currentUser = auth.currentUser;
       if (!currentUser) return;
@@ -854,7 +861,7 @@ export function SubmissionsModal({
         },
         body: JSON.stringify({
           groupId,
-          submissionId: submission.id,
+          submissionId,
           grade,
         }),
       });
@@ -961,9 +968,16 @@ export function SubmissionsModal({
 
   const handleSaveInlineGrade = async (row: Row) => {
     const submission = row.submission;
-    if (!submission) return;
+    const canCreateManualSubmission =
+      isInPerson && !isForumClass && !isQuizClass && !submission;
+    const manualInlineKey = canCreateManualSubmission ? `manual:${row.student.id}` : null;
+    const inlineKey = submission?.id ?? manualInlineKey;
+    if (!inlineKey) return;
 
-    const parsedGrade = parseInlineGrade(getInlineGradeInput(submission));
+    const rawGrade = submission
+      ? getInlineGradeInput(submission)
+      : inlineGrades[inlineKey] ?? "";
+    const parsedGrade = parseInlineGrade(rawGrade);
     if (parsedGrade === null) {
       toast.error(
         isForumClass
@@ -975,9 +989,9 @@ export function SubmissionsModal({
       return;
     }
 
-    setSavingInlineGrades((prev) => new Set(prev).add(submission.id));
+    setSavingInlineGrades((prev) => new Set(prev).add(inlineKey));
     try {
-      if (isForumClass && courseId && lessonId) {
+      if (submission && isForumClass && courseId && lessonId) {
         await gradeForumPost({
           courseId,
           lessonId,
@@ -1004,11 +1018,34 @@ export function SubmissionsModal({
           ),
         );
         toast.success("Calificación de foro guardada correctamente");
-      } else {
+      } else if (submission) {
         await gradeSubmission(groupId, submission.id, parsedGrade, submission.feedback ?? "");
-        void notifyGradeByWhatsApp(submission, parsedGrade);
+        void notifyGradeByWhatsApp(submission.id, parsedGrade);
         await refreshSubmissionsForTable();
         toast.success("Calificación guardada correctamente");
+      } else if (canCreateManualSubmission) {
+        const submissionId = await createSubmission(groupId, {
+          classId,
+          classDocId: classId,
+          courseId: courseId ?? "",
+          lessonId: lessonId ?? "",
+          className,
+          classType: classType ?? "assignment",
+          studentId: row.student.id,
+          studentName: row.student.name,
+          submittedAt: new Date(),
+          status: "graded",
+          grade: parsedGrade,
+          content: "Calificación capturada en grupo presencial sin archivo adjunto.",
+        });
+        void notifyGradeByWhatsApp(submissionId, parsedGrade);
+        await refreshSubmissionsForTable();
+        setInlineGrades((prev) => {
+          const next = { ...prev };
+          delete next[inlineKey];
+          return next;
+        });
+        toast.success("Calificación presencial guardada correctamente");
       }
     } catch (err) {
       console.error("Error guardando calificación inline:", err);
@@ -1016,7 +1053,7 @@ export function SubmissionsModal({
     } finally {
       setSavingInlineGrades((prev) => {
         const next = new Set(prev);
-        next.delete(submission.id);
+        next.delete(inlineKey);
         return next;
       });
     }
@@ -1150,19 +1187,30 @@ export function SubmissionsModal({
                 ) : null}
                 {filteredRows.map((row) => {
                   const sub = row.submission;
-                  const gradeInput = sub ? getInlineGradeInput(sub) : "";
-                  const parsedInlineGrade = sub ? parseInlineGrade(gradeInput) : null;
+                  const canCreateManualSubmission =
+                    isInPerson && !isForumClass && !isQuizClass && !sub;
+                  const manualInlineKey = canCreateManualSubmission ? `manual:${row.student.id}` : null;
+                  const inlineKey = sub?.id ?? manualInlineKey;
+                  const gradeInput = inlineKey
+                    ? Object.prototype.hasOwnProperty.call(inlineGrades, inlineKey)
+                      ? inlineGrades[inlineKey]
+                      : typeof sub?.grade === "number"
+                      ? String(sub.grade)
+                      : ""
+                    : "";
+                  const parsedInlineGrade = inlineKey ? parseInlineGrade(gradeInput) : null;
                   const hasInlineValue = gradeInput.trim().length > 0;
-                  const isInlineSaving = sub ? savingInlineGrades.has(sub.id) : false;
+                  const isInlineSaving = inlineKey ? savingInlineGrades.has(inlineKey) : false;
                   const inlineGradeInvalid =
-                    Boolean(sub) && hasInlineValue && parsedInlineGrade === null;
+                    Boolean(inlineKey) && hasInlineValue && parsedInlineGrade === null;
                   const currentGrade = sub?.grade ?? null;
                   const canSaveInline =
-                    Boolean(sub) &&
+                    Boolean(inlineKey) &&
                     parsedInlineGrade !== null &&
                     (
                       currentGrade == null ||
-                      Math.abs(currentGrade - parsedInlineGrade) > 0.001
+                      Math.abs(currentGrade - parsedInlineGrade) > 0.001 ||
+                      canCreateManualSubmission
                     ) &&
                     !isInlineSaving;
                   return (
@@ -1382,14 +1430,18 @@ export function SubmissionsModal({
                               </div>
                             </td>
                             <td className="px-3 py-2 text-slate-600">
-                              {sub ? (
+                              {sub || canCreateManualSubmission ? (
                                 <input
                                   type="text"
                                   inputMode="decimal"
                                   value={gradeInput}
-                                  onChange={(event) =>
-                                    setInlineGrades((prev) => ({ ...prev, [sub.id]: event.target.value }))
-                                  }
+                                  onChange={(event) => {
+                                    if (!inlineKey) return;
+                                    setInlineGrades((prev) => ({
+                                      ...prev,
+                                      [inlineKey]: event.target.value,
+                                    }));
+                                  }}
                                   onKeyDown={(event) => {
                                     if (event.key === "Enter" && canSaveInline) {
                                       event.preventDefault();
@@ -1408,14 +1460,18 @@ export function SubmissionsModal({
                             </td>
                             <td className="px-3 py-2">
                               <div className="flex items-center gap-2">
-                                {sub ? (
+                                {sub || canCreateManualSubmission ? (
                                   <button
                                     type="button"
                                     className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1 text-sm font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
                                     disabled={!canSaveInline}
                                     onClick={() => void handleSaveInlineGrade(row)}
                                   >
-                                    {isInlineSaving ? "Guardando..." : sub.grade == null ? "Guardar" : "Actualizar"}
+                                    {isInlineSaving
+                                      ? "Guardando..."
+                                      : sub?.grade == null
+                                      ? "Guardar"
+                                      : "Actualizar"}
                                   </button>
                                 ) : null}
                                 <button
@@ -1501,7 +1557,7 @@ export function SubmissionsModal({
               return;
             }
             await gradeSubmission(groupId, gradeModal.submission!.id, grade, feedback);
-            void notifyGradeByWhatsApp(gradeModal.submission!, grade);
+            void notifyGradeByWhatsApp(gradeModal.submission!.id, grade);
             await refreshSubmissionsForTable();
             setGradeModal({ open: false });
           }}
@@ -1515,7 +1571,7 @@ export function SubmissionsModal({
           onClose={() => setQuizDetailModal({ open: false })}
           onGrade={async (grade, feedback) => {
             await gradeSubmission(groupId, quizDetailModal.submission!.id, grade, feedback);
-            void notifyGradeByWhatsApp(quizDetailModal.submission!, grade);
+            void notifyGradeByWhatsApp(quizDetailModal.submission!.id, grade);
             toast.success("Calificación guardada correctamente");
             await refreshSubmissionsForTable();
             setQuizDetailModal({ open: false });

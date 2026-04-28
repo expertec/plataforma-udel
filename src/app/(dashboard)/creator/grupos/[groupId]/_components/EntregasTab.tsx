@@ -12,6 +12,7 @@ type EntregasTabProps = {
   groupId: string;
   courseIds: string[];
   studentsCount: number;
+  isInPerson?: boolean;
 };
 
 type AssignmentRow = {
@@ -37,7 +38,12 @@ type LessonGroup = {
   assignments: AssignmentRow[];
 };
 
-export function EntregasTab({ groupId, courseIds, studentsCount }: EntregasTabProps) {
+export function EntregasTab({
+  groupId,
+  courseIds,
+  studentsCount,
+  isInPerson = false,
+}: EntregasTabProps) {
   const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<{
@@ -345,6 +351,7 @@ export function EntregasTab({ groupId, courseIds, studentsCount }: EntregasTabPr
           classType={selected.classType}
           lessonId={selected.lessonId}
           courseId={selected.courseId}
+          isInPerson={isInPerson}
           isOpen
           onClose={() => setSelected(null)}
         />
