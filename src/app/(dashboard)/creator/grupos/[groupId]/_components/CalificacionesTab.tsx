@@ -37,8 +37,19 @@ type Student = { id: string; name: string };
 
 type Task = {
   id: string;
+  lessonId: string;
   title: string;
   classType: "quiz" | "assignment" | "forum" | "activity";
+};
+
+type QuizQuestionConfig = {
+  pointValue: number;
+  correctOptionIds: string[];
+};
+
+type QuizClassConfig = {
+  totalPoints: number;
+  questionsById: Record<string, QuizQuestionConfig>;
 };
 
 type AutoBreakdownEntry = {
@@ -168,6 +179,16 @@ const taskTypeLabel = (classType: Task["classType"]) => {
   return "Actividad";
 };
 
+const normalizeQuizPointValue = (value: unknown): number => {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : Number(typeof value === "string" ? value.trim().replace(",", ".") : value);
+  if (!Number.isFinite(parsed)) return 1;
+  const bounded = Math.max(0, Math.min(parsed, 100));
+  return Math.round(bounded * 100) / 100;
+};
+
 export function CalificacionesTab({
   groupId,
   courses,
@@ -183,6 +204,7 @@ export function CalificacionesTab({
 }: CalificacionesTabProps) {
   const [students, setStudents] = useState<Student[]>([]);
   const [tasksByCourse, setTasksByCourse] = useState<Record<string, Task[]>>({});
+  const [quizConfigByClass, setQuizConfigByClass] = useState<Record<string, QuizClassConfig>>({});
   const [allSubmissions, setAllSubmissions] = useState<Submission[]>([]);
   const [enrollmentByStudent, setEnrollmentByStudent] = useState<Record<string, EnrollmentRecord>>({});
   const [selectedCourseId, setSelectedCourseId] = useState<string>(courses[0]?.courseId ?? "");
@@ -385,6 +407,7 @@ export function CalificacionesTab({
                 if (!evaluable) return;
                 tasks.push({
                   id: cls.id,
+                  lessonId: lesson.id,
                   title: data.title ?? "Sin título",
                   classType:
                     data.forumEnabled === true
@@ -478,6 +501,101 @@ export function CalificacionesTab({
     return tasksByCourse[selectedCourseId] ?? [];
   }, [selectedCourseId, tasksByCourse]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadQuizConfig = async () => {
+      if (!selectedCourseId) {
+        setQuizConfigByClass({});
+        return;
+      }
+      const quizTasks = selectedCourseTasks.filter((task) => task.classType === "quiz");
+      if (quizTasks.length === 0) {
+        setQuizConfigByClass({});
+        return;
+      }
+
+      try {
+        const entries = await Promise.all(
+          quizTasks.map(async (task) => {
+            const questionsSnap = await getDocs(
+              collection(
+                db,
+                "courses",
+                selectedCourseId,
+                "lessons",
+                task.lessonId,
+                "classes",
+                task.id,
+                "questions",
+              ),
+            );
+
+            let totalPoints = 0;
+            const questionsById: Record<string, QuizQuestionConfig> = {};
+
+            questionsSnap.docs.forEach((questionDoc) => {
+              const data = questionDoc.data() as {
+                pointValue?: unknown;
+                options?: unknown[];
+              };
+              const pointValue = normalizeQuizPointValue(data.pointValue);
+              totalPoints = Math.round((totalPoints + pointValue) * 100) / 100;
+
+              const correctOptionIds = Array.isArray(data.options)
+                ? data.options
+                    .map((opt) => {
+                      const option = (opt && typeof opt === "object"
+                        ? opt
+                        : {}) as {
+                        id?: unknown;
+                        text?: unknown;
+                        isCorrect?: unknown;
+                      };
+                      if (option.isCorrect !== true) return "";
+                      if (typeof option.id === "string" && option.id.trim().length > 0) {
+                        return option.id.trim();
+                      }
+                      if (typeof option.text === "string" && option.text.trim().length > 0) {
+                        return option.text.trim();
+                      }
+                      return "";
+                    })
+                    .filter((id): id is string => id.length > 0)
+                : [];
+
+              questionsById[questionDoc.id] = {
+                pointValue,
+                correctOptionIds,
+              };
+            });
+
+            return [
+              task.id,
+              {
+                totalPoints,
+                questionsById,
+              } satisfies QuizClassConfig,
+            ] as const;
+          }),
+        );
+
+        if (cancelled) return;
+        setQuizConfigByClass(Object.fromEntries(entries));
+      } catch (error) {
+        console.warn("No se pudo cargar configuración de quizzes para recálculo dinámico:", error);
+        if (!cancelled) {
+          setQuizConfigByClass({});
+        }
+      }
+    };
+
+    void loadQuizConfig();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCourseId, selectedCourseTasks]);
+
   const rows = useMemo<StudentCourseRow[]>(() => {
     if (!selectedCourseId) return [];
     const classIdSet = new Set(selectedCourseTasks.map((t) => t.id));
@@ -506,24 +624,76 @@ export function CalificacionesTab({
         (sub) => sub.status === "graded" || typeof sub.grade === "number",
       );
       const normalizeTaskGrade = (task: Task, submission?: Submission): number | null => {
-        if (!submission || typeof submission.grade !== "number" || !Number.isFinite(submission.grade)) {
+        if (!submission) {
           return null;
         }
-        const rawGrade = submission.grade;
+        const rawGrade =
+          typeof submission.grade === "number" && Number.isFinite(submission.grade)
+            ? submission.grade
+            : null;
         if (task.classType !== "quiz") {
+          return rawGrade === null ? null : Math.round(rawGrade * 10) / 10;
+        }
+
+        const quizConfig = quizConfigByClass[task.id];
+        const answers = Array.isArray(submission.answers) ? submission.answers : [];
+
+        // Recalcular directamente con la configuración actual del quiz.
+        if (quizConfig && answers.length > 0) {
+          let matchedQuestions = 0;
+          let earnedPoints = 0;
+          answers.forEach((answer) => {
+            const questionId = typeof answer.questionId === "string" ? answer.questionId.trim() : "";
+            if (!questionId) return;
+            const questionConfig = quizConfig.questionsById[questionId];
+            if (!questionConfig) return;
+            matchedQuestions += 1;
+            const selectedOptionId =
+              typeof answer.selectedOptionId === "string" ? answer.selectedOptionId.trim() : "";
+            if (!selectedOptionId) return;
+            if (questionConfig.correctOptionIds.includes(selectedOptionId)) {
+              earnedPoints += questionConfig.pointValue;
+            }
+          });
+          if (matchedQuestions > 0) {
+            return Math.round(earnedPoints * 10) / 10;
+          }
+        }
+
+        if (rawGrade === null) {
+          return null;
+        }
+
+        // Fallback proporcional si ya no se pueden mapear IDs de preguntas/opciones.
+        const answersCount = Array.isArray(submission.answers) ? submission.answers.length : 0;
+        const quizPointsMaxFromAnswers = answers.length > 0
+          ? Math.round(
+              answers.reduce((sum, answer) => {
+                return sum + normalizeQuizPointValue(answer.questionPointValue);
+              }, 0) * 100,
+            ) / 100
+          : 0;
+        const historicalQuizPointsMax =
+          quizPointsMaxFromAnswers > 0 ? quizPointsMaxFromAnswers : answersCount;
+
+        if (historicalQuizPointsMax <= 0) {
           return Math.round(rawGrade * 10) / 10;
         }
 
-        const answersCount = Array.isArray(submission.answers) ? submission.answers.length : 0;
-        if (answersCount <= 0) {
-          return Math.round(rawGrade * 10) / 10;
-        }
+        const currentQuizPointsMax =
+          quizConfig && quizConfig.totalPoints > 0 ? quizConfig.totalPoints : historicalQuizPointsMax;
 
         // Compatibilidad: quizzes antiguos se guardaban como porcentaje 0-100.
-        if (rawGrade > answersCount && rawGrade <= 100) {
-          return Math.round(((rawGrade / 100) * answersCount) * 10) / 10;
+        const looksLikeLegacyPercent =
+          rawGrade <= 100 &&
+          (rawGrade > historicalQuizPointsMax || historicalQuizPointsMax > 100);
+        const ratio = looksLikeLegacyPercent
+          ? rawGrade / 100
+          : rawGrade / historicalQuizPointsMax;
+        if (!Number.isFinite(ratio)) {
+          return Math.round(rawGrade * 10) / 10;
         }
-        return Math.round(rawGrade * 10) / 10;
+        return Math.round(ratio * currentQuizPointsMax * 10) / 10;
       };
       const autoBreakdown = selectedCourseTasks.map<AutoBreakdownEntry>((task) => {
         const matched = latestByClass.get(task.id);
@@ -564,7 +734,7 @@ export function CalificacionesTab({
         closure,
       };
     });
-  }, [allSubmissions, enrollmentByStudent, groupId, selectedCourseId, selectedCourseTasks, students]);
+  }, [allSubmissions, enrollmentByStudent, groupId, quizConfigByClass, selectedCourseId, selectedCourseTasks, students]);
 
   const openRowsCount = useMemo(
     () => rows.filter((row) => row.closure?.status !== "closed").length,

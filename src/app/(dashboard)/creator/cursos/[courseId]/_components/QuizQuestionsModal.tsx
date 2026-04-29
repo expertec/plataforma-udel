@@ -83,6 +83,7 @@ export function QuizQuestionsModal({
           options: opts,
           order: questions.length,
           type: "multiple",
+          pointValue: 1,
         },
       ]);
       resetForm();

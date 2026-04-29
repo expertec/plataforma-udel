@@ -111,6 +111,16 @@ const normalizeQuizQuestionType = (value: unknown): QuizQuestionType => {
   return "multiple";
 };
 
+const normalizeQuizQuestionPointValue = (value: unknown): number => {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : Number(typeof value === "string" ? value.trim().replace(",", ".") : value);
+  if (!Number.isFinite(parsed)) return 1;
+  const bounded = Math.max(0, Math.min(parsed, 100));
+  return Math.round(bounded * 100) / 100;
+};
+
 const getGroupCourseIds = (groupData: Record<string, unknown>): string[] => {
   const ids = toUniqueStringArray(groupData.courseIds);
   if (ids.length > 0) return ids;
@@ -515,6 +525,7 @@ export async function duplicateCourse(input: DuplicateCourseInput): Promise<stri
             prompt: asString(question.data.prompt),
             type: questionType,
             order: asNumber(question.data.order, questionIndex),
+            pointValue: normalizeQuizQuestionPointValue(question.data.pointValue),
             explanation:
               asString(question.data.explanation) || asString(question.data.questionFeedback),
             options,
@@ -1150,6 +1161,7 @@ export type QuizQuestion = {
   prompt: string;
   type: "multiple" | "truefalse" | "open";
   order: number;
+  pointValue: number;
   explanation?: string;
   options: Array<{
     id: string;
@@ -1188,6 +1200,7 @@ export async function getQuizQuestions(
       explanation: data.explanation ?? data.questionFeedback ?? "",
       type: data.type ?? "multiple",
       order: data.order ?? 0,
+      pointValue: normalizeQuizQuestionPointValue(data.pointValue),
       options: rawOptions.map((opt) => {
         const option = (opt && typeof opt === "object"
           ? opt
@@ -1230,6 +1243,7 @@ type CreateQuizQuestionInput = {
     incorrectFeedback?: string;
   }>;
   order: number;
+  pointValue?: number;
   type?: "multiple" | "truefalse" | "open";
   answerText?: string;
 };
@@ -1251,6 +1265,7 @@ export async function createQuizQuestion(input: CreateQuizQuestionInput): Promis
     type: input.type ?? "multiple",
     options: input.options,
     order: input.order,
+    pointValue: normalizeQuizQuestionPointValue(input.pointValue),
     answerText: input.answerText ?? null,
     createdAt: serverTimestamp(),
   });

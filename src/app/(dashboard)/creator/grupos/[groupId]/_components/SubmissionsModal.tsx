@@ -28,9 +28,28 @@ import {
 type QuizAnswer = {
   questionId: string;
   question: string;
+  questionPointValue?: number;
   selectedOptionId: string;
   selectedOptionText: string;
   isCorrect?: boolean;
+};
+
+const normalizeQuizPointValue = (value: unknown): number => {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : Number(typeof value === "string" ? value.trim().replace(",", ".") : value);
+  if (!Number.isFinite(parsed)) return 1;
+  const bounded = Math.max(0, Math.min(parsed, 100));
+  return Math.round(bounded * 100) / 100;
+};
+
+const roundQuizPoints = (value: number) => Math.round(value * 100) / 100;
+
+const formatQuizPoints = (value: number) => {
+  const normalized = roundQuizPoints(value);
+  if (Number.isInteger(normalized)) return String(normalized);
+  return normalized.toFixed(2).replace(/\.?0+$/, "");
 };
 
 type QuizDetailModalProps = {
@@ -38,6 +57,7 @@ type QuizDetailModalProps = {
   questions: Array<{
     id: string;
     prompt: string;
+    pointValue: number;
     options: Array<{ id: string; text: string; isCorrect?: boolean }>;
   }>;
   onClose: () => void;
@@ -83,11 +103,17 @@ function QuizDetailModal({ submission, questions, onClose, onGrade }: QuizDetail
     const opt = q?.options?.find((o) => o.id === a.selectedOptionId);
     return opt?.isCorrect === true;
   }).length : 0;
-  const quizPointsMax = questions.length > 0 ? questions.length : 100;
+  const totalQuestionPoints = roundQuizPoints(
+    questions.reduce((sum, question) => sum + normalizeQuizPointValue(question.pointValue), 0),
+  );
+  const quizPointsMax = questions.length > 0 ? totalQuestionPoints : 100;
   const normalizeQuizRatio = (grade: number) => {
-    if (grade <= quizPointsMax) return Math.max(0, Math.min(grade / quizPointsMax, 1));
+    if (quizPointsMax > 0 && grade <= quizPointsMax) {
+      return Math.max(0, Math.min(grade / quizPointsMax, 1));
+    }
     if (grade <= 100) return Math.max(0, Math.min(grade / 100, 1));
-    return Math.max(0, Math.min(grade / quizPointsMax, 1));
+    if (quizPointsMax > 0) return Math.max(0, Math.min(grade / quizPointsMax, 1));
+    return 0;
   };
   const existingGradeRatio = typeof existingGrade === "number" ? normalizeQuizRatio(existingGrade) : 0;
   const existingGradeBadgeClass =
@@ -97,8 +123,13 @@ function QuizDetailModal({ submission, questions, onClose, onGrade }: QuizDetail
       ? "bg-amber-100 text-amber-700"
       : "bg-red-100 text-red-700";
   const existingGradeLabel =
-    typeof existingGrade === "number" && existingGrade <= quizPointsMax && questions.length > 0
-      ? `${existingGrade}/${quizPointsMax}`
+    typeof existingGrade === "number" &&
+    quizPointsMax > 0 &&
+    existingGrade <= quizPointsMax &&
+    questions.length > 0
+      ? `${formatQuizPoints(existingGrade)}/${formatQuizPoints(quizPointsMax)}`
+      : typeof existingGrade === "number"
+      ? formatQuizPoints(existingGrade)
       : existingGrade;
 
   return (
@@ -227,11 +258,12 @@ function QuizDetailModal({ submission, questions, onClose, onGrade }: QuizDetail
               <h4 className="mb-3 text-sm font-semibold text-blue-900">Calificación Manual</h4>
               <div className="space-y-3">
                 <div>
-                  <label className="text-xs font-medium text-blue-800">Calificación (0-{quizPointsMax})</label>
+                  <label className="text-xs font-medium text-blue-800">Calificación (0-{formatQuizPoints(quizPointsMax)})</label>
                   <input
                     type="number"
                     min={0}
                     max={quizPointsMax}
+                    step={0.01}
                     value={manualGrade ?? ""}
                     onChange={(e) => setManualGrade(e.target.value ? Number(e.target.value) : undefined)}
                     className="mt-1 w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
@@ -730,6 +762,7 @@ export function SubmissionsModal({
   const [quizQuestions, setQuizQuestions] = useState<Array<{
     id: string;
     prompt: string;
+    pointValue: number;
     options: Array<{ id: string; text: string; isCorrect?: boolean }>;
   }>>([]);
   const [quizDetailModal, setQuizDetailModal] = useState<{
@@ -807,6 +840,7 @@ export function SubmissionsModal({
               return {
                 id: d.id,
                 prompt: qd.prompt ?? qd.text ?? qd.question ?? "",
+                pointValue: normalizeQuizPointValue((qd as { pointValue?: unknown }).pointValue),
                 options: Array.isArray(qd.options)
                   ? qd.options.map((opt) => {
                       const option = (opt ?? {}) as {
@@ -932,13 +966,24 @@ export function SubmissionsModal({
   };
 
   const quizInlineGradeMax = isQuizClass
-    ? (quizQuestions.length > 0 ? quizQuestions.length : 100)
+    ? (() => {
+        const totalPoints = roundQuizPoints(
+          quizQuestions.reduce(
+            (sum, question) => sum + normalizeQuizPointValue(question.pointValue),
+            0,
+          ),
+        );
+        return quizQuestions.length > 0 ? totalPoints : 100;
+      })()
     : 100;
   const inlineGradeMax = isForumClass ? 5 : isQuizClass ? quizInlineGradeMax : 100;
   const getQuizGradeRatio = (grade: number) => {
-    if (grade <= quizInlineGradeMax) return Math.max(0, Math.min(grade / quizInlineGradeMax, 1));
+    if (quizInlineGradeMax > 0 && grade <= quizInlineGradeMax) {
+      return Math.max(0, Math.min(grade / quizInlineGradeMax, 1));
+    }
     if (grade <= 100) return Math.max(0, Math.min(grade / 100, 1));
-    return Math.max(0, Math.min(grade / quizInlineGradeMax, 1));
+    if (quizInlineGradeMax > 0) return Math.max(0, Math.min(grade / quizInlineGradeMax, 1));
+    return 0;
   };
   const getQuizGradeBadgeClass = (grade: number) => {
     const ratio = getQuizGradeRatio(grade);
@@ -947,9 +992,9 @@ export function SubmissionsModal({
     return "bg-red-100 text-red-700";
   };
   const formatQuizGradeLabel = (grade: number) =>
-    quizQuestions.length > 0 && grade <= quizInlineGradeMax
-      ? `${grade}/${quizInlineGradeMax}`
-      : `${grade}`;
+    quizQuestions.length > 0 && quizInlineGradeMax > 0 && grade <= quizInlineGradeMax
+      ? `${formatQuizPoints(grade)}/${formatQuizPoints(quizInlineGradeMax)}`
+      : `${formatQuizPoints(grade)}`;
 
   const parseInlineGrade = (raw: string): number | null => {
     const normalized = raw.trim().replace(",", ".");
@@ -983,7 +1028,7 @@ export function SubmissionsModal({
         isForumClass
           ? "La calificación debe estar entre 0 y 5."
           : isQuizClass
-          ? `La calificación debe estar entre 0 y ${inlineGradeMax}.`
+          ? `La calificación debe estar entre 0 y ${formatQuizPoints(inlineGradeMax)}.`
           : "La calificación debe estar entre 0 y 100.",
       );
       return;
@@ -1330,7 +1375,7 @@ export function SubmissionsModal({
                                       void handleSaveInlineGrade(row);
                                     }
                                   }}
-                                  placeholder={`0-${inlineGradeMax}`}
+                                  placeholder={`0-${formatQuizPoints(inlineGradeMax)}`}
                                   disabled={isInlineSaving}
                                   className={`w-24 rounded-lg border px-2 py-1 text-sm ${
                                     inlineGradeInvalid ? "border-red-400" : "border-slate-300"

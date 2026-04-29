@@ -20,6 +20,7 @@ export type SubmissionStatus = "pending" | "graded" | "late";
 export type SubmissionAnswer = {
   questionId?: string;
   question?: string;
+  questionPointValue?: number;
   selectedOptionId?: string;
   selectedOptionText?: string;
   isCorrect?: boolean;

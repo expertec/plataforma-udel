@@ -161,6 +161,24 @@ export function AddClassModal({
   const [liveScheduledEndAt, setLiveScheduledEndAt] = useState("");
   const [liveTimezone, setLiveTimezone] = useState("America/Monterrey");
   const [liveAutoRecording, setLiveAutoRecording] = useState(true);
+  const [quizQuestionPointValueInput, setQuizQuestionPointValueInput] = useState("1");
+  const normalizeQuestionPointValue = (value: unknown): number => {
+    const parsed =
+      typeof value === "number"
+        ? value
+        : Number(typeof value === "string" ? value.trim().replace(",", ".") : value);
+    if (!Number.isFinite(parsed)) return 1;
+    const bounded = Math.max(0, Math.min(parsed, 100));
+    return Math.round(bounded * 100) / 100;
+  };
+  const parseQuizQuestionPointValue = (value: string): number | null => {
+    const normalizedText = value.trim().replace(",", ".");
+    if (!normalizedText) return 1;
+    const parsed = Number(normalizedText);
+    if (!Number.isFinite(parsed)) return null;
+    if (parsed < 0 || parsed > 100) return null;
+    return normalizeQuestionPointValue(parsed);
+  };
   const makeEmptyQuestion = () => ({
     id: uuidv4(),
     prompt: "",
@@ -243,9 +261,13 @@ export function AddClassModal({
         getQuizQuestions(courseId, lessonId, classId)
           .then((qs) => {
             if (qs.length === 0) {
+              setQuizQuestionPointValueInput("1");
               setQuestions([makeEmptyQuestion()]);
               return;
             }
+            setQuizQuestionPointValueInput(
+              String(normalizeQuestionPointValue(qs[0]?.pointValue)),
+            );
             setQuestions(
               qs.map((q) => ({
                 id: q.id,
@@ -278,6 +300,7 @@ export function AddClassModal({
       setImageUrls([]);
       setAudioCoverUrl("");
       setImageMode("single");
+      setQuizQuestionPointValueInput("1");
       setQuestions([makeEmptyQuestion()]);
       setHasAssignment(false);
       setIsClassroomActivity(false);
@@ -351,6 +374,8 @@ export function AddClassModal({
       return;
     }
     if (type === "quiz") {
+      const parsedQuizPointValue = parseQuizQuestionPointValue(quizQuestionPointValueInput);
+      const pointValueOk = parsedQuizPointValue !== null;
       const hasQuestions = questions.length > 0;
       const everyQuestionValid = questions.every((q) => {
         const promptOk = q.prompt.trim().length > 0;
@@ -366,8 +391,8 @@ export function AddClassModal({
         const hasCorrect = opts.some((o) => o.isCorrect);
         return promptOk && hasMinOpts && hasCorrect;
       });
-      if (!hasQuestions || !everyQuestionValid) {
-        toast.error("Agrega preguntas válidas (texto, respuesta y opción correcta)");
+      if (!pointValueOk || !hasQuestions || !everyQuestionValid) {
+        toast.error("Agrega preguntas válidas y un puntaje entre 0 y 100");
         return;
       }
     }
@@ -473,11 +498,17 @@ export function AddClassModal({
             prevQuestions.map((q) => deleteQuizQuestion(courseId, lessonId, savedClassId, q.id)),
           );
         }
+        const normalizedPointValue = parseQuizQuestionPointValue(quizQuestionPointValueInput);
+        if (normalizedPointValue === null) {
+          toast.error("Ingresa un puntaje válido entre 0 y 100");
+          return;
+        }
         const trimmed = questions.map((q, idx) => {
           if (q.type === "multiple") {
             return {
               prompt: q.prompt.trim(),
               order: idx,
+              pointValue: normalizedPointValue,
               type: "multiple" as const,
               options: q.options
                 .filter((o) => o.text.trim().length > 0)
@@ -523,6 +554,7 @@ export function AddClassModal({
             return {
               prompt: q.prompt.trim(),
               order: idx,
+              pointValue: normalizedPointValue,
               type: "truefalse" as const,
               options: [trueOpt, falseOpt],
             };
@@ -531,6 +563,7 @@ export function AddClassModal({
             return {
               prompt: q.prompt.trim(),
               order: idx,
+              pointValue: normalizedPointValue,
               type: "open" as const,
               options: [],
               answerText: q.answerText?.trim() ?? "",
@@ -539,6 +572,7 @@ export function AddClassModal({
           return {
             prompt: q.prompt.trim(),
             order: idx,
+            pointValue: normalizedPointValue,
             type: "multiple" as const,
             options: q.options
               .filter((o) => o.text.trim().length > 0)
@@ -560,6 +594,7 @@ export function AddClassModal({
               prompt: q.prompt,
               options: q.options,
               order: q.order,
+              pointValue: q.pointValue,
               type: q.type,
               answerText: q.type === "open" ? q.answerText : undefined,
             }),
@@ -597,6 +632,7 @@ export function AddClassModal({
       setUrl("");
       setContent("");
       setImageUrls([]);
+      setQuizQuestionPointValueInput("1");
       setQuestions([makeEmptyQuestion()]);
       setHasAssignment(false);
       setIsClassroomActivity(false);
@@ -1439,6 +1475,23 @@ export function AddClassModal({
                       >
                         + Agregar pregunta
                       </button>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs font-medium text-slate-700">
+                      <span>Cada pregunta vale:</span>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={quizQuestionPointValueInput}
+                        onChange={(e) => {
+                          setQuizQuestionPointValueInput(e.target.value);
+                        }}
+                        onBlur={() => {
+                          const parsed = parseQuizQuestionPointValue(quizQuestionPointValueInput);
+                          if (parsed === null) return;
+                          setQuizQuestionPointValueInput(String(parsed));
+                        }}
+                        className="w-24 rounded-md border border-slate-300 px-2 py-1 text-sm"
+                      />
                     </div>
 
                     <div className="space-y-3">

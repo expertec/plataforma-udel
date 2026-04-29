@@ -254,6 +254,24 @@ const toSafeString = (value: unknown) => {
 
 const trimSafeString = (value: unknown) => toSafeString(value).trim();
 
+const normalizeQuizPointValue = (value: unknown): number => {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : Number(typeof value === "string" ? value.trim().replace(",", ".") : value);
+  if (!Number.isFinite(parsed)) return 1;
+  const bounded = Math.max(0, Math.min(parsed, 100));
+  return Math.round(bounded * 100) / 100;
+};
+
+const roundQuizPoints = (value: number) => Math.round(value * 100) / 100;
+
+const formatQuizPoints = (value: number) => {
+  const normalized = roundQuizPoints(value);
+  if (Number.isInteger(normalized)) return String(normalized);
+  return normalized.toFixed(2).replace(/\.?0+$/, "");
+};
+
 const loadLocalProgress = (uid: string) => {
   if (typeof window === "undefined") return { progress: {}, completed: {}, seen: {} };
   try {
@@ -5971,6 +5989,7 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, les
       text?: string;
       explanation?: string;
       order?: number;
+      pointValue?: number;
       options?: Array<{ id: string; text?: string; isCorrect?: boolean; feedback?: string; correctFeedback?: string; incorrectFeedback?: string }>;
     }>
   >([]);
@@ -6020,6 +6039,7 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, les
             text: toSafeString(qd.text ?? qd.prompt ?? qd.question),
             explanation: toSafeString(qd.explanation ?? qd.questionFeedback),
             order: typeof qd.order === "number" ? qd.order : 0,
+            pointValue: normalizeQuizPointValue((qd as { pointValue?: unknown }).pointValue),
             options: Array.isArray(qd.options)
               ? qd.options.map((opt: any) => {
                   const safeOpt = opt && typeof opt === "object" ? opt : {};
@@ -6192,6 +6212,7 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, les
     const answerPayload = questions.map((q) => ({
       questionId: q.id,
       question: q.text ?? "",
+      questionPointValue: normalizeQuizPointValue(q.pointValue),
       selectedOptionId: answers[q.id] ?? "",
       selectedOptionText:
         (q.options ?? []).find((o) => o.id === answers[q.id])?.text ??
@@ -6205,14 +6226,14 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, les
       (a) =>
         (questions.find((q) => q.id === a.questionId)?.options ?? []).some((o) => typeof o.isCorrect === "boolean"),
     );
-    const correctCount = autogradable
+    const earnedPoints = autogradable
       ? answerPayload.filter((a) => {
           const q = questions.find((qq) => qq.id === a.questionId);
           const opt = (q?.options ?? []).find((o) => o.id === a.selectedOptionId);
           return opt?.isCorrect === true;
-        }).length
+        }).reduce((total, answer) => total + normalizeQuizPointValue(answer.questionPointValue), 0)
       : 0;
-    const gradeValue = autogradable ? correctCount : null;
+    const gradeValue = autogradable ? roundQuizPoints(earnedPoints) : null;
     const statusValue: "graded" | "pending" = autogradable ? "graded" : "pending";
     try {
       const progressDoc = doc(db, "studentEnrollments", enrollmentId, "classProgress", classId);
@@ -6289,18 +6310,25 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, les
 
   // Si el quiz ya fue enviado y tiene calificación, solo mostrar la tarjeta de calificación
   if (submitted && typeof submissionGrade === "number") {
-    const questionsCount = Math.max(questions.length, 1);
-    const isLegacyPercentScore = submissionGrade > questionsCount && submissionGrade <= 100;
+    const totalQuestionPoints = roundQuizPoints(
+      questions.reduce((sum, question) => sum + normalizeQuizPointValue(question.pointValue), 0),
+    );
+    const quizPointsMax = questions.length > 0 ? totalQuestionPoints : 100;
+    const isLegacyPercentScore =
+      quizPointsMax > 0 &&
+      submissionGrade > quizPointsMax &&
+      submissionGrade <= 100;
     const normalizedRatio = isLegacyPercentScore
       ? Math.max(0, Math.min(submissionGrade / 100, 1))
-      : Math.max(0, Math.min(submissionGrade / questionsCount, 1));
+      : quizPointsMax > 0
+      ? Math.max(0, Math.min(submissionGrade / quizPointsMax, 1))
+      : 0;
     const normalizedPct = normalizedRatio * 100;
-    const correctAnswers = isLegacyPercentScore
-      ? Math.round((submissionGrade / 100) * questions.length)
-      : Math.min(Math.round(submissionGrade), questions.length);
     const scoreLabel = isLegacyPercentScore
-      ? `${submissionGrade}`
-      : `${submissionGrade}/${questionsCount}`;
+      ? formatQuizPoints(submissionGrade)
+      : quizPointsMax > 0
+      ? `${formatQuizPoints(submissionGrade)}/${formatQuizPoints(quizPointsMax)}`
+      : formatQuizPoints(submissionGrade);
     return (
       <div className="flex h-full w-full items-center justify-center px-0 lg:px-10">
         <div className="w-[90%] lg:w-full lg:max-w-md px-4 sm:px-6">
@@ -6322,9 +6350,9 @@ function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, les
                 </p>
               </div>
               <div className="mt-2 rounded-lg bg-white/5 px-4 py-2">
-                <p className="text-xs text-neutral-500">Respondidas correctamente</p>
+                <p className="text-xs text-neutral-500">Puntos obtenidos</p>
                 <p className="text-lg font-semibold text-white">
-                  {correctAnswers} de {questions.length}
+                  {scoreLabel}
                 </p>
               </div>
               <p className="mt-2 text-xs text-neutral-500">Quiz completado</p>
