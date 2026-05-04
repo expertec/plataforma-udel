@@ -19,6 +19,7 @@ import {
   getCountFromServer,
   addDoc,
   limit,
+  onSnapshot,
   orderBy,
   query,
   runTransaction,
@@ -125,6 +126,32 @@ type FinanceStatus = {
   };
 };
 
+type BillingBlockedState = {
+  blockType?: "overdue" | "missingContact";
+  reason: string;
+  amount?: number;
+  overdueRows?: Array<{
+    campus?: string;
+    concept: string;
+    dueDate?: string;
+    amount?: number;
+    daysOverdue?: number;
+  }>;
+  clabe?: string;
+  bank?: string;
+};
+
+type FinanceValidationDailyCache = {
+  version: 1;
+  dateKey: string;
+  checkedAt: string;
+  phone: string;
+  whatsapp: string;
+  email: string;
+  status: "ok" | "blocked" | "missingContact";
+  blocked?: BillingBlockedState;
+};
+
 const VIDEO_COMPLETION_THRESHOLD = 80;
 const ENFORCE_VIDEO_GATE = true;
 const HEAVY_CARD_RENDER_RADIUS = 1;
@@ -134,9 +161,11 @@ const getRequiredPct = (type?: string) => {
   return VIDEO_COMPLETION_THRESHOLD;
 };
 const localProgressKey = (uid: string) => `classProgress:${uid}`;
+const financeValidationCacheKey = (uid: string) => `financeValidationDaily:${uid}`;
 const UNIVERSITY_LOGO_SRC = "/university-logo.jpg";
 const FINANCE_STATUS_ENDPOINT = "/api/finance/customer-status";
 const BILLING_SUPPORT_WHATSAPP = "527821012431";
+const FINANCE_VALIDATION_TIMEZONE = "America/Monterrey";
 const BILLING_SUPPORT_WHATSAPP_URL = `https://wa.me/${BILLING_SUPPORT_WHATSAPP}?text=${encodeURIComponent(
   "Hola, me aparece bloqueo por pagos vencidos en la plataforma UDEL y necesito ayuda para revisar mi acceso.",
 )}`;
@@ -272,6 +301,108 @@ const formatQuizPoints = (value: number) => {
   return normalized.toFixed(2).replace(/\.?0+$/, "");
 };
 
+const LIVE_SESSION_MAX_ACTIVE_MS = 6 * 60 * 60 * 1000;
+const LIVE_SESSION_SCHEDULE_EARLY_GRACE_MS = 15 * 60 * 1000;
+const LIVE_SESSION_SCHEDULE_LATE_GRACE_MS = 2 * 60 * 60 * 1000;
+
+const parseIsoDateMs = (value: string | null | undefined) => {
+  if (!value) return null;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const isNowWithinLiveScheduleWindow = (session: LiveClassSession, nowMs: number) => {
+  const scheduledStartMs = parseIsoDateMs(session.scheduledStartAt);
+  const scheduledEndMs = parseIsoDateMs(session.scheduledEndAt);
+  if (scheduledStartMs === null && scheduledEndMs === null) return true;
+
+  if (
+    scheduledStartMs !== null &&
+    nowMs < scheduledStartMs - LIVE_SESSION_SCHEDULE_EARLY_GRACE_MS
+  ) {
+    return false;
+  }
+  if (
+    scheduledEndMs !== null &&
+    nowMs > scheduledEndMs + LIVE_SESSION_SCHEDULE_LATE_GRACE_MS
+  ) {
+    return false;
+  }
+  return true;
+};
+
+const isLiveSessionFinalized = (session: LiveClassSession | null | undefined) => {
+  const status = session?.status ?? "scheduled";
+  return Boolean(session?.lastEndedAt) || status === "ended" || status === "recording_ready";
+};
+
+const isLiveSessionLiveNow = (
+  session: LiveClassSession | null | undefined,
+  nowMs: number = Date.now(),
+) => {
+  if (!session) return false;
+  if (isLiveSessionFinalized(session)) return false;
+
+  const status = session.status ?? "scheduled";
+  const baseLive = session.teacherActive === true || status === "live";
+  if (!baseLive) return false;
+
+  const startedAtMs = parseIsoDateMs(session.lastStartedAt);
+  if (startedAtMs !== null && nowMs - startedAtMs > LIVE_SESSION_MAX_ACTIVE_MS) {
+    return false;
+  }
+
+  const hasScheduleWindow = Boolean(session.scheduledStartAt || session.scheduledEndAt);
+  if (hasScheduleWindow && !isNowWithinLiveScheduleWindow(session, nowMs)) {
+    if (startedAtMs === null) return false;
+    if (nowMs - startedAtMs > LIVE_SESSION_SCHEDULE_LATE_GRACE_MS) return false;
+  }
+
+  // Evita marcar "en vivo" sesiones legacy sin referencias temporales.
+  if (startedAtMs === null && !hasScheduleWindow) return false;
+
+  return true;
+};
+
+const areLiveSessionsEquivalent = (
+  left: LiveClassSession | null | undefined,
+  right: LiveClassSession | null | undefined,
+) => {
+  const a = left ?? null;
+  const b = right ?? null;
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return (
+    a.provider === b.provider &&
+    a.roomName === b.roomName &&
+    a.status === b.status &&
+    a.scheduledStartAt === b.scheduledStartAt &&
+    a.scheduledEndAt === b.scheduledEndAt &&
+    a.timezone === b.timezone &&
+    a.teacherActive === b.teacherActive &&
+    (a.lastStartedAt ?? null) === (b.lastStartedAt ?? null) &&
+    (a.lastEndedAt ?? null) === (b.lastEndedAt ?? null) &&
+    a.recording.auto === b.recording.auto &&
+    (a.recording.egressId ?? null) === (b.recording.egressId ?? null) &&
+    a.recording.status === b.recording.status &&
+    (a.recording.storagePath ?? null) === (b.recording.storagePath ?? null) &&
+    (a.recording.playbackReadyAt ?? null) === (b.recording.playbackReadyAt ?? null) &&
+    (a.recording.durationSec ?? null) === (b.recording.durationSec ?? null)
+  );
+};
+
+const buildLiveClassHref = (params: {
+  classId: string;
+  courseId?: string;
+  lessonId?: string;
+}) => {
+  const baseClassId = encodeURIComponent(params.classId.trim());
+  const liveSearchParams = new URLSearchParams();
+  if (params.courseId?.trim()) liveSearchParams.set("courseId", params.courseId.trim());
+  if (params.lessonId?.trim()) liveSearchParams.set("lessonId", params.lessonId.trim());
+  return `/live/${baseClassId}${liveSearchParams.toString() ? `?${liveSearchParams.toString()}` : ""}`;
+};
+
 const loadLocalProgress = (uid: string) => {
   if (typeof window === "undefined") return { progress: {}, completed: {}, seen: {} };
   try {
@@ -297,6 +428,48 @@ const saveLocalProgress = (
     localStorage.setItem(localProgressKey(uid), JSON.stringify(data));
   } catch {
     // Si falla localStorage (p. ej. modo incógnito), simplemente ignoramos.
+  }
+};
+
+const getCurrentDateKeyInMonterrey = () => {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: FINANCE_VALIDATION_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return formatter.format(new Date());
+};
+
+const loadFinanceValidationCache = (uid: string): FinanceValidationDailyCache | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(financeValidationCacheKey(uid));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<FinanceValidationDailyCache>;
+    if (
+      parsed?.version !== 1 ||
+      typeof parsed.dateKey !== "string" ||
+      typeof parsed.checkedAt !== "string" ||
+      typeof parsed.phone !== "string" ||
+      typeof parsed.whatsapp !== "string" ||
+      typeof parsed.email !== "string"
+    ) {
+      return null;
+    }
+    if (!["ok", "blocked", "missingContact"].includes(parsed.status ?? "")) return null;
+    return parsed as FinanceValidationDailyCache;
+  } catch {
+    return null;
+  }
+};
+
+const saveFinanceValidationCache = (uid: string, data: FinanceValidationDailyCache) => {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(financeValidationCacheKey(uid), JSON.stringify(data));
+  } catch {
+    // Ignorar fallos de almacenamiento local.
   }
 };
 
@@ -341,20 +514,7 @@ export default function StudentFeedPageClient() {
   const [loadingStage, setLoadingStage] = useState<LoadingStage>("auth");
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [billingBlocked, setBillingBlocked] = useState<{
-    blockType?: "overdue" | "missingContact";
-    reason: string;
-    amount?: number;
-    overdueRows?: Array<{
-      campus?: string;
-      concept: string;
-      dueDate?: string;
-      amount?: number;
-      daysOverdue?: number;
-    }>;
-    clabe?: string;
-    bank?: string;
-  } | null>(null);
+  const [billingBlocked, setBillingBlocked] = useState<BillingBlockedState | null>(null);
   const [clabeCopied, setClabeCopied] = useState(false);
   const [classes, setClasses] = useState<FeedClass[]>([]);
   const [courseName, setCourseName] = useState("");
@@ -469,6 +629,7 @@ export default function StudentFeedPageClient() {
   const previewMode = Boolean(previewCourseId);
   const router = useRouter();
   const activePendingSurvey = pendingSurveys.length > 0 ? pendingSurveys[0] : null;
+  const [liveNowTickMs, setLiveNowTickMs] = useState(() => Date.now());
 
   const sanitizeOptions = useMemo(
     () => ({
@@ -727,6 +888,41 @@ export default function StudentFeedPageClient() {
     });
   }, [activePendingSurvey?.id, activePendingSurvey]);
 
+  useEffect(() => {
+    const timerId = window.setInterval(() => {
+      setLiveNowTickMs(Date.now());
+    }, 30 * 1000);
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, []);
+
+  const liveSyncTargets = useMemo(() => {
+    const uniqueTargets = new Map<
+      string,
+      { courseId: string; lessonId: string; classDocId: string }
+    >();
+    classes.forEach((cls) => {
+      if (cls.type !== "live") return;
+      const courseId = cls.courseId?.trim() ?? "";
+      const lessonId = cls.lessonId?.trim() ?? "";
+      const classDocId = (cls.classDocId ?? cls.id).trim();
+      if (!courseId || !lessonId || !classDocId) return;
+      const key = `${courseId}::${lessonId}::${classDocId}`;
+      if (!uniqueTargets.has(key)) {
+        uniqueTargets.set(key, { courseId, lessonId, classDocId });
+      }
+    });
+    return Array.from(uniqueTargets.values());
+  }, [classes]);
+  const liveSyncTargetSignature = useMemo(
+    () =>
+      liveSyncTargets
+        .map((target) => `${target.courseId}::${target.lessonId}::${target.classDocId}`)
+        .join("|"),
+    [liveSyncTargets],
+  );
+
   const visibleClasses = useMemo(() => {
     const platformVisible = classes.filter((cls) => {
       if (cls.showInStudentPlatform === false) return false;
@@ -770,6 +966,49 @@ export default function StudentFeedPageClient() {
     activeClass?.type === "image" && activeClass.images ? activeClass.images.length : 0;
   const activeImageIdx = activeClass?.id ? imageIndexMap[activeClass.id] ?? 0 : 0;
   const hasPendingImages = activeImagesCount > 0 && activeImageIdx < activeImagesCount - 1;
+  const liveJoinTargets = useMemo(() => {
+    if (previewMode) return [];
+    const byClassId = new Map<
+      string,
+      {
+        classId: string;
+        title: string;
+        href: string;
+        groupName?: string;
+        courseTitle?: string;
+      }
+    >();
+    visibleClasses.forEach((cls) => {
+      if (cls.type !== "live") return;
+      const session = normalizeLiveSession(cls.liveSession);
+      if (isLiveSessionFinalized(session)) return;
+      if (!isLiveSessionLiveNow(session, liveNowTickMs)) return;
+      const baseClassId = (cls.classDocId ?? cls.id).trim();
+      if (!baseClassId || byClassId.has(baseClassId)) return;
+      byClassId.set(baseClassId, {
+        classId: baseClassId,
+        title: cls.title || "Clase en vivo",
+        href: buildLiveClassHref({
+          classId: baseClassId,
+          courseId: cls.courseId,
+          lessonId: cls.lessonId,
+        }),
+        groupName: cls.groupName,
+        courseTitle: cls.courseTitle,
+      });
+    });
+    return Array.from(byClassId.values());
+  }, [liveNowTickMs, previewMode, visibleClasses]);
+  const liveJoinBannerTarget = liveJoinTargets[0] ?? null;
+  const hasLiveJoinBanner = Boolean(liveJoinBannerTarget);
+  const sidebarTopClass = hasLiveJoinBanner ? "top-12 h-[calc(100vh-3rem)]" : "top-0 h-full";
+  const floatingButtonsTopClass = hasLiveJoinBanner ? "top-14" : "top-3";
+  const mobileCourseBadgeTopClass = hasLiveJoinBanner ? "top-16" : "top-4";
+  const mobileSidebarInsetClass = hasLiveJoinBanner ? "inset-y-12" : "inset-y-0";
+  const feedContainerHeightClass = hasLiveJoinBanner ? "h-[calc(100vh-3rem)]" : "h-screen";
+  const feedSectionHeightClass = hasLiveJoinBanner
+    ? "h-[calc(100vh-3rem)] min-h-[calc(100vh-3rem)]"
+    : "h-screen min-h-screen";
   const engagementTargetClasses = useMemo(() => {
     if (!visibleClasses.length) return [] as FeedClass[];
     const start = Math.max(0, activeIndex - HEAVY_CARD_RENDER_RADIUS);
@@ -1762,85 +2001,148 @@ export default function StudentFeedPageClient() {
             userData.whatsappNumber ??
             "",
         );
+        const dateKey = getCurrentDateKeyInMonterrey();
+        const financeCache = loadFinanceValidationCache(currentUser.uid);
+        const cacheStillValid =
+          financeCache?.dateKey === dateKey &&
+          financeCache.phone === phone &&
+          financeCache.whatsapp === whatsapp &&
+          financeCache.email === financeEmail;
 
-        if (!phone && !whatsapp) {
-          setClabeCopied(false);
-          setBillingBlocked({
+        if (cacheStillValid) {
+          if (financeCache.status === "ok") {
+            setBillingBlocked(null);
+          } else {
+            const fallbackBlocked: BillingBlockedState =
+              financeCache.status === "missingContact"
+                ? {
+                    blockType: "missingContact",
+                    reason:
+                      "No hay teléfono o WhatsApp registrado para validar tus pagos. Contacta a administración.",
+                  }
+                : {
+                    blockType: "overdue",
+                    reason: "Tienes pagos vencidos. Regulariza tu cuenta para continuar.",
+                  };
+            setClabeCopied(false);
+            setBillingBlocked(financeCache.blocked ?? fallbackBlocked);
+            setLoading(false);
+            return;
+          }
+        }
+
+        if (!cacheStillValid && !phone && !whatsapp) {
+          const nextBlocked: BillingBlockedState = {
             blockType: "missingContact",
             reason: "No hay teléfono o WhatsApp registrado para validar tus pagos. Contacta a administración.",
-          });
-          setLoading(false);
-          return;
-        }
-
-        const financeQuery = new URLSearchParams();
-        if (phone) financeQuery.set("phone", phone);
-        if (whatsapp) financeQuery.set("whatsapp", whatsapp);
-        if (financeEmail) financeQuery.set("email", financeEmail);
-
-        const financeResp = await fetch(`${FINANCE_STATUS_ENDPOINT}?${financeQuery.toString()}`, {
-          cache: "no-store",
-        });
-        const financeJson: FinanceStatus = await financeResp.json().catch(() => ({ success: false }));
-
-        if (!financeResp.ok || !financeJson?.success || !financeJson?.data) {
-          setError("No se pudo validar tu estado de pagos. Intenta nuevamente en unos minutos.");
-          setLoading(false);
-          return;
-        }
-
-        const overdue =
-          financeJson.data.hasOverduePayments ||
-          (financeJson.data.totalOverdueAmount ?? 0) > 0 ||
-          (financeJson.data.overdueCount ?? 0) > 0 ||
-          (financeJson.data.overduePaymentsCount ?? 0) > 0 ||
-          (financeJson.data.overdueReceivablesCount ?? 0) > 0;
-        const hasActivePaymentAgreement =
-          financeJson.data.hasActivePaymentAgreement === true &&
-          financeJson.data.accessGrantedByAgreement !== false;
-
-        if (overdue && !hasActivePaymentAgreement) {
-          const accountClabe = (financeJson.data.clabe?.clabe ?? "").trim();
-          const accountBank = (financeJson.data.clabe?.bank ?? "").trim();
-          const overdueSource = financeJson.data.overdueDetails;
-          let overdueRows: Array<{
-            campus?: string;
-            concept: string;
-            dueDate?: string;
-            amount?: number;
-            daysOverdue?: number;
-          }> = [];
-
-          if (Array.isArray(overdueSource)) {
-            overdueRows = overdueSource.map((d) => ({
-              campus: (d.campus ?? "").trim() || undefined,
-              concept: (d.concept ?? "").trim() || "Pago pendiente",
-              dueDate: d.dueDate,
-              amount: typeof d.amount === "number" ? d.amount : undefined,
-              daysOverdue: typeof d.daysOverdue === "number" ? d.daysOverdue : undefined,
-            }));
-          } else {
-            const legacyText =
-              (typeof overdueSource === "string" ? overdueSource : "") ||
-              financeJson.data.overdueDetailsText ||
-              financeJson.data.details ||
-              "";
-            if (legacyText) {
-              overdueRows = parseOverdueRowsFromText(legacyText);
-            }
-          }
-
-          setBillingBlocked({
-            blockType: "overdue",
-            reason: "Tienes pagos vencidos. Regulariza tu cuenta para continuar.",
-            amount: financeJson.data.totalOverdueAmount,
-            overdueRows: overdueRows.length ? overdueRows : undefined,
-            clabe: accountClabe || undefined,
-            bank: accountBank || undefined,
+          };
+          saveFinanceValidationCache(currentUser.uid, {
+            version: 1,
+            dateKey,
+            checkedAt: new Date().toISOString(),
+            phone,
+            whatsapp,
+            email: financeEmail,
+            status: "missingContact",
+            blocked: nextBlocked,
           });
           setClabeCopied(false);
+          setBillingBlocked(nextBlocked);
           setLoading(false);
           return;
+        }
+
+        if (!cacheStillValid) {
+          const financeQuery = new URLSearchParams();
+          if (phone) financeQuery.set("phone", phone);
+          if (whatsapp) financeQuery.set("whatsapp", whatsapp);
+          if (financeEmail) financeQuery.set("email", financeEmail);
+
+          const financeResp = await fetch(`${FINANCE_STATUS_ENDPOINT}?${financeQuery.toString()}`, {
+            cache: "no-store",
+          });
+          const financeJson: FinanceStatus = await financeResp.json().catch(() => ({ success: false }));
+
+          if (!financeResp.ok || !financeJson?.success || !financeJson?.data) {
+            setError("No se pudo validar tu estado de pagos. Intenta nuevamente en unos minutos.");
+            setLoading(false);
+            return;
+          }
+
+          const overdue =
+            financeJson.data.hasOverduePayments ||
+            (financeJson.data.totalOverdueAmount ?? 0) > 0 ||
+            (financeJson.data.overdueCount ?? 0) > 0 ||
+            (financeJson.data.overduePaymentsCount ?? 0) > 0 ||
+            (financeJson.data.overdueReceivablesCount ?? 0) > 0;
+          const hasActivePaymentAgreement =
+            financeJson.data.hasActivePaymentAgreement === true &&
+            financeJson.data.accessGrantedByAgreement !== false;
+
+          if (overdue && !hasActivePaymentAgreement) {
+            const accountClabe = (financeJson.data.clabe?.clabe ?? "").trim();
+            const accountBank = (financeJson.data.clabe?.bank ?? "").trim();
+            const overdueSource = financeJson.data.overdueDetails;
+            let overdueRows: Array<{
+              campus?: string;
+              concept: string;
+              dueDate?: string;
+              amount?: number;
+              daysOverdue?: number;
+            }> = [];
+
+            if (Array.isArray(overdueSource)) {
+              overdueRows = overdueSource.map((d) => ({
+                campus: (d.campus ?? "").trim() || undefined,
+                concept: (d.concept ?? "").trim() || "Pago pendiente",
+                dueDate: d.dueDate,
+                amount: typeof d.amount === "number" ? d.amount : undefined,
+                daysOverdue: typeof d.daysOverdue === "number" ? d.daysOverdue : undefined,
+              }));
+            } else {
+              const legacyText =
+                (typeof overdueSource === "string" ? overdueSource : "") ||
+                financeJson.data.overdueDetailsText ||
+                financeJson.data.details ||
+                "";
+              if (legacyText) {
+                overdueRows = parseOverdueRowsFromText(legacyText);
+              }
+            }
+
+            const nextBlocked: BillingBlockedState = {
+              blockType: "overdue",
+              reason: "Tienes pagos vencidos. Regulariza tu cuenta para continuar.",
+              amount: financeJson.data.totalOverdueAmount,
+              overdueRows: overdueRows.length ? overdueRows : undefined,
+              clabe: accountClabe || undefined,
+              bank: accountBank || undefined,
+            };
+            saveFinanceValidationCache(currentUser.uid, {
+              version: 1,
+              dateKey,
+              checkedAt: new Date().toISOString(),
+              phone,
+              whatsapp,
+              email: financeEmail,
+              status: "blocked",
+              blocked: nextBlocked,
+            });
+            setBillingBlocked(nextBlocked);
+            setClabeCopied(false);
+            setLoading(false);
+            return;
+          }
+
+          saveFinanceValidationCache(currentUser.uid, {
+            version: 1,
+            dateKey,
+            checkedAt: new Date().toISOString(),
+            phone,
+            whatsapp,
+            email: financeEmail,
+            status: "ok",
+          });
         }
         setBillingBlocked(null);
       } catch (billingErr) {
@@ -2160,6 +2462,68 @@ export default function StudentFeedPageClient() {
       load();
     }
   }, [authLoading, currentUser?.uid, previewCourseId, previewMode]);
+
+  useEffect(() => {
+    if (previewMode) return;
+    if (!liveSyncTargets.length) return;
+
+    const unsubscribers = liveSyncTargets.map((target) =>
+      onSnapshot(
+        doc(
+          db,
+          "courses",
+          target.courseId,
+          "lessons",
+          target.lessonId,
+          "classes",
+          target.classDocId,
+        ),
+        (snapshot) => {
+          if (!snapshot.exists()) return;
+          const snapshotData = snapshot.data() as Record<string, unknown>;
+          const nextSession = normalizeLiveSession(snapshotData.liveSession);
+          const nextTitle = trimSafeString(snapshotData.title);
+
+          setClasses((prev) => {
+            let changed = false;
+            const next = prev.map((cls) => {
+              const matchesTarget =
+                cls.type === "live" &&
+                cls.courseId?.trim() === target.courseId &&
+                cls.lessonId?.trim() === target.lessonId &&
+                (cls.classDocId ?? cls.id).trim() === target.classDocId;
+              if (!matchesTarget) return cls;
+              const resolvedTitle = nextTitle || cls.title;
+              const resolvedClassTitle = nextTitle || cls.classTitle;
+              const sameTitle = cls.title === resolvedTitle;
+              const sameClassTitle = cls.classTitle === resolvedClassTitle;
+              const sameSession = areLiveSessionsEquivalent(cls.liveSession, nextSession);
+              if (sameTitle && sameClassTitle && sameSession) {
+                return cls;
+              }
+              changed = true;
+              return {
+                ...cls,
+                title: resolvedTitle,
+                classTitle: resolvedClassTitle,
+                liveSession: nextSession,
+              };
+            });
+            return changed ? next : prev;
+          });
+        },
+        (listenerError) => {
+          console.warn("No se pudo sincronizar estado de clase en vivo:", listenerError);
+        },
+      ),
+    );
+
+    return () => {
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+    };
+    // liveSyncTargets se deriva de classes; la firma evita re-suscripciones innecesarias.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveSyncTargetSignature, previewMode]);
 
   // Cargar engagement (likes/conteos) solo para la tarjeta activa y sus vecinas.
   useEffect(() => {
@@ -3148,20 +3512,15 @@ export default function StudentFeedPageClient() {
     if (cls.type === "live") {
       const session = normalizeLiveSession(cls.liveSession);
       const sessionStatus = session?.status ?? "scheduled";
-      const sessionFinalized =
-        Boolean(session?.lastEndedAt) ||
-        sessionStatus === "ended" ||
-        sessionStatus === "recording_ready";
-      const isRoomLive = session?.teacherActive === true || sessionStatus === "live";
-      const recordingReady =
-        sessionStatus === "recording_ready" || session?.recording.status === "ready";
-      const baseClassId = encodeURIComponent((cls.classDocId ?? cls.id).trim());
-      const liveSearchParams = new URLSearchParams();
-      if (cls.courseId?.trim()) liveSearchParams.set("courseId", cls.courseId.trim());
-      if (cls.lessonId?.trim()) liveSearchParams.set("lessonId", cls.lessonId.trim());
-      const liveHref = `/live/${baseClassId}${
-        liveSearchParams.toString() ? `?${liveSearchParams.toString()}` : ""
-      }`;
+      const sessionFinalized = isLiveSessionFinalized(session);
+      const isRoomLive = isLiveSessionLiveNow(session, liveNowTickMs);
+      const recordingReady = sessionStatus === "recording_ready" || session?.recording.status === "ready";
+      const baseClassId = (cls.classDocId ?? cls.id).trim();
+      const liveHref = buildLiveClassHref({
+        classId: baseClassId,
+        courseId: cls.courseId,
+        lessonId: cls.lessonId,
+      });
 
       return (
         <div className="flex h-full w-full items-center justify-center bg-neutral-950 px-4">
@@ -3234,60 +3593,38 @@ export default function StudentFeedPageClient() {
   };
 
   if (loading) {
-    const stageMessages: Record<LoadingStage, string> = {
-      auth: "Verificando sesión...",
-      billing: "Verificando pagos pendientes...",
-      enrollments: "Buscando tus inscripciones...",
-      progress: "Cargando tu progreso...",
-      courses: "Cargando tus cursos...",
-      classes: "Preparando tus clases...",
-      done: "¡Listo!",
-    };
-
     return (
       <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#0b0708]">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(110,45,45,0.28),_transparent_60%)]" />
         <div className="pointer-events-none absolute -bottom-32 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-[#6e2d2d]/20 blur-3xl" />
 
-        <div className="relative flex flex-col items-center space-y-6 px-6 text-center">
-          <div className="flex h-20 w-20 items-center justify-center rounded-3xl border border-[#6e2d2d]/40 bg-white/5 p-2 shadow-[0_0_24px_rgba(110,45,45,0.35)]">
-            <Image
+	        <div className="relative flex flex-col items-center space-y-8 px-6 text-center">
+	          <div className="flex h-20 w-20 items-center justify-center rounded-3xl border border-[#6e2d2d]/40 bg-white/5 p-2 shadow-[0_0_24px_rgba(110,45,45,0.35)]">
+	            <Image
               src={UNIVERSITY_LOGO_SRC}
               alt="Logo UDEL Universidad"
               width={64}
               height={64}
               className="h-12 w-12 object-contain"
               unoptimized
-              priority
-            />
-          </div>
+	              priority
+	            />
+	          </div>
 
-          <div>
-            <p className="text-xs uppercase tracking-[0.35em] text-[#d6b3b3]/70">
-              UDEL Universidad
-            </p>
-            <p className="mt-2 text-lg font-semibold text-white">
-              {stageMessages[loadingStage]}
-            </p>
-            <p className="mt-1 text-sm text-[#d6b3b3]/80">
-              Esto solo tomará un momento
-            </p>
-          </div>
+	          <p className="text-base font-semibold text-white">Cargando</p>
 
-          <div className="w-64 h-2 rounded-full bg-white/10 overflow-hidden">
-            <div
-              className="h-full rounded-full bg-gradient-to-r from-[#6e2d2d] via-[#7a3232] to-[#9b4a4a] transition-all duration-500 ease-out"
-              style={{ width: `${loadingProgress}%` }}
-            />
-          </div>
+	          <div className="w-64 h-2 rounded-full bg-white/10 overflow-hidden">
+	            <div
+	              className="h-full rounded-full bg-gradient-to-r from-[#6e2d2d] via-[#7a3232] to-[#9b4a4a] transition-all duration-500 ease-out"
+	              style={{ width: `${loadingProgress}%` }}
+	            />
+	          </div>
 
-          <p className="text-xs tabular-nums text-[#d6b3b3]/70">
-            {loadingProgress}%
-          </p>
-        </div>
-      </div>
-    );
-  }
+	          <p className="text-xs tabular-nums text-[#d6b3b3]/80">{loadingProgress}%</p>
+	        </div>
+	      </div>
+	    );
+	  }
 
   if (billingBlocked) {
     return (
@@ -3581,7 +3918,24 @@ export default function StudentFeedPageClient() {
     });
 
   return (
-    <div className="min-h-screen bg-black text-white" style={{ touchAction: "pan-y" }}>
+    <div className={`min-h-screen bg-black text-white ${hasLiveJoinBanner ? "pt-12" : ""}`} style={{ touchAction: "pan-y" }}>
+      {liveJoinBannerTarget ? (
+        <div className="fixed inset-x-0 top-0 z-[85] border-b border-black/30 bg-[#a30000] shadow-lg">
+          <div className="mx-auto flex h-12 max-w-6xl items-center justify-center gap-3 px-4">
+            <p className="m-0 truncate text-sm font-semibold text-white">
+              {liveJoinTargets.length > 1
+                ? `Tienes ${liveJoinTargets.length} clases en vivo ahora`
+                : "Tu clase en vivo ya inició"}
+            </p>
+            <Link
+              href={liveJoinBannerTarget.href}
+              className="shrink-0 rounded-md bg-green-500 px-4 py-1.5 text-sm font-bold text-white transition hover:bg-green-400"
+            >
+              Entrar
+            </Link>
+          </div>
+        </div>
+      ) : null}
       {previewMode ? (
         <div className="sticky top-0 z-30 flex items-center justify-between gap-3 rounded-b-2xl border-b border-yellow-700 bg-yellow-400/95 px-4 py-2 text-xs font-semibold text-black shadow-lg lg:ml-64 lg:px-6">
           <p className="m-0 flex-1 text-left leading-snug">
@@ -3596,7 +3950,7 @@ export default function StudentFeedPageClient() {
           </button>
         </div>
       ) : null}
-      <header className="fixed left-0 top-0 z-20 hidden h-full w-64 flex-col border-r border-white/10 bg-neutral-900/80 p-4 lg:flex">
+      <header className={`fixed left-0 z-20 hidden w-64 flex-col border-r border-white/10 bg-neutral-900/80 p-4 lg:flex ${sidebarTopClass}`}>
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 space-y-1">
             <h1 className="text-xl font-bold">Mis clases</h1>
@@ -3651,7 +4005,7 @@ export default function StudentFeedPageClient() {
         <button
           type="button"
           onClick={() => setMobileClassesOpen(true)}
-          className="pointer-events-auto fixed left-3 top-3 z-40 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white shadow-lg backdrop-blur lg:hidden"
+          className={`pointer-events-auto fixed left-3 z-40 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white shadow-lg backdrop-blur lg:hidden ${floatingButtonsTopClass}`}
           aria-label="Abrir mis clases"
         >
           <ControlIcon name="menu" />
@@ -3661,7 +4015,7 @@ export default function StudentFeedPageClient() {
           <button
             type="button"
             disabled
-            className="pointer-events-auto fixed right-3 top-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white shadow-lg backdrop-blur opacity-40"
+            className={`pointer-events-auto fixed right-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white shadow-lg backdrop-blur opacity-40 ${floatingButtonsTopClass}`}
             aria-label="Perfil de alumno deshabilitado"
           >
             <ControlIcon name="user" />
@@ -3669,21 +4023,21 @@ export default function StudentFeedPageClient() {
         ) : (
           <Link
             href="/student/profile"
-            className="pointer-events-auto fixed right-3 top-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white shadow-lg backdrop-blur transition hover:bg-white/20"
+            className={`pointer-events-auto fixed right-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white shadow-lg backdrop-blur transition hover:bg-white/20 ${floatingButtonsTopClass}`}
             aria-label="Perfil de alumno"
           >
             <ControlIcon name="user" />
           </Link>
         )}
         {/* Header overlay móvil */}
-        <div className="pointer-events-none absolute inset-x-0 top-4 z-30 flex items-center justify-center text-xs text-white/80 lg:hidden">
+        <div className={`pointer-events-none absolute inset-x-0 z-30 flex items-center justify-center text-xs text-white/80 lg:hidden ${mobileCourseBadgeTopClass}`}>
           <span className="rounded-full bg-black/50 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.12em]">
             {courseTitleMap[activeClass?.courseId ?? ""] || activeClass?.courseTitle || courseName || "Curso"}
           </span>
         </div>
         <div
           ref={containerRef}
-          className="relative flex h-screen snap-y snap-mandatory flex-col overflow-y-scroll scroll-smooth no-scrollbar overscroll-contain"
+          className={`relative flex ${feedContainerHeightClass} snap-y snap-mandatory flex-col overflow-y-scroll scroll-smooth no-scrollbar overscroll-contain`}
         >
           {mobileClassesOpen ? (
             <div
@@ -3693,7 +4047,7 @@ export default function StudentFeedPageClient() {
             />
           ) : null}
           <aside
-            className={`fixed inset-y-0 left-0 z-50 w-[85vw] max-w-sm bg-neutral-900/95 text-white shadow-2xl backdrop-blur transition-transform duration-300 lg:hidden ${
+            className={`fixed ${mobileSidebarInsetClass} left-0 z-50 w-[85vw] max-w-sm bg-neutral-900/95 text-white shadow-2xl backdrop-blur transition-transform duration-300 lg:hidden ${
               mobileClassesOpen ? "translate-x-0" : "-translate-x-full"
             }`}
           >
@@ -3751,7 +4105,7 @@ export default function StudentFeedPageClient() {
                 ×
               </button>
             </div>
-            <div className="h-[calc(100vh-80px)] overflow-y-auto px-3 pb-6">
+            <div className="h-[calc(100%-80px)] overflow-y-auto px-3 pb-6">
               {renderCourseTree()}
             </div>
           </aside>
@@ -3799,7 +4153,7 @@ export default function StudentFeedPageClient() {
                 ref={(el) => {
                   sectionRefs.current[cls.id] = el;
                 }}
-                className="feed-card relative flex h-screen min-h-screen w-full snap-start snap-always items-center justify-center bg-black"
+                className={`feed-card relative flex ${feedSectionHeightClass} w-full snap-start snap-always items-center justify-center bg-black`}
               >
                 <div className="relative flex h-full w-full min-h-0 items-center justify-center lg:px-8 lg:py-5 mx-auto overflow-visible">
                   <div className="relative box-border flex min-h-0 items-center justify-center gap-6 lg:gap-10 w-full h-full lg:w-auto lg:h-auto pt-6 pb-14 lg:pt-0 lg:pb-0">
