@@ -5,6 +5,7 @@ import {
   toLiveAccessErrorResponse,
   LiveAccessError,
 } from "@/lib/live-classes/access";
+import { createLiveSessionForClass } from "@/lib/live-classes/types";
 import { getLiveKitEgressConfig } from "@/lib/server/livekit";
 
 export const runtime = "nodejs";
@@ -18,24 +19,46 @@ function normalizeObjectPath(value: string): string {
   return value.replace(/^\/+/, "").trim();
 }
 
-function extractObjectPath(rawStoragePath: string, bucketName: string): string | null {
+type ObjectLocation = {
+  bucketName: string;
+  objectPath: string;
+};
+
+function extractObjectLocation(rawStoragePath: string, defaultBucketName: string): ObjectLocation | null {
   const value = rawStoragePath.trim();
   if (!value) return null;
   if (value.startsWith("gs://")) {
     const withoutScheme = value.slice("gs://".length);
     const slashIdx = withoutScheme.indexOf("/");
     if (slashIdx < 0) return null;
-    const bucket = withoutScheme.slice(0, slashIdx);
-    if (bucket !== bucketName) return null;
-    return normalizeObjectPath(withoutScheme.slice(slashIdx + 1));
+    const bucketName = withoutScheme.slice(0, slashIdx).trim();
+    const objectPath = normalizeObjectPath(withoutScheme.slice(slashIdx + 1));
+    if (!bucketName || !objectPath) return null;
+    return { bucketName, objectPath };
   }
   if (value.startsWith("http://") || value.startsWith("https://")) {
     const directMatch = value.match(/\/([^/]+)\/o\/([^?]+)/);
-    if (directMatch && directMatch[1] === bucketName) {
-      return normalizeObjectPath(decodeURIComponent(directMatch[2]));
+    if (directMatch) {
+      const bucketName = asTrimmedString(directMatch[1]);
+      const objectPath = normalizeObjectPath(decodeURIComponent(directMatch[2]));
+      if (!bucketName || !objectPath) return null;
+      return { bucketName, objectPath };
     }
   }
-  return normalizeObjectPath(value);
+  const objectPath = normalizeObjectPath(value);
+  if (!objectPath) return null;
+  return {
+    bucketName: defaultBucketName,
+    objectPath,
+  };
+}
+
+function isRecordingReady(liveSession: {
+  status?: string;
+  recording?: { status?: string };
+} | null): boolean {
+  if (!liveSession) return false;
+  return liveSession.status === "recording_ready" || liveSession.recording?.status === "ready";
 }
 
 export async function GET(
@@ -54,26 +77,62 @@ export async function GET(
       requireTeacher: false,
     });
 
-    const liveSession = access.classContext.liveSession;
-    const recordingReady =
-      liveSession?.status === "recording_ready" || liveSession?.recording.status === "ready";
+    const egressConfig = getLiveKitEgressConfig();
+    let liveSession = access.classContext.liveSession;
+    let recordingReady = isRecordingReady(liveSession);
+
+    let storagePath = liveSession?.recording.storagePath ?? "";
+    let objectLocation = extractObjectLocation(storagePath, egressConfig.egressBucket);
+
+    if (!recordingReady && objectLocation) {
+      const storageBucket = getAdminApp().storage().bucket(objectLocation.bucketName);
+      const [fileExists] = await storageBucket.file(objectLocation.objectPath).exists();
+      if (fileExists) {
+        const nowIso = new Date().toISOString();
+        const baseSession =
+          liveSession ??
+          createLiveSessionForClass({
+            courseId: access.classContext.courseId,
+            lessonId: access.classContext.lessonId,
+            classId: access.classContext.classId,
+          });
+        const nextSession = {
+          ...baseSession,
+          status: "recording_ready" as const,
+          teacherActive: false,
+          recording: {
+            ...baseSession.recording,
+            status: "ready" as const,
+            storagePath: baseSession.recording.storagePath || objectLocation.objectPath,
+            playbackReadyAt: baseSession.recording.playbackReadyAt ?? nowIso,
+          },
+        };
+        await access.classContext.classRef.set(
+          {
+            liveSession: nextSession,
+          },
+          { merge: true },
+        );
+        liveSession = nextSession;
+        recordingReady = true;
+        storagePath = liveSession.recording.storagePath ?? storagePath;
+        objectLocation = extractObjectLocation(storagePath, egressConfig.egressBucket);
+      }
+    }
+
     if (!recordingReady) {
+      if (liveSession?.recording.status === "failed") {
+        throw new LiveAccessError(409, "La grabación falló y no pudo guardarse.");
+      }
       throw new LiveAccessError(409, "La grabación aún se está procesando");
     }
-    const storagePath = liveSession?.recording.storagePath ?? "";
-    if (!storagePath) {
+    if (!objectLocation) {
       throw new LiveAccessError(404, "La grabación aún no está disponible");
     }
 
-    const egressConfig = getLiveKitEgressConfig();
-    const objectPath = extractObjectPath(storagePath, egressConfig.egressBucket);
-    if (!objectPath) {
-      throw new LiveAccessError(404, "No se encontró un archivo válido de grabación");
-    }
-
-    const bucket = getAdminApp().storage().bucket(egressConfig.egressBucket);
+    const bucket = getAdminApp().storage().bucket(objectLocation.bucketName);
     const expiresAt = Date.now() + 10 * 60 * 1000;
-    const [signedUrl] = await bucket.file(objectPath).getSignedUrl({
+    const [signedUrl] = await bucket.file(objectLocation.objectPath).getSignedUrl({
       action: "read",
       expires: expiresAt,
     });
@@ -84,7 +143,7 @@ export async function GET(
         data: {
           url: signedUrl,
           expiresAt: new Date(expiresAt).toISOString(),
-          objectPath,
+          objectPath: objectLocation.objectPath,
         },
       },
       { status: 200 },

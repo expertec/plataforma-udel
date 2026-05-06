@@ -4,9 +4,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
+  increment,
+  limit,
   orderBy,
   query,
+  serverTimestamp,
   setDoc,
   writeBatch,
   where,
@@ -64,6 +68,33 @@ type AutoBreakdownEntry = {
   gradedAt?: Date | null;
 };
 
+type ExtraConceptGrade = {
+  id: string;
+  concept: string;
+  points: number;
+};
+
+type ExtraConceptDefinition = {
+  id: string;
+  concept: string;
+};
+
+type ExtraConceptDraft = {
+  id: string;
+  concept: string;
+};
+
+type ExtraConceptResolution = {
+  concepts: ExtraConceptGrade[];
+  totalPoints: number;
+  errorMessage: string | null;
+};
+
+type CourseConceptsResolution = {
+  concepts: ExtraConceptDefinition[];
+  errorMessage: string | null;
+};
+
 type CourseClosureState = {
   status?: "open" | "closed";
   finalGrade?: number;
@@ -72,6 +103,8 @@ type CourseClosureState = {
   campusFinalExamGrade?: number | null;
   globalExamGrade?: number | null;
   extraordinaryExamGrade?: number | null;
+  extraConcepts?: ExtraConceptGrade[];
+  extraPointsTotal?: number | null;
   manualOverride?: boolean;
   pendingUngradedCount?: number;
   lastFinalGradeNotifiedAt?: Date | null;
@@ -135,6 +168,66 @@ type ConfirmationModalContext = {
   cancelLabel?: string;
   tone?: "default" | "warning" | "danger";
 };
+
+const toConceptComparable = (value: string) =>
+  value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+const toConceptSuggestionDocId = (value: string) => {
+  const normalized = toConceptComparable(value)
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!normalized) return "";
+  return normalized.slice(0, 90);
+};
+
+const createExtraConceptId = () =>
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+const normalizeExtraConcepts = (value: unknown, idPrefix: string): ExtraConceptGrade[] =>
+  Array.isArray(value)
+    ? value
+        .map((entry, index): ExtraConceptGrade | null => {
+          if (!entry || typeof entry !== "object") return null;
+          const extraEntry = entry as Record<string, unknown>;
+          const concept = typeof extraEntry.concept === "string" ? extraEntry.concept.trim() : "";
+          const points =
+            typeof extraEntry.points === "number" && Number.isFinite(extraEntry.points)
+              ? Math.round(extraEntry.points * 10) / 10
+              : null;
+          if (!concept || points === null || points <= 0) return null;
+          const id =
+            typeof extraEntry.id === "string" && extraEntry.id.trim().length > 0
+              ? extraEntry.id.trim()
+              : `${idPrefix}-extra-${index + 1}`;
+          return { id, concept, points };
+        })
+        .filter((entry): entry is ExtraConceptGrade => entry !== null)
+    : [];
+
+const normalizeExtraConceptDefinitions = (
+  value: unknown,
+  idPrefix: string,
+): ExtraConceptDefinition[] =>
+  Array.isArray(value)
+    ? value
+        .map((entry, index): ExtraConceptDefinition | null => {
+          if (!entry || typeof entry !== "object") return null;
+          const conceptEntry = entry as Record<string, unknown>;
+          const concept = typeof conceptEntry.concept === "string" ? conceptEntry.concept.trim() : "";
+          if (!concept) return null;
+          const id =
+            typeof conceptEntry.id === "string" && conceptEntry.id.trim().length > 0
+              ? conceptEntry.id.trim()
+              : `${idPrefix}-extra-${index + 1}`;
+          return { id, concept };
+        })
+        .filter((entry): entry is ExtraConceptDefinition => entry !== null)
+    : [];
 
 const toDateOrNull = (value: unknown): Date | null => {
   if (!value) return null;
@@ -212,12 +305,20 @@ export function CalificacionesTab({
   const [draftCampusFinalExamGrades, setDraftCampusFinalExamGrades] = useState<Record<string, string>>({});
   const [draftGlobalExamGrades, setDraftGlobalExamGrades] = useState<Record<string, string>>({});
   const [draftExtraordinaryExamGrades, setDraftExtraordinaryExamGrades] = useState<Record<string, string>>({});
+  const [draftExtraConceptsByCourse, setDraftExtraConceptsByCourse] = useState<Record<string, ExtraConceptDraft[]>>({});
+  const [draftExtraPointsByStudent, setDraftExtraPointsByStudent] = useState<Record<string, Record<string, string>>>({});
   const [draftFinalGrades, setDraftFinalGrades] = useState<Record<string, string>>({});
+  const [extraConceptSuggestions, setExtraConceptSuggestions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [processingStudentId, setProcessingStudentId] = useState<string | null>(null);
   const [processingNotifyStudentId, setProcessingNotifyStudentId] = useState<string | null>(null);
   const [processingAll, setProcessingAll] = useState(false);
   const [breakdownStudentId, setBreakdownStudentId] = useState<string | null>(null);
+  const [extraConceptModalOpen, setExtraConceptModalOpen] = useState(false);
+  const [extraConceptModalDrafts, setExtraConceptModalDrafts] = useState<ExtraConceptDraft[]>([]);
+  const [extraConceptModalError, setExtraConceptModalError] = useState<string | null>(null);
+  const [savingExtraConceptModal, setSavingExtraConceptModal] = useState(false);
+  const [activeExtraConceptDropdownId, setActiveExtraConceptDropdownId] = useState<string | null>(null);
   const [signatureModalContext, setSignatureModalContext] = useState<SignatureModalContext | null>(null);
   const [signerNameInput, setSignerNameInput] = useState("");
   const [signatureError, setSignatureError] = useState<string | null>(null);
@@ -304,6 +405,13 @@ export function CalificacionesTab({
           Object.entries(rawClosures).forEach(([courseId, closureValue]) => {
             if (!closureValue || typeof closureValue !== "object") return;
             const closureObj = closureValue as Record<string, unknown>;
+            const normalizedExtraConcepts = normalizeExtraConcepts(
+              closureObj.extraConcepts,
+              courseId,
+            );
+            const extraPointsTotal = Math.round(
+              normalizedExtraConcepts.reduce((acc, entry) => acc + entry.points, 0) * 10,
+            ) / 10;
             normalizedClosures[courseId] = {
               status:
                 closureObj.status === "closed" || closureObj.status === "open"
@@ -337,6 +445,8 @@ export function CalificacionesTab({
                 Number.isFinite(closureObj.extraordinaryExamGrade)
                   ? closureObj.extraordinaryExamGrade
                   : null,
+              extraConcepts: normalizedExtraConcepts,
+              extraPointsTotal,
               manualOverride: closureObj.manualOverride === true,
               pendingUngradedCount:
                 typeof closureObj.pendingUngradedCount === "number"
@@ -752,6 +862,41 @@ export function CalificacionesTab({
     setBreakdownStudentId(null);
   }, [breakdownStudentId, rows]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadConceptSuggestions = async () => {
+      try {
+        const suggestionsSnap = await getDocs(
+          query(
+            collection(db, "gradeConceptSuggestions"),
+            orderBy("usageCount", "desc"),
+            limit(120),
+          ),
+        );
+        if (cancelled) return;
+        const seen = new Set<string>();
+        const suggestions = suggestionsSnap.docs
+          .map((docSnap) => {
+            const data = docSnap.data() as { concept?: unknown };
+            const concept = typeof data.concept === "string" ? data.concept.trim() : "";
+            if (!concept) return "";
+            const normalized = toConceptComparable(concept);
+            if (!normalized || seen.has(normalized)) return "";
+            seen.add(normalized);
+            return concept;
+          })
+          .filter((concept): concept is string => concept.length > 0);
+        setExtraConceptSuggestions(suggestions);
+      } catch (error) {
+        console.warn("No se pudieron cargar sugerencias de conceptos extra:", error);
+      }
+    };
+    void loadConceptSuggestions();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const getDraftKey = (studentId: string) => `${selectedCourseId}::${studentId}`;
   const formatGradeInput = (value?: number | null) =>
     typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "";
@@ -762,12 +907,212 @@ export function CalificacionesTab({
     if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) return undefined;
     return parsed;
   };
+  const parseOptionalExtraPointsInput = (value: string): number | null | undefined => {
+    const normalized = value.trim();
+    if (!normalized) return null;
+    const parsed = Number(normalized);
+    if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+    return parsed;
+  };
 
   const roundGrade = (value: number) => Math.round(value * 10) / 10;
+  const toExtraConceptDrafts = (
+    concepts?: Array<Pick<ExtraConceptDefinition, "id" | "concept">> | null,
+  ): ExtraConceptDraft[] =>
+    (concepts ?? []).map((entry) => ({
+      id: entry.id,
+      concept: entry.concept,
+    }));
+
+  const getCourseExtrasDocId = (courseId: string) => `__courseExtras__${courseId}`;
+  const getCourseExtraDraftKey = () => selectedCourseId.trim();
+
+  const getCourseExtraConceptDrafts = (): ExtraConceptDraft[] => {
+    const key = getCourseExtraDraftKey();
+    if (!key) return [];
+    if (Object.prototype.hasOwnProperty.call(draftExtraConceptsByCourse, key)) {
+      return draftExtraConceptsByCourse[key];
+    }
+    return [];
+  };
+
+  const resolveCourseConceptsFromDrafts = (drafts: ExtraConceptDraft[]): CourseConceptsResolution => {
+    const usedConceptKeys = new Set<string>();
+    const parsedConcepts: ExtraConceptDefinition[] = [];
+    for (const draft of drafts) {
+      const concept = draft.concept.trim();
+      if (!concept) continue;
+      const conceptKey = toConceptComparable(concept);
+      if (!conceptKey) {
+        return {
+          concepts: [],
+          errorMessage: "El concepto extra no puede estar vacío.",
+        };
+      }
+      if (usedConceptKeys.has(conceptKey)) {
+        return {
+          concepts: [],
+          errorMessage: "No repitas el mismo concepto extra en la materia.",
+        };
+      }
+      usedConceptKeys.add(conceptKey);
+      parsedConcepts.push({
+        id: draft.id || createExtraConceptId(),
+        concept,
+      });
+    }
+
+    return {
+      concepts: parsedConcepts,
+      errorMessage: null,
+    };
+  };
+
+  const resolveExtraConceptsForCourse = (): CourseConceptsResolution =>
+    resolveCourseConceptsFromDrafts(getCourseExtraConceptDrafts());
+
+  useEffect(() => {
+    if (!selectedCourseId) return;
+    let cancelled = false;
+    const key = selectedCourseId.trim();
+    const loadCourseExtraConcepts = async () => {
+      try {
+        const courseExtrasRef = doc(
+          db,
+          "groups",
+          groupId,
+          "grades",
+          getCourseExtrasDocId(selectedCourseId),
+        );
+        const courseExtrasSnap = await getDoc(courseExtrasRef);
+        if (cancelled) return;
+
+        let concepts: ExtraConceptDefinition[] = [];
+        if (courseExtrasSnap.exists()) {
+          const data = courseExtrasSnap.data() as { extraConcepts?: unknown };
+          concepts = normalizeExtraConceptDefinitions(data.extraConcepts, selectedCourseId);
+        }
+
+        if (concepts.length === 0) {
+          const fallbackMap = new Map<string, ExtraConceptDefinition>();
+          rows.forEach((row) => {
+            (row.closure?.extraConcepts ?? []).forEach((extraConcept) => {
+              const conceptKey = toConceptComparable(extraConcept.concept);
+              if (!conceptKey || fallbackMap.has(conceptKey)) return;
+              fallbackMap.set(conceptKey, { id: extraConcept.id, concept: extraConcept.concept });
+            });
+          });
+          concepts = Array.from(fallbackMap.values());
+        }
+
+        setDraftExtraConceptsByCourse((prev) => ({
+          ...prev,
+          [key]: toExtraConceptDrafts(concepts),
+        }));
+      } catch (error) {
+        console.warn("No se pudieron cargar los extras globales de la materia:", error);
+      }
+    };
+    void loadCourseExtraConcepts();
+    return () => {
+      cancelled = true;
+    };
+  }, [groupId, rows, selectedCourseId]);
+
+  const getClosureExtraPointsForConcept = (
+    row: StudentCourseRow,
+    concept: ExtraConceptDefinition,
+  ): number => {
+    const closureExtras = row.closure?.extraConcepts ?? [];
+    const byId = closureExtras.find((item) => item.id === concept.id);
+    if (byId && Number.isFinite(byId.points)) return roundGrade(byId.points);
+    const conceptKey = toConceptComparable(concept.concept);
+    const byConcept = closureExtras.find((item) => toConceptComparable(item.concept) === conceptKey);
+    if (byConcept && Number.isFinite(byConcept.points)) return roundGrade(byConcept.points);
+    return 0;
+  };
+
+  const getExtraPointInputForRow = (row: StudentCourseRow, concept: ExtraConceptDefinition): string => {
+    const rowKey = getDraftKey(row.studentId);
+    const rowDraft = draftExtraPointsByStudent[rowKey];
+    if (rowDraft && Object.prototype.hasOwnProperty.call(rowDraft, concept.id)) {
+      return rowDraft[concept.id];
+    }
+    const closurePoints = getClosureExtraPointsForConcept(row, concept);
+    return closurePoints > 0 ? formatGradeInput(closurePoints) : "";
+  };
+
+  const updateExtraPointInputForRow = (
+    row: StudentCourseRow,
+    concept: ExtraConceptDefinition,
+    value: string,
+  ) => {
+    const rowKey = getDraftKey(row.studentId);
+    setDraftExtraPointsByStudent((prev) => ({
+      ...prev,
+      [rowKey]: {
+        ...(prev[rowKey] ?? {}),
+        [concept.id]: value,
+      },
+    }));
+  };
+
+  const resolveExtraConceptsForRow = (
+    row: StudentCourseRow,
+    concepts: ExtraConceptDefinition[],
+  ): ExtraConceptResolution => {
+    const parsedConcepts: ExtraConceptGrade[] = [];
+    for (const concept of concepts) {
+      const inputValue = getExtraPointInputForRow(row, concept);
+      const parsedValue = parseOptionalExtraPointsInput(inputValue);
+      if (parsedValue === undefined) {
+        return {
+          concepts: [],
+          totalPoints: 0,
+          errorMessage: `El puntaje extra para \"${concept.concept}\" debe ser 0 o mayor.`,
+        };
+      }
+      const points = parsedValue === null ? 0 : roundGrade(parsedValue);
+      parsedConcepts.push({
+        id: concept.id,
+        concept: concept.concept,
+        points,
+      });
+    }
+
+    return {
+      concepts: parsedConcepts,
+      totalPoints: roundGrade(parsedConcepts.reduce((acc, entry) => acc + entry.points, 0)),
+      errorMessage: null,
+    };
+  };
+
   const areNullableGradesEqual = (a?: number | null, b?: number | null) => {
     const normalizedA = typeof a === "number" && Number.isFinite(a) ? roundGrade(a) : null;
     const normalizedB = typeof b === "number" && Number.isFinite(b) ? roundGrade(b) : null;
     return normalizedA === normalizedB;
+  };
+
+  const areExtraConceptsEquivalent = (
+    a?: ExtraConceptGrade[] | null,
+    b?: ExtraConceptGrade[] | null,
+  ) => {
+    const normalize = (items?: ExtraConceptGrade[] | null) =>
+      (items ?? [])
+        .map((item) => ({
+          key: toConceptComparable(item.concept),
+          points: roundGrade(item.points),
+        }))
+        .filter((item) => item.key.length > 0)
+        .sort((left, right) => left.key.localeCompare(right.key));
+    const left = normalize(a);
+    const right = normalize(b);
+    if (left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+      if (left[index].key !== right[index].key) return false;
+      if (!areNullableGradesEqual(left[index].points, right[index].points)) return false;
+    }
+    return true;
   };
 
   const getCampusTasksGradeInput = (row: StudentCourseRow) => {
@@ -870,12 +1215,36 @@ export function CalificacionesTab({
 
   const resolveFinalGradeForRow = (row: StudentCourseRow) => {
     const campusGrades = resolveCampusGradesForRow(row);
+    const courseConceptsResolution = resolveExtraConceptsForCourse();
+    const extraConceptsResolution = resolveExtraConceptsForRow(row, courseConceptsResolution.concepts);
     if (campusGrades.errorMessage) {
       return {
         finalGrade: null,
         manualOverride: false,
         campusGrades,
+        extraConcepts: [],
+        extraPointsTotal: 0,
         errorMessage: campusGrades.errorMessage,
+      };
+    }
+    if (courseConceptsResolution.errorMessage) {
+      return {
+        finalGrade: null,
+        manualOverride: false,
+        campusGrades,
+        extraConcepts: [],
+        extraPointsTotal: 0,
+        errorMessage: courseConceptsResolution.errorMessage,
+      };
+    }
+    if (extraConceptsResolution.errorMessage) {
+      return {
+        finalGrade: null,
+        manualOverride: false,
+        campusGrades,
+        extraConcepts: [],
+        extraPointsTotal: 0,
+        errorMessage: extraConceptsResolution.errorMessage,
       };
     }
     const autoFinalGrade = roundGrade(
@@ -883,13 +1252,16 @@ export function CalificacionesTab({
       (campusGrades.campusTasksGrade ?? 0) +
       (campusGrades.campusFinalExamGrade ?? 0) +
       (campusGrades.globalExamGrade ?? 0) +
-      (campusGrades.extraordinaryExamGrade ?? 0),
+      (campusGrades.extraordinaryExamGrade ?? 0) +
+      extraConceptsResolution.totalPoints,
     );
     if (!Number.isFinite(autoFinalGrade) || autoFinalGrade < 0 || autoFinalGrade > 100) {
       return {
         finalGrade: null,
         manualOverride: false,
         campusGrades,
+        extraConcepts: extraConceptsResolution.concepts,
+        extraPointsTotal: extraConceptsResolution.totalPoints,
         errorMessage: "La sumatoria de la calificación final debe estar entre 0 y 100.",
       };
     }
@@ -903,6 +1275,8 @@ export function CalificacionesTab({
           finalGrade: null,
           manualOverride: false,
           campusGrades,
+          extraConcepts: extraConceptsResolution.concepts,
+          extraPointsTotal: extraConceptsResolution.totalPoints,
           errorMessage: "La calificación final manual debe estar entre 0 y 100.",
         };
       }
@@ -911,6 +1285,8 @@ export function CalificacionesTab({
           finalGrade: autoFinalGrade,
           manualOverride: false,
           campusGrades,
+          extraConcepts: extraConceptsResolution.concepts,
+          extraPointsTotal: extraConceptsResolution.totalPoints,
           errorMessage: null,
         };
       }
@@ -918,6 +1294,8 @@ export function CalificacionesTab({
         finalGrade: roundGrade(parsedManual),
         manualOverride: true,
         campusGrades,
+        extraConcepts: extraConceptsResolution.concepts,
+        extraPointsTotal: extraConceptsResolution.totalPoints,
         errorMessage: null,
       };
     }
@@ -926,7 +1304,8 @@ export function CalificacionesTab({
       !areNullableGradesEqual(campusGrades.campusTasksGrade, row.closure?.campusTasksGrade) ||
       !areNullableGradesEqual(campusGrades.campusFinalExamGrade, row.closure?.campusFinalExamGrade) ||
       !areNullableGradesEqual(campusGrades.globalExamGrade, row.closure?.globalExamGrade) ||
-      !areNullableGradesEqual(campusGrades.extraordinaryExamGrade, row.closure?.extraordinaryExamGrade);
+      !areNullableGradesEqual(campusGrades.extraordinaryExamGrade, row.closure?.extraordinaryExamGrade) ||
+      !areExtraConceptsEquivalent(extraConceptsResolution.concepts, row.closure?.extraConcepts);
 
     if (
       row.closure?.manualOverride === true &&
@@ -939,6 +1318,8 @@ export function CalificacionesTab({
           finalGrade: null,
           manualOverride: false,
           campusGrades,
+          extraConcepts: extraConceptsResolution.concepts,
+          extraPointsTotal: extraConceptsResolution.totalPoints,
           errorMessage: "La calificación final manual almacenada está fuera de rango.",
         };
       }
@@ -946,6 +1327,8 @@ export function CalificacionesTab({
         finalGrade: persistedManual,
         manualOverride: true,
         campusGrades,
+        extraConcepts: extraConceptsResolution.concepts,
+        extraPointsTotal: extraConceptsResolution.totalPoints,
         errorMessage: null,
       };
     }
@@ -954,8 +1337,170 @@ export function CalificacionesTab({
       finalGrade: autoFinalGrade,
       manualOverride: false,
       campusGrades,
+      extraConcepts: extraConceptsResolution.concepts,
+      extraPointsTotal: extraConceptsResolution.totalPoints,
       errorMessage: null,
     };
+  };
+
+  const persistConceptSuggestions = async (concepts: Array<{ concept: string }>) => {
+    const deduped = new Map<string, string>();
+    concepts.forEach((entry) => {
+      const concept = entry.concept.trim();
+      const normalized = toConceptComparable(concept);
+      if (!concept || !normalized) return;
+      if (!deduped.has(normalized)) {
+        deduped.set(normalized, concept);
+      }
+    });
+    if (!deduped.size) return;
+
+    const writes = Array.from(deduped.entries()).map(async ([, concept]) => {
+      const docId = toConceptSuggestionDocId(concept);
+      if (!docId) return;
+      await setDoc(
+        doc(db, "gradeConceptSuggestions", docId),
+        {
+          concept,
+          conceptNormalized: toConceptComparable(concept),
+          usageCount: increment(1),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+    });
+
+    try {
+      await Promise.all(writes);
+      setExtraConceptSuggestions((prev) => {
+        const merged = [...prev];
+        const seen = new Set(merged.map((item) => toConceptComparable(item)));
+        deduped.forEach((concept, normalized) => {
+          if (seen.has(normalized)) return;
+          seen.add(normalized);
+          merged.push(concept);
+        });
+        return merged;
+      });
+    } catch (error) {
+      console.warn("No se pudieron actualizar sugerencias de conceptos extra:", error);
+    }
+  };
+
+  const persistCourseExtraConcepts = async (concepts: ExtraConceptDefinition[]) => {
+    if (!selectedCourseId) return;
+    const extrasRef = doc(
+      db,
+      "groups",
+      groupId,
+      "grades",
+      getCourseExtrasDocId(selectedCourseId),
+    );
+    await setDoc(
+      extrasRef,
+      {
+        type: "courseExtras",
+        courseId: selectedCourseId,
+        extraConcepts: concepts.map((concept) => ({
+          id: concept.id,
+          concept: concept.concept,
+        })),
+        updatedBy: currentUserId ?? null,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+    setDraftExtraConceptsByCourse((prev) => ({
+      ...prev,
+      [selectedCourseId]: toExtraConceptDrafts(concepts),
+    }));
+  };
+
+  const openExtraConceptModal = () => {
+    if (!selectedCourseId) return;
+    const currentDrafts = getCourseExtraConceptDrafts();
+    setExtraConceptModalDrafts(currentDrafts.map((entry) => ({ ...entry })));
+    setExtraConceptModalError(null);
+    setExtraConceptModalOpen(true);
+  };
+
+  const closeExtraConceptModal = () => {
+    if (savingExtraConceptModal) return;
+    setExtraConceptModalOpen(false);
+    setExtraConceptModalError(null);
+    setExtraConceptModalDrafts([]);
+    setActiveExtraConceptDropdownId(null);
+  };
+
+  const addExtraConceptModalRow = () => {
+    setExtraConceptModalDrafts((prev) => [
+      ...prev,
+      { id: createExtraConceptId(), concept: "" },
+    ]);
+  };
+
+  const updateExtraConceptModalDraft = (
+    draftId: string,
+    patch: Partial<Pick<ExtraConceptDraft, "concept">>,
+  ) => {
+    setExtraConceptModalDrafts((prev) =>
+      prev.map((entry) => (entry.id === draftId ? { ...entry, ...patch } : entry)),
+    );
+  };
+
+  const removeExtraConceptModalDraft = (draftId: string) => {
+    setExtraConceptModalDrafts((prev) => prev.filter((entry) => entry.id !== draftId));
+    setActiveExtraConceptDropdownId((prev) => (prev === draftId ? null : prev));
+  };
+
+  const getFilteredSuggestionsForDraft = (draftId: string, inputValue: string): string[] => {
+    const query = toConceptComparable(inputValue);
+    const usedInOtherDrafts = new Set(
+      extraConceptModalDrafts
+        .filter((entry) => entry.id !== draftId)
+        .map((entry) => toConceptComparable(entry.concept))
+        .filter((value) => value.length > 0),
+    );
+    const seen = new Set<string>();
+
+    return extraConceptSuggestions
+      .map((suggestion) => suggestion.trim())
+      .filter((suggestion) => suggestion.length > 0)
+      .filter((suggestion) => {
+        const normalized = toConceptComparable(suggestion);
+        if (!normalized) return false;
+        if (seen.has(normalized)) return false;
+        seen.add(normalized);
+        if (usedInOtherDrafts.has(normalized)) return false;
+        if (!query) return true;
+        return normalized.includes(query);
+      })
+      .slice(0, 8);
+  };
+
+  const handleSaveExtraConceptModal = async () => {
+    if (!selectedCourseId) return;
+    const resolution = resolveCourseConceptsFromDrafts(extraConceptModalDrafts);
+    if (resolution.errorMessage) {
+      setExtraConceptModalError(resolution.errorMessage);
+      return;
+    }
+
+    setSavingExtraConceptModal(true);
+    try {
+      await persistCourseExtraConcepts(resolution.concepts);
+      await persistConceptSuggestions(resolution.concepts);
+      setExtraConceptModalOpen(false);
+      setExtraConceptModalError(null);
+      setExtraConceptModalDrafts([]);
+      setActiveExtraConceptDropdownId(null);
+      toast.success("Conceptos extra actualizados para la materia seleccionada.");
+    } catch (error) {
+      console.error(error);
+      setExtraConceptModalError("No se pudo guardar el concepto extra global.");
+    } finally {
+      setSavingExtraConceptModal(false);
+    }
   };
 
   const upsertLocalClosure = (
@@ -1385,7 +1930,7 @@ export function CalificacionesTab({
       toast.error(finalResolution.errorMessage ?? "No se pudo calcular la calificación final.");
       return;
     }
-    const { finalGrade, campusGrades, manualOverride } = finalResolution;
+    const { finalGrade, campusGrades, manualOverride, extraConcepts, extraPointsTotal } = finalResolution;
 
     if (row.pendingUngradedCount > 0) {
       const confirmed = await requestConfirmation({
@@ -1430,6 +1975,8 @@ export function CalificacionesTab({
         campusFinalExamGrade: campusGrades.campusFinalExamGrade,
         globalExamGrade: campusGrades.globalExamGrade,
         extraordinaryExamGrade: campusGrades.extraordinaryExamGrade,
+        extraConcepts,
+        extraPointsTotal,
         manualOverride,
         pendingUngradedCount: row.pendingUngradedCount,
         lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
@@ -1457,6 +2004,8 @@ export function CalificacionesTab({
               campusFinalExamGrade: closurePayload.campusFinalExamGrade,
               globalExamGrade: closurePayload.globalExamGrade,
               extraordinaryExamGrade: closurePayload.extraordinaryExamGrade,
+              extraConcepts: closurePayload.extraConcepts ?? [],
+              extraPointsTotal: closurePayload.extraPointsTotal ?? 0,
               manualOverride: closurePayload.manualOverride,
               pendingUngradedCount: closurePayload.pendingUngradedCount,
               lastFinalGradeNotifiedAt: closurePayload.lastFinalGradeNotifiedAt ?? null,
@@ -1473,6 +2022,7 @@ export function CalificacionesTab({
       );
 
       upsertLocalClosure(row.studentId, selectedCourseId, closurePayload, row.enrollmentId);
+      await persistConceptSuggestions(extraConcepts);
       await downloadSignedClosurePdf(signature);
       toast.success(`Materia cerrada para ${row.studentName}`);
     } catch (err) {
@@ -1497,7 +2047,7 @@ export function CalificacionesTab({
       toast.error(finalResolution.errorMessage ?? "No se pudo calcular la calificación final.");
       return;
     }
-    const { finalGrade, campusGrades, manualOverride } = finalResolution;
+    const { finalGrade, campusGrades, manualOverride, extraConcepts, extraPointsTotal } = finalResolution;
 
     setProcessingStudentId(row.studentId);
     try {
@@ -1512,6 +2062,8 @@ export function CalificacionesTab({
         campusFinalExamGrade: campusGrades.campusFinalExamGrade,
         globalExamGrade: campusGrades.globalExamGrade,
         extraordinaryExamGrade: campusGrades.extraordinaryExamGrade,
+        extraConcepts,
+        extraPointsTotal,
         manualOverride,
         pendingUngradedCount: row.pendingUngradedCount,
         lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
@@ -1542,6 +2094,8 @@ export function CalificacionesTab({
               campusFinalExamGrade: payload.campusFinalExamGrade,
               globalExamGrade: payload.globalExamGrade,
               extraordinaryExamGrade: payload.extraordinaryExamGrade,
+              extraConcepts: payload.extraConcepts ?? [],
+              extraPointsTotal: payload.extraPointsTotal ?? 0,
               manualOverride: payload.manualOverride,
               pendingUngradedCount: payload.pendingUngradedCount,
               lastFinalGradeNotifiedAt: payload.lastFinalGradeNotifiedAt ?? null,
@@ -1578,12 +2132,22 @@ export function CalificacionesTab({
         ...prev,
         [key]: formatGradeInput(campusGrades.extraordinaryExamGrade),
       }));
+      setDraftExtraPointsByStudent((prev) => ({
+        ...prev,
+        [key]: Object.fromEntries(
+          extraConcepts.map((concept) => [
+            concept.id,
+            concept.points > 0 ? formatGradeInput(concept.points) : "",
+          ]),
+        ),
+      }));
       setDraftFinalGrades((prev) => {
         const next = { ...prev };
         delete next[key];
         return next;
       });
 
+      await persistConceptSuggestions(extraConcepts);
       toast.success(`Calificación guardada para ${row.studentName}`);
     } catch (err) {
       console.error(err);
@@ -1606,7 +2170,7 @@ export function CalificacionesTab({
       toast.error(finalResolution.errorMessage ?? "No se pudo calcular la calificación final.");
       return;
     }
-    const { finalGrade, campusGrades, manualOverride } = finalResolution;
+    const { finalGrade, campusGrades, manualOverride, extraConcepts, extraPointsTotal } = finalResolution;
 
     setProcessingNotifyStudentId(row.studentId);
     let gradeSaved = false;
@@ -1622,6 +2186,8 @@ export function CalificacionesTab({
         campusFinalExamGrade: campusGrades.campusFinalExamGrade,
         globalExamGrade: campusGrades.globalExamGrade,
         extraordinaryExamGrade: campusGrades.extraordinaryExamGrade,
+        extraConcepts,
+        extraPointsTotal,
         manualOverride,
         pendingUngradedCount: row.pendingUngradedCount,
         lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
@@ -1652,6 +2218,8 @@ export function CalificacionesTab({
               campusFinalExamGrade: payload.campusFinalExamGrade,
               globalExamGrade: payload.globalExamGrade,
               extraordinaryExamGrade: payload.extraordinaryExamGrade,
+              extraConcepts: payload.extraConcepts ?? [],
+              extraPointsTotal: payload.extraPointsTotal ?? 0,
               manualOverride: payload.manualOverride,
               pendingUngradedCount: payload.pendingUngradedCount,
               lastFinalGradeNotifiedAt: payload.lastFinalGradeNotifiedAt ?? null,
@@ -1689,11 +2257,21 @@ export function CalificacionesTab({
         ...prev,
         [key]: formatGradeInput(campusGrades.extraordinaryExamGrade),
       }));
+      setDraftExtraPointsByStudent((prev) => ({
+        ...prev,
+        [key]: Object.fromEntries(
+          extraConcepts.map((concept) => [
+            concept.id,
+            concept.points > 0 ? formatGradeInput(concept.points) : "",
+          ]),
+        ),
+      }));
       setDraftFinalGrades((prev) => {
         const next = { ...prev };
         delete next[key];
         return next;
       });
+      await persistConceptSuggestions(extraConcepts);
 
       const currentSessionUser = auth.currentUser;
       if (!currentSessionUser) {
@@ -1755,6 +2333,8 @@ export function CalificacionesTab({
                 campusFinalExamGrade: notifiedPayload.campusFinalExamGrade,
                 globalExamGrade: notifiedPayload.globalExamGrade,
                 extraordinaryExamGrade: notifiedPayload.extraordinaryExamGrade,
+                extraConcepts: notifiedPayload.extraConcepts ?? [],
+                extraPointsTotal: notifiedPayload.extraPointsTotal ?? 0,
                 manualOverride: notifiedPayload.manualOverride,
                 pendingUngradedCount: notifiedPayload.pendingUngradedCount,
                 lastFinalGradeNotifiedAt: notifiedPayload.lastFinalGradeNotifiedAt,
@@ -1819,6 +2399,8 @@ export function CalificacionesTab({
         campusFinalExamGrade: previous?.campusFinalExamGrade ?? null,
         globalExamGrade: previous?.globalExamGrade ?? null,
         extraordinaryExamGrade: previous?.extraordinaryExamGrade ?? null,
+        extraConcepts: previous?.extraConcepts ?? [],
+        extraPointsTotal: previous?.extraPointsTotal ?? 0,
         manualOverride: previous?.manualOverride ?? false,
         pendingUngradedCount: row.pendingUngradedCount,
         lastFinalGradeNotifiedAt: previous?.lastFinalGradeNotifiedAt ?? null,
@@ -1849,6 +2431,8 @@ export function CalificacionesTab({
               campusFinalExamGrade: reopenPayload.campusFinalExamGrade ?? null,
               globalExamGrade: reopenPayload.globalExamGrade ?? null,
               extraordinaryExamGrade: reopenPayload.extraordinaryExamGrade ?? null,
+              extraConcepts: reopenPayload.extraConcepts ?? [],
+              extraPointsTotal: reopenPayload.extraPointsTotal ?? 0,
               manualOverride: reopenPayload.manualOverride ?? false,
               pendingUngradedCount: reopenPayload.pendingUngradedCount,
               lastFinalGradeNotifiedAt: reopenPayload.lastFinalGradeNotifiedAt ?? null,
@@ -1901,6 +2485,8 @@ export function CalificacionesTab({
         finalGrade: resolution.finalGrade,
         manualOverride: resolution.manualOverride,
         campusGrades: resolution.campusGrades,
+        extraConcepts: resolution.extraConcepts,
+        extraPointsTotal: resolution.extraPointsTotal,
         errorMessage: resolution.errorMessage,
       };
     });
@@ -1968,7 +2554,7 @@ export function CalificacionesTab({
       for (let i = 0; i < parsedRows.length; i += chunkSize) {
         const chunk = parsedRows.slice(i, i + chunkSize);
         const batch = writeBatch(db);
-        chunk.forEach(({ row, finalGrade, campusGrades, manualOverride }) => {
+        chunk.forEach(({ row, finalGrade, campusGrades, manualOverride, extraConcepts, extraPointsTotal }) => {
           if (typeof finalGrade !== "number") return;
           const previousClosure = row.closure ?? null;
           const enrollmentRef = doc(db, "studentEnrollments", row.enrollmentId);
@@ -1987,6 +2573,8 @@ export function CalificacionesTab({
                   campusFinalExamGrade: campusGrades.campusFinalExamGrade,
                   globalExamGrade: campusGrades.globalExamGrade,
                   extraordinaryExamGrade: campusGrades.extraordinaryExamGrade,
+                  extraConcepts,
+                  extraPointsTotal,
                   manualOverride,
                   pendingUngradedCount: row.pendingUngradedCount,
                   lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
@@ -2007,7 +2595,7 @@ export function CalificacionesTab({
 
       setEnrollmentByStudent((prev) => {
         const next = { ...prev };
-        parsedRows.forEach(({ row, finalGrade, campusGrades, manualOverride }) => {
+        parsedRows.forEach(({ row, finalGrade, campusGrades, manualOverride, extraConcepts, extraPointsTotal }) => {
           if (typeof finalGrade !== "number") return;
           const previousClosure = row.closure ?? null;
           const current = next[row.studentId] ?? { id: row.enrollmentId, courseClosures: {} };
@@ -2024,6 +2612,8 @@ export function CalificacionesTab({
                 campusFinalExamGrade: campusGrades.campusFinalExamGrade,
                 globalExamGrade: campusGrades.globalExamGrade,
                 extraordinaryExamGrade: campusGrades.extraordinaryExamGrade,
+                extraConcepts,
+                extraPointsTotal,
                 manualOverride,
                 pendingUngradedCount: row.pendingUngradedCount,
                 lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
@@ -2039,6 +2629,8 @@ export function CalificacionesTab({
         });
         return next;
       });
+      const allConcepts = parsedRows.flatMap(({ extraConcepts }) => extraConcepts ?? []);
+      await persistConceptSuggestions(allConcepts);
 
       processStage = "unlinking";
       const currentSessionUser = auth.currentUser;
@@ -2116,12 +2708,16 @@ export function CalificacionesTab({
     );
   }
 
+  const courseExtraConceptsResolution = resolveExtraConceptsForCourse();
+  const courseExtraConceptColumns = courseExtraConceptsResolution.concepts;
+
   const tableColumnsCount =
     6 +
     (enableCampusTasksGrade ? 1 : 0) +
     (enableCampusFinalExamGrade ? 1 : 0) +
     (enableGlobalExamGrade ? 1 : 0) +
-    (enableExtraordinaryExamGrade ? 1 : 0);
+    (enableExtraordinaryExamGrade ? 1 : 0) +
+    courseExtraConceptColumns.length;
 
   return (
     <div className="space-y-4">
@@ -2139,6 +2735,15 @@ export function CalificacionesTab({
               </option>
             ))}
           </select>
+          <button
+            type="button"
+            onClick={openExtraConceptModal}
+            disabled={!canManageClosures || !selectedCourseId || processingAll}
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+          >
+            <span className="text-sm leading-none">+</span>
+            <span>Concepto Extra</span>
+          </button>
         </div>
         <div className="flex items-center gap-2">
           {canManageClosures ? (
@@ -2190,6 +2795,11 @@ export function CalificacionesTab({
                 {enableExtraordinaryExamGrade ? (
                   <th className="px-3 py-2 text-left">Examen extraordinario</th>
                 ) : null}
+                {courseExtraConceptColumns.map((concept) => (
+                  <th key={concept.id} className="px-3 py-2 text-left">
+                    {concept.concept}
+                  </th>
+                ))}
                 <th className="px-3 py-2 text-left">Final</th>
                 <th className="px-3 py-2 text-left">Pendientes</th>
                 <th className="px-3 py-2 text-left">Estado</th>
@@ -2250,11 +2860,23 @@ export function CalificacionesTab({
                   (!Number.isFinite(extraordinaryExamGradeNum) ||
                     extraordinaryExamGradeNum < 0 ||
                     extraordinaryExamGradeNum > 100);
+                const extraConceptInputsById: Record<string, string> = {};
+                const invalidExtraConceptIds = new Set<string>();
+                courseExtraConceptColumns.forEach((concept) => {
+                  const inputValue = getExtraPointInputForRow(row, concept);
+                  extraConceptInputsById[concept.id] = inputValue;
+                  if (parseOptionalExtraPointsInput(inputValue) === undefined) {
+                    invalidExtraConceptIds.add(concept.id);
+                  }
+                });
+                const invalidExtraConcepts =
+                  Boolean(courseExtraConceptsResolution.errorMessage) || invalidExtraConceptIds.size > 0;
                 const hasAdditionalInputErrors =
                   invalidCampusTasksGrade ||
                   invalidCampusFinalExamGrade ||
                   invalidGlobalExamGrade ||
                   invalidExtraordinaryExamGrade ||
+                  invalidExtraConcepts ||
                   Boolean(finalResolution.campusGrades.errorMessage);
                 const isRowProcessing =
                   processingAll ||
@@ -2343,6 +2965,27 @@ export function CalificacionesTab({
                         />
                       </td>
                     ) : null}
+                    {courseExtraConceptColumns.map((concept) => {
+                      const conceptInput = extraConceptInputsById[concept.id] ?? "";
+                      const invalidConceptInput = invalidExtraConceptIds.has(concept.id);
+                      return (
+                        <td key={`${row.studentId}-${concept.id}`} className="px-3 py-2">
+                          <input
+                            type="number"
+                            min={0}
+                            step={0.1}
+                            value={conceptInput}
+                            onChange={(event) => {
+                              updateExtraPointInputForRow(row, concept, event.target.value);
+                            }}
+                            disabled={!canManageClosures || isRowProcessing}
+                            className={`w-28 rounded-lg border px-2 py-1 text-sm ${
+                              invalidConceptInput ? "border-red-400" : "border-slate-300"
+                            } ${!canManageClosures ? "bg-slate-100 text-slate-500" : "bg-white text-slate-900"}`}
+                          />
+                        </td>
+                      );
+                    })}
                     <td className="px-3 py-2">
                       <input
                         type="number"
@@ -2461,6 +3104,126 @@ export function CalificacionesTab({
           </p>
         </div>
       )}
+
+      {extraConceptModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 px-4 py-6">
+          <div className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white shadow-2xl">
+            <div className="border-b border-slate-200 px-5 py-4">
+              <h3 className="text-lg font-semibold text-slate-900">Conceptos extra de la materia</h3>
+              <p className="mt-1 text-sm text-slate-600">
+                Materia: <span className="font-medium">{selectedCourse?.courseName ?? "Sin materia"}</span>. Se aplica a todos los alumnos del grupo.
+              </p>
+            </div>
+
+            <div className="space-y-3 px-5 py-4">
+              {extraConceptModalDrafts.length === 0 ? (
+                <p className="text-sm text-slate-500">Sin conceptos extra registrados.</p>
+              ) : (
+                extraConceptModalDrafts.map((entry) => {
+                  const filteredSuggestions = getFilteredSuggestionsForDraft(entry.id, entry.concept);
+                  const showSuggestions =
+                    activeExtraConceptDropdownId === entry.id &&
+                    !savingExtraConceptModal &&
+                    filteredSuggestions.length > 0;
+
+                  return (
+                    <div key={entry.id} className="flex items-start gap-2">
+                      <div className="relative min-w-0 flex-1">
+                        <input
+                          type="text"
+                          value={entry.concept}
+                          autoComplete="off"
+                          onFocus={() => setActiveExtraConceptDropdownId(entry.id)}
+                          onBlur={() => {
+                            window.setTimeout(() => {
+                              setActiveExtraConceptDropdownId((prev) => (prev === entry.id ? null : prev));
+                            }, 120);
+                          }}
+                          onChange={(event) => {
+                            updateExtraConceptModalDraft(entry.id, { concept: event.target.value });
+                            setActiveExtraConceptDropdownId(entry.id);
+                            if (extraConceptModalError) setExtraConceptModalError(null);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") {
+                              setActiveExtraConceptDropdownId((prev) => (prev === entry.id ? null : prev));
+                            }
+                          }}
+                          disabled={savingExtraConceptModal}
+                          placeholder="Concepto (ej. Clase en vivo)"
+                          className="min-w-0 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                        />
+                        {showSuggestions ? (
+                          <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-20 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+                            <ul className="max-h-48 overflow-y-auto py-1">
+                              {filteredSuggestions.map((suggestion) => (
+                                <li key={`${entry.id}-${suggestion}`}>
+                                  <button
+                                    type="button"
+                                    onMouseDown={(event) => event.preventDefault()}
+                                    onClick={() => {
+                                      updateExtraConceptModalDraft(entry.id, { concept: suggestion });
+                                      setActiveExtraConceptDropdownId(null);
+                                      if (extraConceptModalError) setExtraConceptModalError(null);
+                                    }}
+                                    className="w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
+                                  >
+                                    {suggestion}
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeExtraConceptModalDraft(entry.id)}
+                        disabled={savingExtraConceptModal}
+                        className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+
+              <button
+                type="button"
+                onClick={addExtraConceptModalRow}
+                disabled={savingExtraConceptModal}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+              >
+                <span className="text-sm leading-none">+</span>
+                <span>Agregar concepto</span>
+              </button>
+              {extraConceptModalError ? (
+                <p className="text-sm font-medium text-red-600">{extraConceptModalError}</p>
+              ) : null}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
+              <button
+                type="button"
+                onClick={closeExtraConceptModal}
+                disabled={savingExtraConceptModal}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveExtraConceptModal}
+                disabled={savingExtraConceptModal}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+              >
+                {savingExtraConceptModal ? "Guardando..." : "Guardar conceptos"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {breakdownRow ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 px-4 py-6">

@@ -77,6 +77,9 @@ service cloud.firestore {
     function isSelf(userId) { return isSignedIn() && request.auth.uid == userId; }
     function absVal(x) { return x >= 0 ? x : -x; }
     function listSize(x) { return x is list ? x.size() : 0; }
+    function isCourseExtrasGradeDocId(docId) {
+      return docId is string && docId.matches('^__courseExtras__.*$');
+    }
     function isAssistantInGroup(g) {
       return g.assistantTeacherIds is list &&
         (
@@ -534,14 +537,20 @@ service cloud.firestore {
       match /grades/{studentId} {
         allow read: if isAdmin() || isAdminTeacher() ||
           isGroupInUserPlantel(/databases/$(database)/documents/groups/$(groupId)) || (
-          isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
-          isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId))
+          isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId)) &&
+          (
+            isTeacherLike() ||
+            isCourseExtrasGradeDocId(studentId)
+          )
         );
         allow create, update, delete: if isAdmin() || isAdminTeacher() || (
-          isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
-          isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId))
+          isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId)) &&
+          (
+            isTeacherLike() ||
+            isCourseExtrasGradeDocId(studentId)
+          )
         );
       }
     }
@@ -651,6 +660,13 @@ service cloud.firestore {
         request.resource.data.createdBy == request.auth.uid;
       allow update: if isStrictAdminTeacher();
       allow delete: if false;
+    }
+
+    /* conceptos extra reutilizables para calificaciones */
+    match /gradeConceptSuggestions/{conceptId} {
+      allow read: if isTeacherLike() || isAdmin() || isAdminTeacher();
+      allow create, update: if isTeacherLike() || isAdmin() || isAdminTeacher();
+      allow delete: if isAdmin() || isAdminTeacher();
     }
 
     // Regla para collectionGroup queries en forums (necesaria para consultas globales)

@@ -38,6 +38,14 @@ function requiredEnv(name: string): string {
   return value;
 }
 
+function normalizeBucketName(rawValue: string): string {
+  const trimmed = rawValue.trim();
+  if (!trimmed) return "";
+  const withoutScheme = trimmed.replace(/^gs:\/\//i, "");
+  const firstSegment = withoutScheme.split("/").find((segment) => segment.trim().length > 0) ?? "";
+  return firstSegment.trim();
+}
+
 function normalizeLiveKitUrls(rawValue: string): { serverUrl: string; clientUrl: string } {
   const raw = rawValue.trim();
   if (!raw) {
@@ -109,9 +117,10 @@ export function getLiveKitConfig(): LiveKitConfig {
 
 export function getLiveKitEgressConfig(): LiveKitEgressConfig {
   if (cachedEgressConfig) return cachedEgressConfig;
-  const egressBucket =
+  const egressBucket = normalizeBucketName(
     (process.env.LIVEKIT_EGRESS_GCS_BUCKET ?? "").trim() ||
-    (process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET ?? "").trim();
+      (process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET ?? "").trim(),
+  );
   if (!egressBucket) {
     throw new Error("Missing required env var: LIVEKIT_EGRESS_GCS_BUCKET");
   }

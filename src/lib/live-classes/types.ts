@@ -151,13 +151,13 @@ export function createLiveSessionForClass(params: {
   input?: unknown;
 }): LiveClassSession {
   const normalized = normalizeLiveSession(params.input);
-  const defaultRoom = buildLiveRoomName({
+  const classScopedRoom = buildLiveRoomName({
     courseId: params.courseId,
     lessonId: params.lessonId,
     classId: params.classId,
   });
   const base = createDefaultLiveSession({
-    roomName: normalized?.roomName || defaultRoom,
+    roomName: classScopedRoom,
     scheduledStartAt: normalized?.scheduledStartAt ?? null,
     scheduledEndAt: normalized?.scheduledEndAt ?? null,
     timezone: normalized?.timezone ?? "America/Monterrey",
@@ -165,7 +165,8 @@ export function createLiveSessionForClass(params: {
 
   return {
     ...base,
-    roomName: sanitizeLiveRoomName(normalized?.roomName || defaultRoom, defaultRoom),
+    // Room name must be class-scoped to avoid collisions between simultaneous live classes.
+    roomName: classScopedRoom,
     scheduledStartAt: normalized?.scheduledStartAt ?? base.scheduledStartAt,
     scheduledEndAt: normalized?.scheduledEndAt ?? base.scheduledEndAt,
     timezone: normalized?.timezone || base.timezone,
@@ -191,7 +192,7 @@ export function mergeTeacherEditableLiveSession(params: {
   });
   const current = normalizeLiveSession(params.current) ?? fallback;
   const incoming = normalizeLiveSession(params.input);
-  const defaultRoom = buildLiveRoomName({
+  const classScopedRoom = buildLiveRoomName({
     courseId: params.courseId,
     lessonId: params.lessonId,
     classId: params.classId,
@@ -200,10 +201,8 @@ export function mergeTeacherEditableLiveSession(params: {
   return {
     ...current,
     provider: "livekit",
-    roomName: sanitizeLiveRoomName(
-      incoming?.roomName || current.roomName || defaultRoom,
-      defaultRoom,
-    ),
+    // Keep room deterministic by class identity; do not trust roomName from client payload.
+    roomName: classScopedRoom,
     scheduledStartAt: incoming ? incoming.scheduledStartAt : current.scheduledStartAt,
     scheduledEndAt: incoming ? incoming.scheduledEndAt : current.scheduledEndAt,
     timezone: incoming?.timezone || current.timezone || "America/Monterrey",

@@ -3515,6 +3515,9 @@ export default function StudentFeedPageClient() {
       const sessionFinalized = isLiveSessionFinalized(session);
       const isRoomLive = isLiveSessionLiveNow(session, liveNowTickMs);
       const recordingReady = sessionStatus === "recording_ready" || session?.recording.status === "ready";
+      const recordingFailed = session?.recording.status === "failed";
+      const canOpenRecording =
+        sessionFinalized && !recordingFailed && session?.recording.auto !== false;
       const baseClassId = (cls.classDocId ?? cls.id).trim();
       const liveHref = buildLiveClassHref({
         classId: baseClassId,
@@ -3543,6 +3546,8 @@ export default function StudentFeedPageClient() {
                 {sessionFinalized
                   ? recordingReady
                     ? "La sesión en vivo terminó. Ya puedes ver la grabación."
+                    : recordingFailed
+                    ? "La sesión en vivo terminó, pero la grabación falló."
                     : "La sesión en vivo terminó. La grabación se está procesando."
                   : "Sala de espera: el profesor aún no inicia la clase."}
               </div>
@@ -3561,14 +3566,18 @@ export default function StudentFeedPageClient() {
                   {isRoomLive ? "Entrar a la clase" : "Abrir sala de espera"}
                 </Link>
               ) : null}
-              {recordingReady ? (
+              {canOpenRecording ? (
                 <button
                   type="button"
                   onClick={() => handleOpenLiveRecording(cls)}
                   disabled={recordingLoadingMap[cls.id] === true}
                   className="rounded-lg border border-slate-500 px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-800 disabled:opacity-60"
                 >
-                  {recordingLoadingMap[cls.id] ? "Abriendo..." : "Ver grabación"}
+                  {recordingLoadingMap[cls.id]
+                    ? "Verificando..."
+                    : recordingReady
+                    ? "Ver grabación"
+                    : "Intentar ver grabación"}
                 </button>
               ) : null}
             </div>
