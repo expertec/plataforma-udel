@@ -54,6 +54,16 @@ service cloud.firestore {
           isLegacyAdminTeacherRole(userRole()) ||
           userRole() == 'coordinadorPlantel');
     }
+    // Soporta cuentas de docentes/mentores cuyo rol aún no está normalizado en users/{uid}.
+    // Excluye explícitamente a estudiantes; para roles nulos o no estándar permite operar
+    // sobre recursos de trabajo docente no sensibles.
+    function isNonStudentSignedIn() {
+      return isSignedIn() &&
+        (
+          userRole() == null ||
+          userRole() != 'student'
+        );
+    }
     function isCampusCoordinator() { return isSignedIn() && userRole() == 'coordinadorPlantel'; }
     function isAdminOrCampusCoordinator() { return isSignedIn() && (isAdmin() || isCampusCoordinator()); }
     function userPlantelId() {
@@ -664,8 +674,8 @@ service cloud.firestore {
 
     /* conceptos extra reutilizables para calificaciones */
     match /gradeConceptSuggestions/{conceptId} {
-      allow read: if isTeacherLike() || isAdmin() || isAdminTeacher();
-      allow create, update: if isTeacherLike() || isAdmin() || isAdminTeacher();
+      allow read: if isTeacherLike() || isAdmin() || isAdminTeacher() || isNonStudentSignedIn();
+      allow create, update: if isTeacherLike() || isAdmin() || isAdminTeacher() || isNonStudentSignedIn();
       allow delete: if isAdmin() || isAdminTeacher();
     }
 

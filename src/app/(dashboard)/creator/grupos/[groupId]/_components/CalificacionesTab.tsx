@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
@@ -77,11 +77,13 @@ type ExtraConceptGrade = {
 type ExtraConceptDefinition = {
   id: string;
   concept: string;
+  defaultPoints?: number | null;
 };
 
 type ExtraConceptDraft = {
   id: string;
   concept: string;
+  defaultPoints: string;
 };
 
 type ExtraConceptResolution = {
@@ -188,6 +190,8 @@ const toConceptSuggestionDocId = (value: string) => {
 const createExtraConceptId = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+const getCourseExtrasDocId = (courseId: string) => `__courseExtras__${courseId}`;
+
 const normalizeExtraConcepts = (value: unknown, idPrefix: string): ExtraConceptGrade[] =>
   Array.isArray(value)
     ? value
@@ -199,7 +203,7 @@ const normalizeExtraConcepts = (value: unknown, idPrefix: string): ExtraConceptG
             typeof extraEntry.points === "number" && Number.isFinite(extraEntry.points)
               ? Math.round(extraEntry.points * 10) / 10
               : null;
-          if (!concept || points === null || points <= 0) return null;
+          if (!concept || points === null || points < 0) return null;
           const id =
             typeof extraEntry.id === "string" && extraEntry.id.trim().length > 0
               ? extraEntry.id.trim()
@@ -220,14 +224,30 @@ const normalizeExtraConceptDefinitions = (
           const conceptEntry = entry as Record<string, unknown>;
           const concept = typeof conceptEntry.concept === "string" ? conceptEntry.concept.trim() : "";
           if (!concept) return null;
+          const defaultPoints =
+            typeof conceptEntry.defaultPoints === "number" && Number.isFinite(conceptEntry.defaultPoints)
+              ? Math.round(Math.max(0, conceptEntry.defaultPoints) * 10) / 10
+              : null;
           const id =
             typeof conceptEntry.id === "string" && conceptEntry.id.trim().length > 0
               ? conceptEntry.id.trim()
               : `${idPrefix}-extra-${index + 1}`;
-          return { id, concept };
+          return { id, concept, defaultPoints };
         })
         .filter((entry): entry is ExtraConceptDefinition => entry !== null)
     : [];
+
+const formatDefaultPointsDraftInput = (value?: number | null) =>
+  typeof value === "number" && Number.isFinite(value) ? (Math.round(value * 10) / 10).toFixed(1) : "";
+
+const toExtraConceptDrafts = (
+  concepts?: Array<Pick<ExtraConceptDefinition, "id" | "concept" | "defaultPoints">> | null,
+): ExtraConceptDraft[] =>
+  (concepts ?? []).map((entry) => ({
+    id: entry.id,
+    concept: entry.concept,
+    defaultPoints: formatDefaultPointsDraftInput(entry.defaultPoints),
+  }));
 
 const toDateOrNull = (value: unknown): Date | null => {
   if (!value) return null;
@@ -862,30 +882,88 @@ export function CalificacionesTab({
     setBreakdownStudentId(null);
   }, [breakdownStudentId, rows]);
 
+  const fetchConceptSuggestions = useCallback(async (): Promise<string[]> => {
+    const [suggestionsSnap, extrasByCourse] = await Promise.all([
+      getDocs(query(collection(db, "gradeConceptSuggestions"), limit(400))),
+      Promise.all(
+        courses.map(async (course) => {
+          const courseId = course.courseId?.trim() ?? "";
+          if (!courseId) return [] as ExtraConceptDefinition[];
+          try {
+            const extrasSnap = await getDoc(
+              doc(db, "groups", groupId, "grades", getCourseExtrasDocId(courseId)),
+            );
+            if (!extrasSnap.exists()) return [] as ExtraConceptDefinition[];
+            const extrasData = extrasSnap.data() as { extraConcepts?: unknown };
+            return normalizeExtraConceptDefinitions(extrasData.extraConcepts, courseId);
+          } catch {
+            return [] as ExtraConceptDefinition[];
+          }
+        }),
+      ),
+    ]);
+
+    const rankedSuggestions = [
+      ...suggestionsSnap.docs
+        .map((docSnap) => {
+          const data = docSnap.data() as { concept?: unknown; usageCount?: unknown };
+          const concept = typeof data.concept === "string" ? data.concept.trim() : "";
+          const usageCount =
+            typeof data.usageCount === "number" && Number.isFinite(data.usageCount) ? data.usageCount : 0;
+          if (!concept) return null;
+          const normalized = toConceptComparable(concept);
+          if (!normalized) return null;
+          return { concept, normalized, usageCount };
+        })
+        .filter(
+          (
+            entry,
+          ): entry is {
+            concept: string;
+            normalized: string;
+            usageCount: number;
+          } => entry !== null,
+        ),
+      ...extrasByCourse
+        .flat()
+        .map((entry) => {
+          const concept = entry.concept.trim();
+          if (!concept) return null;
+          const normalized = toConceptComparable(concept);
+          if (!normalized) return null;
+          return { concept, normalized, usageCount: 0 };
+        })
+        .filter(
+          (
+            entry,
+          ): entry is {
+            concept: string;
+            normalized: string;
+            usageCount: number;
+          } => entry !== null,
+        ),
+    ].sort((left, right) => {
+      if (right.usageCount !== left.usageCount) return right.usageCount - left.usageCount;
+      return left.concept.localeCompare(right.concept, "es-MX");
+    });
+
+    const seen = new Set<string>();
+    return rankedSuggestions
+      .filter((entry) => {
+        if (seen.has(entry.normalized)) return false;
+        seen.add(entry.normalized);
+        return true;
+      })
+      .slice(0, 120)
+      .map((entry) => entry.concept);
+  }, [courses, groupId]);
+
   useEffect(() => {
     let cancelled = false;
     const loadConceptSuggestions = async () => {
       try {
-        const suggestionsSnap = await getDocs(
-          query(
-            collection(db, "gradeConceptSuggestions"),
-            orderBy("usageCount", "desc"),
-            limit(120),
-          ),
-        );
+        const suggestions = await fetchConceptSuggestions();
         if (cancelled) return;
-        const seen = new Set<string>();
-        const suggestions = suggestionsSnap.docs
-          .map((docSnap) => {
-            const data = docSnap.data() as { concept?: unknown };
-            const concept = typeof data.concept === "string" ? data.concept.trim() : "";
-            if (!concept) return "";
-            const normalized = toConceptComparable(concept);
-            if (!normalized || seen.has(normalized)) return "";
-            seen.add(normalized);
-            return concept;
-          })
-          .filter((concept): concept is string => concept.length > 0);
         setExtraConceptSuggestions(suggestions);
       } catch (error) {
         console.warn("No se pudieron cargar sugerencias de conceptos extra:", error);
@@ -895,7 +973,7 @@ export function CalificacionesTab({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [fetchConceptSuggestions]);
 
   const getDraftKey = (studentId: string) => `${selectedCourseId}::${studentId}`;
   const formatGradeInput = (value?: number | null) =>
@@ -916,15 +994,6 @@ export function CalificacionesTab({
   };
 
   const roundGrade = (value: number) => Math.round(value * 10) / 10;
-  const toExtraConceptDrafts = (
-    concepts?: Array<Pick<ExtraConceptDefinition, "id" | "concept">> | null,
-  ): ExtraConceptDraft[] =>
-    (concepts ?? []).map((entry) => ({
-      id: entry.id,
-      concept: entry.concept,
-    }));
-
-  const getCourseExtrasDocId = (courseId: string) => `__courseExtras__${courseId}`;
   const getCourseExtraDraftKey = () => selectedCourseId.trim();
 
   const getCourseExtraConceptDrafts = (): ExtraConceptDraft[] => {
@@ -956,9 +1025,17 @@ export function CalificacionesTab({
         };
       }
       usedConceptKeys.add(conceptKey);
+      const parsedDefaultPoints = parseOptionalExtraPointsInput(draft.defaultPoints);
+      if (parsedDefaultPoints === undefined) {
+        return {
+          concepts: [],
+          errorMessage: `El puntaje inicial para \"${concept}\" debe ser 0 o mayor.`,
+        };
+      }
       parsedConcepts.push({
         id: draft.id || createExtraConceptId(),
         concept,
+        defaultPoints: parsedDefaultPoints === null ? null : roundGrade(parsedDefaultPoints),
       });
     }
 
@@ -999,7 +1076,11 @@ export function CalificacionesTab({
             (row.closure?.extraConcepts ?? []).forEach((extraConcept) => {
               const conceptKey = toConceptComparable(extraConcept.concept);
               if (!conceptKey || fallbackMap.has(conceptKey)) return;
-              fallbackMap.set(conceptKey, { id: extraConcept.id, concept: extraConcept.concept });
+              fallbackMap.set(conceptKey, {
+                id: extraConcept.id,
+                concept: extraConcept.concept,
+                defaultPoints: null,
+              });
             });
           });
           concepts = Array.from(fallbackMap.values());
@@ -1022,14 +1103,14 @@ export function CalificacionesTab({
   const getClosureExtraPointsForConcept = (
     row: StudentCourseRow,
     concept: ExtraConceptDefinition,
-  ): number => {
+  ): number | null => {
     const closureExtras = row.closure?.extraConcepts ?? [];
     const byId = closureExtras.find((item) => item.id === concept.id);
     if (byId && Number.isFinite(byId.points)) return roundGrade(byId.points);
     const conceptKey = toConceptComparable(concept.concept);
     const byConcept = closureExtras.find((item) => toConceptComparable(item.concept) === conceptKey);
     if (byConcept && Number.isFinite(byConcept.points)) return roundGrade(byConcept.points);
-    return 0;
+    return null;
   };
 
   const getExtraPointInputForRow = (row: StudentCourseRow, concept: ExtraConceptDefinition): string => {
@@ -1039,7 +1120,13 @@ export function CalificacionesTab({
       return rowDraft[concept.id];
     }
     const closurePoints = getClosureExtraPointsForConcept(row, concept);
-    return closurePoints > 0 ? formatGradeInput(closurePoints) : "";
+    if (typeof closurePoints === "number") {
+      return formatGradeInput(closurePoints);
+    }
+    if (typeof concept.defaultPoints === "number" && Number.isFinite(concept.defaultPoints)) {
+      return formatGradeInput(roundGrade(concept.defaultPoints));
+    }
+    return "";
   };
 
   const updateExtraPointInputForRow = (
@@ -1404,6 +1491,10 @@ export function CalificacionesTab({
         extraConcepts: concepts.map((concept) => ({
           id: concept.id,
           concept: concept.concept,
+          defaultPoints:
+            typeof concept.defaultPoints === "number" && Number.isFinite(concept.defaultPoints)
+              ? roundGrade(concept.defaultPoints)
+              : null,
         })),
         updatedBy: currentUserId ?? null,
         updatedAt: serverTimestamp(),
@@ -1418,6 +1509,13 @@ export function CalificacionesTab({
 
   const openExtraConceptModal = () => {
     if (!selectedCourseId) return;
+    void fetchConceptSuggestions()
+      .then((suggestions) => {
+        setExtraConceptSuggestions(suggestions);
+      })
+      .catch((error) => {
+        console.warn("No se pudieron refrescar sugerencias de conceptos extra:", error);
+      });
     const currentDrafts = getCourseExtraConceptDrafts();
     setExtraConceptModalDrafts(currentDrafts.map((entry) => ({ ...entry })));
     setExtraConceptModalError(null);
@@ -1435,13 +1533,13 @@ export function CalificacionesTab({
   const addExtraConceptModalRow = () => {
     setExtraConceptModalDrafts((prev) => [
       ...prev,
-      { id: createExtraConceptId(), concept: "" },
+      { id: createExtraConceptId(), concept: "", defaultPoints: "" },
     ]);
   };
 
   const updateExtraConceptModalDraft = (
     draftId: string,
-    patch: Partial<Pick<ExtraConceptDraft, "concept">>,
+    patch: Partial<Pick<ExtraConceptDraft, "concept" | "defaultPoints">>,
   ) => {
     setExtraConceptModalDrafts((prev) =>
       prev.map((entry) => (entry.id === draftId ? { ...entry, ...patch } : entry)),
@@ -1455,12 +1553,6 @@ export function CalificacionesTab({
 
   const getFilteredSuggestionsForDraft = (draftId: string, inputValue: string): string[] => {
     const query = toConceptComparable(inputValue);
-    const usedInOtherDrafts = new Set(
-      extraConceptModalDrafts
-        .filter((entry) => entry.id !== draftId)
-        .map((entry) => toConceptComparable(entry.concept))
-        .filter((value) => value.length > 0),
-    );
     const seen = new Set<string>();
 
     return extraConceptSuggestions
@@ -1471,7 +1563,6 @@ export function CalificacionesTab({
         if (!normalized) return false;
         if (seen.has(normalized)) return false;
         seen.add(normalized);
-        if (usedInOtherDrafts.has(normalized)) return false;
         if (!query) return true;
         return normalized.includes(query);
       })
@@ -3176,6 +3267,19 @@ export function CalificacionesTab({
                           </div>
                         ) : null}
                       </div>
+                      <input
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={entry.defaultPoints}
+                        onChange={(event) => {
+                          updateExtraConceptModalDraft(entry.id, { defaultPoints: event.target.value });
+                          if (extraConceptModalError) setExtraConceptModalError(null);
+                        }}
+                        disabled={savingExtraConceptModal}
+                        placeholder="Pts iniciales (opcional)"
+                        className="w-44 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                      />
                       <button
                         type="button"
                         onClick={() => removeExtraConceptModalDraft(entry.id)}
@@ -3201,6 +3305,10 @@ export function CalificacionesTab({
               {extraConceptModalError ? (
                 <p className="text-sm font-medium text-red-600">{extraConceptModalError}</p>
               ) : null}
+              <p className="text-xs text-slate-500">
+                Pts iniciales es opcional. Si lo capturas, se sugiere ese puntaje para todos los alumnos al crear el
+                concepto.
+              </p>
             </div>
 
             <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
