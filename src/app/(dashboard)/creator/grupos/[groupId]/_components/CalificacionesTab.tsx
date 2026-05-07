@@ -66,6 +66,8 @@ type AutoBreakdownEntry = {
   submissionId?: string;
   submittedAt?: Date | null;
   gradedAt?: Date | null;
+  gradedById?: string;
+  gradedByName?: string;
 };
 
 type ExtraConceptGrade = {
@@ -302,6 +304,12 @@ const normalizeQuizPointValue = (value: unknown): number => {
   return Math.round(bounded * 100) / 100;
 };
 
+const isPermissionDeniedError = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  (error as { code?: unknown }).code === "permission-denied";
+
 export function CalificacionesTab({
   groupId,
   courses,
@@ -386,22 +394,49 @@ export function CalificacionesTab({
         }));
         const studentIdSet = new Set(nextStudents.map((student) => student.id));
 
-        const submissions = await getAllSubmissions(groupId);
+        let permissionWarningShown = false;
+        let submissions: Submission[] = [];
+        try {
+          submissions = await getAllSubmissions(groupId);
+        } catch (error) {
+          if (isPermissionDeniedError(error)) {
+            permissionWarningShown = true;
+            console.warn("Sin permisos para leer submissions del grupo:", groupId, error);
+          } else {
+            throw error;
+          }
+        }
 
-        const enrollmentsSnap = await getDocs(
-          query(collection(db, "studentEnrollments"), where("groupId", "==", groupId)),
-        );
+        let enrollmentDocs: Array<{ __id: string; [key: string]: unknown }> = [];
+        try {
+          const enrollmentsSnap = await getDocs(
+            query(collection(db, "studentEnrollments"), where("groupId", "==", groupId)),
+          );
+          enrollmentDocs = enrollmentsSnap.docs.map((docSnap) => ({
+            ...(docSnap.data() as Record<string, unknown>),
+            __id: docSnap.id,
+          }));
+        } catch (error) {
+          if (isPermissionDeniedError(error)) {
+            permissionWarningShown = true;
+            console.warn("Sin permisos para leer studentEnrollments del grupo:", groupId, error);
+          } else {
+            throw error;
+          }
+        }
 
         const enrollmentsMap: Record<string, EnrollmentRecord> = {};
-        enrollmentsSnap.docs.forEach((enrollmentDoc) => {
-          const data = enrollmentDoc.data() as {
+        enrollmentDocs.forEach((enrollmentRaw) => {
+          const data = enrollmentRaw as {
+            __id: string;
             studentId?: string;
             studentName?: string;
             courseClosures?: Record<string, unknown>;
             [key: string]: unknown;
           };
-          const idFromDoc = enrollmentDoc.id.startsWith(`${groupId}_`)
-            ? enrollmentDoc.id.slice(groupId.length + 1).trim()
+          const enrollmentDocId = data.__id;
+          const idFromDoc = enrollmentDocId.startsWith(`${groupId}_`)
+            ? enrollmentDocId.slice(groupId.length + 1).trim()
             : "";
           const studentId =
             (typeof data.studentId === "string" ? data.studentId.trim() : "") || idFromDoc;
@@ -496,12 +531,12 @@ export function CalificacionesTab({
           });
 
           const record: EnrollmentRecord = {
-            id: enrollmentDoc.id,
+            id: enrollmentDocId,
             courseClosures: normalizedClosures,
             studentName: data.studentName,
           };
 
-          if (!existing || enrollmentDoc.id === canonicalId) {
+          if (!existing || enrollmentDocId === canonicalId) {
             enrollmentsMap[studentId] = record;
           }
         });
@@ -593,6 +628,8 @@ export function CalificacionesTab({
                     grade: typeof post.grade === "number" ? post.grade : undefined,
                     feedback: post.feedback ?? "",
                     gradedAt: post.gradedAt ?? null,
+                    gradedById: post.gradedById ?? undefined,
+                    gradedByName: post.gradedByName ?? undefined,
                   };
                 })
                 .filter((submission): submission is Submission => submission !== null);
@@ -612,6 +649,9 @@ export function CalificacionesTab({
         setAllSubmissions(mergedSubmissions);
         setEnrollmentByStudent(enrollmentsMap);
         setTasksByCourse(Object.fromEntries(courseTasksEntries));
+        if (permissionWarningShown) {
+          toast.error("Algunas calificaciones no pudieron cargarse por permisos del rol.");
+        }
       } catch (err) {
         console.error(err);
         toast.error("No se pudieron cargar las calificaciones");
@@ -838,6 +878,8 @@ export function CalificacionesTab({
           submissionId: matched?.id,
           submittedAt: matched?.submittedAt ?? null,
           gradedAt: matched?.gradedAt ?? null,
+          gradedById: matched?.gradedById,
+          gradedByName: matched?.gradedByName,
         };
       });
       const numericBreakdownGrades = autoBreakdown
@@ -3385,6 +3427,8 @@ export function CalificacionesTab({
                       <th className="px-3 py-2 text-left">Actividad</th>
                       <th className="px-3 py-2 text-left">Tipo</th>
                       <th className="px-3 py-2 text-left">Estado</th>
+                      <th className="px-3 py-2 text-left">Entregada</th>
+                      <th className="px-3 py-2 text-left">Evaluada</th>
                       <th className="px-3 py-2 text-left">Puntos sumados</th>
                     </tr>
                   </thead>
@@ -3404,6 +3448,21 @@ export function CalificacionesTab({
                             : item.isMarkedGraded
                             ? "Calificada sin puntaje"
                             : "Sin calificar"}
+                        </td>
+                        <td className="px-3 py-2 text-slate-700">
+                          {item.submittedAt ? formatDateTime(item.submittedAt) : "—"}
+                        </td>
+                        <td className="px-3 py-2 text-slate-700">
+                          {item.gradedAt ? (
+                            <div className="space-y-0.5">
+                              <p>{formatDateTime(item.gradedAt)}</p>
+                              <p className="text-xs text-slate-500">{item.gradedByName || "Docente"}</p>
+                            </div>
+                          ) : item.isMarkedGraded ? (
+                            "Calificada sin fecha"
+                          ) : (
+                            "—"
+                          )}
                         </td>
                         <td className="px-3 py-2 text-slate-900">
                           {typeof item.grade === "number" ? item.grade.toFixed(1) : "—"}

@@ -337,6 +337,7 @@ type ForumThreadModalProps = {
   highlightStudentName: string;
   currentUserId: string;
   currentUserName: string;
+  readOnly?: boolean;
   onClose: () => void;
 };
 
@@ -348,6 +349,7 @@ function ForumThreadModal({
   highlightStudentName,
   currentUserId,
   currentUserName,
+  readOnly = false,
   onClose,
 }: ForumThreadModalProps) {
   const [posts, setPosts] = useState<ForumPost[]>([]);
@@ -451,6 +453,7 @@ function ForumThreadModal({
   };
 
   const handleSendReply = async (postId: string) => {
+    if (readOnly) return;
     const text = replyText[postId]?.trim();
     if (!text) return;
 
@@ -669,30 +672,33 @@ function ForumThreadModal({
                         </div>
                       )}
 
-                      {/* Input para nueva respuesta */}
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={replyText[post.id] ?? ""}
-                          onChange={(e) => setReplyText((prev) => ({ ...prev, [post.id]: e.target.value }))}
-                          placeholder="Escribe una respuesta como profesor..."
-                          className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" && !e.shiftKey) {
-                              e.preventDefault();
-                              handleSendReply(post.id);
-                            }
-                          }}
-                        />
-                        <button
-                          type="button"
-                          disabled={!replyText[post.id]?.trim() || sendingReply === post.id}
-                          onClick={() => handleSendReply(post.id)}
-                          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {sendingReply === post.id ? "..." : "Enviar"}
-                        </button>
-                      </div>
+                      {!readOnly ? (
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={replyText[post.id] ?? ""}
+                            onChange={(e) => setReplyText((prev) => ({ ...prev, [post.id]: e.target.value }))}
+                            placeholder="Escribe una respuesta como profesor..."
+                            className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && !e.shiftKey) {
+                                e.preventDefault();
+                                handleSendReply(post.id);
+                              }
+                            }}
+                          />
+                          <button
+                            type="button"
+                            disabled={!replyText[post.id]?.trim() || sendingReply === post.id}
+                            onClick={() => handleSendReply(post.id)}
+                            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {sendingReply === post.id ? "..." : "Enviar"}
+                          </button>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-500">Vista de solo lectura.</p>
+                      )}
                     </div>
                   )}
                 </div>
@@ -722,6 +728,7 @@ type Props = {
   lessonId?: string;
   classType?: string;
   isInPerson?: boolean;
+  readOnly?: boolean;
   className: string;
   isOpen: boolean;
   onClose: () => void;
@@ -745,6 +752,7 @@ export function SubmissionsModal({
   lessonId,
   classType,
   isInPerson = false,
+  readOnly = false,
   isOpen,
   onClose,
 }: Props) {
@@ -815,6 +823,8 @@ export function SubmissionsModal({
               grade: typeof post.grade === "number" ? post.grade : undefined,
               feedback: post.feedback ?? "",
               gradedAt: post.gradedAt ?? null,
+              gradedById: post.gradedById ?? undefined,
+              gradedByName: post.gradedByName ?? undefined,
             };
           });
         } else {
@@ -943,6 +953,8 @@ export function SubmissionsModal({
           grade: typeof post.grade === "number" ? post.grade : undefined,
           feedback: post.feedback ?? "",
           gradedAt: post.gradedAt ?? null,
+          gradedById: post.gradedById ?? undefined,
+          gradedByName: post.gradedByName ?? undefined,
         };
       });
       setRows((prev) =>
@@ -1012,6 +1024,10 @@ export function SubmissionsModal({
   };
 
   const handleSaveInlineGrade = async (row: Row) => {
+    if (readOnly) {
+      toast.error("Vista de solo lectura: no puedes guardar calificaciones.");
+      return;
+    }
     const submission = row.submission;
     const canCreateManualSubmission =
       isInPerson && !isForumClass && !isQuizClass && !submission;
@@ -1036,6 +1052,8 @@ export function SubmissionsModal({
 
     setSavingInlineGrades((prev) => new Set(prev).add(inlineKey));
     try {
+      const gradedById = auth.currentUser?.uid ?? "";
+      const gradedByName = auth.currentUser?.displayName ?? "Profesor";
       if (submission && isForumClass && courseId && lessonId) {
         await gradeForumPost({
           courseId,
@@ -1044,6 +1062,8 @@ export function SubmissionsModal({
           studentId: submission.id,
           grade: parsedGrade,
           feedback: submission.feedback ?? "",
+          gradedById,
+          gradedByName,
         });
         setRows((prev) =>
           prev.map((r) =>
@@ -1056,6 +1076,8 @@ export function SubmissionsModal({
                         grade: parsedGrade,
                         status: "graded",
                         gradedAt: new Date(),
+                        gradedById,
+                        gradedByName,
                       }
                     : r.submission,
                 }
@@ -1064,7 +1086,10 @@ export function SubmissionsModal({
         );
         toast.success("Calificación de foro guardada correctamente");
       } else if (submission) {
-        await gradeSubmission(groupId, submission.id, parsedGrade, submission.feedback ?? "");
+        await gradeSubmission(groupId, submission.id, parsedGrade, submission.feedback ?? "", {
+          gradedById,
+          gradedByName,
+        });
         void notifyGradeByWhatsApp(submission.id, parsedGrade);
         await refreshSubmissionsForTable();
         toast.success("Calificación guardada correctamente");
@@ -1082,6 +1107,8 @@ export function SubmissionsModal({
           status: "graded",
           grade: parsedGrade,
           content: "Calificación capturada en grupo presencial sin archivo adjunto.",
+          gradedById,
+          gradedByName,
         });
         void notifyGradeByWhatsApp(submissionId, parsedGrade);
         await refreshSubmissionsForTable();
@@ -1109,6 +1136,10 @@ export function SubmissionsModal({
     studentName: string,
     label: "tarea" | "aporte" = "tarea",
   ) => {
+    if (readOnly) {
+      toast.error("Vista de solo lectura: no puedes resetear entregas.");
+      return;
+    }
     const pronoun = label === "tarea" ? "la" : "lo";
     if (!confirm(`¿Estás seguro de que deseas resetear el ${label} de ${studentName}? Esto permitirá que el alumno vuelva a enviar${pronoun}.`)) {
       return;
@@ -1190,6 +1221,11 @@ export function SubmissionsModal({
           <span className="text-xs text-slate-500">
             Mostrando {filteredRows.length} de {rows.length} alumnos
           </span>
+          {readOnly ? (
+            <span className="text-xs text-slate-500">
+              Vista de solo lectura: puedes monitorear entregas y calificaciones sin editar.
+            </span>
+          ) : null}
         </DialogHeader>
 
         {loading ? (
@@ -1233,7 +1269,7 @@ export function SubmissionsModal({
                 {filteredRows.map((row) => {
                   const sub = row.submission;
                   const canCreateManualSubmission =
-                    isInPerson && !isForumClass && !isQuizClass && !sub;
+                    !readOnly && isInPerson && !isForumClass && !isQuizClass && !sub;
                   const manualInlineKey = canCreateManualSubmission ? `manual:${row.student.id}` : null;
                   const inlineKey = sub?.id ?? manualInlineKey;
                   const gradeInput = inlineKey
@@ -1257,12 +1293,24 @@ export function SubmissionsModal({
                       Math.abs(currentGrade - parsedInlineGrade) > 0.001 ||
                       canCreateManualSubmission
                     ) &&
-                    !isInlineSaving;
+                    !isInlineSaving &&
+                    !readOnly;
                   return (
                     <tr key={row.student.id} className="hover:bg-slate-50">
                       <td className="px-3 py-2 align-middle text-slate-900">{row.student.name}</td>
                       <td className="px-3 py-2 align-middle text-slate-600">
-                        {sub ? formatDate(sub.submittedAt) : "-"}
+                        {sub ? (
+                          <div className="space-y-0.5">
+                            <p>{formatDate(sub.submittedAt)}</p>
+                            {sub.gradedAt ? (
+                              <p className="text-[11px] text-slate-500">
+                                Evaluó: {sub.gradedByName || "Docente"} · {formatDate(sub.gradedAt)}
+                              </p>
+                            ) : null}
+                          </div>
+                        ) : (
+                          "-"
+                        )}
                       </td>
                       {isForumClass ? (
                         <>
@@ -1275,7 +1323,7 @@ export function SubmissionsModal({
                               }`}>
                                 {sub.grade}/5
                               </span>
-                            ) : sub ? (
+                            ) : sub && !readOnly ? (
                               <input
                                 type="text"
                                 inputMode="decimal"
@@ -1295,6 +1343,8 @@ export function SubmissionsModal({
                                   inlineGradeInvalid ? "border-red-400" : "border-slate-300"
                                 }`}
                               />
+                            ) : sub ? (
+                              <span className="text-slate-500">Pendiente</span>
                             ) : (
                               "-"
                             )}
@@ -1303,7 +1353,7 @@ export function SubmissionsModal({
                             <div className="flex items-center gap-2">
                               {sub ? (
                                 <>
-                                  {sub.grade == null ? (
+                                  {sub.grade == null && !readOnly ? (
                                     <button
                                       type="button"
                                       className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1 text-sm font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
@@ -1320,7 +1370,7 @@ export function SubmissionsModal({
                                       setGradeModal({
                                         open: true,
                                         submission: sub,
-                                        readonly: sub?.grade != null,
+                                        readonly: readOnly || sub?.grade != null,
                                       })
                                     }
                                   >
@@ -1337,14 +1387,16 @@ export function SubmissionsModal({
                                   >
                                     Ver hilo
                                   </button>
-                                  <button
-                                    type="button"
-                                    className="rounded-lg border border-red-200 bg-red-50 px-3 py-1 text-sm font-medium text-red-600 hover:border-red-400 hover:bg-red-100 disabled:opacity-60"
-                                    disabled={deletingIds.has(sub.id)}
-                                    onClick={() => handleResetSubmission(sub, row.student.name, "aporte")}
-                                  >
-                                    {deletingIds.has(sub.id) ? "Reseteando..." : "Resetear"}
-                                  </button>
+                                  {!readOnly ? (
+                                    <button
+                                      type="button"
+                                      className="rounded-lg border border-red-200 bg-red-50 px-3 py-1 text-sm font-medium text-red-600 hover:border-red-400 hover:bg-red-100 disabled:opacity-60"
+                                      disabled={deletingIds.has(sub.id)}
+                                      onClick={() => handleResetSubmission(sub, row.student.name, "aporte")}
+                                    >
+                                      {deletingIds.has(sub.id) ? "Reseteando..." : "Resetear"}
+                                    </button>
+                                  ) : null}
                                 </>
                               ) : (
                                 <span className="text-slate-400">-</span>
@@ -1361,7 +1413,7 @@ export function SubmissionsModal({
                                 }`}>
                                   {formatQuizGradeLabel(sub.grade)}
                                 </span>
-                              ) : sub ? (
+                              ) : sub && !readOnly ? (
                                 <input
                                   type="text"
                                   inputMode="decimal"
@@ -1381,6 +1433,8 @@ export function SubmissionsModal({
                                     inlineGradeInvalid ? "border-red-400" : "border-slate-300"
                                   }`}
                                 />
+                              ) : sub ? (
+                                <span className="text-slate-500">Pendiente</span>
                               ) : (
                                 "-"
                               )}
@@ -1388,7 +1442,7 @@ export function SubmissionsModal({
                             <td className="px-3 py-2">
                               {sub ? (
                                 <div className="flex items-center gap-2">
-                                  {sub.grade == null ? (
+                                  {sub.grade == null && !readOnly ? (
                                     <button
                                       type="button"
                                       className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1 text-sm font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
@@ -1429,14 +1483,16 @@ export function SubmissionsModal({
                                   >
                                     {sub.grade == null ? "Ver respuestas" : "Ver detalles"}
                                   </button>
-                                  <button
-                                    type="button"
-                                    className="rounded-lg border border-red-200 bg-red-50 px-3 py-1 text-sm font-medium text-red-600 hover:border-red-400 hover:bg-red-100 disabled:opacity-60"
-                                    disabled={deletingIds.has(sub.id)}
-                                    onClick={() => handleResetSubmission(sub, row.student.name)}
-                                  >
-                                    {deletingIds.has(sub.id) ? "Reseteando..." : "Resetear"}
-                                  </button>
+                                  {!readOnly ? (
+                                    <button
+                                      type="button"
+                                      className="rounded-lg border border-red-200 bg-red-50 px-3 py-1 text-sm font-medium text-red-600 hover:border-red-400 hover:bg-red-100 disabled:opacity-60"
+                                      disabled={deletingIds.has(sub.id)}
+                                      onClick={() => handleResetSubmission(sub, row.student.name)}
+                                    >
+                                      {deletingIds.has(sub.id) ? "Reseteando..." : "Resetear"}
+                                    </button>
+                                  ) : null}
                                 </div>
                               ) : (
                                 <span className="text-slate-400">-</span>
@@ -1476,36 +1532,42 @@ export function SubmissionsModal({
                             </td>
                             <td className="px-3 py-2 text-slate-600">
                               {sub || canCreateManualSubmission ? (
-                                <input
-                                  type="text"
-                                  inputMode="decimal"
-                                  value={gradeInput}
-                                  onChange={(event) => {
-                                    if (!inlineKey) return;
-                                    setInlineGrades((prev) => ({
-                                      ...prev,
-                                      [inlineKey]: event.target.value,
-                                    }));
-                                  }}
-                                  onKeyDown={(event) => {
-                                    if (event.key === "Enter" && canSaveInline) {
-                                      event.preventDefault();
-                                      void handleSaveInlineGrade(row);
-                                    }
-                                  }}
-                                  placeholder="0-100"
-                                  disabled={isInlineSaving}
-                                  className={`w-24 rounded-lg border px-2 py-1 text-sm ${
-                                    inlineGradeInvalid ? "border-red-400" : "border-slate-300"
-                                  }`}
-                                />
+                                readOnly ? (
+                                  <span className="text-slate-500">
+                                    {sub?.grade != null ? sub.grade : "Pendiente"}
+                                  </span>
+                                ) : (
+                                  <input
+                                    type="text"
+                                    inputMode="decimal"
+                                    value={gradeInput}
+                                    onChange={(event) => {
+                                      if (!inlineKey) return;
+                                      setInlineGrades((prev) => ({
+                                        ...prev,
+                                        [inlineKey]: event.target.value,
+                                      }));
+                                    }}
+                                    onKeyDown={(event) => {
+                                      if (event.key === "Enter" && canSaveInline) {
+                                        event.preventDefault();
+                                        void handleSaveInlineGrade(row);
+                                      }
+                                    }}
+                                    placeholder="0-100"
+                                    disabled={isInlineSaving}
+                                    className={`w-24 rounded-lg border px-2 py-1 text-sm ${
+                                      inlineGradeInvalid ? "border-red-400" : "border-slate-300"
+                                    }`}
+                                  />
+                                )
                               ) : (
                                 "-"
                               )}
                             </td>
                             <td className="px-3 py-2">
                               <div className="flex items-center gap-2">
-                                {sub || canCreateManualSubmission ? (
+                                {!readOnly && (sub || canCreateManualSubmission) ? (
                                   <button
                                     type="button"
                                     className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1 text-sm font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
@@ -1528,14 +1590,14 @@ export function SubmissionsModal({
                                       ? setGradeModal({
                                           open: true,
                                           submission: sub,
-                                          readonly: sub?.grade != null,
+                                          readonly: readOnly || sub?.grade != null,
                                         })
                                       : null
                                   }
                                 >
                                   {!sub ? "Pendiente" : "Ver"}
                                 </button>
-                                {sub ? (
+                                {sub && !readOnly ? (
                                   <button
                                     type="button"
                                     className="rounded-lg border border-red-200 bg-red-50 px-3 py-1 text-sm font-medium text-red-600 hover:border-red-400 hover:bg-red-100 disabled:opacity-60"
@@ -1561,7 +1623,7 @@ export function SubmissionsModal({
       {gradeModal.open && gradeModal.submission ? (
         <GradeModal
           submission={gradeModal.submission}
-          readonly={gradeModal.readonly}
+          readonly={readOnly || gradeModal.readonly}
           onClose={async () => {
             setGradeModal({ open: false });
             if (!isForumClass) {
@@ -1569,6 +1631,8 @@ export function SubmissionsModal({
             }
           }}
           onSave={async (grade, feedback) => {
+            const gradedById = auth.currentUser?.uid ?? "";
+            const gradedByName = auth.currentUser?.displayName ?? "Profesor";
             if (isForumClass && courseId && lessonId) {
               await gradeForumPost({
                 courseId,
@@ -1577,6 +1641,8 @@ export function SubmissionsModal({
                 studentId: gradeModal.submission!.id,
                 grade,
                 feedback,
+                gradedById,
+                gradedByName,
               });
               setRows((prev) =>
                 prev.map((r) =>
@@ -1590,6 +1656,8 @@ export function SubmissionsModal({
                               feedback,
                               status: "graded",
                               gradedAt: new Date(),
+                              gradedById,
+                              gradedByName,
                             }
                           : r.submission,
                       }
@@ -1601,7 +1669,10 @@ export function SubmissionsModal({
               setGradeModal({ open: false });
               return;
             }
-            await gradeSubmission(groupId, gradeModal.submission!.id, grade, feedback);
+            await gradeSubmission(groupId, gradeModal.submission!.id, grade, feedback, {
+              gradedById,
+              gradedByName,
+            });
             void notifyGradeByWhatsApp(gradeModal.submission!.id, grade);
             await refreshSubmissionsForTable();
             setGradeModal({ open: false });
@@ -1614,13 +1685,22 @@ export function SubmissionsModal({
           submission={quizDetailModal.submission}
           questions={quizQuestions}
           onClose={() => setQuizDetailModal({ open: false })}
-          onGrade={async (grade, feedback) => {
-            await gradeSubmission(groupId, quizDetailModal.submission!.id, grade, feedback);
-            void notifyGradeByWhatsApp(quizDetailModal.submission!.id, grade);
-            toast.success("Calificación guardada correctamente");
-            await refreshSubmissionsForTable();
-            setQuizDetailModal({ open: false });
-          }}
+          onGrade={
+            readOnly
+              ? undefined
+              : async (grade, feedback) => {
+                  const gradedById = auth.currentUser?.uid ?? "";
+                  const gradedByName = auth.currentUser?.displayName ?? "Profesor";
+                  await gradeSubmission(groupId, quizDetailModal.submission!.id, grade, feedback, {
+                    gradedById,
+                    gradedByName,
+                  });
+                  void notifyGradeByWhatsApp(quizDetailModal.submission!.id, grade);
+                  toast.success("Calificación guardada correctamente");
+                  await refreshSubmissionsForTable();
+                  setQuizDetailModal({ open: false });
+                }
+          }
         />
       ) : null}
 
@@ -1633,6 +1713,7 @@ export function SubmissionsModal({
           highlightStudentName={forumThreadModal.studentName}
           currentUserId={auth.currentUser?.uid ?? ""}
           currentUserName={auth.currentUser?.displayName ?? "Profesor"}
+          readOnly={readOnly}
           onClose={() => setForumThreadModal({ open: false, studentId: "", studentName: "" })}
         />
       ) : null}

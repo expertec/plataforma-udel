@@ -40,6 +40,7 @@ export default function GroupsPage() {
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [search, setSearch] = useState("");
   const [plantelFilter, setPlantelFilter] = useState("all");
+  const [modeFilter, setModeFilter] = useState<"all" | "presencial" | "enLinea">("all");
 
   useEffect(() => {
     let cancelled = false;
@@ -192,17 +193,31 @@ export default function GroupsPage() {
       return group.plantelId === plantelFilter;
     };
 
-    const active = groups.filter((g) => g.status !== "finished" && matchesSearch(g) && matchesPlantel(g));
-    const finished = groups.filter((g) => g.status === "finished" && matchesSearch(g) && matchesPlantel(g));
-    const activeAssistant = assistantGroups.filter((g) => g.status !== "finished" && matchesSearch(g));
-    const finishedAssistant = assistantGroups.filter((g) => g.status === "finished" && matchesSearch(g));
+    const matchesMode = (group: Group) => {
+      if (modeFilter === "all") return true;
+      if (modeFilter === "presencial") return group.isInPerson === true;
+      return group.isInPerson !== true;
+    };
+
+    const active = groups.filter(
+      (g) => g.status !== "finished" && matchesSearch(g) && matchesPlantel(g) && matchesMode(g),
+    );
+    const finished = groups.filter(
+      (g) => g.status === "finished" && matchesSearch(g) && matchesPlantel(g) && matchesMode(g),
+    );
+    const activeAssistant = assistantGroups.filter(
+      (g) => g.status !== "finished" && matchesSearch(g) && matchesMode(g),
+    );
+    const finishedAssistant = assistantGroups.filter(
+      (g) => g.status === "finished" && matchesSearch(g) && matchesMode(g),
+    );
     return {
       activeGroups: active,
       finishedGroups: finished,
       activeAssistantGroups: activeAssistant,
       finishedAssistantGroups: finishedAssistant,
     };
-  }, [groups, assistantGroups, plantelFilter, searchTerm]);
+  }, [assistantGroups, groups, modeFilter, plantelFilter, searchTerm]);
 
   const formatRange = (start?: Date | null, end?: Date | null) => {
     if (!start || !end) return "Sin fechas";
@@ -313,8 +328,19 @@ export default function GroupsPage() {
                       {plantel.name}
                     </option>
                   ))}
-                </select>
+                  </select>
               ) : null}
+              <select
+                value={modeFilter}
+                onChange={(event) =>
+                  setModeFilter(event.target.value as "all" | "presencial" | "enLinea")
+                }
+                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+              >
+                <option value="all">Todas las modalidades</option>
+                <option value="presencial">Presencial</option>
+                <option value="enLinea">En línea</option>
+              </select>
               {hasSearch ? (
                 <button
                   type="button"
@@ -495,6 +521,15 @@ function GroupCard({
               {group.program}
             </span>
           ) : null}
+          <span
+            className={`mt-1 inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+              group.isInPerson === true
+                ? "bg-emerald-100 text-emerald-700"
+                : "bg-blue-100 text-blue-700"
+            }`}
+          >
+            {group.isInPerson === true ? "Presencial" : "En línea"}
+          </span>
           <p className="mt-1 text-xs text-slate-500">
             Plantel: {group.plantelName || "Sin plantel"}
           </p>

@@ -129,6 +129,8 @@ export type ForumPost = {
   grade?: number;
   feedback?: string;
   gradedAt?: Date | null;
+  gradedById?: string;
+  gradedByName?: string;
 };
 
 /**
@@ -181,6 +183,8 @@ export async function getForumPosts(
       grade: typeof data.grade === "number" && Number.isFinite(data.grade) ? data.grade : undefined,
       feedback: normalizeText(data.feedback, ""),
       gradedAt: data.gradedAt ? normalizeDate(data.gradedAt) : null,
+      gradedById: normalizeOptionalString(data.gradedById) ?? undefined,
+      gradedByName: normalizeOptionalString(data.gradedByName) ?? undefined,
     };
   });
 }
@@ -223,6 +227,8 @@ export async function getStudentForumPost(
     grade: typeof data.grade === "number" && Number.isFinite(data.grade) ? data.grade : undefined,
     feedback: normalizeText(data.feedback, ""),
     gradedAt: data.gradedAt ? normalizeDate(data.gradedAt) : null,
+    gradedById: normalizeOptionalString(data.gradedById) ?? undefined,
+    gradedByName: normalizeOptionalString(data.gradedByName) ?? undefined,
   };
 }
 
@@ -547,8 +553,10 @@ export async function gradeForumPost(params: {
   studentId: string;
   grade: number;
   feedback?: string;
+  gradedById?: string;
+  gradedByName?: string;
 }): Promise<void> {
-  const { courseId, lessonId, classId, studentId, grade, feedback } = params;
+  const { courseId, lessonId, classId, studentId, grade, feedback, gradedById, gradedByName } = params;
   if (!Number.isFinite(grade) || grade < 0 || grade > 5) {
     throw new Error("FORUM_GRADE_INVALID");
   }
@@ -577,6 +585,8 @@ export async function gradeForumPost(params: {
       grade,
       feedback: (feedback ?? "").trim(),
       gradedAt: serverTimestamp(),
+      ...(gradedById ? { gradedById: gradedById.trim() } : {}),
+      ...(gradedByName ? { gradedByName: gradedByName.trim() } : {}),
     },
     { merge: true }
   );

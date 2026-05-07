@@ -13,6 +13,7 @@ type EntregasTabProps = {
   courseIds: string[];
   studentsCount: number;
   isInPerson?: boolean;
+  readOnly?: boolean;
 };
 
 type AssignmentRow = {
@@ -43,6 +44,7 @@ export function EntregasTab({
   courseIds,
   studentsCount,
   isInPerson = false,
+  readOnly = false,
 }: EntregasTabProps) {
   const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -161,6 +163,8 @@ export function EntregasTab({
               grade: typeof post.grade === "number" ? post.grade : undefined,
               feedback: post.feedback ?? "",
               gradedAt: post.gradedAt ?? null,
+              gradedById: post.gradedById ?? undefined,
+              gradedByName: post.gradedByName ?? undefined,
             });
           });
         }
@@ -250,6 +254,11 @@ export function EntregasTab({
 
   return (
     <div className="space-y-4">
+      {readOnly ? (
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+          Vista de coordinación: solo lectura de entregas y horarios.
+        </div>
+      ) : null}
       {lessonGroups.length === 0 ? (
         <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
           No hay entregas registradas.
@@ -329,7 +338,7 @@ export function EntregasTab({
                               }
                               className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-blue-600 hover:border-blue-400"
                             >
-                              Revisar
+                              {readOnly ? "Ver" : "Revisar"}
                             </button>
                           </div>
                         </div>
@@ -352,6 +361,7 @@ export function EntregasTab({
           lessonId={selected.lessonId}
           courseId={selected.courseId}
           isInPerson={isInPerson}
+          readOnly={readOnly}
           isOpen
           onClose={() => setSelected(null)}
         />

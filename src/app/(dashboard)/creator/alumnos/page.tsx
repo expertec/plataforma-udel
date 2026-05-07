@@ -1854,6 +1854,8 @@ export default function AlumnosPage() {
           studentId={selectedStudentForSubmissions.id}
           studentName={selectedStudentForSubmissions.name}
           studentEmail={selectedStudentForSubmissions.email}
+          scopePlantelId={isCoordinator ? coordinatorPlantelId || "" : ""}
+          readOnly={isCoordinator}
           isOpen={submissionsModalOpen}
           onClose={() => {
             setSubmissionsModalOpen(false);

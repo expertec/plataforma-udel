@@ -48,6 +48,8 @@ export type Submission = {
   answers?: SubmissionAnswer[];
   feedback?: string;
   gradedAt?: Date | null;
+  gradedById?: string;
+  gradedByName?: string;
 };
 
 type CreateSubmissionInput = {
@@ -68,6 +70,8 @@ type CreateSubmissionInput = {
   status?: SubmissionStatus;
   grade?: number;
   answers?: SubmissionAnswer[];
+  gradedById?: string;
+  gradedByName?: string;
 };
 
 export async function createSubmission(
@@ -132,7 +136,14 @@ export async function createSubmission(
     audioUrl: data.audioUrl ?? "",
     content: data.content ?? "",
     status: data.status ?? "pending",
-    ...(typeof data.grade === "number" ? { grade: data.grade, gradedAt: serverTimestamp() } : {}),
+    ...(typeof data.grade === "number"
+      ? {
+          grade: data.grade,
+          gradedAt: serverTimestamp(),
+          ...(data.gradedById ? { gradedById: data.gradedById } : {}),
+          ...(data.gradedByName ? { gradedByName: data.gradedByName } : {}),
+        }
+      : {}),
     ...(data.answers ? { answers: data.answers } : {}),
   });
   return docRef.id;
@@ -160,6 +171,10 @@ export async function gradeSubmission(
   submissionId: string,
   grade: number,
   feedback: string,
+  gradedBy?: {
+    gradedById?: string;
+    gradedByName?: string;
+  },
 ): Promise<void> {
   const ref = doc(db, "groups", groupId, "submissions", submissionId);
   await updateDoc(ref, {
@@ -167,6 +182,8 @@ export async function gradeSubmission(
     feedback,
     gradedAt: serverTimestamp(),
     status: "graded",
+    ...(gradedBy?.gradedById ? { gradedById: gradedBy.gradedById } : {}),
+    ...(gradedBy?.gradedByName ? { gradedByName: gradedBy.gradedByName } : {}),
   });
 }
 
@@ -208,6 +225,8 @@ type SubmissionData = {
   answers?: SubmissionAnswer[];
   feedback?: string;
   gradedAt?: { toDate?: () => Date };
+  gradedById?: string;
+  gradedByName?: string;
 };
 
 function toSubmission(id: string, data: SubmissionData): Submission {
@@ -235,5 +254,7 @@ function toSubmission(id: string, data: SubmissionData): Submission {
     answers: Array.isArray(data.answers) ? (data.answers as SubmissionAnswer[]) : undefined,
     feedback: data.feedback ?? "",
     gradedAt: data.gradedAt?.toDate?.() ?? null,
+    gradedById: typeof data.gradedById === "string" ? data.gradedById : undefined,
+    gradedByName: typeof data.gradedByName === "string" ? data.gradedByName : undefined,
   };
 }

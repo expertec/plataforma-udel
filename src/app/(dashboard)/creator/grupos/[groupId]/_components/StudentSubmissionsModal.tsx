@@ -10,6 +10,7 @@ type Props = {
   studentId: string;
   studentName: string;
   allowedCourseIds?: string[];
+  readOnly?: boolean;
   isOpen: boolean;
   onClose: () => void;
 };
@@ -19,6 +20,7 @@ export function StudentSubmissionsModal({
   studentId,
   studentName,
   allowedCourseIds,
+  readOnly = false,
   isOpen,
   onClose,
 }: Props) {
@@ -59,6 +61,10 @@ export function StudentSubmissionsModal({
   }, [filterByAllowedCourses, groupId, isOpen, studentId]);
 
   const handleResetSubmission = async (submission: Submission) => {
+    if (readOnly) {
+      toast.error("Vista de solo lectura: no puedes resetear entregas.");
+      return;
+    }
     if (
       !confirm(
         `¿Estás seguro de que deseas resetear la tarea "${submission.className}"? Esto permitirá que ${studentName} la vuelva a enviar.`
@@ -138,6 +144,11 @@ export function StudentSubmissionsModal({
       <DialogContent className="max-w-5xl max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Tareas de {studentName}</DialogTitle>
+          {readOnly ? (
+            <p className="text-xs text-slate-500">
+              Vista de solo lectura: puedes visualizar fecha y hora de entrega, sin resetear tareas.
+            </p>
+          ) : null}
         </DialogHeader>
 
         {loading ? (
@@ -174,7 +185,9 @@ export function StudentSubmissionsModal({
                         ) : null}
                         <span>Enviado: {formatDate(sub.submittedAt)}</span>
                         {sub.gradedAt ? (
-                          <span>Calificado: {formatDate(sub.gradedAt)}</span>
+                          <span>
+                            Evaluó: {sub.gradedByName || "Docente"} · {formatDate(sub.gradedAt)}
+                          </span>
                         ) : null}
                       </div>
                     </div>
@@ -186,14 +199,16 @@ export function StudentSubmissionsModal({
                       >
                         {isExpanded ? "Ocultar" : "Ver detalles"}
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => handleResetSubmission(sub)}
-                        disabled={deletingIds.has(sub.id)}
-                        className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-sm font-medium text-red-600 hover:border-red-400 hover:bg-red-100 disabled:opacity-60"
-                      >
-                        {deletingIds.has(sub.id) ? "Reseteando..." : "Resetear"}
-                      </button>
+                      {!readOnly ? (
+                        <button
+                          type="button"
+                          onClick={() => handleResetSubmission(sub)}
+                          disabled={deletingIds.has(sub.id)}
+                          className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-sm font-medium text-red-600 hover:border-red-400 hover:bg-red-100 disabled:opacity-60"
+                        >
+                          {deletingIds.has(sub.id) ? "Reseteando..." : "Resetear"}
+                        </button>
+                      ) : null}
                     </div>
                   </div>
 

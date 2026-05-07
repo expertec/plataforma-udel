@@ -749,12 +749,18 @@ export default function GroupDetailPage() {
                   courseIds={visibleCourseIdsForCurrentUser}
                   studentsCount={group.studentsCount}
                   isInPerson={group.isInPerson === true}
+                  readOnly={isCoordinatorForGroup}
                 />
               )}
             </TabsContent>
 
             <TabsContent value="calificaciones">
               <div className="rounded-lg bg-white p-6 shadow-sm">
+                {isCoordinatorForGroup ? (
+                  <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                    Vista de coordinación: puedes monitorear evaluaciones del mentor y calificaciones, sin editar.
+                  </div>
+                ) : null}
                 {isMentorWithRestrictedCourses && visibleCoursesForCurrentUser.length === 0 ? (
                   <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
                     No tienes materias asignadas para gestionar calificaciones en este grupo.
@@ -1134,6 +1140,7 @@ export default function GroupDetailPage() {
           studentId={studentSubmissionsModal.studentId}
           studentName={studentSubmissionsModal.studentName}
           allowedCourseIds={isMentorWithRestrictedCourses ? visibleCourseIdsForCurrentUser : undefined}
+          readOnly={isCoordinatorForGroup}
           isOpen={studentSubmissionsModal.open}
           onClose={() => setStudentSubmissionsModal({ open: false, studentId: "", studentName: "" })}
         />

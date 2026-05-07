@@ -77,6 +77,12 @@ const buildRowKey = (groupId: string, groupName: string, courseId: string, cours
 const getRowTs = (row: GradeRow): number =>
   Math.max(row.closedAt?.getTime() ?? 0, row.updatedAt?.getTime() ?? 0);
 
+const isPermissionDeniedError = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  (error as { code?: unknown }).code === "permission-denied";
+
 export function StudentGradesModal({
   studentId,
   studentName,
@@ -186,7 +192,7 @@ export function StudentGradesModal({
         };
 
         const submissionAggByKey = new Map<string, SubmissionAgg>();
-        await Promise.all(
+        const submissionsByGroupResults = await Promise.allSettled(
           Array.from(groupIds).map(async (groupId) => {
             const groupName = enrollmentGroupNames.get(groupId) ?? "Sin grupo";
             const fallbackCourseName =
@@ -197,56 +203,73 @@ export function StudentGradesModal({
                 where("studentId", "==", studentId),
               ),
             );
-
-            submissionsSnap.docs.forEach((submissionDoc) => {
-              const data = submissionDoc.data() as {
-                courseId?: string;
-                courseTitle?: string;
-                status?: string;
-                grade?: number;
-                submittedAt?: unknown;
-                gradedAt?: unknown;
-              };
-              const courseId = (data.courseId ?? "").trim();
-              const courseTitle = (data.courseTitle ?? "").trim();
-              const courseName =
-                courseTitle ||
-                (courseId ? courseId : fallbackCourseName) ||
-                "Sin materia";
-              const key = buildRowKey(groupId, groupName, courseId, courseName);
-
-              const current =
-                submissionAggByKey.get(key) ??
-                {
-                  id: key,
-                  groupId,
-                  groupName,
-                  courseId,
-                  courseName,
-                  total: 0,
-                  graded: 0,
-                  numericCount: 0,
-                  numericSum: 0,
-                  latestAt: null,
-                };
-
-              current.total += 1;
-              const isGraded = data.status === "graded" || typeof data.grade === "number";
-              if (isGraded) current.graded += 1;
-              if (typeof data.grade === "number" && Number.isFinite(data.grade)) {
-                current.numericCount += 1;
-                current.numericSum += data.grade;
-              }
-              const candidateDate =
-                toDateOrNull(data.gradedAt) ?? toDateOrNull(data.submittedAt);
-              if (candidateDate && (!current.latestAt || candidateDate > current.latestAt)) {
-                current.latestAt = candidateDate;
-              }
-
-              submissionAggByKey.set(key, current);
-            });
+            return {
+              groupId,
+              groupName,
+              fallbackCourseName,
+              docs: submissionsSnap.docs,
+            };
           }),
         );
+
+        let skippedGroupsByPermission = 0;
+        submissionsByGroupResults.forEach((result) => {
+          if (result.status === "rejected") {
+            if (isPermissionDeniedError(result.reason)) {
+              skippedGroupsByPermission += 1;
+              return;
+            }
+            throw result.reason;
+          }
+          const { groupId, groupName, fallbackCourseName, docs } = result.value;
+          docs.forEach((submissionDoc) => {
+            const data = submissionDoc.data() as {
+              courseId?: string;
+              courseTitle?: string;
+              status?: string;
+              grade?: number;
+              submittedAt?: unknown;
+              gradedAt?: unknown;
+            };
+            const courseId = (data.courseId ?? "").trim();
+            const courseTitle = (data.courseTitle ?? "").trim();
+            const courseName =
+              courseTitle ||
+              (courseId ? courseId : fallbackCourseName) ||
+              "Sin materia";
+            const key = buildRowKey(groupId, groupName, courseId, courseName);
+
+            const current =
+              submissionAggByKey.get(key) ??
+              {
+                id: key,
+                groupId,
+                groupName,
+                courseId,
+                courseName,
+                total: 0,
+                graded: 0,
+                numericCount: 0,
+                numericSum: 0,
+                latestAt: null,
+              };
+
+            current.total += 1;
+            const isGraded = data.status === "graded" || typeof data.grade === "number";
+            if (isGraded) current.graded += 1;
+            if (typeof data.grade === "number" && Number.isFinite(data.grade)) {
+              current.numericCount += 1;
+              current.numericSum += data.grade;
+            }
+            const candidateDate =
+              toDateOrNull(data.gradedAt) ?? toDateOrNull(data.submittedAt);
+            if (candidateDate && (!current.latestAt || candidateDate > current.latestAt)) {
+              current.latestAt = candidateDate;
+            }
+
+            submissionAggByKey.set(key, current);
+          });
+        });
 
         const mergedRows = new Map<string, GradeRow>();
 
@@ -291,6 +314,9 @@ export function StudentGradesModal({
 
         if (!active) return;
         setRows(nextRows);
+        if (skippedGroupsByPermission > 0) {
+          toast.error("Algunas materias no pudieron cargarse por permisos de lectura.");
+        }
       } catch (err) {
         console.error("Error cargando kardex:", err);
         if (active) {
