@@ -160,6 +160,12 @@ service cloud.firestore {
         exists(/databases/$(database)/documents/satisfactionSurveys/$(surveyId)) &&
         get(/databases/$(database)/documents/satisfactionSurveys/$(surveyId)).data.status == "published";
     }
+    function isOwnSurveyResponseDocId(responseId) {
+      return isSignedIn() &&
+        responseId is string &&
+        responseId.size() > request.auth.uid.size() + 1 &&
+        responseId.matches('^.+_' + request.auth.uid + '$');
+    }
     function isFeedbackAdminRole(roleValue) {
       return roleValue == 'adminTeacher' ||
         roleValue == 'superAdminTeacher' ||
@@ -640,8 +646,13 @@ service cloud.firestore {
     match /surveyResponses/{responseId} {
       allow read: if canReadFeedbackAnalytics() || (
         isSignedIn() &&
-        resource.data.studentId is string &&
-        resource.data.studentId == request.auth.uid
+        (
+          isOwnSurveyResponseDocId(responseId) ||
+          (
+            resource.data.studentId is string &&
+            resource.data.studentId == request.auth.uid
+          )
+        )
       );
       allow create: if isSignedIn() &&
         request.resource.data.studentId is string &&

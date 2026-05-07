@@ -108,6 +108,491 @@ const errorCodeSuffix = (error: unknown): string => {
   return code ? ` (${code})` : "";
 };
 
+type ClassInsight = {
+  classKey: string;
+  classLabel: string;
+  courseLabel: string;
+  lessonLabel: string;
+  responses: number;
+  average: number;
+  lowCount: number;
+  highCount: number;
+  commentsCount: number;
+  lowRate: number;
+  commentsRate: number;
+  severityScore: number;
+  lastUpdatedAt: Date | null;
+};
+
+type CourseInsight = {
+  courseKey: string;
+  courseLabel: string;
+  responses: number;
+  average: number;
+  lowCount: number;
+  highCount: number;
+  commentsCount: number;
+  lowRate: number;
+  commentsRate: number;
+  severityScore: number;
+};
+
+type CommentTopicInsight = {
+  id: string;
+  label: string;
+  count: number;
+  rate: number;
+  decisionHint: string;
+};
+
+type TrendInsight = {
+  recentCount: number;
+  previousCount: number;
+  recentAverage: number | null;
+  previousAverage: number | null;
+  deltaAverage: number | null;
+  recentLowRate: number | null;
+  previousLowRate: number | null;
+  deltaLowRate: number | null;
+};
+
+type SurveyQuestionInsight = {
+  questionId: string;
+  label: string;
+  type: SurveyQuestion["type"];
+  answeredCount: number;
+  missingCount: number;
+  average?: number;
+  lowRate?: number;
+  severityScore?: number;
+  optionsSummary?: Array<{ option: string; count: number; rate: number }>;
+  topTopics?: Array<{ label: string; count: number; rate: number }>;
+};
+
+const REPORT_MIN_SAMPLE = 3;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const COMMENT_TOPIC_RULES: Array<{
+  id: string;
+  label: string;
+  keywords: string[];
+  decisionHint: string;
+}> = [
+  {
+    id: "clarity",
+    label: "Claridad de explicacion",
+    keywords: ["confus", "claro", "explica", "entendi", "duda"],
+    decisionHint: "Revisar secuencia didactica y simplificar explicaciones clave.",
+  },
+  {
+    id: "pace",
+    label: "Ritmo y carga",
+    keywords: ["rapido", "lento", "tiempo", "carga", "pesad", "tarea", "demasiado"],
+    decisionHint: "Ajustar ritmo, dividir contenido y equilibrar carga por sesion.",
+  },
+  {
+    id: "difficulty",
+    label: "Dificultad del contenido",
+    keywords: ["dificil", "complej", "complicad", "no entiendo"],
+    decisionHint: "Agregar ejemplos guiados y prerequisitos antes de temas complejos.",
+  },
+  {
+    id: "material",
+    label: "Calidad de materiales",
+    keywords: ["material", "recurso", "pdf", "diaposit", "ejemplo", "guia"],
+    decisionHint: "Actualizar material y agregar recursos practicos descargables.",
+  },
+  {
+    id: "engagement",
+    label: "Dinamica y participacion",
+    keywords: ["aburr", "interes", "dinamic", "particip"],
+    decisionHint: "Incorporar actividades interactivas y checkpoints de participacion.",
+  },
+  {
+    id: "platform",
+    label: "Problemas tecnicos/plataforma",
+    keywords: ["audio", "video", "internet", "plataforma", "error", "falla", "no carga"],
+    decisionHint: "Priorizar correcciones tecnicas de reproduccion y estabilidad.",
+  },
+  {
+    id: "assessment",
+    label: "Evaluacion y retroalimentacion",
+    keywords: ["calific", "rubrica", "examen", "retroaliment"],
+    decisionHint: "Revisar criterios de evaluacion y tiempos de retroalimentacion.",
+  },
+];
+
+const normalizeForSearch = (value: string): string =>
+  value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+const safeLabel = (value: string | null | undefined, fallback: string): string => {
+  const normalized = (value ?? "").trim();
+  return normalized || fallback;
+};
+
+const toRatioPercent = (value: number): string => `${(value * 100).toFixed(1)}%`;
+const roundTo2 = (value: number): number => Number(value.toFixed(2));
+const truncateText = (value: string, maxLength: number): string =>
+  value.length > maxLength ? `${value.slice(0, Math.max(maxLength - 1, 1))}…` : value;
+
+const buildSeverityScore = (average: number, lowRate: number, responses: number): number => {
+  const normalizedAverage = Math.max(0, Math.min(1, (5 - average) / 4));
+  const sampleWeight = Math.min(1, responses / 8);
+  return roundTo2((normalizedAverage * 0.65 + lowRate * 0.35) * sampleWeight * 100);
+};
+
+const buildClassInsights = (entries: ClassEvaluation[]): ClassInsight[] => {
+  const map = new Map<
+    string,
+    {
+      classKey: string;
+      classLabel: string;
+      courseLabel: string;
+      lessonLabel: string;
+      responses: number;
+      ratingSum: number;
+      lowCount: number;
+      highCount: number;
+      commentsCount: number;
+      lastUpdatedAt: Date | null;
+    }
+  >();
+
+  entries.forEach((entry) => {
+    const classKey = safeLabel(entry.classDocId, entry.id);
+    const classLabel = safeLabel(entry.classTitle, classKey);
+    const courseLabel = safeLabel(entry.courseTitle, safeLabel(entry.courseId, "Curso sin ID"));
+    const lessonLabel = safeLabel(entry.lessonTitle, safeLabel(entry.lessonId, "Leccion sin ID"));
+
+    const current = map.get(classKey) ?? {
+      classKey,
+      classLabel,
+      courseLabel,
+      lessonLabel,
+      responses: 0,
+      ratingSum: 0,
+      lowCount: 0,
+      highCount: 0,
+      commentsCount: 0,
+      lastUpdatedAt: null,
+    };
+
+    current.responses += 1;
+    current.ratingSum += entry.rating;
+    if (entry.rating <= 2) current.lowCount += 1;
+    if (entry.rating >= 4) current.highCount += 1;
+    if (entry.comment.trim().length > 0) current.commentsCount += 1;
+    if (
+      entry.updatedAt &&
+      (!current.lastUpdatedAt || entry.updatedAt.getTime() > current.lastUpdatedAt.getTime())
+    ) {
+      current.lastUpdatedAt = entry.updatedAt;
+    }
+
+    map.set(classKey, current);
+  });
+
+  return Array.from(map.values()).map((item) => {
+    const average = item.responses > 0 ? item.ratingSum / item.responses : 0;
+    const lowRate = item.responses > 0 ? item.lowCount / item.responses : 0;
+    const commentsRate = item.responses > 0 ? item.commentsCount / item.responses : 0;
+    return {
+      classKey: item.classKey,
+      classLabel: item.classLabel,
+      courseLabel: item.courseLabel,
+      lessonLabel: item.lessonLabel,
+      responses: item.responses,
+      average: roundTo2(average),
+      lowCount: item.lowCount,
+      highCount: item.highCount,
+      commentsCount: item.commentsCount,
+      lowRate,
+      commentsRate,
+      severityScore: buildSeverityScore(average, lowRate, item.responses),
+      lastUpdatedAt: item.lastUpdatedAt,
+    };
+  });
+};
+
+const buildCourseInsights = (entries: ClassEvaluation[]): CourseInsight[] => {
+  const map = new Map<
+    string,
+    {
+      courseKey: string;
+      courseLabel: string;
+      responses: number;
+      ratingSum: number;
+      lowCount: number;
+      highCount: number;
+      commentsCount: number;
+    }
+  >();
+
+  entries.forEach((entry) => {
+    const courseKey = safeLabel(entry.courseId, "sin-curso");
+    const courseLabel = safeLabel(entry.courseTitle, courseKey);
+    const current = map.get(courseKey) ?? {
+      courseKey,
+      courseLabel,
+      responses: 0,
+      ratingSum: 0,
+      lowCount: 0,
+      highCount: 0,
+      commentsCount: 0,
+    };
+    current.responses += 1;
+    current.ratingSum += entry.rating;
+    if (entry.rating <= 2) current.lowCount += 1;
+    if (entry.rating >= 4) current.highCount += 1;
+    if (entry.comment.trim().length > 0) current.commentsCount += 1;
+    map.set(courseKey, current);
+  });
+
+  return Array.from(map.values()).map((item) => {
+    const average = item.responses > 0 ? item.ratingSum / item.responses : 0;
+    const lowRate = item.responses > 0 ? item.lowCount / item.responses : 0;
+    const commentsRate = item.responses > 0 ? item.commentsCount / item.responses : 0;
+    return {
+      courseKey: item.courseKey,
+      courseLabel: item.courseLabel,
+      responses: item.responses,
+      average: roundTo2(average),
+      lowCount: item.lowCount,
+      highCount: item.highCount,
+      commentsCount: item.commentsCount,
+      lowRate,
+      commentsRate,
+      severityScore: buildSeverityScore(average, lowRate, item.responses),
+    };
+  });
+};
+
+const buildCommentTopicInsights = (entries: ClassEvaluation[]): CommentTopicInsight[] => {
+  if (!entries.length) return [];
+
+  const counts = COMMENT_TOPIC_RULES.reduce<Record<string, number>>((acc, topic) => {
+    acc[topic.id] = 0;
+    return acc;
+  }, {});
+
+  entries.forEach((entry) => {
+    const comment = normalizeForSearch(entry.comment);
+    if (!comment) return;
+    COMMENT_TOPIC_RULES.forEach((topic) => {
+      if (topic.keywords.some((keyword) => comment.includes(keyword))) {
+        counts[topic.id] += 1;
+      }
+    });
+  });
+
+  return COMMENT_TOPIC_RULES
+    .map((topic) => ({
+      id: topic.id,
+      label: topic.label,
+      count: counts[topic.id] ?? 0,
+      rate: entries.length > 0 ? (counts[topic.id] ?? 0) / entries.length : 0,
+      decisionHint: topic.decisionHint,
+    }))
+    .filter((topic) => topic.count > 0)
+    .sort((a, b) => b.count - a.count);
+};
+
+const buildTrendInsight = (entries: ClassEvaluation[]): TrendInsight => {
+  if (!entries.length) {
+    return {
+      recentCount: 0,
+      previousCount: 0,
+      recentAverage: null,
+      previousAverage: null,
+      deltaAverage: null,
+      recentLowRate: null,
+      previousLowRate: null,
+      deltaLowRate: null,
+    };
+  }
+
+  const nowMs = Date.now();
+  const recentStartMs = nowMs - 14 * DAY_MS;
+  const previousStartMs = nowMs - 28 * DAY_MS;
+
+  const recent = entries.filter((entry) => {
+    const time = entry.updatedAt?.getTime() ?? 0;
+    return time >= recentStartMs && time <= nowMs;
+  });
+  const previous = entries.filter((entry) => {
+    const time = entry.updatedAt?.getTime() ?? 0;
+    return time >= previousStartMs && time < recentStartMs;
+  });
+
+  const averageOf = (items: ClassEvaluation[]): number | null =>
+    items.length ? roundTo2(items.reduce((sum, item) => sum + item.rating, 0) / items.length) : null;
+  const lowRateOf = (items: ClassEvaluation[]): number | null =>
+    items.length ? items.filter((item) => item.rating <= 2).length / items.length : null;
+
+  const recentAverage = averageOf(recent);
+  const previousAverage = averageOf(previous);
+  const recentLowRate = lowRateOf(recent);
+  const previousLowRate = lowRateOf(previous);
+
+  return {
+    recentCount: recent.length,
+    previousCount: previous.length,
+    recentAverage,
+    previousAverage,
+    deltaAverage:
+      recentAverage !== null && previousAverage !== null
+        ? roundTo2(recentAverage - previousAverage)
+        : null,
+    recentLowRate,
+    previousLowRate,
+    deltaLowRate:
+      recentLowRate !== null && previousLowRate !== null
+        ? roundTo2(recentLowRate - previousLowRate)
+        : null,
+  };
+};
+
+const toValidRating = (value: unknown): number | null => {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isFinite(parsed)) return null;
+  if (parsed < 1 || parsed > 5) return null;
+  return parsed;
+};
+
+const buildSurveyQuestionInsights = (
+  survey: SatisfactionSurvey,
+  responses: SurveyResponse[],
+): SurveyQuestionInsight[] => {
+  return survey.questions.map((question) => {
+    const rawAnswers = responses.map((response) => getAnswerValue(response, question.id));
+    const answered = rawAnswers.filter((value) => value !== null && String(value).trim() !== "");
+    const missingCount = Math.max(responses.length - answered.length, 0);
+
+    if (question.type === "rating_1_5") {
+      const numeric = answered
+        .map((value) => toValidRating(value))
+        .filter((value): value is number => value !== null);
+      const average = numeric.length > 0 ? numeric.reduce((sum, value) => sum + value, 0) / numeric.length : 0;
+      const lowCount = numeric.filter((value) => value <= 2).length;
+      const lowRate = numeric.length > 0 ? lowCount / numeric.length : 0;
+      return {
+        questionId: question.id,
+        label: question.label,
+        type: question.type,
+        answeredCount: numeric.length,
+        missingCount,
+        average: roundTo2(average),
+        lowRate,
+        severityScore: buildSeverityScore(average, lowRate, numeric.length),
+      };
+    }
+
+    if (question.type === "single_choice") {
+      const counts = answered.reduce<Record<string, number>>((acc, answer) => {
+        const option = String(answer).trim();
+        if (!option) return acc;
+        acc[option] = (acc[option] ?? 0) + 1;
+        return acc;
+      }, {});
+      const optionsSummary = Object.entries(counts)
+        .map(([option, count]) => ({
+          option,
+          count,
+          rate: answered.length > 0 ? count / answered.length : 0,
+        }))
+        .sort((a, b) => b.count - a.count);
+
+      return {
+        questionId: question.id,
+        label: question.label,
+        type: question.type,
+        answeredCount: answered.length,
+        missingCount,
+        optionsSummary,
+      };
+    }
+
+    const normalizedComments = answered.map((value) => normalizeForSearch(String(value)));
+    const topicCounts = COMMENT_TOPIC_RULES.reduce<Record<string, number>>((acc, topic) => {
+      acc[topic.id] = 0;
+      return acc;
+    }, {});
+
+    normalizedComments.forEach((comment) => {
+      COMMENT_TOPIC_RULES.forEach((topic) => {
+        if (topic.keywords.some((keyword) => comment.includes(keyword))) {
+          topicCounts[topic.id] += 1;
+        }
+      });
+    });
+
+    const topTopics = COMMENT_TOPIC_RULES.map((topic) => ({
+      label: topic.label,
+      count: topicCounts[topic.id] ?? 0,
+      rate: answered.length > 0 ? (topicCounts[topic.id] ?? 0) / answered.length : 0,
+    }))
+      .filter((topic) => topic.count > 0)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 3);
+
+    return {
+      questionId: question.id,
+      label: question.label,
+      type: question.type,
+      answeredCount: answered.length,
+      missingCount,
+      topTopics,
+    };
+  });
+};
+
+const buildSurveyCriticalCommentRows = (
+  survey: SatisfactionSurvey,
+  responses: SurveyResponse[],
+): Array<{ studentName: string; studentEmail: string; submittedAt: Date | null; overallRating: number | null; comment: string }> => {
+  const ratingQuestions = survey.questions.filter((question) => question.type === "rating_1_5");
+  const textQuestions = survey.questions.filter((question) => question.type === "text");
+
+  return responses
+    .map((response) => {
+      const ratingValues = ratingQuestions
+        .map((question) => toValidRating(getAnswerValue(response, question.id)))
+        .filter((value): value is number => value !== null);
+
+      const overallRating =
+        ratingValues.length > 0
+          ? roundTo2(ratingValues.reduce((sum, value) => sum + value, 0) / ratingValues.length)
+          : null;
+
+      const comment = textQuestions
+        .map((question) => {
+          const value = getAnswerValue(response, question.id);
+          return value === null ? "" : String(value).trim();
+        })
+        .filter(Boolean)
+        .join(" | ");
+
+      return {
+        studentName: response.studentName || "Estudiante",
+        studentEmail: response.studentEmail || "",
+        submittedAt: response.submittedAt,
+        overallRating,
+        comment,
+      };
+    })
+    .filter((row) => row.comment.length > 0)
+    .sort((a, b) => {
+      const left = a.overallRating ?? 999;
+      const right = b.overallRating ?? 999;
+      if (left !== right) return left - right;
+      return (b.submittedAt?.getTime() ?? 0) - (a.submittedAt?.getTime() ?? 0);
+    })
+    .slice(0, 10);
+};
+
 export default function EncuestasPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
@@ -122,10 +607,12 @@ export default function EncuestasPage() {
 
   const [responsesBySurvey, setResponsesBySurvey] = useState<Record<string, SurveyResponse[]>>({});
   const [responsesLoadingId, setResponsesLoadingId] = useState<string | null>(null);
+  const [surveyPdfLoadingId, setSurveyPdfLoadingId] = useState<string | null>(null);
   const [selectedSurveyId, setSelectedSurveyId] = useState<string | null>(null);
 
   const [evaluations, setEvaluations] = useState<ClassEvaluation[]>([]);
   const [evaluationsLoading, setEvaluationsLoading] = useState(true);
+  const [evaluationsPdfLoading, setEvaluationsPdfLoading] = useState(false);
   const [evaluationsCourseFilter, setEvaluationsCourseFilter] = useState("");
   const [evaluationsStartDate, setEvaluationsStartDate] = useState("");
   const [evaluationsEndDate, setEvaluationsEndDate] = useState("");
@@ -176,6 +663,67 @@ export default function EncuestasPage() {
     [evaluations],
   );
 
+  const lowRatingCount = useMemo(
+    () => evaluationSummary.counts[1] + evaluationSummary.counts[2],
+    [evaluationSummary],
+  );
+
+  const highRatingCount = useMemo(
+    () => evaluationSummary.counts[4] + evaluationSummary.counts[5],
+    [evaluationSummary],
+  );
+
+  const lowRatingRate = useMemo(
+    () => (evaluationSummary.total > 0 ? lowRatingCount / evaluationSummary.total : 0),
+    [evaluationSummary.total, lowRatingCount],
+  );
+
+  const commentsRate = useMemo(
+    () =>
+      evaluationSummary.total > 0 ? evaluationsWithComment.length / evaluationSummary.total : 0,
+    [evaluationSummary.total, evaluationsWithComment.length],
+  );
+
+  const classInsights = useMemo(() => buildClassInsights(evaluations), [evaluations]);
+
+  const courseInsights = useMemo(() => buildCourseInsights(evaluations), [evaluations]);
+
+  const worstClassInsights = useMemo(
+    () =>
+      [...classInsights]
+        .filter((item) => item.responses >= 2)
+        .sort((a, b) => {
+          if (b.severityScore !== a.severityScore) return b.severityScore - a.severityScore;
+          if (a.average !== b.average) return a.average - b.average;
+          return b.responses - a.responses;
+        })
+        .slice(0, 10),
+    [classInsights],
+  );
+
+  const atRiskClassInsights = useMemo(
+    () =>
+      classInsights
+        .filter((item) => item.responses >= REPORT_MIN_SAMPLE && item.average < 3)
+        .sort((a, b) => a.average - b.average),
+    [classInsights],
+  );
+
+  const atRiskCourseInsights = useMemo(
+    () =>
+      courseInsights
+        .filter((item) => item.responses >= REPORT_MIN_SAMPLE && item.average < 3)
+        .sort((a, b) => a.average - b.average),
+    [courseInsights],
+  );
+
+  const commentTopicInsights = useMemo(
+    () => buildCommentTopicInsights(evaluationsWithComment),
+    [evaluationsWithComment],
+  );
+
+  const trendInsight = useMemo(() => buildTrendInsight(evaluations), [evaluations]);
+
   const surveyStats = useMemo(() => {
     return surveys.reduce(
       (acc, survey) => {
@@ -213,6 +761,21 @@ export default function EncuestasPage() {
       setResponsesLoadingId(null);
     }
   }, []);
+
+  const getOrLoadResponsesForSurvey = useCallback(
+    async (surveyId: string): Promise<SurveyResponse[]> => {
+      const normalizedSurveyId = surveyId.trim();
+      if (!normalizedSurveyId) return [];
+
+      const cached = responsesBySurvey[normalizedSurveyId];
+      if (cached) return cached;
+
+      const responses = await getSurveyResponsesBySurveyId(normalizedSurveyId);
+      setResponsesBySurvey((prev) => ({ ...prev, [normalizedSurveyId]: responses }));
+      return responses;
+    },
+    [responsesBySurvey],
+  );
 
   const refreshAllSurveyResponses = useCallback(async (items: SatisfactionSurvey[]) => {
     if (!items.length) {
@@ -255,6 +818,544 @@ export default function EncuestasPage() {
       setEvaluationsLoading(false);
     }
   }, [evaluationsCourseFilter, evaluationsStartDate, evaluationsEndDate]);
+
+  const handleDownloadEvaluationsReportPdf = useCallback(async () => {
+    if (!evaluations.length) {
+      toast.error("No hay evaluaciones para generar el reporte.");
+      return;
+    }
+
+    const highRatingRate =
+      evaluationSummary.total > 0 ? highRatingCount / evaluationSummary.total : 0;
+
+    const topCourseRisks = [...atRiskCourseInsights].slice(0, 8);
+    const topClassRisks = [...worstClassInsights].slice(0, 12);
+    const topTopics = [...commentTopicInsights].slice(0, 6);
+
+    const recommendations: string[] = [];
+    if (topClassRisks.length > 0) {
+      recommendations.push(
+        `Intervenir de inmediato las ${Math.min(
+          5,
+          topClassRisks.length,
+        )} clases con mayor severidad (promedio bajo y alta tasa de 1-2 estrellas).`,
+      );
+    }
+    if (topTopics.length > 0) {
+      recommendations.push(
+        `Priorizar mejoras en "${topTopics[0].label}" porque aparece en ${toRatioPercent(
+          topTopics[0].rate,
+        )} de los comentarios.`,
+      );
+    }
+    if (lowRatingRate >= 0.25) {
+      recommendations.push(
+        "Activar plan correctivo docente para grupos con >=25% de evaluaciones criticas (1-2 estrellas).",
+      );
+    }
+    if (trendInsight.deltaAverage !== null && trendInsight.deltaAverage <= -0.2) {
+      recommendations.push(
+        "El promedio reciente cayo frente a las 2 semanas previas; revisar cambios recientes de contenido o docente.",
+      );
+    }
+    if (recommendations.length === 0) {
+      recommendations.push(
+        "Mantener monitoreo semanal y enfocar seguimiento en clases con bajo volumen para confirmar estabilidad.",
+      );
+    }
+
+    setEvaluationsPdfLoading(true);
+    try {
+      const { jsPDF } = await import("jspdf");
+      const pdf = new jsPDF({ unit: "pt", format: "a4" });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const marginX = 40;
+      const topMargin = 46;
+      const bottomMargin = 42;
+      const contentWidth = pageWidth - marginX * 2;
+      const bottomLimit = pageHeight - bottomMargin;
+      let y = topMargin;
+
+      const ensureSpace = (requiredHeight: number) => {
+        if (y + requiredHeight <= bottomLimit) return;
+        pdf.addPage();
+        y = topMargin;
+      };
+
+      const drawTitle = (text: string) => {
+        ensureSpace(30);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(18);
+        pdf.setTextColor(15, 23, 42);
+        pdf.text(text, marginX, y);
+        y += 22;
+      };
+
+      const drawSection = (text: string) => {
+        ensureSpace(24);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(13);
+        pdf.setTextColor(30, 41, 59);
+        pdf.text(text, marginX, y);
+        y += 16;
+      };
+
+      const drawParagraph = (text: string, fontSize = 10, color: [number, number, number] = [71, 85, 105]) => {
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(fontSize);
+        pdf.setTextColor(color[0], color[1], color[2]);
+        const lines = pdf.splitTextToSize(text, contentWidth) as string[];
+        ensureSpace(lines.length * 13 + 4);
+        pdf.text(lines, marginX, y);
+        y += lines.length * 13 + 4;
+      };
+
+      const drawKeyValue = (label: string, value: string) => {
+        ensureSpace(14);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(10);
+        pdf.setTextColor(30, 41, 59);
+        pdf.text(label, marginX, y);
+        pdf.setFont("helvetica", "normal");
+        pdf.setTextColor(51, 65, 85);
+        pdf.text(value, marginX + 190, y);
+        y += 14;
+      };
+
+      const drawSimpleTable = (headers: string[], widths: number[], rows: string[][]) => {
+        const rowHeight = 16;
+        const headerHeight = 18;
+        ensureSpace(headerHeight + rowHeight);
+
+        let x = marginX;
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(9);
+        pdf.setTextColor(30, 41, 59);
+        headers.forEach((header, index) => {
+          pdf.text(header, x + 2, y);
+          x += widths[index];
+        });
+        y += 6;
+        pdf.setDrawColor(148, 163, 184);
+        pdf.line(marginX, y, marginX + contentWidth, y);
+        y += 10;
+
+        rows.forEach((row) => {
+          ensureSpace(rowHeight + 6);
+          let cellX = marginX;
+          pdf.setFont("helvetica", "normal");
+          pdf.setFontSize(9);
+          pdf.setTextColor(51, 65, 85);
+          row.forEach((cell, cellIndex) => {
+            const maxChars = cellIndex <= 1 ? 34 : 16;
+            pdf.text(truncateText(cell, maxChars), cellX + 2, y);
+            cellX += widths[cellIndex];
+          });
+          y += 6;
+          pdf.setDrawColor(226, 232, 240);
+          pdf.line(marginX, y, marginX + contentWidth, y);
+          y += 10;
+        });
+      };
+
+      const periodText = `${evaluationsStartDate || "sin limite"} a ${evaluationsEndDate || "hoy"}`;
+      const courseFilterText = evaluationsCourseFilter.trim() || "Todos los cursos";
+
+      drawTitle("Reporte de decisiones - Evaluaciones de clase");
+      drawParagraph(`Generado: ${new Date().toLocaleString("es-MX")}`, 10);
+      drawParagraph(`Filtro de curso: ${courseFilterText}`, 10);
+      drawParagraph(`Periodo: ${periodText}`, 10);
+      y += 4;
+
+      drawSection("1) Resumen ejecutivo");
+      drawKeyValue("Total de evaluaciones", String(evaluationSummary.total));
+      drawKeyValue("Promedio general", evaluationSummary.average.toFixed(2));
+      drawKeyValue("Participacion con comentario", `${evaluationsWithComment.length} (${toRatioPercent(commentsRate)})`);
+      drawKeyValue("Evaluaciones criticas (1-2)", `${lowRatingCount} (${toRatioPercent(lowRatingRate)})`);
+      drawKeyValue("Evaluaciones positivas (4-5)", `${highRatingCount} (${toRatioPercent(highRatingRate)})`);
+      drawKeyValue("Clases en riesgo (avg < 3, n >= 3)", String(atRiskClassInsights.length));
+      drawKeyValue("Cursos en riesgo (avg < 3, n >= 3)", String(atRiskCourseInsights.length));
+
+      const trendText =
+        trendInsight.deltaAverage === null
+          ? "No hay suficiente historico para comparar tendencia de 14 dias."
+          : `Promedio ultimos 14 dias: ${trendInsight.recentAverage?.toFixed(2) ?? "N/D"} vs periodo previo: ${
+              trendInsight.previousAverage?.toFixed(2) ?? "N/D"
+            } (delta ${trendInsight.deltaAverage >= 0 ? "+" : ""}${trendInsight.deltaAverage.toFixed(2)}).`;
+      drawParagraph(trendText);
+      if (trendInsight.deltaLowRate !== null) {
+        drawParagraph(
+          `Tasa critica 1-2★ ultimos 14 dias: ${toRatioPercent(
+            trendInsight.recentLowRate ?? 0,
+          )} vs previo ${toRatioPercent(trendInsight.previousLowRate ?? 0)} (delta ${
+            trendInsight.deltaLowRate >= 0 ? "+" : ""
+          }${toRatioPercent(trendInsight.deltaLowRate)}).`,
+        );
+      }
+
+      y += 6;
+      drawSection("2) Top clases/contenidos peor puntuados");
+      if (!topClassRisks.length) {
+        drawParagraph("No hay suficiente muestra para construir ranking de clases.");
+      } else {
+        drawSimpleTable(
+          ["#", "Clase/Contenido", "Curso", "Resp", "Avg", "%1-2", "Sev"],
+          [24, 150, 106, 40, 44, 55, 96],
+          topClassRisks.map((item, index) => [
+            String(index + 1),
+            item.classLabel,
+            item.courseLabel,
+            String(item.responses),
+            item.average.toFixed(2),
+            toRatioPercent(item.lowRate),
+            `${item.severityScore.toFixed(1)} / 100`,
+          ]),
+        );
+      }
+
+      y += 6;
+      drawSection("3) Cursos en riesgo por promedio");
+      if (!topCourseRisks.length) {
+        drawParagraph("No se detectaron cursos con promedio menor a 3 en la muestra actual.");
+      } else {
+        drawSimpleTable(
+          ["Curso", "Resp", "Avg", "%1-2", "%coment", "Sev"],
+          [220, 50, 50, 70, 70, 55],
+          topCourseRisks.map((item) => [
+            item.courseLabel,
+            String(item.responses),
+            item.average.toFixed(2),
+            toRatioPercent(item.lowRate),
+            toRatioPercent(item.commentsRate),
+            item.severityScore.toFixed(1),
+          ]),
+        );
+      }
+
+      y += 6;
+      drawSection("4) Temas recurrentes en comentarios");
+      if (!topTopics.length) {
+        drawParagraph("No hay suficiente texto en comentarios para clasificar temas.");
+      } else {
+        topTopics.forEach((topic, index) => {
+          drawParagraph(
+            `${index + 1}. ${topic.label}: ${topic.count} menciones (${toRatioPercent(topic.rate)}). ${topic.decisionHint}`,
+          );
+        });
+      }
+
+      y += 6;
+      drawSection("5) Recomendaciones accionables");
+      recommendations.forEach((item, index) => {
+        drawParagraph(`${index + 1}. ${item}`);
+      });
+
+      y += 8;
+      drawParagraph("Documento generado automaticamente por Plataforma UDEL.", 9, [100, 116, 139]);
+
+      const dateToken = new Date().toISOString().slice(0, 10);
+      const safeCourseToken = (evaluationsCourseFilter.trim() || "todos")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-zA-Z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .toLowerCase();
+      pdf.save(`reporte-evaluaciones-${safeCourseToken || "todos"}-${dateToken}.pdf`);
+    } catch (error) {
+      console.error("No se pudo generar el PDF de analitica:", error);
+      toast.error("No se pudo generar el PDF. Intenta de nuevo.");
+    } finally {
+      setEvaluationsPdfLoading(false);
+    }
+  }, [
+    atRiskClassInsights.length,
+    atRiskCourseInsights,
+    commentTopicInsights,
+    commentsRate,
+    evaluationSummary,
+    evaluations,
+    evaluationsCourseFilter,
+    evaluationsEndDate,
+    evaluationsStartDate,
+    highRatingCount,
+    lowRatingCount,
+    lowRatingRate,
+    evaluationsWithComment.length,
+    trendInsight,
+    worstClassInsights,
+  ]);
+
+  const handleDownloadSurveyReportPdf = useCallback(
+    async (survey: SatisfactionSurvey) => {
+      const surveyId = survey.id.trim();
+      if (!surveyId) return;
+
+      setSurveyPdfLoadingId(surveyId);
+      try {
+        const responses = await getOrLoadResponsesForSurvey(surveyId);
+        const questionInsights = buildSurveyQuestionInsights(survey, responses);
+        const ratingInsights = questionInsights.filter(
+          (item): item is SurveyQuestionInsight & { average: number; lowRate: number; severityScore: number } =>
+            item.type === "rating_1_5" &&
+            typeof item.average === "number" &&
+            typeof item.lowRate === "number" &&
+            typeof item.severityScore === "number",
+        );
+        const riskyRatingQuestions = ratingInsights
+          .filter((item) => item.answeredCount >= REPORT_MIN_SAMPLE)
+          .sort((a, b) => {
+            if (b.severityScore !== a.severityScore) return b.severityScore - a.severityScore;
+            return a.average - b.average;
+          })
+          .slice(0, 8);
+
+        const allRatingValues = responses.flatMap((response) =>
+          survey.questions
+            .filter((question) => question.type === "rating_1_5")
+            .map((question) => toValidRating(getAnswerValue(response, question.id)))
+            .filter((value): value is number => value !== null),
+        );
+        const globalAverage =
+          allRatingValues.length > 0
+            ? roundTo2(allRatingValues.reduce((sum, value) => sum + value, 0) / allRatingValues.length)
+            : null;
+        const globalLowRate =
+          allRatingValues.length > 0
+            ? allRatingValues.filter((value) => value <= 2).length / allRatingValues.length
+            : null;
+
+        const totalPotentialAnswers = responses.length * Math.max(survey.questions.length, 1);
+        const totalAnswered = questionInsights.reduce((sum, item) => sum + item.answeredCount, 0);
+        const completionRate = totalPotentialAnswers > 0 ? totalAnswered / totalPotentialAnswers : 0;
+
+        const criticalComments = buildSurveyCriticalCommentRows(survey, responses);
+        const topTextTopics = questionInsights
+          .filter((item) => item.type === "text" && item.topTopics && item.topTopics.length > 0)
+          .flatMap((item) => item.topTopics ?? [])
+          .reduce<Record<string, { label: string; count: number }>>((acc, topic) => {
+            const key = topic.label;
+            acc[key] = {
+              label: topic.label,
+              count: (acc[key]?.count ?? 0) + topic.count,
+            };
+            return acc;
+          }, {});
+        const topTopics = Object.values(topTextTopics)
+          .map((topic) => ({
+            label: topic.label,
+            count: topic.count,
+            rate: responses.length > 0 ? topic.count / responses.length : 0,
+          }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 6);
+
+        const recommendations: string[] = [];
+        if (globalLowRate !== null && globalLowRate >= 0.25) {
+          recommendations.push(
+            `La tasa de respuestas criticas (1-2) es ${toRatioPercent(
+              globalLowRate,
+            )}; activar plan correctivo para esta encuesta.`,
+          );
+        }
+        if (riskyRatingQuestions.length > 0) {
+          recommendations.push(
+            `Priorizar la mejora de la pregunta "${riskyRatingQuestions[0].label}" (promedio ${riskyRatingQuestions[0].average.toFixed(
+              2,
+            )}).`,
+          );
+        }
+        if (topTopics.length > 0) {
+          recommendations.push(
+            `Tema recurrente principal: "${topTopics[0].label}" (${topTopics[0].count} menciones). Planear accion especifica.`,
+          );
+        }
+        if (completionRate < 0.75) {
+          recommendations.push(
+            `La completitud de respuestas es ${toRatioPercent(
+              completionRate,
+            )}; revisar longitud o claridad de preguntas para mejorar calidad de datos.`,
+          );
+        }
+        if (!recommendations.length) {
+          recommendations.push(
+            "No se detectan focos rojos severos; mantener monitoreo y comparar contra la siguiente cohorte.",
+          );
+        }
+
+        const { jsPDF } = await import("jspdf");
+        const pdf = new jsPDF({ unit: "pt", format: "a4" });
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+        const marginX = 40;
+        const topMargin = 46;
+        const bottomMargin = 42;
+        const contentWidth = pageWidth - marginX * 2;
+        const bottomLimit = pageHeight - bottomMargin;
+        let y = topMargin;
+
+        const ensureSpace = (requiredHeight: number) => {
+          if (y + requiredHeight <= bottomLimit) return;
+          pdf.addPage();
+          y = topMargin;
+        };
+
+        const drawTitle = (text: string) => {
+          ensureSpace(30);
+          pdf.setFont("helvetica", "bold");
+          pdf.setFontSize(18);
+          pdf.setTextColor(15, 23, 42);
+          pdf.text(text, marginX, y);
+          y += 22;
+        };
+
+        const drawSection = (text: string) => {
+          ensureSpace(24);
+          pdf.setFont("helvetica", "bold");
+          pdf.setFontSize(13);
+          pdf.setTextColor(30, 41, 59);
+          pdf.text(text, marginX, y);
+          y += 16;
+        };
+
+        const drawParagraph = (
+          text: string,
+          fontSize = 10,
+          color: [number, number, number] = [71, 85, 105],
+        ) => {
+          pdf.setFont("helvetica", "normal");
+          pdf.setFontSize(fontSize);
+          pdf.setTextColor(color[0], color[1], color[2]);
+          const lines = pdf.splitTextToSize(text, contentWidth) as string[];
+          ensureSpace(lines.length * 13 + 4);
+          pdf.text(lines, marginX, y);
+          y += lines.length * 13 + 4;
+        };
+
+        const drawKeyValue = (label: string, value: string) => {
+          ensureSpace(14);
+          pdf.setFont("helvetica", "bold");
+          pdf.setFontSize(10);
+          pdf.setTextColor(30, 41, 59);
+          pdf.text(label, marginX, y);
+          pdf.setFont("helvetica", "normal");
+          pdf.setTextColor(51, 65, 85);
+          pdf.text(value, marginX + 210, y);
+          y += 14;
+        };
+
+        drawTitle("Reporte por encuesta");
+        drawParagraph(`Encuesta: ${survey.title}`, 11);
+        drawParagraph(`Generado: ${new Date().toLocaleString("es-MX")}`);
+        drawParagraph(`Estado: ${STATUS_LABELS[survey.status]} • Segmento: ${SEGMENT_LABELS[survey.segment]}`);
+        drawParagraph(
+          `Incluye alumnos futuros: ${
+            survey.applyToFutureStudents ? "Si" : "No"
+          } • Ultima actualizacion: ${formatDateTime(survey.updatedAt)}`,
+        );
+        y += 4;
+
+        drawSection("1) Resumen ejecutivo");
+        drawKeyValue("Total de respuestas", String(responses.length));
+        drawKeyValue("Preguntas en encuesta", String(survey.questions.length));
+        drawKeyValue("Completitud general", toRatioPercent(completionRate));
+        drawKeyValue("Promedio global (preguntas 1-5)", globalAverage !== null ? globalAverage.toFixed(2) : "N/D");
+        drawKeyValue(
+          "Tasa critica 1-2 (preguntas 1-5)",
+          globalLowRate !== null ? toRatioPercent(globalLowRate) : "N/D",
+        );
+        drawKeyValue("Comentarios de texto analizados", String(criticalComments.length));
+
+        y += 4;
+        drawSection("2) Preguntas de mayor riesgo");
+        if (!riskyRatingQuestions.length) {
+          drawParagraph("No hay preguntas de escala con muestra suficiente para determinar riesgo.");
+        } else {
+          riskyRatingQuestions.forEach((item, index) => {
+            drawParagraph(
+              `${index + 1}. ${item.label} | promedio ${item.average.toFixed(2)} | criticas ${toRatioPercent(
+                item.lowRate,
+              )} | severidad ${item.severityScore.toFixed(1)}/100`,
+            );
+          });
+        }
+
+        y += 4;
+        drawSection("3) Resultado por pregunta");
+        questionInsights.forEach((item, index) => {
+          drawParagraph(
+            `${index + 1}. ${item.label} (${item.type}) - respondidas ${item.answeredCount}, sin respuesta ${item.missingCount}`,
+            10,
+            [30, 41, 59],
+          );
+          if (item.type === "rating_1_5") {
+            drawParagraph(
+              `Promedio ${item.average?.toFixed(2) ?? "N/D"} | criticas ${toRatioPercent(
+                item.lowRate ?? 0,
+              )} | severidad ${(item.severityScore ?? 0).toFixed(1)}/100`,
+            );
+          } else if (item.type === "single_choice") {
+            const topOptions = (item.optionsSummary ?? []).slice(0, 3);
+            if (!topOptions.length) {
+              drawParagraph("Sin respuestas de opcion multiple.");
+            } else {
+              topOptions.forEach((option, optionIndex) => {
+                drawParagraph(
+                  `Opcion ${optionIndex + 1}: ${option.option} (${option.count}, ${toRatioPercent(option.rate)})`,
+                );
+              });
+            }
+          } else {
+            const topicText = (item.topTopics ?? [])
+              .slice(0, 3)
+              .map((topic) => `${topic.label}: ${topic.count} (${toRatioPercent(topic.rate)})`)
+              .join(" | ");
+            drawParagraph(topicText || "Sin temas recurrentes detectables en texto.");
+          }
+          y += 2;
+        });
+
+        y += 4;
+        drawSection("4) Comentarios prioritarios (para accion)");
+        if (!criticalComments.length) {
+          drawParagraph("No hay comentarios de texto para priorizar en esta encuesta.");
+        } else {
+          criticalComments.forEach((row, index) => {
+            drawParagraph(
+              `${index + 1}. ${row.studentName} ${
+                row.studentEmail ? `(${row.studentEmail})` : ""
+              } | rating global ${row.overallRating?.toFixed(2) ?? "N/D"} | ${formatDateTime(row.submittedAt)}`,
+            );
+            drawParagraph(`"${truncateText(row.comment, 220)}"`);
+          });
+        }
+
+        y += 4;
+        drawSection("5) Recomendaciones accionables");
+        recommendations.forEach((item, index) => {
+          drawParagraph(`${index + 1}. ${item}`);
+        });
+
+        y += 8;
+        drawParagraph("Documento generado automaticamente por Plataforma UDEL.", 9, [100, 116, 139]);
+
+        const stamp = new Date().toISOString().slice(0, 10);
+        const safeTitle = survey.title
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/[^a-zA-Z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .toLowerCase();
+        pdf.save(`reporte-encuesta-${safeTitle || surveyId}-${stamp}.pdf`);
+      } catch (error) {
+        console.error("No se pudo generar el reporte PDF de encuesta:", error);
+        toast.error("No se pudo generar el reporte PDF de la encuesta.");
+      } finally {
+        setSurveyPdfLoadingId(null);
+      }
+    },
+    [getOrLoadResponsesForSurvey],
+  );
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -752,6 +1853,14 @@ export default function EncuestasPage() {
                     >
                       Ver respuestas ({surveyResponseCounts[survey.id] ?? 0})
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleDownloadSurveyReportPdf(survey)}
+                      disabled={surveyPdfLoadingId === survey.id}
+                      className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-blue-300 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {surveyPdfLoadingId === survey.id ? "Generando PDF..." : "Reporte PDF"}
+                    </button>
 
                     {canManageSurveys ? (
                       <>
@@ -805,14 +1914,24 @@ export default function EncuestasPage() {
         <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-lg font-semibold text-slate-900">Analítica de evaluaciones de clase</h2>
-            <button
-              type="button"
-              onClick={() => void loadClassEvaluationsData()}
-              disabled={evaluationsLoading}
-              className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:border-blue-300 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              {evaluationsLoading ? "Cargando..." : "Aplicar filtros"}
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void loadClassEvaluationsData()}
+                disabled={evaluationsLoading}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:border-blue-300 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {evaluationsLoading ? "Cargando..." : "Aplicar filtros"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDownloadEvaluationsReportPdf()}
+                disabled={evaluationsPdfLoading || evaluations.length === 0}
+                className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {evaluationsPdfLoading ? "Generando PDF..." : "Descargar reporte PDF"}
+              </button>
+            </div>
           </div>
 
           <div className="mt-3 grid gap-3 md:grid-cols-3">
@@ -851,6 +1970,29 @@ export default function EncuestasPage() {
             <StatCard title="Con comentario" value={evaluationsWithComment.length} />
           </div>
 
+          <div className="mt-4 grid gap-3 sm:grid-cols-4">
+            <MetricCard
+              title="Clases en riesgo"
+              value={String(atRiskClassInsights.length)}
+              subtitle="avg < 3.0 y muestra >= 3"
+            />
+            <MetricCard
+              title="Cursos en riesgo"
+              value={String(atRiskCourseInsights.length)}
+              subtitle="avg < 3.0 y muestra >= 3"
+            />
+            <MetricCard
+              title="Criticas (1-2★)"
+              value={toRatioPercent(lowRatingRate)}
+              subtitle={`${lowRatingCount} evaluaciones`}
+            />
+            <MetricCard
+              title="Cobertura comentario"
+              value={toRatioPercent(commentsRate)}
+              subtitle={`${evaluationsWithComment.length} comentarios`}
+            />
+          </div>
+
           <div className="mt-4 grid gap-2 sm:grid-cols-5">
             {RATING_STARS.map((star) => (
               <div key={star} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-center">
@@ -883,6 +2025,50 @@ export default function EncuestasPage() {
               </div>
             )}
           </div>
+
+          <div className="mt-6 grid gap-4 lg:grid-cols-2">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <h3 className="text-sm font-semibold text-slate-800">Top clases/contenidos en riesgo</h3>
+              {worstClassInsights.length === 0 ? (
+                <p className="mt-2 text-sm text-slate-600">Aun no hay muestra suficiente para ranking.</p>
+              ) : (
+                <div className="mt-2 space-y-2">
+                  {worstClassInsights.slice(0, 6).map((item, index) => (
+                    <article key={item.classKey} className="rounded-lg border border-slate-200 bg-white p-2.5">
+                      <p className="text-sm font-semibold text-slate-900">
+                        {index + 1}. {item.classLabel}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {item.courseLabel} • {item.responses} evals • promedio {item.average.toFixed(2)}
+                      </p>
+                      <p className="text-xs text-rose-700">
+                        Criticas: {toRatioPercent(item.lowRate)} • Severidad: {item.severityScore.toFixed(1)}/100
+                      </p>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <h3 className="text-sm font-semibold text-slate-800">Temas que mas impactan la satisfaccion</h3>
+              {commentTopicInsights.length === 0 ? (
+                <p className="mt-2 text-sm text-slate-600">No hay suficientes comentarios para clasificar temas.</p>
+              ) : (
+                <div className="mt-2 space-y-2">
+                  {commentTopicInsights.slice(0, 6).map((topic) => (
+                    <article key={topic.id} className="rounded-lg border border-slate-200 bg-white p-2.5">
+                      <p className="text-sm font-semibold text-slate-900">{topic.label}</p>
+                      <p className="text-xs text-slate-500">
+                        {topic.count} menciones ({toRatioPercent(topic.rate)})
+                      </p>
+                      <p className="text-xs text-slate-700">{topic.decisionHint}</p>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </section>
       </div>
 
@@ -902,13 +2088,23 @@ export default function EncuestasPage() {
                   {SEGMENT_LABELS[selectedSurvey.segment]} • Respuestas: {selectedSurveyResponses.length}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setSelectedSurveyId(null)}
-                className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:border-slate-300"
-              >
-                Cerrar
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleDownloadSurveyReportPdf(selectedSurvey)}
+                  disabled={surveyPdfLoadingId === selectedSurvey.id}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:border-blue-300 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {surveyPdfLoadingId === selectedSurvey.id ? "Generando PDF..." : "Reporte PDF"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedSurveyId(null)}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:border-slate-300"
+                >
+                  Cerrar
+                </button>
+              </div>
             </div>
 
             {responsesLoadingId === selectedSurvey.id ? (
@@ -1014,6 +2210,16 @@ function StatCard({ title, value }: { title: string; value: number }) {
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <p className="text-xs uppercase tracking-[0.18em] text-slate-500">{title}</p>
       <p className="mt-2 text-2xl font-semibold text-slate-900">{value}</p>
+    </div>
+  );
+}
+
+function MetricCard({ title, value, subtitle }: { title: string; value: string; subtitle?: string }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3">
+      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{title}</p>
+      <p className="mt-1 text-lg font-semibold text-slate-900">{value}</p>
+      {subtitle ? <p className="text-xs text-slate-500">{subtitle}</p> : null}
     </div>
   );
 }

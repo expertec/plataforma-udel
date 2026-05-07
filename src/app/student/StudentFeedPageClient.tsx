@@ -51,6 +51,7 @@ import {
   saveSurveyResponse,
   type SatisfactionSurvey,
   type SurveyAnswer,
+  type SurveyQuestion,
 } from "@/lib/firebase/satisfaction-surveys-service";
 import { v4 as uuidv4 } from "uuid";
 import sanitizeHtml from "sanitize-html";
@@ -610,6 +611,7 @@ export default function StudentFeedPageClient() {
   const [studentCreatedAt, setStudentCreatedAt] = useState<Date | null>(null);
   const [pendingSurveys, setPendingSurveys] = useState<SatisfactionSurvey[]>([]);
   const [surveyAnswers, setSurveyAnswers] = useState<Record<string, string | number>>({});
+  const [surveyStepIndex, setSurveyStepIndex] = useState(0);
   const [surveySubmitting, setSurveySubmitting] = useState(false);
   const [courseClosureMap, setCourseClosureMap] = useState<Record<string, CourseClosureState>>({});
   const [forumDoneMap, setForumDoneMap] = useState<Record<string, boolean>>({});
@@ -852,8 +854,16 @@ export default function StudentFeedPageClient() {
 
         const checks = await Promise.all(
           eligible.map(async (survey) => {
-            const existing = await getSurveyResponse(survey.id, currentUser.uid);
-            return { survey, answered: Boolean(existing) };
+            try {
+              const existing = await getSurveyResponse(survey.id, currentUser.uid);
+              return { survey, answered: Boolean(existing) };
+            } catch (error) {
+              console.warn(
+                `No se pudo validar respuesta previa de encuesta ${survey.id}:`,
+                error,
+              );
+              return { survey, answered: false };
+            }
           }),
         );
 
@@ -887,6 +897,54 @@ export default function StudentFeedPageClient() {
       return next;
     });
   }, [activePendingSurvey?.id, activePendingSurvey]);
+
+  useEffect(() => {
+    setSurveyStepIndex(0);
+  }, [activePendingSurvey?.id]);
+
+  const isSurveyQuestionAnswered = useCallback(
+    (question: SurveyQuestion | null | undefined): boolean => {
+      if (!question) return false;
+      const rawValue = surveyAnswers[question.id];
+      if (question.type === "rating_1_5") {
+        return typeof rawValue === "number" && Number.isFinite(rawValue) && rawValue >= 1 && rawValue <= 5;
+      }
+      return typeof rawValue === "string" && rawValue.trim().length > 0;
+    },
+    [surveyAnswers],
+  );
+
+  const handleSurveyAnswerChange = useCallback(
+    (
+      question: SurveyQuestion,
+      value: string | number,
+      options?: { autoAdvance?: boolean },
+    ) => {
+      setSurveyAnswers((prev) => ({ ...prev, [question.id]: value }));
+      if (!options?.autoAdvance || !activePendingSurvey) return;
+      const currentIndex = activePendingSurvey.questions.findIndex((item) => item.id === question.id);
+      if (currentIndex < 0 || currentIndex >= activePendingSurvey.questions.length - 1) return;
+      setSurveyStepIndex(currentIndex + 1);
+    },
+    [activePendingSurvey],
+  );
+
+  const goToPreviousSurveyStep = useCallback(() => {
+    setSurveyStepIndex((prev) => Math.max(prev - 1, 0));
+  }, []);
+
+  const goToNextSurveyStep = useCallback(() => {
+    if (!activePendingSurvey) return;
+    const currentQuestion = activePendingSurvey.questions[surveyStepIndex];
+    if (!currentQuestion) return;
+    if (currentQuestion.required && !isSurveyQuestionAnswered(currentQuestion)) {
+      toast.error(`Responde la pregunta: ${currentQuestion.label}`);
+      return;
+    }
+    setSurveyStepIndex((prev) =>
+      Math.min(prev + 1, Math.max(activePendingSurvey.questions.length - 1, 0)),
+    );
+  }, [activePendingSurvey, isSurveyQuestionAnswered, surveyStepIndex]);
 
   useEffect(() => {
     const timerId = window.setInterval(() => {
@@ -4687,37 +4745,63 @@ export default function StudentFeedPageClient() {
           ) : null}
 
           {/* Encuesta de satisfacción obligatoria (una vez por encuesta) */}
-          {activePendingSurvey && !previewMode ? (
-            <div className="fixed inset-0 z-[90] flex items-start justify-center overflow-y-auto bg-black/80 px-4 py-6">
-              <div className="w-full max-w-2xl max-h-[calc(100vh-3rem)] overflow-y-auto rounded-2xl bg-neutral-900 p-6 shadow-2xl">
-                <div className="mb-4">
-                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-300">
-                    Encuesta obligatoria
-                  </p>
-                  <h3 className="mt-1 text-xl font-semibold text-white">{activePendingSurvey.title}</h3>
-                  {activePendingSurvey.description ? (
-                    <p className="mt-1 text-sm text-neutral-300">{activePendingSurvey.description}</p>
-                  ) : null}
-                </div>
+          {activePendingSurvey && !previewMode
+            ? (() => {
+                const totalQuestions = activePendingSurvey.questions.length;
+                const safeStepIndex = Math.min(
+                  Math.max(surveyStepIndex, 0),
+                  Math.max(totalQuestions - 1, 0),
+                );
+                const currentQuestion = activePendingSurvey.questions[safeStepIndex];
+                if (!currentQuestion) return null;
+                const currentValue = surveyAnswers[currentQuestion.id];
+                const isLastStep = safeStepIndex === totalQuestions - 1;
+                const canAdvance =
+                  !currentQuestion.required || isSurveyQuestionAnswered(currentQuestion);
+                const progressPercent = totalQuestions > 0 ? ((safeStepIndex + 1) / totalQuestions) * 100 : 0;
 
-                <div className="space-y-4">
-                  {activePendingSurvey.questions.map((question, idx) => {
-                    const currentValue = surveyAnswers[question.id];
-                    return (
-                      <div key={question.id} className="rounded-lg border border-neutral-700 bg-neutral-800 p-4">
+                return (
+                  <div className="fixed inset-0 z-[90] flex items-start justify-center overflow-y-auto bg-black/80 px-4 py-6">
+                    <div className="w-full max-w-2xl rounded-2xl bg-neutral-900 p-6 shadow-2xl">
+                      <div className="mb-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-300">
+                          Encuesta obligatoria
+                        </p>
+                        <h3 className="mt-1 text-xl font-semibold text-white">{activePendingSurvey.title}</h3>
+                        {activePendingSurvey.description ? (
+                          <p className="mt-1 text-sm text-neutral-300">{activePendingSurvey.description}</p>
+                        ) : null}
+                      </div>
+
+                      <div className="mb-3 flex items-center justify-between text-xs text-neutral-300">
+                        <span>
+                          Pregunta {safeStepIndex + 1} de {totalQuestions}
+                        </span>
+                        <span>{Math.round(progressPercent)}%</span>
+                      </div>
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-neutral-800">
+                        <div
+                          className="h-full rounded-full bg-emerald-400 transition-all"
+                          style={{ width: `${progressPercent}%` }}
+                        />
+                      </div>
+
+                      <div className="mt-4 rounded-lg border border-neutral-700 bg-neutral-800 p-4">
                         <p className="text-sm font-semibold text-white">
-                          {idx + 1}. {question.label}{" "}
-                          {question.required ? <span className="text-rose-300">*</span> : null}
+                          {safeStepIndex + 1}. {currentQuestion.label}{" "}
+                          {currentQuestion.required ? <span className="text-rose-300">*</span> : null}
                         </p>
 
-                        {question.type === "rating_1_5" ? (
+                        {currentQuestion.type === "rating_1_5" ? (
                           <div className="mt-3 flex flex-wrap items-center gap-2">
                             {[1, 2, 3, 4, 5].map((star) => (
                               <button
                                 key={star}
                                 type="button"
                                 onClick={() =>
-                                  setSurveyAnswers((prev) => ({ ...prev, [question.id]: star }))
+                                  handleSurveyAnswerChange(currentQuestion, star, {
+                                    autoAdvance: true,
+                                  })
                                 }
                                 className={`rounded-full px-3 py-1 text-sm font-semibold transition ${
                                   Number(currentValue) >= star
@@ -4731,19 +4815,21 @@ export default function StudentFeedPageClient() {
                           </div>
                         ) : null}
 
-                        {question.type === "single_choice" ? (
+                        {currentQuestion.type === "single_choice" ? (
                           <div className="mt-3 space-y-2">
-                            {(question.options ?? []).map((option) => (
-                              <label key={option.id} className="flex cursor-pointer items-center gap-2 text-sm text-neutral-200">
+                            {(currentQuestion.options ?? []).map((option) => (
+                              <label
+                                key={option.id}
+                                className="flex cursor-pointer items-center gap-2 text-sm text-neutral-200"
+                              >
                                 <input
                                   type="radio"
-                                  name={`survey-${activePendingSurvey.id}-${question.id}`}
+                                  name={`survey-${activePendingSurvey.id}-${currentQuestion.id}`}
                                   checked={currentValue === option.label}
                                   onChange={() =>
-                                    setSurveyAnswers((prev) => ({
-                                      ...prev,
-                                      [question.id]: option.label,
-                                    }))
+                                    handleSurveyAnswerChange(currentQuestion, option.label, {
+                                      autoAdvance: true,
+                                    })
                                   }
                                   className="h-4 w-4"
                                 />
@@ -4753,14 +4839,11 @@ export default function StudentFeedPageClient() {
                           </div>
                         ) : null}
 
-                        {question.type === "text" ? (
+                        {currentQuestion.type === "text" ? (
                           <textarea
                             value={typeof currentValue === "string" ? currentValue : ""}
                             onChange={(event) =>
-                              setSurveyAnswers((prev) => ({
-                                ...prev,
-                                [question.id]: event.target.value,
-                              }))
+                              handleSurveyAnswerChange(currentQuestion, event.target.value)
                             }
                             rows={3}
                             placeholder="Escribe tu respuesta"
@@ -4768,23 +4851,42 @@ export default function StudentFeedPageClient() {
                           />
                         ) : null}
                       </div>
-                    );
-                  })}
-                </div>
 
-                <div className="mt-5 flex items-center justify-end">
-                  <button
-                    type="button"
-                    onClick={() => void handleSubmitSurvey()}
-                    disabled={surveySubmitting}
-                    className="rounded-lg bg-emerald-500 px-5 py-2 text-sm font-semibold text-white transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {surveySubmitting ? "Enviando..." : "Enviar encuesta"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          ) : null}
+                      <div className="mt-5 flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={goToPreviousSurveyStep}
+                          disabled={surveySubmitting || safeStepIndex === 0}
+                          className="rounded-lg border border-neutral-600 px-4 py-2 text-sm font-semibold text-neutral-200 transition hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Anterior
+                        </button>
+
+                        {!isLastStep ? (
+                          <button
+                            type="button"
+                            onClick={goToNextSurveyStep}
+                            disabled={surveySubmitting || !canAdvance}
+                            className="rounded-lg bg-emerald-500 px-5 py-2 text-sm font-semibold text-white transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Siguiente
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void handleSubmitSurvey()}
+                            disabled={surveySubmitting}
+                            className="rounded-lg bg-emerald-500 px-5 py-2 text-sm font-semibold text-white transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {surveySubmitting ? "Enviando..." : "Enviar encuesta"}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()
+            : null}
 
           {/* Panel de tarea lateral */}
           {assignmentPanel.open && assignmentPanel.classId && !previewMode ? (() => {
