@@ -10,6 +10,7 @@ import {
   Course,
   reorderClasses,
   updateCourse,
+  updateLesson,
 } from "@/lib/firebase/courses-service";
 import { collection, doc, onSnapshot, orderBy, query, Unsubscribe } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
@@ -157,6 +158,10 @@ export default function CourseBuilderPage() {
   }, [lessons]);
   const canManageGroups = isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
   const canLinkGroups = canManageGroups || userRole === "teacher";
+  const canEditLessons =
+    userRole === "teacher" || isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
+  const canReorderClasses =
+    userRole === "teacher" || isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
   const showCreationMetadata = isAdminTeacherRole(userRole);
   const availablePlanteles = useMemo<Plantel[]>(() => {
     if (isAdminTeacherRole(userRole)) return planteles;
@@ -599,6 +604,40 @@ export default function CourseBuilderPage() {
       },
     });
   };
+
+  const handleEditLesson = useCallback(
+    async (lesson: Lesson) => {
+      if (!courseId) return;
+      if (!canEditLessons) {
+        toast.error("No tienes permiso para editar esta lección");
+        return;
+      }
+      const nextTitleRaw = window.prompt("Nuevo título de la lección", lesson.title);
+      if (nextTitleRaw === null) return;
+      const nextTitle = nextTitleRaw.trim();
+      if (!nextTitle) {
+        toast.error("El título no puede estar vacío");
+        return;
+      }
+      if (nextTitle === lesson.title.trim()) return;
+
+      try {
+        await updateLesson({
+          courseId,
+          lessonId: lesson.id,
+          title: nextTitle,
+        });
+        setLessons((prev) =>
+          prev.map((item) => (item.id === lesson.id ? { ...item, title: nextTitle } : item)),
+        );
+        toast.success("Título de lección actualizado");
+      } catch (error) {
+        console.error("No se pudo actualizar el título de la lección", error);
+        toast.error("No se pudo actualizar el título de la lección");
+      }
+    },
+    [canEditLessons, courseId],
+  );
 
   const handleDeleteClass = async (lessonId: string, classId: string) => {
     if (!courseId) return;
@@ -1144,11 +1183,13 @@ export default function CourseBuilderPage() {
                       onAddClass={handleOpenAddClass}
                       onDeleteClass={handleDeleteClass}
                       onDeleteLesson={handleDeleteLesson}
+                      onEditLesson={handleEditLesson}
                       onEditClass={handleEditClass}
                       onOpenComments={(lessonItem, classItem) =>
                         setCommentsTarget({ open: true, lesson: lessonItem, classItem })
                       }
                       onReorderClass={handleReorderClasses}
+                      canReorderClasses={canReorderClasses}
                       onStartLiveClass={handleStartLiveClass}
                       onEndLiveClass={handleEndLiveClass}
                       onJoinLiveClass={handleJoinLiveClass}

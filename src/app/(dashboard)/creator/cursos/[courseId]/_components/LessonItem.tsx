@@ -13,9 +13,11 @@ type LessonItemProps = {
   onAddClass: (lesson: Lesson) => void;
   onDeleteClass: (lessonId: string, classId: string) => void;
   onDeleteLesson: (lessonId: string) => void;
+  onEditLesson?: (lesson: Lesson) => void;
   onEditClass: (lesson: Lesson, classItem: ClassData) => void;
   onOpenComments: (lesson: Lesson, classItem: ClassData) => void;
   onReorderClass: (lessonId: string, fromIndex: number, toIndex: number) => void;
+  canReorderClasses?: boolean;
   onStartLiveClass?: (lesson: Lesson, classItem: ClassData) => void;
   onEndLiveClass?: (lesson: Lesson, classItem: ClassData) => void;
   onJoinLiveClass?: (lesson: Lesson, classItem: ClassData) => void;
@@ -44,9 +46,11 @@ export function LessonItem({
   onAddClass,
   onDeleteClass,
   onDeleteLesson,
+  onEditLesson,
   onEditClass,
   onOpenComments,
   onReorderClass,
+  canReorderClasses = true,
   onStartLiveClass,
   onEndLiveClass,
   onJoinLiveClass,
@@ -108,6 +112,9 @@ export function LessonItem({
                   className="block w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
                   onClick={() => {
                     setMenuOpen(false);
+                    if (item.key === "edit") {
+                      onEditLesson?.(lesson);
+                    }
                     if (item.key === "delete") {
                       onDeleteLesson(lesson.id);
                     }
@@ -145,20 +152,23 @@ export function LessonItem({
                 onCopyLiveLink={(classItem) => onCopyLiveLink?.(lesson, classItem)}
                 liveActionLoading={liveActionLoadingMap[cls.id] ?? false}
                 dragProps={{
-                  draggable: true,
+                  draggable: canReorderClasses,
                   isDragging: draggingIndex === idx,
                   isDragOver: dragOverIndex === idx,
                   onDragStart: (event) => {
+                    if (!canReorderClasses) return;
                     event.dataTransfer.effectAllowed = "move";
                     setDraggingIndex(idx);
                   },
                   onDragOver: (event) => {
+                    if (!canReorderClasses) return;
                     event.preventDefault();
                     if (dragOverIndex !== idx) {
                       setDragOverIndex(idx);
                     }
                   },
                   onDrop: () => {
+                    if (!canReorderClasses) return;
                     if (draggingIndex !== null) {
                       if (draggingIndex !== idx) {
                         onReorderClass(lesson.id, draggingIndex, idx);
@@ -168,6 +178,7 @@ export function LessonItem({
                     setDragOverIndex(null);
                   },
                   onDragEnd: () => {
+                    if (!canReorderClasses) return;
                     setDraggingIndex(null);
                     setDragOverIndex(null);
                   },

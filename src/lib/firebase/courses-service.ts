@@ -676,6 +676,15 @@ type CreateLessonInput = {
   order: number;
 };
 
+type UpdateLessonInput = {
+  courseId: string;
+  lessonId: string;
+  title?: string;
+  description?: string;
+  lessonNumber?: number;
+  order?: number;
+};
+
 const isPermissionDeniedError = (error: unknown): boolean => {
   if (!error || typeof error !== "object") return false;
   return "code" in error && (error as { code?: unknown }).code === "permission-denied";
@@ -713,6 +722,37 @@ async function createLessonViaApiFallback(input: CreateLessonInput): Promise<str
   return payload.data.lessonId;
 }
 
+async function updateLessonViaApiFallback(
+  input: Pick<UpdateLessonInput, "courseId" | "lessonId">,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error("No hay sesión activa para actualizar la lección");
+  }
+
+  const token = await currentUser.getIdToken();
+  const response = await fetch(
+    `/api/courses/${encodeURIComponent(input.courseId)}/lessons/${encodeURIComponent(input.lessonId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    },
+  );
+
+  const data = (await response.json().catch(() => null)) as
+    | { success?: boolean; error?: string }
+    | null;
+
+  if (!response.ok || !data?.success) {
+    throw new Error(data?.error || "No se pudo actualizar la lección");
+  }
+}
+
 export async function createLesson(input: CreateLessonInput): Promise<string> {
   const lessonsRef = collection(db, "courses", input.courseId, "lessons");
   let docRef;
@@ -744,6 +784,27 @@ export async function createLesson(input: CreateLessonInput): Promise<string> {
   }
 
   return docRef.id;
+}
+
+export async function updateLesson(input: UpdateLessonInput): Promise<void> {
+  const lessonRef = doc(db, "courses", input.courseId, "lessons", input.lessonId);
+  const payload: Record<string, unknown> = {};
+
+  if (input.title !== undefined) payload.title = input.title;
+  if (input.description !== undefined) payload.description = input.description;
+  if (input.lessonNumber !== undefined) payload.lessonNumber = input.lessonNumber;
+  if (input.order !== undefined) payload.order = input.order;
+
+  if (Object.keys(payload).length === 0) return;
+  try {
+    await updateDoc(lessonRef, payload);
+  } catch (error) {
+    if (isPermissionDeniedError(error)) {
+      await updateLessonViaApiFallback(input, payload);
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function deleteLesson(courseId: string, lessonId: string): Promise<void> {
@@ -1047,12 +1108,30 @@ export async function reorderClasses(
   classIds: string[],
 ): Promise<void> {
   if (!classIds.length) return;
-  const batch = writeBatch(db);
-  classIds.forEach((classId, index) => {
-    const classRef = doc(db, "courses", courseId, "lessons", lessonId, "classes", classId);
-    batch.update(classRef, { order: index });
-  });
-  await batch.commit();
+  try {
+    const batch = writeBatch(db);
+    classIds.forEach((classId, index) => {
+      const classRef = doc(db, "courses", courseId, "lessons", lessonId, "classes", classId);
+      batch.update(classRef, { order: index });
+    });
+    await batch.commit();
+  } catch (error) {
+    if (!isPermissionDeniedError(error)) {
+      throw error;
+    }
+
+    await Promise.all(
+      classIds.map((classId, index) =>
+        updateClassViaApiFallback(
+          { courseId, lessonId, classId },
+          {
+            id: classId,
+            order: index,
+          },
+        ),
+      ),
+    );
+  }
 }
 
 export async function deleteClass(
