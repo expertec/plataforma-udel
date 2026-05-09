@@ -1,5 +1,13 @@
 import { initializeApp, getApps } from "firebase/app";
-import { getAuth } from "firebase/auth";
+import {
+  browserLocalPersistence,
+  browserSessionPersistence,
+  getAuth,
+  inMemoryPersistence,
+  indexedDBLocalPersistence,
+  initializeAuth,
+  setPersistence,
+} from "firebase/auth";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -13,4 +21,37 @@ const firebaseConfig = {
 // Initialize once on the client
 const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 
-export const auth = getAuth(app);
+export const auth = (() => {
+  if (typeof window === "undefined") {
+    return getAuth(app);
+  }
+  try {
+    return initializeAuth(app, {
+      // Try robust persistence fallbacks for browsers with strict privacy/storage
+      // policies (Safari/Firefox private mode, enterprise restrictions, etc).
+      persistence: [
+        indexedDBLocalPersistence,
+        browserLocalPersistence,
+        browserSessionPersistence,
+        inMemoryPersistence,
+      ],
+    });
+  } catch {
+    return getAuth(app);
+  }
+})();
+
+export async function prepareAuthPersistence(remember: boolean): Promise<void> {
+  const chain = remember
+    ? [browserLocalPersistence, browserSessionPersistence, inMemoryPersistence]
+    : [browserSessionPersistence, browserLocalPersistence, inMemoryPersistence];
+
+  for (const persistence of chain) {
+    try {
+      await setPersistence(auth, persistence);
+      return;
+    } catch {
+      // Try next persistence option.
+    }
+  }
+}

@@ -16,6 +16,7 @@ import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoginCard } from "@/components/auth/LoginCard";
 import { auth } from "@/lib/firebase/client";
+import { formatEsMxDateTime } from "@/lib/utils/date-format";
 
 type LiveTokenResponse = {
   success?: boolean;
@@ -363,10 +364,7 @@ export default function LiveClassRoomPage() {
         {scheduledStartAt ? (
           <p className="text-xs text-slate-300">
             Inicio programado:{" "}
-            {new Date(scheduledStartAt).toLocaleString("es-MX", {
-              dateStyle: "medium",
-              timeStyle: "short",
-            })}{" "}
+            {formatEsMxDateTime(scheduledStartAt)}{" "}
             ({timezone})
           </p>
         ) : null}

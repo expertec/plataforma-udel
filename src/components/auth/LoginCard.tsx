@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { sendPasswordResetEmail, signInWithEmailAndPassword } from "firebase/auth";
 import toast from "react-hot-toast";
-import { auth } from "@/lib/firebase/client";
+import { auth, prepareAuthPersistence } from "@/lib/firebase/client";
 import { resolveUserRole } from "@/lib/firebase/roles";
 import Image from "next/image";
 
@@ -33,32 +33,44 @@ export function LoginCard({
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLoading(true);
-    signInWithEmailAndPassword(auth, email, password)
-      .then(async (cred) => {
-        const role = await resolveUserRole(cred.user);
-        if (!role) {
-          toast.error("No se encontró un rol asignado.");
-          return;
-        }
-        const destination =
-          redirectTo && redirectTo.startsWith("/") ? redirectTo : role === "student" ? "/feed" : "/creator";
-        toast.success("Inicio de sesión correcto");
-        if (remember) {
-          // noop placeholder; add persistence here si se requiere.
-        }
-        router.replace(destination);
-      })
-      .catch((error) => {
-        const message =
-          error?.code === "auth/invalid-credential"
-            ? "Credenciales inválidas."
-            : "No se pudo iniciar sesión. Intenta de nuevo.";
-        toast.error(message);
-      })
-      .finally(() => setLoading(false));
+    try {
+      await prepareAuthPersistence(remember);
+      const cred = await signInWithEmailAndPassword(auth, email, password);
+      const role = await resolveUserRole(cred.user);
+
+      if (!role) {
+        toast.error("No se encontró un rol asignado.");
+        return;
+      }
+
+      const destination =
+        redirectTo && redirectTo.startsWith("/") ? redirectTo : role === "student" ? "/feed" : "/creator";
+      toast.success("Inicio de sesión correcto");
+      router.replace(destination);
+    } catch (error: unknown) {
+      const code =
+        typeof error === "object" && error !== null && "code" in error
+          ? (error as { code?: string }).code
+          : undefined;
+
+      const message =
+        code === "auth/invalid-credential" || code === "auth/wrong-password" || code === "auth/user-not-found"
+          ? "Credenciales inválidas."
+          : code === "auth/network-request-failed"
+            ? "No se pudo conectar al servicio de acceso. Revisa tu red o intenta sin modo privado."
+            : code === "auth/web-storage-unsupported"
+              ? "Tu navegador bloquea almacenamiento para iniciar sesión. Desactiva modo privado o estricto."
+              : code === "auth/too-many-requests"
+                ? "Demasiados intentos. Espera unos minutos e inténtalo de nuevo."
+                : "No se pudo iniciar sesión. Intenta de nuevo.";
+
+      toast.error(message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -218,7 +230,7 @@ export function LoginCard({
       <p className="mt-6 text-sm text-slate-700">
         ¿Aún no tienes cuenta?{" "}
         <Link
-          href="/(auth)/register"
+          href="/register"
           className="font-semibold text-[#6e2d2d] hover:opacity-80"
         >
           Regístrate aquí

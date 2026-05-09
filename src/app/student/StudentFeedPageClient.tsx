@@ -87,6 +87,33 @@ type FeedClass = {
   liveSession?: LiveClassSession | null;
 };
 
+const sortLiveClassesWithinCourse = (items: FeedClass[]) => {
+  const buckets = new Map<string, { live: FeedClass[]; rest: FeedClass[] }>();
+  const courseOrder: string[] = [];
+
+  items.forEach((item) => {
+    const key = `${item.groupId ?? ""}::${item.courseId ?? "__no_course__"}`;
+    if (!buckets.has(key)) {
+      buckets.set(key, { live: [], rest: [] });
+      courseOrder.push(key);
+    }
+    const bucket = buckets.get(key)!;
+    if (item.type === "live") {
+      bucket.live.push(item);
+      return;
+    }
+    bucket.rest.push(item);
+  });
+
+  const ordered: FeedClass[] = [];
+  courseOrder.forEach((key) => {
+    const bucket = buckets.get(key);
+    if (!bucket) return;
+    ordered.push(...bucket.live, ...bucket.rest);
+  });
+  return ordered;
+};
+
 type FinanceStatus = {
   success: boolean;
   data?: {
@@ -584,6 +611,8 @@ export default function StudentFeedPageClient() {
   const wheelAccumRef = useRef(0);
   const wheelTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const gateToastRef = useRef<{ classId: string | null; ts: number }>({ classId: null, ts: 0 });
+  const pendingNavigationIndexRef = useRef<number | null>(null);
+  const pendingNavigationTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [courseTitleMap, setCourseTitleMap] = useState<Record<string, string>>({});
   const [courseCoverMap, setCourseCoverMap] = useState<Record<string, string>>({});
   const [likesMap, setLikesMap] = useState<Record<string, number>>({});
@@ -591,6 +620,7 @@ export default function StudentFeedPageClient() {
   const likedLoadCacheRef = useRef<Record<string, boolean>>({});
   const [likePendingMap, setLikePendingMap] = useState<Record<string, boolean>>({});
   const [recordingLoadingMap, setRecordingLoadingMap] = useState<Record<string, boolean>>({});
+  const [liveRecordingUrlMap, setLiveRecordingUrlMap] = useState<Record<string, string>>({});
   const commentsCountLoadCacheRef = useRef<Record<string, boolean>>({});
   const [loadingCommentsMap, setLoadingCommentsMap] = useState<Record<string, boolean>>({});
   const [mobileClassesOpen, setMobileClassesOpen] = useState(false);
@@ -796,6 +826,16 @@ export default function StudentFeedPageClient() {
   }, [desktopFiltersOpen, mobileFiltersOpen]);
 
   useEffect(() => {
+    return () => {
+      if (pendingNavigationTimerRef.current) {
+        clearTimeout(pendingNavigationTimerRef.current);
+        pendingNavigationTimerRef.current = null;
+      }
+      pendingNavigationIndexRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!mobileClassesOpen) {
       setMobileFiltersOpen(false);
     }
@@ -989,12 +1029,13 @@ export default function StudentFeedPageClient() {
       }
       return true;
     });
-    if (previewMode) return platformVisible;
-    return platformVisible.filter((cls) => {
+    if (previewMode) return sortLiveClassesWithinCourse(platformVisible);
+    const filtered = platformVisible.filter((cls) => {
       const courseClosed = isCourseClosedForClass(cls);
       if (courseClosed) return showClosedCourses;
       return true;
     });
+    return sortLiveClassesWithinCourse(filtered);
   }, [classes, isCourseClosedForClass, previewMode, showClosedCourses]);
   const visibleClassSignature = useMemo(
     () => visibleClasses.map((cls) => cls.id).join("|"),
@@ -1602,10 +1643,12 @@ export default function StudentFeedPageClient() {
         if (!response.ok || !payload?.success || !payload.data?.url) {
           throw new Error(payload?.error || "La grabación no está disponible");
         }
-        window.open(payload.data.url, "_blank", "noopener,noreferrer");
+        setLiveRecordingUrlMap((prev) => ({ ...prev, [cls.id]: payload.data!.url! }));
       } catch (error) {
         console.error("No se pudo abrir la grabación", error);
-        toast.error(error instanceof Error ? error.message : "No se pudo abrir la grabación");
+        const message =
+          error instanceof Error ? error.message : "No se pudo abrir la grabación";
+        toast.error(message);
       } finally {
         setRecordingLoadingMap((prev) => ({ ...prev, [cls.id]: false }));
       }
@@ -1895,6 +1938,7 @@ export default function StudentFeedPageClient() {
   useEffect(() => {
     const load = async () => {
       setClasses([]);
+      setLiveRecordingUrlMap({});
       setActiveId(null);
       setActiveIndex(0);
       if (previewMode) {
@@ -2694,29 +2738,48 @@ export default function StudentFeedPageClient() {
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
+        let bestVisibleEntry: IntersectionObserverEntry | null = null;
+
         entries.forEach((entry) => {
-          // Evitar que el observer cambie de tarjeta antes de posicionar en la clase pendiente
-          if (!initialPositionedRef.current) return;
-          if (entry.isIntersecting) {
-            const id = entry.target.getAttribute("data-id");
-            const idx = entry.target.getAttribute("data-index");
-            const nextIdx = idx ? Number(idx) : null;
-            const prevIdx = lastActiveRef.current;
-            if (id) {
-              setActiveId(id);
-              activeIdRef.current = id;
-            }
-            if (nextIdx !== null) {
-              setActiveIndex(nextIdx);
-              lastActiveRef.current = nextIdx;
-            }
+          if (
+            entry.isIntersecting &&
+            (!bestVisibleEntry || entry.intersectionRatio > bestVisibleEntry.intersectionRatio)
+          ) {
+            bestVisibleEntry = entry;
           }
+
           const video = videosRef.current[entry.target.id];
           if (video) {
             if (entry.isIntersecting) video.play().catch(() => {});
             else video.pause();
           }
         });
+
+        // Evitar que el observer cambie de tarjeta antes de posicionar en la clase pendiente.
+        if (!initialPositionedRef.current || !bestVisibleEntry) return;
+
+        const id = bestVisibleEntry.target.getAttribute("data-id");
+        const idx = bestVisibleEntry.target.getAttribute("data-index");
+        const nextIdx = idx ? Number(idx) : null;
+        const pendingIdx = pendingNavigationIndexRef.current;
+        if (pendingIdx !== null && nextIdx !== pendingIdx) {
+          return;
+        }
+        if (pendingIdx !== null && nextIdx === pendingIdx) {
+          pendingNavigationIndexRef.current = null;
+          if (pendingNavigationTimerRef.current) {
+            clearTimeout(pendingNavigationTimerRef.current);
+            pendingNavigationTimerRef.current = null;
+          }
+        }
+        if (id) {
+          setActiveId(id);
+          activeIdRef.current = id;
+        }
+        if (nextIdx !== null) {
+          setActiveIndex(nextIdx);
+          lastActiveRef.current = nextIdx;
+        }
       },
       {
         threshold: 0.6,
@@ -2790,10 +2853,85 @@ export default function StudentFeedPageClient() {
     const container = containerRef.current;
     if (!node || !container) return;
 
+    pendingNavigationIndexRef.current = clampedIdx;
+    if (pendingNavigationTimerRef.current) {
+      clearTimeout(pendingNavigationTimerRef.current);
+    }
+    pendingNavigationTimerRef.current = setTimeout(() => {
+      pendingNavigationIndexRef.current = null;
+      pendingNavigationTimerRef.current = null;
+    }, 800);
+
     const nodeTop = node.offsetTop;
     const behavior = smooth ? "smooth" : "auto";
     container.scrollTo({ top: nodeTop, behavior });
   };
+
+  const resolveCurrentIndexForNavigation = useCallback(() => {
+    if (!visibleClasses.length) return 0;
+
+    const activeId = activeIdRef.current;
+    if (activeId) {
+      const activeIdx = visibleClasses.findIndex((cls) => cls.id === activeId);
+      if (activeIdx >= 0) return activeIdx;
+    }
+
+    const container = containerRef.current;
+    if (container) {
+      const viewportCenter = container.scrollTop + container.clientHeight / 2;
+      let bestIdx = 0;
+      let bestDistance = Number.POSITIVE_INFINITY;
+
+      visibleClasses.forEach((cls, idx) => {
+        const node = sectionRefs.current[cls.id];
+        if (!node) return;
+        const nodeCenter = node.offsetTop + node.clientHeight / 2;
+        const distance = Math.abs(nodeCenter - viewportCenter);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIdx = idx;
+        }
+      });
+
+      return bestIdx;
+    }
+
+    const fallback = Number.isFinite(lastActiveRef.current) ? lastActiveRef.current : activeIndex;
+    return Math.max(0, Math.min(visibleClasses.length - 1, fallback));
+  }, [activeIndex, visibleClasses]);
+
+  const getDirectionalIndex = useCallback(
+    (currentIdx: number, direction: 1 | -1) => {
+      const current = visibleClasses[currentIdx];
+      if (!current) return currentIdx + direction;
+
+      // Si estamos en clase en vivo, primero buscar la siguiente/anterior clase del mismo curso.
+      if (current.type === "live" && current.courseId?.trim()) {
+        const currentCourseId = current.courseId.trim();
+        if (direction > 0) {
+          for (let i = currentIdx + 1; i < visibleClasses.length; i += 1) {
+            const candidate = visibleClasses[i];
+            if (candidate.courseId?.trim() === currentCourseId) {
+              return i;
+            }
+          }
+        } else {
+          for (let i = currentIdx - 1; i >= 0; i -= 1) {
+            const candidate = visibleClasses[i];
+            if (candidate.courseId?.trim() === currentCourseId) {
+              return i;
+            }
+          }
+        }
+
+        // Si no hay más clases de este curso en esa dirección, no brincar a otro curso.
+        return currentIdx;
+      }
+
+      return currentIdx + direction;
+    },
+    [visibleClasses],
+  );
 
   const isClassComplete = useCallback(
     (cls: FeedClass) => {
@@ -2936,7 +3074,6 @@ export default function StudentFeedPageClient() {
 
       if (e.ctrlKey || e.metaKey) return; // no interferir con zoom
       e.preventDefault();
-      const now = Date.now();
 
       if (wheelTimeoutRef.current) clearTimeout(wheelTimeoutRef.current);
 
@@ -2947,7 +3084,18 @@ export default function StudentFeedPageClient() {
       if (!wheelLockRef.current && Math.abs(wheelAccumRef.current) >= threshold) {
         wheelLockRef.current = true;
         const direction = wheelAccumRef.current > 0 ? 1 : -1;
-        const nextIdx = (activeIndex ?? 0) + direction;
+        const baseIdx = resolveCurrentIndexForNavigation();
+        const nextIdx = getDirectionalIndex(baseIdx, direction as 1 | -1);
+        if (nextIdx < 0 || nextIdx >= visibleClasses.length) {
+          wheelLockRef.current = false;
+          wheelAccumRef.current = 0;
+          return;
+        }
+        if (nextIdx === baseIdx) {
+          wheelLockRef.current = false;
+          wheelAccumRef.current = 0;
+          return;
+        }
 
         // Verificar si hay un quiz activo sin enviar
         const quizState = activeQuizStateRef.current;
@@ -2986,7 +3134,7 @@ export default function StudentFeedPageClient() {
       container.removeEventListener("wheel", handleWheel);
       if (wheelTimeoutRef.current) clearTimeout(wheelTimeoutRef.current);
     };
-  }, [activeIndex, scrollToIndex]);
+  }, [getDirectionalIndex, getPrevSameCourse, isClassComplete, resolveCurrentIndexForNavigation, scrollToIndex, visibleClasses.length]);
 
   // Handler de progreso que NO causa re-renders excesivos
   const handleProgress = useCallback(
@@ -3569,77 +3717,42 @@ export default function StudentFeedPageClient() {
 
     if (cls.type === "live") {
       const session = normalizeLiveSession(cls.liveSession);
-      const sessionStatus = session?.status ?? "scheduled";
       const sessionFinalized = isLiveSessionFinalized(session);
-      const isRoomLive = isLiveSessionLiveNow(session, liveNowTickMs);
-      const recordingReady = sessionStatus === "recording_ready" || session?.recording.status === "ready";
       const recordingFailed = session?.recording.status === "failed";
       const canOpenRecording =
         sessionFinalized && !recordingFailed && session?.recording.auto !== false;
-      const baseClassId = (cls.classDocId ?? cls.id).trim();
-      const liveHref = buildLiveClassHref({
-        classId: baseClassId,
-        courseId: cls.courseId,
-        lessonId: cls.lessonId,
-      });
+      const recordingUrl = liveRecordingUrlMap[cls.id];
+      const recordingPlayerId = `${cls.id}__live_recording`;
+      const showPlayButton = !recordingUrl;
+      const playDisabled = recordingLoadingMap[cls.id] === true || !canOpenRecording;
 
       return (
-        <div className="flex h-full w-full items-center justify-center bg-neutral-950 px-4">
-          <div className="w-full max-w-2xl rounded-2xl border border-slate-700 bg-slate-900/80 p-6 text-slate-100 shadow-2xl">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-sky-300">Clase en vivo</p>
-            <h3 className="mt-2 text-xl font-semibold text-white">{cls.title}</h3>
-            {session?.scheduledStartAt ? (
-              <p className="mt-1 text-sm text-slate-300">
-                Inicio programado:{" "}
-                {new Date(session.scheduledStartAt).toLocaleString("es-MX", {
-                  dateStyle: "medium",
-                  timeStyle: "short",
-                })}{" "}
-                ({session.timezone})
-              </p>
-            ) : null}
-
-            {!isRoomLive ? (
-              <div className="mt-4 rounded-lg border border-sky-300/20 bg-sky-400/10 px-4 py-3 text-sm text-sky-100">
-                {sessionFinalized
-                  ? recordingReady
-                    ? "La sesión en vivo terminó. Ya puedes ver la grabación."
-                    : recordingFailed
-                    ? "La sesión en vivo terminó, pero la grabación falló."
-                    : "La sesión en vivo terminó. La grabación se está procesando."
-                  : "Sala de espera: el profesor aún no inicia la clase."}
-              </div>
-            ) : (
-              <div className="mt-4 rounded-lg border border-green-300/20 bg-green-400/10 px-4 py-3 text-sm text-green-100">
-                La clase está en vivo ahora.
-              </div>
-            )}
-
-            <div className="mt-5 flex flex-wrap gap-3">
-              {!sessionFinalized ? (
-                <Link
-                  href={liveHref}
-                  className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-500"
-                >
-                  {isRoomLive ? "Entrar a la clase" : "Abrir sala de espera"}
-                </Link>
-              ) : null}
-              {canOpenRecording ? (
-                <button
-                  type="button"
-                  onClick={() => handleOpenLiveRecording(cls)}
-                  disabled={recordingLoadingMap[cls.id] === true}
-                  className="rounded-lg border border-slate-500 px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-800 disabled:opacity-60"
-                >
-                  {recordingLoadingMap[cls.id]
-                    ? "Verificando..."
-                    : recordingReady
-                    ? "Ver grabación"
-                    : "Intentar ver grabación"}
-                </button>
-              ) : null}
+        <div className="flex h-full w-full items-center justify-center bg-neutral-950">
+          {showPlayButton ? (
+            <button
+              type="button"
+              onClick={() => handleOpenLiveRecording(cls)}
+              disabled={playDisabled}
+              className="inline-flex items-center gap-2 rounded-full border border-slate-500 px-5 py-3 text-base font-semibold text-slate-100 hover:bg-slate-800 disabled:opacity-60"
+            >
+              <ControlIcon name="play" />
+              {recordingLoadingMap[cls.id] ? "Cargando..." : "Play"}
+            </button>
+          ) : (
+            <div className="h-full w-full overflow-hidden rounded-none bg-black lg:rounded-2xl">
+              <VideoPlayer
+                id={recordingPlayerId}
+                src={recordingUrl}
+                isActive={activeId === cls.id}
+                muted={unmutedId !== recordingPlayerId}
+                onToggleMute={() =>
+                  setUnmutedId((prev) => (prev === recordingPlayerId ? null : recordingPlayerId))
+                }
+                registerRef={() => {}}
+                initialProgress={0}
+              />
             </div>
-          </div>
+          )}
         </div>
       );
     }
@@ -3950,9 +4063,13 @@ export default function StudentFeedPageClient() {
                             />
                             <span className="absolute left-0 top-[9px]">
                               {isCompleted ? (
-                                <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 text-white shadow">
-                                  <ControlIcon name="check" />
-                                </span>
+                                <span
+                                  className={`block h-2.5 w-2.5 rounded-full shadow ${
+                                    item.type === "live"
+                                      ? "bg-sky-400"
+                                      : "bg-emerald-500"
+                                  }`}
+                                />
                               ) : (
                                 <span className="block h-2 w-2 rounded-full border border-white/40 bg-amber-400" />
                               )}
@@ -4445,7 +4562,10 @@ export default function StudentFeedPageClient() {
           <div className="pointer-events-auto fixed right-3 bottom-16 z-40 flex flex-col gap-3 lg:right-6 lg:top-1/2 lg:-translate-y-1/2 lg:bottom-auto">
             <button
               type="button"
-              onClick={() => jumpToIndex(activeIndex - 1)}
+              onClick={() => {
+                const baseIdx = resolveCurrentIndexForNavigation();
+                jumpToIndex(getDirectionalIndex(baseIdx, -1));
+              }}
               disabled={activeIndex === 0}
               className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-white/60 text-white shadow-lg backdrop-blur transition hover:border-white hover:opacity-80 disabled:opacity-40"
               style={{ backgroundColor: '#400106' }}
@@ -4454,7 +4574,10 @@ export default function StudentFeedPageClient() {
             </button>
             <button
               type="button"
-              onClick={() => jumpToIndex(activeIndex + 1)}
+              onClick={() => {
+                const baseIdx = resolveCurrentIndexForNavigation();
+                jumpToIndex(getDirectionalIndex(baseIdx, 1));
+              }}
               disabled={activeIndex >= visibleClasses.length - 1}
               className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-white/60 text-white shadow-lg backdrop-blur transition hover:border-white hover:opacity-80 disabled:opacity-40"
               style={{ backgroundColor: '#400106' }}
