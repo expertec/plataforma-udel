@@ -87,6 +87,11 @@ service cloud.firestore {
     function isSelf(userId) { return isSignedIn() && request.auth.uid == userId; }
     function absVal(x) { return x >= 0 ? x : -x; }
     function listSize(x) { return x is list ? x.size() : 0; }
+    function isWholeNonNegativeNumber(x) {
+      return x is number &&
+        x >= 0 &&
+        int(x) == x;
+    }
     function isCourseExtrasGradeDocId(docId) {
       return docId is string && docId.matches('^__courseExtras__.*$');
     }
@@ -219,8 +224,7 @@ service cloud.firestore {
     function canUpdateRepliesCountOnly() {
       return isSignedIn() &&
         request.resource.data.diff(resource.data).changedKeys().hasOnly(['repliesCount']) &&
-        request.resource.data.repliesCount is int &&
-        request.resource.data.repliesCount >= 0;
+        isWholeNonNegativeNumber(request.resource.data.repliesCount);
     }
     function forumPostIsGraded() {
       // Verificar existencia de campos antes de accederlos para evitar errores

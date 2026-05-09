@@ -261,7 +261,7 @@ export async function createOrUpdateForumPost(params: {
 
   const existingSnap = await getDoc(postRef);
   const existingRepliesCount = existingSnap.exists()
-    ? (existingSnap.data()?.repliesCount ?? 0)
+    ? normalizeNumber(existingSnap.data()?.repliesCount, 0)
     : 0;
   if (existingSnap.exists()) {
     const data = existingSnap.data();
@@ -372,16 +372,20 @@ export async function addForumReply(params: {
     postId
   );
 
-  const postSnap = await getDoc(postRef);
-  if (postSnap.exists()) {
-    const currentRepliesCount = postSnap.data()?.repliesCount ?? 0;
-    await setDoc(
-      postRef,
-      {
-        repliesCount: currentRepliesCount + 1,
-      },
-      { merge: true }
-    );
+  try {
+    const postSnap = await getDoc(postRef);
+    if (postSnap.exists()) {
+      const currentRepliesCount = normalizeNumber(postSnap.data()?.repliesCount, 0);
+      await setDoc(
+        postRef,
+        {
+          repliesCount: currentRepliesCount + 1,
+        },
+        { merge: true }
+      );
+    }
+  } catch (error) {
+    console.warn("No se pudo actualizar repliesCount del foro:", error);
   }
 
   return docRef.id;
@@ -426,16 +430,20 @@ export async function deleteForumReply(
     postId
   );
 
-  const postSnap = await getDoc(postRef);
-  if (postSnap.exists()) {
-    const currentRepliesCount = postSnap.data()?.repliesCount ?? 0;
-    await setDoc(
-      postRef,
-      {
-        repliesCount: Math.max(0, currentRepliesCount - 1),
-      },
-      { merge: true }
-    );
+  try {
+    const postSnap = await getDoc(postRef);
+    if (postSnap.exists()) {
+      const currentRepliesCount = normalizeNumber(postSnap.data()?.repliesCount, 0);
+      await setDoc(
+        postRef,
+        {
+          repliesCount: Math.max(0, currentRepliesCount - 1),
+        },
+        { merge: true }
+      );
+    }
+  } catch (error) {
+    console.warn("No se pudo actualizar repliesCount del foro:", error);
   }
 }
 
@@ -488,7 +496,7 @@ export async function getForumPostRepliesCount(
   const snap = await getDoc(postRef);
   if (!snap.exists()) return 0;
 
-  return snap.data()?.repliesCount ?? 0;
+  return normalizeNumber(snap.data()?.repliesCount, 0);
 }
 
 /**

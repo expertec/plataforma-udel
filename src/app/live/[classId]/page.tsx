@@ -11,7 +11,7 @@ import {
   useTracks,
 } from "@livekit/components-react";
 import { onAuthStateChanged, type User } from "firebase/auth";
-import { Track } from "livekit-client";
+import { isBrowserSupported, MediaDeviceFailure, Track } from "livekit-client";
 import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoginCard } from "@/components/auth/LoginCard";
@@ -80,9 +80,11 @@ export default function LiveClassRoomPage() {
   const [scheduledStartAt, setScheduledStartAt] = useState<string | null>(null);
   const [timezone, setTimezone] = useState<string>("America/Monterrey");
   const [asRole, setAsRole] = useState<"teacher" | "student" | null>(null);
+  const [livekitError, setLivekitError] = useState<string | null>(null);
   const [startingSession, setStartingSession] = useState(false);
   const [endingSession, setEndingSession] = useState(false);
   const autoStartAttemptedRef = useRef(false);
+  const browserSupported = useMemo(() => isBrowserSupported(), []);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (nextUser) => {
@@ -98,6 +100,7 @@ export default function LiveClassRoomPage() {
 
     setLoading(true);
     setError(null);
+    setLivekitError(null);
     try {
       const idToken = await user.getIdToken();
       const response = await fetch("/api/livekit/token", {
@@ -328,6 +331,17 @@ export default function LiveClassRoomPage() {
     );
   }
 
+  if (!browserSupported) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-950 px-4 text-center text-white">
+        <p>Este navegador no es compatible con clases en vivo.</p>
+        <p className="max-w-lg text-sm text-slate-300">
+          Usa una versión reciente de Chrome, Edge, Firefox o Safari.
+        </p>
+      </div>
+    );
+  }
+
   if (loading) {
     return <div className="flex min-h-screen items-center justify-center bg-slate-950 text-white">Preparando sala...</div>;
   }
@@ -380,12 +394,39 @@ export default function LiveClassRoomPage() {
 
   return (
     <div className="h-screen w-full bg-slate-950">
+      {livekitError ? (
+        <div className="pointer-events-none fixed left-0 right-0 top-14 z-20 flex justify-center px-3">
+          <p className="pointer-events-auto rounded-full bg-red-600/90 px-3 py-1 text-xs font-semibold text-white">
+            {livekitError}
+          </p>
+        </div>
+      ) : null}
       <LiveKitRoom
         token={token}
         serverUrl={livekitUrl}
         connect={true}
-        audio={true}
-        video={true}
+        // Publish media manually from controls to avoid browser/device-specific
+        // join failures when mic/camera permissions are blocked.
+        audio={false}
+        video={false}
+        onError={(liveError) => {
+          console.error("LiveKit error", liveError);
+          setLivekitError("No se pudo conectar a la sala. Revisa internet y permisos del navegador.");
+        }}
+        onMediaDeviceFailure={(failure) => {
+          if (failure === MediaDeviceFailure.PermissionDenied) {
+            setLivekitError("Permiso de cámara o micrófono bloqueado en el navegador.");
+            return;
+          }
+          if (failure === MediaDeviceFailure.NotFound) {
+            setLivekitError("No se detectó cámara o micrófono en este dispositivo.");
+            return;
+          }
+          setLivekitError("No se pudo acceder a dispositivos de audio/video.");
+        }}
+        onConnected={() => {
+          setLivekitError(null);
+        }}
         onDisconnected={() => {
           setToken(null);
           setLivekitUrl(null);

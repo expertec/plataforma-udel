@@ -2852,6 +2852,91 @@ export function CalificacionesTab({
     (enableExtraordinaryExamGrade ? 1 : 0) +
     courseExtraConceptColumns.length;
 
+  const breakdownEditState = breakdownRow
+    ? (() => {
+        const row = breakdownRow;
+        const finalResolution = resolveFinalGradeForRow(row);
+        const finalGradeValue = finalResolution.finalGrade;
+        const computedFinalInput =
+          typeof finalGradeValue === "number" ? finalGradeValue.toFixed(1) : "";
+        const finalKey = getDraftKey(row.studentId);
+        const hasFinalDraft = Object.prototype.hasOwnProperty.call(draftFinalGrades, finalKey);
+        const finalInput = hasFinalDraft ? draftFinalGrades[finalKey] : computedFinalInput;
+        const invalidFinal =
+          finalResolution.errorMessage !== null ||
+          typeof finalGradeValue !== "number" ||
+          !Number.isFinite(finalGradeValue) ||
+          finalGradeValue < 0 ||
+          finalGradeValue > 100;
+
+        const campusTasksInput = getCampusTasksGradeInput(row);
+        const campusFinalExamInput = getCampusFinalExamGradeInput(row);
+        const globalExamInput = getGlobalExamGradeInput(row);
+        const extraordinaryExamInput = getExtraordinaryExamGradeInput(row);
+
+        const campusTasksGradeNum = Number(campusTasksInput);
+        const invalidCampusTasksGrade =
+          enableCampusTasksGrade &&
+          campusTasksInput.trim().length > 0 &&
+          (!Number.isFinite(campusTasksGradeNum) ||
+            campusTasksGradeNum < 0 ||
+            campusTasksGradeNum > 100);
+        const campusFinalExamGradeNum = Number(campusFinalExamInput);
+        const invalidCampusFinalExamGrade =
+          enableCampusFinalExamGrade &&
+          campusFinalExamInput.trim().length > 0 &&
+          (!Number.isFinite(campusFinalExamGradeNum) ||
+            campusFinalExamGradeNum < 0 ||
+            campusFinalExamGradeNum > 100);
+        const globalExamGradeNum = Number(globalExamInput);
+        const invalidGlobalExamGrade =
+          enableGlobalExamGrade &&
+          globalExamInput.trim().length > 0 &&
+          (!Number.isFinite(globalExamGradeNum) ||
+            globalExamGradeNum < 0 ||
+            globalExamGradeNum > 100);
+        const extraordinaryExamGradeNum = Number(extraordinaryExamInput);
+        const invalidExtraordinaryExamGrade =
+          enableExtraordinaryExamGrade &&
+          extraordinaryExamInput.trim().length > 0 &&
+          (!Number.isFinite(extraordinaryExamGradeNum) ||
+            extraordinaryExamGradeNum < 0 ||
+            extraordinaryExamGradeNum > 100);
+        const invalidExtraConcepts =
+          Boolean(courseExtraConceptsResolution.errorMessage) ||
+          courseExtraConceptColumns.some(
+            (concept) => parseOptionalExtraPointsInput(getExtraPointInputForRow(row, concept)) === undefined,
+          );
+        const hasAdditionalInputErrors =
+          invalidCampusTasksGrade ||
+          invalidCampusFinalExamGrade ||
+          invalidGlobalExamGrade ||
+          invalidExtraordinaryExamGrade ||
+          invalidExtraConcepts ||
+          Boolean(finalResolution.campusGrades.errorMessage);
+        const isRowProcessing =
+          processingAll ||
+          processingStudentId === row.studentId ||
+          processingNotifyStudentId === row.studentId;
+        const canSaveFromBreakdown =
+          canManageClosures &&
+          !isRowProcessing &&
+          finalInput.trim().length > 0 &&
+          !invalidFinal &&
+          !hasAdditionalInputErrors;
+
+        return {
+          row,
+          finalKey,
+          finalInput,
+          computedFinalInput,
+          invalidFinal,
+          isRowProcessing,
+          canSaveFromBreakdown,
+        };
+      })()
+    : null;
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -3419,6 +3504,61 @@ export function CalificacionesTab({
                   </p>
                 </div>
               </div>
+
+              {breakdownEditState ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">
+                        Calificación final
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={0.1}
+                        value={breakdownEditState.finalInput}
+                        onChange={(event) =>
+                          setDraftFinalGrades((prev) => ({
+                            ...prev,
+                            [breakdownEditState.finalKey]: event.target.value,
+                          }))
+                        }
+                        disabled={!canManageClosures || breakdownEditState.isRowProcessing}
+                        className={`mt-1 w-32 rounded-lg border px-2 py-1 text-sm ${
+                          breakdownEditState.invalidFinal ? "border-red-400" : "border-slate-300"
+                        } ${!canManageClosures ? "bg-slate-100 text-slate-500" : "bg-white text-slate-900"}`}
+                      />
+                    </div>
+                    <div className="text-xs text-slate-600">
+                      <p>
+                        Sugerida por suma:{" "}
+                        <span className="font-semibold">
+                          {breakdownEditState.computedFinalInput || "—"}
+                        </span>
+                      </p>
+                      <p>
+                        {canManageClosures
+                          ? "Puedes editar y guardar sin cerrar el desglose."
+                          : "Solo lectura: no tienes permisos para guardar."}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleSaveFinalGradeForStudent(breakdownEditState.row)}
+                      disabled={!breakdownEditState.canSaveFromBreakdown}
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                    >
+                      {processingStudentId === breakdownEditState.row.studentId ? "Guardando..." : "Guardar calificación"}
+                    </button>
+                  </div>
+                  {breakdownEditState.invalidFinal ? (
+                    <p className="mt-2 text-xs font-medium text-red-600">
+                      Revisa los valores capturados. La calificación final debe estar entre 0 y 100.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
 
               <div className="max-h-[52vh] overflow-auto rounded-lg border border-slate-200">
                 <table className="min-w-full text-sm">
