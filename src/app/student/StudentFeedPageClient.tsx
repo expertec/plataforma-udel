@@ -2740,7 +2740,7 @@ export default function StudentFeedPageClient() {
       (entries) => {
         let bestVisibleEntry: IntersectionObserverEntry | null = null;
 
-        entries.forEach((entry) => {
+        for (const entry of entries) {
           if (
             entry.isIntersecting &&
             (!bestVisibleEntry || entry.intersectionRatio > bestVisibleEntry.intersectionRatio)
@@ -2753,7 +2753,7 @@ export default function StudentFeedPageClient() {
             if (entry.isIntersecting) video.play().catch(() => {});
             else video.pause();
           }
-        });
+        }
 
         // Evitar que el observer cambie de tarjeta antes de posicionar en la clase pendiente.
         if (!initialPositionedRef.current || !bestVisibleEntry) return;
