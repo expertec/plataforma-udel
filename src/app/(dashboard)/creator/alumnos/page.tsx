@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MoreVertical } from "lucide-react";
-import type { DocumentSnapshot } from "firebase/firestore";
+import { collection, getDocs, query, where, type DocumentSnapshot } from "firebase/firestore";
 import toast from "react-hot-toast";
 import * as XLSX from "xlsx";
 import { createPortal } from "react-dom";
@@ -24,8 +24,9 @@ import {
   createStudentIfNotExists,
   checkStudentExists,
 } from "@/lib/firebase/students-service";
-import { getGroupStudents, getGroupsForTeacher } from "@/lib/firebase/groups-service";
+import { getGroupsByPlantel, getGroupStudents, getGroupsForTeacher } from "@/lib/firebase/groups-service";
 import { getUserPlantelAssignment, PlantelAssignment } from "@/lib/firebase/planteles-service";
+import { db } from "@/lib/firebase/firestore";
 import { StudentAllSubmissionsModal } from "./_components/StudentAllSubmissionsModal";
 import { StudentGradesModal } from "./_components/StudentGradesModal";
 import { StudentDropoutRiskTab } from "./_components/StudentDropoutRiskTab";
@@ -55,6 +56,23 @@ type ActionMenuState = {
   left: number;
   openUp: boolean;
 };
+
+const FIRESTORE_IN_QUERY_LIMIT = 30;
+
+function chunkArray<T>(items: T[], chunkSize: number): T[][] {
+  if (chunkSize <= 0) return [items];
+  const chunks: T[][] = [];
+  for (let idx = 0; idx < items.length; idx += chunkSize) {
+    chunks.push(items.slice(idx, idx + chunkSize));
+  }
+  return chunks;
+}
+
+const isPermissionDeniedError = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  (error as { code?: unknown }).code === "permission-denied";
 
 const isValidEmail = (email: string): boolean => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -87,6 +105,7 @@ export default function AlumnosPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [plantelAssignment, setPlantelAssignment] = useState<PlantelAssignment | null>(null);
+  const [coordinatorScopeGroupIds, setCoordinatorScopeGroupIds] = useState<string[]>([]);
   const [deletingStudentId, setDeletingStudentId] = useState<string | null>(null);
   const [previewFilter, setPreviewFilter] = useState<"all" | "invalid" | "new" | "existing">("all");
 
@@ -132,6 +151,7 @@ export default function AlumnosPage() {
       if (!user) {
         setUserRole(null);
         setPlantelAssignment(null);
+        setCoordinatorScopeGroupIds([]);
         return;
       }
       try {
@@ -141,10 +161,12 @@ export default function AlumnosPage() {
           setPlantelAssignment(await getUserPlantelAssignment(user.uid));
         } else {
           setPlantelAssignment(null);
+          setCoordinatorScopeGroupIds([]);
         }
       } catch {
         setUserRole(null);
         setPlantelAssignment(null);
+        setCoordinatorScopeGroupIds([]);
       }
     });
     return () => unsub();
@@ -187,9 +209,110 @@ export default function AlumnosPage() {
           setStudents([]);
           setTotalStudentsCount(0);
           setHasMoreStudents(false);
+          setCoordinatorScopeGroupIds([]);
           return;
         }
-        // Usar paginación para admin teachers y coordinadores.
+
+        if (isCoordinator) {
+          // En pestaña de Alumnos, coordinación debe ver solo alumnos vinculados a su plantel.
+          const scopedGroups = await getGroupsByPlantel(coordinatorPlantelId);
+          const scopedGroupIds = Array.from(
+            new Set(scopedGroups.map((group) => group.id).filter((groupId) => groupId.trim().length > 0)),
+          );
+          setCoordinatorScopeGroupIds(scopedGroupIds);
+
+          if (scopedGroupIds.length === 0) {
+            setStudents([]);
+            setTotalStudentsCount(0);
+            setHasMoreStudents(false);
+            setLastDoc(null);
+            lastDocRef.current = null;
+            return;
+          }
+
+          const studentMap = new Map<string, StudentUser>();
+          let enrollmentReadDenied = false;
+          try {
+            const enrollmentTasks = chunkArray(scopedGroupIds, FIRESTORE_IN_QUERY_LIMIT).map((groupIdsBatch) =>
+              getDocs(
+                query(collection(db, "studentEnrollments"), where("groupId", "in", groupIdsBatch)),
+              ),
+            );
+            const enrollmentSnaps = await Promise.all(enrollmentTasks);
+            enrollmentSnaps.forEach((snapshot) => {
+              snapshot.docs.forEach((docSnap) => {
+                const data = docSnap.data() as {
+                  studentId?: unknown;
+                  studentName?: unknown;
+                  studentEmail?: unknown;
+                  status?: unknown;
+                };
+                const studentId =
+                  typeof data.studentId === "string" && data.studentId.trim().length > 0
+                    ? data.studentId.trim()
+                    : "";
+                if (!studentId) return;
+                if (studentMap.has(studentId)) return;
+                const studentEmail =
+                  typeof data.studentEmail === "string" ? data.studentEmail.trim() : "";
+                if (!studentEmail) return;
+                const studentName =
+                  typeof data.studentName === "string" && data.studentName.trim().length > 0
+                    ? data.studentName.trim()
+                    : "Alumno";
+                const status = typeof data.status === "string" ? data.status : "active";
+
+                studentMap.set(studentId, {
+                  id: studentId,
+                  name: studentName,
+                  email: studentEmail,
+                  estado: status,
+                  program: "",
+                });
+              });
+            });
+          } catch (error) {
+            if (!isPermissionDeniedError(error)) throw error;
+            enrollmentReadDenied = true;
+            console.warn(
+              "Sin permisos para leer studentEnrollments en vista de coordinador. Se usará fallback por grupos/students.",
+              error,
+            );
+          }
+
+          // Fallback para coordinador: reconstruir listado desde subcolecciones legibles del grupo.
+          // Esto evita romper la pestaña cuando hay docs legacy/no legibles en studentEnrollments.
+          if (enrollmentReadDenied || studentMap.size === 0) {
+            const groupStudentSnaps = await Promise.all(
+              scopedGroupIds.map((groupId) => getGroupStudents(groupId)),
+            );
+            groupStudentSnaps.forEach((groupStudents) => {
+              groupStudents.forEach((student) => {
+                if (!student.id || !student.studentEmail) return;
+                if (studentMap.has(student.id)) return;
+                studentMap.set(student.id, {
+                  id: student.id,
+                  name: student.studentName || "Alumno",
+                  email: student.studentEmail,
+                  estado: student.status || "active",
+                  program: "",
+                });
+              });
+            });
+          }
+
+          const nextStudents = Array.from(studentMap.values()).sort((a, b) =>
+            a.name.localeCompare(b.name, "es"),
+          );
+          setStudents(nextStudents);
+          setTotalStudentsCount(nextStudents.length);
+          setHasMoreStudents(false);
+          setLastDoc(null);
+          lastDocRef.current = null;
+          return;
+        }
+
+        // Usar paginación para admin teachers.
         const result = await getStudentUsersPaginated(
           50, // Cargar 50 estudiantes por página
           loadMore ? lastDocRef.current : null,
@@ -206,6 +329,7 @@ export default function AlumnosPage() {
           setTotalStudentsCount(count);
         }
 
+        setCoordinatorScopeGroupIds([]);
         lastDocRef.current = result.lastDoc;
         setLastDoc(result.lastDoc);
         setHasMoreStudents(result.hasMore);
@@ -233,11 +357,12 @@ export default function AlumnosPage() {
       setStudents(Array.from(studentMap.values()));
       setTotalStudentsCount(null);
       setHasMoreStudents(false);
+      setCoordinatorScopeGroupIds([]);
     } catch (err) {
       console.error(err);
       toast.error(
         canViewAllStudents
-          ? "No se pudieron cargar los alumnos (users)"
+          ? "No se pudieron cargar los alumnos"
           : "No se pudieron cargar los alumnos de tus grupos",
       );
     } finally {
@@ -248,8 +373,7 @@ export default function AlumnosPage() {
 
   useEffect(() => {
     loadStudents(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser?.uid, userRole]);
+  }, [loadStudents]);
 
   useEffect(() => {
     let active = true;
@@ -508,10 +632,10 @@ export default function AlumnosPage() {
   }, [parsedRows, previewFilter]);
 
   const isSearchActive = searchQuery.trim().length > 0;
-  const canRunGlobalSearch = isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
+  const canRunGlobalSearch = isAdminTeacherRole(userRole);
   const coordinatorPlantelId = isCampusCoordinatorRole(userRole) ? plantelAssignment?.plantelId ?? "" : "";
 
-  // Búsqueda global en Firestore para admin teachers y coordinadores.
+  // Búsqueda global en Firestore para admin teachers.
   useEffect(() => {
     if (!canRunGlobalSearch) {
       setSearchResults([]);
@@ -524,12 +648,6 @@ export default function AlumnosPage() {
       setSearching(false);
       return;
     }
-    if (isCampusCoordinatorRole(userRole) && !coordinatorPlantelId) {
-      setSearchResults([]);
-      setSearching(false);
-      return;
-    }
-
     const token = ++searchTokenRef.current;
     const timer = setTimeout(async () => {
       setSearching(true);
@@ -575,7 +693,7 @@ export default function AlumnosPage() {
     return () => {
       clearTimeout(timer);
     };
-  }, [searchQuery, canRunGlobalSearch, coordinatorPlantelId, userRole]);
+  }, [searchQuery, canRunGlobalSearch, coordinatorPlantelId]);
 
   // Filtrar alumnos según búsqueda
   const filteredStudents = useMemo(() => {
@@ -1840,6 +1958,7 @@ export default function AlumnosPage() {
           studentName={selectedStudentForGrades.name}
           studentEmail={selectedStudentForGrades.email}
           scopePlantelId={isCoordinator ? coordinatorPlantelId || "" : ""}
+          scopeGroupIds={isCoordinator ? coordinatorScopeGroupIds : []}
           isOpen={gradesModalOpen}
           onClose={() => {
             setGradesModalOpen(false);
@@ -1855,6 +1974,7 @@ export default function AlumnosPage() {
           studentName={selectedStudentForSubmissions.name}
           studentEmail={selectedStudentForSubmissions.email}
           scopePlantelId={isCoordinator ? coordinatorPlantelId || "" : ""}
+          scopeGroupIds={isCoordinator ? coordinatorScopeGroupIds : []}
           readOnly={isCoordinator}
           isOpen={submissionsModalOpen}
           onClose={() => {

@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import { Course, getCourses } from "@/lib/firebase/courses-service";
-import { Group, getAllGroups, getGroupsByPlantel, getGroupsForTeacher } from "@/lib/firebase/groups-service";
+import { Group, getAllGroups, getCoordinatorScopeGroups, getGroupsForTeacher } from "@/lib/firebase/groups-service";
 import { getUserPlantelAssignment } from "@/lib/firebase/planteles-service";
 import {
   isAdminTeacherRole,
@@ -49,7 +49,7 @@ export default function CreatorPage() {
           isAdminTeacherRole(role)
             ? getAllGroups(DASHBOARD_LIMIT)
             : isCoordinator && plantelAssignment?.plantelId
-              ? getGroupsByPlantel(plantelAssignment.plantelId, DASHBOARD_LIMIT)
+              ? getCoordinatorScopeGroups(plantelAssignment.plantelId, DASHBOARD_LIMIT)
               : getGroupsForTeacher(user.uid, DASHBOARD_LIMIT),
         ]);
         setCourses(coursesData);

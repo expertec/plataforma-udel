@@ -232,7 +232,7 @@ export default function GroupDetailPage() {
     group &&
       isCampusCoordinatorRole(userRole) &&
       plantelAssignment?.plantelId &&
-      group.plantelId === plantelAssignment.plantelId,
+      (group.plantelId === plantelAssignment.plantelId || group.isInPerson === false),
   );
   const canManageMentors = Boolean(
     group &&

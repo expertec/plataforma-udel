@@ -21,7 +21,7 @@ import { db } from "@/lib/firebase/firestore";
 import { auth } from "@/lib/firebase/client";
 import { Submission, getAllSubmissions } from "@/lib/firebase/submissions-service";
 import { getForumPosts } from "@/lib/firebase/forum-service";
-import { UserRole, isAdminTeacherRole } from "@/lib/firebase/roles";
+import { UserRole, isAdminTeacherRole, isCampusCoordinatorRole } from "@/lib/firebase/roles";
 
 type CalificacionesTabProps = {
   groupId: string;
@@ -408,20 +408,70 @@ export function CalificacionesTab({
         }
 
         let enrollmentDocs: Array<{ __id: string; [key: string]: unknown }> = [];
-        try {
-          const enrollmentsSnap = await getDocs(
-            query(collection(db, "studentEnrollments"), where("groupId", "==", groupId)),
+        const isCoordinatorView = isCampusCoordinatorRole(userRole);
+        let shouldRunEnrollmentFallbackByDocId = isCoordinatorView;
+        if (!isCoordinatorView) {
+          try {
+            const enrollmentsSnap = await getDocs(
+              query(collection(db, "studentEnrollments"), where("groupId", "==", groupId)),
+            );
+            enrollmentDocs = enrollmentsSnap.docs.map((docSnap) => ({
+              ...(docSnap.data() as Record<string, unknown>),
+              __id: docSnap.id,
+            }));
+          } catch (error) {
+            if (isPermissionDeniedError(error)) {
+              shouldRunEnrollmentFallbackByDocId = true;
+              console.warn("Sin permisos para leer studentEnrollments del grupo:", groupId, error);
+            } else {
+              throw error;
+            }
+          }
+        }
+        if (shouldRunEnrollmentFallbackByDocId) {
+          const fallbackEnrollmentIds = Array.from(
+            new Set(
+              nextStudents
+                .map((student) => `${groupId}_${student.id}`.trim())
+                .filter((enrollmentId) => enrollmentId !== `${groupId}_`),
+            ),
           );
-          enrollmentDocs = enrollmentsSnap.docs.map((docSnap) => ({
-            ...(docSnap.data() as Record<string, unknown>),
-            __id: docSnap.id,
-          }));
-        } catch (error) {
-          if (isPermissionDeniedError(error)) {
-            permissionWarningShown = true;
-            console.warn("Sin permisos para leer studentEnrollments del grupo:", groupId, error);
-          } else {
-            throw error;
+
+          const fallbackResults = await Promise.allSettled(
+            fallbackEnrollmentIds.map((enrollmentId) =>
+              getDoc(doc(db, "studentEnrollments", enrollmentId)),
+            ),
+          );
+
+          let fallbackPermissionDenied = false;
+          fallbackResults.forEach((result) => {
+            if (result.status === "fulfilled") {
+              if (!result.value.exists()) return;
+              enrollmentDocs.push({
+                ...(result.value.data() as Record<string, unknown>),
+                __id: result.value.id,
+              });
+              return;
+            }
+
+            if (isPermissionDeniedError(result.reason)) {
+              fallbackPermissionDenied = true;
+              return;
+            }
+
+            throw result.reason;
+          });
+
+          if (fallbackPermissionDenied) {
+            // En vista de coordinación intentamos leer múltiples IDs canónicos;
+            // algunos pueden no existir aún en grupos legacy, sin romper la pantalla.
+            if (!isCoordinatorView) {
+              permissionWarningShown = true;
+              console.warn(
+                "Sin permisos para leer studentEnrollments por documento del grupo:",
+                groupId,
+              );
+            }
           }
         }
 
@@ -664,7 +714,7 @@ export function CalificacionesTab({
     return () => {
       cancelled = true;
     };
-  }, [courses, groupId]);
+  }, [courses, groupId, userRole]);
 
   const selectedCourseTasks = useMemo(() => {
     if (!selectedCourseId) return [];

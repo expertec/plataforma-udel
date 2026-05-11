@@ -12,6 +12,7 @@ type Props = {
   studentName: string;
   studentEmail: string;
   scopePlantelId?: string;
+  scopeGroupIds?: string[];
   readOnly?: boolean;
   isOpen: boolean;
   onClose: () => void;
@@ -121,6 +122,7 @@ export function StudentAllSubmissionsModal({
   studentName,
   studentEmail,
   scopePlantelId = "",
+  scopeGroupIds = [],
   readOnly = false,
   isOpen,
   onClose,
@@ -144,23 +146,34 @@ export function StudentAllSubmissionsModal({
         let groupsMap = new Map<string, { groupName: string; courseNameMap: Map<string, string> }>();
 
         if (readOnly && scopePlantelId) {
-          const enrollmentQuery = query(
-            collection(db, "studentEnrollments"),
-            where("studentId", "==", studentId),
-            where("plantelId", "==", scopePlantelId),
+          const normalizedScopeGroupIds = Array.from(
+            new Set(scopeGroupIds.map((groupId) => groupId.trim()).filter((groupId) => groupId.length > 0)),
           );
-          const enrollmentsSnap = await getDocs(enrollmentQuery);
-          const groupIds = Array.from(
-            new Set(
-              enrollmentsSnap.docs
-                .map((docSnap) => {
-                  const enrollmentData = docSnap.data() as Record<string, unknown>;
-                  return typeof enrollmentData.groupId === "string" ? enrollmentData.groupId : "";
-                })
-                .filter((groupId): groupId is string => groupId.length > 0),
-            ),
+          const groupIds =
+            normalizedScopeGroupIds.length > 0
+              ? normalizedScopeGroupIds
+              : Array.from(
+                  new Set(
+                    (
+                      await getDocs(
+                        query(
+                          collection(db, "studentEnrollments"),
+                          where("studentId", "==", studentId),
+                          where("plantelId", "==", scopePlantelId),
+                        ),
+                      )
+                    ).docs
+                      .map((docSnap) => {
+                        const enrollmentData = docSnap.data() as Record<string, unknown>;
+                        return typeof enrollmentData.groupId === "string" ? enrollmentData.groupId : "";
+                      })
+                      .filter((groupId): groupId is string => groupId.length > 0),
+                  ),
+                );
+          groupsMap = await buildGroupsMap(
+            groupIds,
+            normalizedScopeGroupIds.length > 0 ? undefined : scopePlantelId,
           );
-          groupsMap = await buildGroupsMap(groupIds, scopePlantelId);
 
           await Promise.all(
             Array.from(groupsMap.entries()).map(async ([groupId, groupInfo]) => {
@@ -301,7 +314,7 @@ export function StudentAllSubmissionsModal({
       }
     };
     load();
-  }, [isOpen, readOnly, scopePlantelId, studentId]);
+  }, [isOpen, readOnly, scopeGroupIds, scopePlantelId, studentId]);
 
   function normalizeSubmissionType(value: string) {
     const normalized = (value || "").toLowerCase().trim();

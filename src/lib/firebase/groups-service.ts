@@ -461,6 +461,34 @@ export async function getGroupsByPlantel(plantelId: string, maxResults?: number)
   return typeof maxResults === "number" && maxResults > 0 ? groups.slice(0, maxResults) : groups;
 }
 
+export async function getOnlineGroups(maxResults?: number): Promise<Group[]> {
+  const snap = await getDocs(
+    query(collection(db, "groups"), where("isInPerson", "==", false)),
+  );
+  const groups = sortGroupsByCreatedAtDesc(
+    snap.docs.map((docSnap) => toGroup(docSnap.id, docSnap.data())),
+  );
+  return typeof maxResults === "number" && maxResults > 0 ? groups.slice(0, maxResults) : groups;
+}
+
+export async function getCoordinatorScopeGroups(plantelId: string, maxResults?: number): Promise<Group[]> {
+  const normalizedPlantelId = plantelId.trim();
+  if (!normalizedPlantelId) return [];
+
+  const [campusGroups, onlineGroups] = await Promise.all([
+    getGroupsByPlantel(normalizedPlantelId),
+    getOnlineGroups(),
+  ]);
+
+  const scoped = new Map<string, Group>();
+  [...campusGroups, ...onlineGroups].forEach((group) => {
+    scoped.set(group.id, group);
+  });
+
+  const groups = sortGroupsByCreatedAtDesc(Array.from(scoped.values()));
+  return typeof maxResults === "number" && maxResults > 0 ? groups.slice(0, maxResults) : groups;
+}
+
 export async function getActiveGroupsByPlantel(plantelId: string, maxResults?: number): Promise<Group[]> {
   const groups = await getGroupsByPlantel(plantelId, maxResults);
   return groups.filter((group) => group.status === "active");

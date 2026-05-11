@@ -11,8 +11,8 @@ import {
   getAllGroups,
   Group,
   deleteGroup,
+  getCoordinatorScopeGroups,
   getGroups,
-  getGroupsByPlantel,
   getGroupsWhereAssistant,
 } from "@/lib/firebase/groups-service";
 import { getPlanteles, getUserPlantelAssignment, Plantel, PlantelAssignment } from "@/lib/firebase/planteles-service";
@@ -87,7 +87,7 @@ export default function GroupsPage() {
       const ownGroupsPromise = isAdminTeacher
         ? getAllGroups()
         : isCoordinator && plantelAssignment?.plantelId
-          ? getGroupsByPlantel(plantelAssignment.plantelId)
+          ? getCoordinatorScopeGroups(plantelAssignment.plantelId)
           : getGroups(currentUser.uid);
       const assistantGroupsPromise =
         isAdminTeacher || isCoordinator ? Promise.resolve([]) : getGroupsWhereAssistant(currentUser.uid);
@@ -266,7 +266,7 @@ export default function GroupsPage() {
               {hasGlobalGroupsView
                 ? "Todos los grupos"
                 : isCampusCoordinator
-                  ? `Grupos de ${plantelAssignment?.plantelName || "tu plantel"}`
+                  ? `Grupos de ${plantelAssignment?.plantelName || "tu plantel"} + en línea`
                   : "Mis grupos asignados"}
             </h1>
           </div>

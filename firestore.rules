@@ -83,6 +83,20 @@ service cloud.firestore {
     function isGroupInUserPlantel(groupPath) {
       return exists(groupPath) && isGroupDataInUserPlantel(get(groupPath).data);
     }
+    // Alcance de solo lectura para coordinación:
+    // - grupos de su plantel
+    // - grupos en línea (isInPerson != true; compatible con grupos legacy sin campo)
+    function isGroupDataInCoordinatorReadScope(groupData) {
+      let isOnlineGroup = !(groupData.isInPerson is bool && groupData.isInPerson == true);
+      return isCampusCoordinator() &&
+        (
+          isGroupDataInUserPlantel(groupData) ||
+          isOnlineGroup
+        );
+    }
+    function isGroupInCoordinatorReadScope(groupPath) {
+      return exists(groupPath) && isGroupDataInCoordinatorReadScope(get(groupPath).data);
+    }
     function isApproved() { return isSignedIn() && userDoc().data.approved == true; }
     function isSelf(userId) { return isSignedIn() && request.auth.uid == userId; }
     function absVal(x) { return x >= 0 ? x : -x; }
@@ -123,23 +137,53 @@ service cloud.firestore {
           isGroupInUserPlantel(groupPath)
         );
     }
+    function canCoordinatorReadEnrollmentGroup(groupId) {
+      let groupPath = /databases/$(database)/documents/groups/$(groupId);
+      return groupId is string &&
+        groupId.size() > 0 &&
+        isGroupInCoordinatorReadScope(groupPath);
+    }
+    // Fallback para enrollments legacy/corruptos donde groupId no viene bien en data:
+    // permite inferir el groupId desde el id canónico {groupId}_{studentId}.
+    function enrollmentGroupIdFromDocId(enrollmentId) {
+      let parts = enrollmentId is string ? enrollmentId.split('_') : [];
+      return parts.size() > 1 && parts[0] is string && parts[0].size() > 0
+        ? parts[0]
+        : null;
+    }
+    function canCoordinatorReadEnrollmentDocById(enrollmentId) {
+      let inferredGroupId = enrollmentGroupIdFromDocId(enrollmentId);
+      return isCampusCoordinator() &&
+        inferredGroupId is string &&
+        canCoordinatorReadEnrollmentGroup(inferredGroupId);
+    }
     function canReadEnrollmentData(enrollmentData) {
       return isAdmin() ||
         isAdminTeacher() ||
         (
-          isSignedIn() &&
-          enrollmentData.studentId is string &&
-          enrollmentData.studentId == request.auth.uid
-        ) ||
-        (
-          isCampusCoordinator() &&
-          userPlantelId() != null &&
-          enrollmentData.plantelId is string &&
-          enrollmentData.plantelId == userPlantelId()
-        ) ||
-        (
-          enrollmentData.groupId is string &&
-          canAccessEnrollmentGroup(enrollmentData.groupId)
+          enrollmentData is map &&
+          (
+            (
+              isSignedIn() &&
+              enrollmentData.studentId is string &&
+              enrollmentData.studentId == request.auth.uid
+            ) ||
+            (
+              isCampusCoordinator() &&
+              userPlantelId() != null &&
+              enrollmentData.plantelId is string &&
+              enrollmentData.plantelId == userPlantelId()
+            ) ||
+            (
+              isCampusCoordinator() &&
+              enrollmentData.groupId is string &&
+              canCoordinatorReadEnrollmentGroup(enrollmentData.groupId)
+            ) ||
+            (
+              enrollmentData.groupId is string &&
+              canAccessEnrollmentGroup(enrollmentData.groupId)
+            )
+          )
         );
     }
     function canCampusCoordinatorUpdateStudentRisk() {
@@ -497,7 +541,7 @@ service cloud.firestore {
 
       match /students/{studentId} {
         allow read: if isAdmin() || isAdminTeacher() ||
-          isGroupInUserPlantel(/databases/$(database)/documents/groups/$(groupId)) ||
+          isGroupInCoordinatorReadScope(/databases/$(database)/documents/groups/$(groupId)) ||
           (isSignedIn() &&
             (
               isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId)) ||
@@ -516,7 +560,7 @@ service cloud.firestore {
 
       match /submissions/{submissionId} {
         allow read: if isAdmin() || isAdminTeacher() ||
-          isGroupInUserPlantel(/databases/$(database)/documents/groups/$(groupId)) || (
+          isGroupInCoordinatorReadScope(/databases/$(database)/documents/groups/$(groupId)) || (
           isSignedIn() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
           (
@@ -556,7 +600,7 @@ service cloud.firestore {
 
       match /grades/{studentId} {
         allow read: if isAdmin() || isAdminTeacher() ||
-          isGroupInUserPlantel(/databases/$(database)/documents/groups/$(groupId)) || (
+          isGroupInCoordinatorReadScope(/databases/$(database)/documents/groups/$(groupId)) || (
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
           isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId)) &&
           (
@@ -577,7 +621,8 @@ service cloud.firestore {
 
     /* studentEnrollments */
     match /studentEnrollments/{enrollmentId} {
-      allow read: if canReadEnrollmentData(resource.data);
+      allow read: if canCoordinatorReadEnrollmentDocById(enrollmentId) ||
+        canReadEnrollmentData(resource.data);
       allow create: if isAdmin() || isAdminTeacher() || (
         request.resource.data.studentId is string &&
         request.resource.data.studentId == request.auth.uid
@@ -604,7 +649,12 @@ service cloud.firestore {
 
       // Progreso por clase (para alumnos y admins)
       match /classProgress/{classId} {
-        allow read, write: if exists(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)) &&
+        allow read: if exists(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)) &&
+          (
+            canReadEnrollmentData(get(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)).data) ||
+            canCoordinatorReadEnrollmentDocById(enrollmentId)
+          );
+        allow write: if exists(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)) &&
           canReadEnrollmentData(get(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)).data);
       }
     }

@@ -4,7 +4,7 @@ import { createContext, useContext, useState, useCallback, useEffect, ReactNode 
 import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import { Course, getCourses } from "@/lib/firebase/courses-service";
-import { Group, getAllGroups, getGroupsByPlantel, getGroupsForTeacher } from "@/lib/firebase/groups-service";
+import { Group, getAllGroups, getCoordinatorScopeGroups, getGroupsForTeacher } from "@/lib/firebase/groups-service";
 import { getUserPlantelAssignment, PlantelAssignment } from "@/lib/firebase/planteles-service";
 import {
   resolveUserRole,
@@ -82,7 +82,7 @@ export function TeacherDataProvider({ children }: { children: ReactNode }) {
         userRole && isAdminTeacherRole(userRole)
           ? await getAllGroups(50)
           : userRole && isCampusCoordinatorRole(userRole) && plantelAssignment?.plantelId
-            ? await getGroupsByPlantel(plantelAssignment.plantelId, 50)
+            ? await getCoordinatorScopeGroups(plantelAssignment.plantelId, 50)
             : await getGroupsForTeacher(currentUser.uid, 50);
       setGroups(data);
     } catch (err) {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { collection, getDocs, query, where } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
 import toast from "react-hot-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { db } from "@/lib/firebase/firestore";
@@ -11,6 +11,7 @@ type Props = {
   studentName: string;
   studentEmail: string;
   scopePlantelId?: string;
+  scopeGroupIds?: string[];
   isOpen: boolean;
   onClose: () => void;
 };
@@ -88,6 +89,7 @@ export function StudentGradesModal({
   studentName,
   studentEmail,
   scopePlantelId = "",
+  scopeGroupIds = [],
   isOpen,
   onClose,
 }: Props) {
@@ -101,13 +103,39 @@ export function StudentGradesModal({
     const loadGrades = async () => {
       setLoading(true);
       try {
-        const enrollmentConstraints = [where("studentId", "==", studentId)];
-        if (scopePlantelId) {
-          enrollmentConstraints.push(where("plantelId", "==", scopePlantelId));
-        }
-        const enrollmentsSnap = await getDocs(
-          query(collection(db, "studentEnrollments"), ...enrollmentConstraints),
+        const normalizedScopeGroupIds = Array.from(
+          new Set(scopeGroupIds.map((groupId) => groupId.trim()).filter((groupId) => groupId.length > 0)),
         );
+        let enrollmentPermissionDenied = false;
+        const enrollmentDocs =
+          normalizedScopeGroupIds.length > 0
+            ? (
+                await Promise.allSettled(
+                  normalizedScopeGroupIds.map((groupId) =>
+                    getDoc(doc(db, "studentEnrollments", `${groupId}_${studentId}`)),
+                  ),
+                )
+              )
+                .flatMap((result) => {
+                  if (result.status === "rejected") {
+                    if (isPermissionDeniedError(result.reason)) {
+                      enrollmentPermissionDenied = true;
+                      return [];
+                    }
+                    throw result.reason;
+                  }
+                  return result.value.exists() ? [result.value] : [];
+                })
+            : (
+                await getDocs(
+                  query(
+                    collection(db, "studentEnrollments"),
+                    ...(scopePlantelId
+                      ? [where("studentId", "==", studentId), where("plantelId", "==", scopePlantelId)]
+                      : [where("studentId", "==", studentId)]),
+                  ),
+                )
+              ).docs;
 
         const closureRows = new Map<string, GradeRow>();
         const enrollmentGroupNames = new Map<string, string>();
@@ -121,7 +149,7 @@ export function StudentGradesModal({
           }
         };
 
-        enrollmentsSnap.docs.forEach((docSnap) => {
+        enrollmentDocs.forEach((docSnap) => {
           const data = docSnap.data() as {
             groupId?: string;
             groupName?: string;
@@ -192,8 +220,13 @@ export function StudentGradesModal({
         };
 
         const submissionAggByKey = new Map<string, SubmissionAgg>();
+        const groupsToReadSubmissions = Array.from(
+          normalizedScopeGroupIds.length > 0
+            ? new Set([...normalizedScopeGroupIds, ...Array.from(groupIds)])
+            : groupIds,
+        );
         const submissionsByGroupResults = await Promise.allSettled(
-          Array.from(groupIds).map(async (groupId) => {
+          groupsToReadSubmissions.map(async (groupId) => {
             const groupName = enrollmentGroupNames.get(groupId) ?? "Sin grupo";
             const fallbackCourseName =
               enrollmentCourseFallbackByGroup.get(groupId) ?? "Sin materia";
@@ -314,7 +347,7 @@ export function StudentGradesModal({
 
         if (!active) return;
         setRows(nextRows);
-        if (skippedGroupsByPermission > 0) {
+        if (enrollmentPermissionDenied || skippedGroupsByPermission > 0) {
           toast.error("Algunas materias no pudieron cargarse por permisos de lectura.");
         }
       } catch (err) {
@@ -332,7 +365,7 @@ export function StudentGradesModal({
     return () => {
       active = false;
     };
-  }, [isOpen, scopePlantelId, studentId]);
+  }, [isOpen, scopeGroupIds, scopePlantelId, studentId]);
 
   const summary = useMemo(() => {
     const closed = rows.filter((row) => row.status === "closed");
