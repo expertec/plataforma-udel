@@ -7,7 +7,7 @@ import {
   RoomServiceClient,
   WebhookReceiver,
 } from "livekit-server-sdk";
-import type { EgressInfo } from "livekit-server-sdk";
+import type { EgressInfo, ParticipantInfo, TrackInfo } from "livekit-server-sdk";
 
 type LiveKitConfig = {
   serverUrl: string;
@@ -29,6 +29,35 @@ let cachedEgressConfig: LiveKitEgressConfig | null = null;
 let cachedRoomServiceClient: RoomServiceClient | null = null;
 let cachedEgressClient: EgressClient | null = null;
 let cachedWebhookReceiver: WebhookReceiver | null = null;
+const LIVEKIT_TRACK_SOURCE_MICROPHONE = 2; // TrackSource.MICROPHONE
+
+export type LiveRoomParticipantSummary = {
+  identity: string;
+  name: string;
+  role: string | null;
+  microphone: {
+    total: number;
+    muted: number;
+    unmuted: number;
+  };
+};
+
+export type LiveMuteParticipantResult = {
+  participantIdentity: string;
+  totalMicrophoneTracks: number;
+  mutedTrackSids: string[];
+  alreadyMutedTrackSids: string[];
+};
+
+export type LiveMuteAllParticipantsResult = {
+  totalParticipants: number;
+  targetedParticipants: number;
+  skippedParticipants: number;
+  mutedParticipants: number;
+  mutedMicrophoneTracks: number;
+  alreadyMutedMicrophoneTracks: number;
+  participantResults: LiveMuteParticipantResult[];
+};
 
 function requiredEnv(name: string): string {
   const value = (process.env[name] ?? "").trim();
@@ -171,7 +200,7 @@ export async function ensureLiveKitRoom(roomName: string): Promise<void> {
   });
 }
 
-function isLiveKitNotFoundError(error: unknown): boolean {
+export function isLiveKitNotFoundError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const candidate = error as {
     status?: unknown;
@@ -227,6 +256,46 @@ function parseParticipantRoleFromMetadata(rawMetadata: string | null | undefined
   return "";
 }
 
+function normalizeParticipantRole(value: string): string | null {
+  const normalized = value.trim().toLowerCase();
+  return normalized || null;
+}
+
+function isTeacherLikeRole(role: string | null): boolean {
+  if (!role) return false;
+  return (
+    role === "teacher" ||
+    role === "adminteacher" ||
+    role === "superadminteacher" ||
+    role === "admin_teacher" ||
+    role === "super_admin_teacher"
+  );
+}
+
+function isMicrophoneTrack(track: TrackInfo): boolean {
+  return track.source === LIVEKIT_TRACK_SOURCE_MICROPHONE;
+}
+
+function participantMicStats(participant: ParticipantInfo) {
+  const micTracks = participant.tracks.filter(isMicrophoneTrack);
+  const mutedTracks = micTracks.filter((track) => track.muted);
+  return {
+    total: micTracks.length,
+    muted: mutedTracks.length,
+    unmuted: micTracks.length - mutedTracks.length,
+  };
+}
+
+function summarizeParticipant(participant: ParticipantInfo): LiveRoomParticipantSummary {
+  const parsedRole = normalizeParticipantRole(parseParticipantRoleFromMetadata(participant.metadata));
+  return {
+    identity: participant.identity,
+    name: participant.name?.trim() || participant.identity,
+    role: parsedRole,
+    microphone: participantMicStats(participant),
+  };
+}
+
 export async function isTeacherConnectedInRoom(roomName: string): Promise<boolean> {
   const normalizedRoomName = roomName.trim();
   if (!normalizedRoomName) return false;
@@ -240,6 +309,113 @@ export async function isTeacherConnectedInRoom(roomName: string): Promise<boolea
   } catch {
     return false;
   }
+}
+
+export async function listLiveKitRoomParticipants(
+  roomName: string,
+): Promise<LiveRoomParticipantSummary[]> {
+  const normalizedRoomName = roomName.trim();
+  if (!normalizedRoomName) return [];
+  const participants = await getRoomServiceClient().listParticipants(normalizedRoomName);
+  return participants
+    .map((participant) => summarizeParticipant(participant))
+    .sort((left, right) => {
+      const byRole =
+        Number(isTeacherLikeRole(right.role)) - Number(isTeacherLikeRole(left.role));
+      if (byRole !== 0) return byRole;
+      return left.name.localeCompare(right.name, "es-MX", { sensitivity: "base" });
+    });
+}
+
+export async function muteLiveKitParticipantMicrophones(params: {
+  roomName: string;
+  participantIdentity: string;
+}): Promise<LiveMuteParticipantResult> {
+  const normalizedRoomName = params.roomName.trim();
+  const normalizedIdentity = params.participantIdentity.trim();
+  if (!normalizedRoomName) {
+    throw new Error("roomName es requerido");
+  }
+  if (!normalizedIdentity) {
+    throw new Error("participantIdentity es requerido");
+  }
+
+  const participant = await getRoomServiceClient().getParticipant(
+    normalizedRoomName,
+    normalizedIdentity,
+  );
+  const microphoneTracks = participant.tracks.filter(isMicrophoneTrack);
+  const unmutedTracks = microphoneTracks.filter((track) => !track.muted);
+  const alreadyMutedTracks = microphoneTracks.filter((track) => track.muted);
+
+  for (const track of unmutedTracks) {
+    await getRoomServiceClient().mutePublishedTrack(
+      normalizedRoomName,
+      normalizedIdentity,
+      track.sid,
+      true,
+    );
+  }
+
+  return {
+    participantIdentity: normalizedIdentity,
+    totalMicrophoneTracks: microphoneTracks.length,
+    mutedTrackSids: unmutedTracks.map((track) => track.sid),
+    alreadyMutedTrackSids: alreadyMutedTracks.map((track) => track.sid),
+  };
+}
+
+export async function muteAllLiveKitParticipantMicrophones(params: {
+  roomName: string;
+  excludeIdentities?: string[];
+  excludeTeacherRoleParticipants?: boolean;
+}): Promise<LiveMuteAllParticipantsResult> {
+  const normalizedRoomName = params.roomName.trim();
+  if (!normalizedRoomName) {
+    throw new Error("roomName es requerido");
+  }
+
+  const excludedIds = new Set(
+    (params.excludeIdentities ?? []).map((value) => value.trim()).filter(Boolean),
+  );
+  const allParticipants = await getRoomServiceClient().listParticipants(normalizedRoomName);
+  const targetParticipants = allParticipants.filter((participant) => {
+    if (excludedIds.has(participant.identity)) return false;
+    if (!params.excludeTeacherRoleParticipants) return true;
+    const role = normalizeParticipantRole(parseParticipantRoleFromMetadata(participant.metadata));
+    return !isTeacherLikeRole(role);
+  });
+
+  const participantResults: LiveMuteParticipantResult[] = [];
+  for (const participant of targetParticipants) {
+    const result = await muteLiveKitParticipantMicrophones({
+      roomName: normalizedRoomName,
+      participantIdentity: participant.identity,
+    });
+    participantResults.push(result);
+  }
+
+  const mutedParticipants = participantResults.filter(
+    (result) => result.mutedTrackSids.length > 0,
+  ).length;
+  const mutedMicrophoneTracks = participantResults.reduce(
+    (sum, result) => sum + result.mutedTrackSids.length,
+    0,
+  );
+  const alreadyMutedMicrophoneTracks = participantResults.reduce(
+    (sum, result) => sum + result.alreadyMutedTrackSids.length,
+    0,
+  );
+
+  return {
+    totalParticipants: allParticipants.length,
+    targetedParticipants: targetParticipants.length,
+    skippedParticipants: allParticipants.length - targetParticipants.length,
+    mutedParticipants,
+    mutedMicrophoneTracks,
+    alreadyMutedMicrophoneTracks,
+    participantResults,
+  };
 }
 
 export async function createJoinToken(params: {
