@@ -2,8 +2,12 @@
 
 import "@livekit/components-styles";
 import {
+  CarouselLayout,
   ChatToggle,
+  FocusLayout,
+  FocusLayoutContainer,
   GridLayout,
+  isTrackReference,
   LayoutContextProvider,
   LiveKitRoom,
   MediaDeviceMenu,
@@ -12,14 +16,18 @@ import {
   StartAudio,
   TrackToggle,
   useChat,
+  useConnectionState,
   useDataChannel,
+  useLocalParticipantPermissions,
   useMaybeLayoutContext,
   useParticipants,
+  useSpeakingParticipants,
+  type TrackReference,
   type WidgetState,
   useTracks,
 } from "@livekit/components-react";
 import { onAuthStateChanged, type User } from "firebase/auth";
-import { isBrowserSupported, MediaDeviceFailure, Track } from "livekit-client";
+import { ConnectionState, isBrowserSupported, MediaDeviceFailure, Track } from "livekit-client";
 import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoginCard } from "@/components/auth/LoginCard";
@@ -163,6 +171,24 @@ function isTeacherLikeLiveRole(role: string | null): boolean {
   );
 }
 
+function parseParticipantRoleFromMetadata(rawMetadata: string | undefined): string | null {
+  const value = (rawMetadata ?? "").trim();
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const role = (parsed as Record<string, unknown>).role;
+      if (typeof role === "string") {
+        const normalized = role.trim().toLowerCase();
+        return normalized || null;
+      }
+    }
+  } catch {
+    // ignore malformed metadata
+  }
+  return null;
+}
+
 function formatChatHour(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString("es-MX", {
     hour: "2-digit",
@@ -284,9 +310,18 @@ function LiveRoomChatPanel({ visible }: { visible: boolean }) {
 
 function LiveRoomConference() {
   const participants = useParticipants();
-  const tracks = useTracks([Track.Source.Camera, Track.Source.ScreenShare], {
-    onlySubscribed: false,
-  });
+  const speakingParticipants = useSpeakingParticipants();
+  const connectionState = useConnectionState();
+  const localParticipantPermissions = useLocalParticipantPermissions();
+  const tracks = useTracks(
+    [
+      { source: Track.Source.Camera, withPlaceholder: true },
+      { source: Track.Source.ScreenShare, withPlaceholder: false },
+    ],
+    {
+      onlySubscribed: false,
+    },
+  );
   const [widgetState, setWidgetState] = useState<WidgetState>({
     showChat: false,
     unreadMessages: 0,
@@ -306,6 +341,62 @@ function LiveRoomConference() {
   const localParticipantId = localParticipant?.identity ?? "";
   const localParticipantName =
     localParticipant?.name?.trim() || localParticipantId || "Participante";
+  const signalSendBackoffUntilRef = useRef(0);
+
+  const remoteParticipantIdentities = useMemo(
+    () =>
+      participants
+        .filter((participant) => !participant.isLocal)
+        .map((participant) => participant.identity.trim())
+        .filter((identity) => identity.length > 0),
+    [participants],
+  );
+
+  const canPublishSignalPackets =
+    connectionState === ConnectionState.Connected &&
+    localParticipantPermissions?.canPublishData !== false;
+
+  const screenShareTrack = useMemo(() => {
+    const screenShares = tracks.filter(
+      (track): track is TrackReference =>
+        track.source === Track.Source.ScreenShare && isTrackReference(track),
+    );
+    const subscribed = screenShares.find((track) => track.publication.isSubscribed);
+    return subscribed ?? screenShares[0] ?? null;
+  }, [tracks]);
+
+  const activeTeacherParticipant = useMemo(
+    () =>
+      speakingParticipants.find((participant) =>
+        isTeacherLikeLiveRole(parseParticipantRoleFromMetadata(participant.metadata)),
+      ) ?? null,
+    [speakingParticipants],
+  );
+
+  const teacherSpeakerCameraTrack = useMemo(() => {
+    if (!activeTeacherParticipant) return null;
+    const teacherCameraTracks = tracks.filter(
+      (track): track is TrackReference =>
+        isTrackReference(track) &&
+        track.source === Track.Source.Camera &&
+        track.participant.identity === activeTeacherParticipant.identity,
+    );
+    const subscribed = teacherCameraTracks.find((track) => track.publication.isSubscribed);
+    return subscribed ?? teacherCameraTracks[0] ?? null;
+  }, [activeTeacherParticipant, tracks]);
+
+  const focusTrack = screenShareTrack ?? teacherSpeakerCameraTrack ?? null;
+
+  const nonFocusedTracks = useMemo(() => {
+    if (!focusTrack) return tracks;
+    const focusedTrackKey = `track:${focusTrack.publication.trackSid}`;
+    return tracks.filter((track) => {
+      const trackKey = isTrackReference(track)
+        ? `track:${track.publication.trackSid}`
+        : `placeholder:${track.participant.identity}:${track.source}`;
+      return trackKey !== focusedTrackKey;
+    });
+  }, [focusTrack, tracks]);
 
   const rememberSignalId = useCallback((eventId: string): boolean => {
     const normalized = eventId.trim();
@@ -386,6 +477,26 @@ function LiveRoomConference() {
 
   const { send: sendSignal } = useDataChannel(LIVE_SIGNAL_TOPIC, handleSignalMessage);
 
+  const publishSignal = useCallback(
+    async (payload: LiveSignalPayload, reliable: boolean) => {
+      if (!canPublishSignalPackets) return false;
+      if (remoteParticipantIdentities.length === 0) return false;
+      if (signalSendBackoffUntilRef.current > Date.now()) return false;
+      try {
+        await sendSignal(encodeLiveSignal(payload), {
+          reliable,
+          destinationIdentities: remoteParticipantIdentities,
+        });
+        return true;
+      } catch (signalError) {
+        signalSendBackoffUntilRef.current = Date.now() + 1_500;
+        console.warn("No se pudo enviar señal en vivo", signalError);
+        return false;
+      }
+    },
+    [canPublishSignalPackets, remoteParticipantIdentities, sendSignal],
+  );
+
   const sendReaction = useCallback(
     async (emoji: string) => {
       if (!localParticipantId || !emoji.trim()) return;
@@ -399,13 +510,9 @@ function LiveRoomConference() {
       };
       if (rememberSignalId(payload.eventId)) return;
       applyReaction(payload);
-      try {
-        await sendSignal(encodeLiveSignal(payload), { reliable: false });
-      } catch (reactionError) {
-        console.error("No se pudo enviar reacción", reactionError);
-      }
+      await publishSignal(payload, false);
     },
-    [applyReaction, localParticipantId, localParticipantName, rememberSignalId, sendSignal],
+    [applyReaction, localParticipantId, localParticipantName, publishSignal, rememberSignalId],
   );
 
   const broadcastHandState = useCallback(
@@ -421,13 +528,9 @@ function LiveRoomConference() {
       };
       if (rememberSignalId(payload.eventId)) return;
       applyRaisedHand(payload);
-      try {
-        await sendSignal(encodeLiveSignal(payload), { reliable: true });
-      } catch (handError) {
-        console.error("No se pudo actualizar el estado de la mano", handError);
-      }
+      await publishSignal(payload, true);
     },
-    [applyRaisedHand, localParticipantId, localParticipantName, rememberSignalId, sendSignal],
+    [applyRaisedHand, localParticipantId, localParticipantName, publishSignal, rememberSignalId],
   );
 
   const toggleHandRaised = useCallback(() => {
@@ -445,12 +548,8 @@ function LiveRoomConference() {
       timestamp: Date.now(),
     };
     if (rememberSignalId(payload.eventId)) return;
-    try {
-      await sendSignal(encodeLiveSignal(payload), { reliable: true });
-    } catch (handSyncError) {
-      console.error("No se pudo sincronizar mano levantada", handSyncError);
-    }
-  }, [handRaised, localParticipantId, localParticipantName, rememberSignalId, sendSignal]);
+    await publishSignal(payload, true);
+  }, [handRaised, localParticipantId, localParticipantName, publishSignal, rememberSignalId]);
 
   const raisedHandsList = useMemo(
     () =>
@@ -543,10 +642,23 @@ function LiveRoomConference() {
       <LayoutContextProvider onWidgetChange={setWidgetState}>
         <div className="flex min-h-0 flex-1">
           <div className="flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1 p-2">
-              <GridLayout tracks={tracks} className="h-full">
-                <ParticipantTile />
-              </GridLayout>
+            <div className="lk-video-conference-inner min-h-0 flex-1">
+              {!focusTrack ? (
+                <div className="lk-grid-layout-wrapper min-h-0 flex-1">
+                  <GridLayout tracks={tracks} className="h-full">
+                    <ParticipantTile />
+                  </GridLayout>
+                </div>
+              ) : (
+                <div className="lk-focus-layout-wrapper min-h-0 flex-1">
+                  <FocusLayoutContainer className="h-full">
+                    <CarouselLayout tracks={nonFocusedTracks}>
+                      <ParticipantTile />
+                    </CarouselLayout>
+                    <FocusLayout trackRef={focusTrack} />
+                  </FocusLayoutContainer>
+                </div>
+              )}
             </div>
             <div className="border-t border-slate-800 bg-slate-950/80 px-2 py-2">
               <div className="lk-control-bar">
@@ -623,6 +735,7 @@ export default function LiveClassRoomPage() {
   const [livekitError, setLivekitError] = useState<string | null>(null);
   const [startingSession, setStartingSession] = useState(false);
   const [endingSession, setEndingSession] = useState(false);
+  const [showEndSessionConfirm, setShowEndSessionConfirm] = useState(false);
   const [showModerationPanel, setShowModerationPanel] = useState(false);
   const [participantsLoading, setParticipantsLoading] = useState(false);
   const [participantsError, setParticipantsError] = useState<string | null>(null);
@@ -703,6 +816,7 @@ export default function LiveClassRoomPage() {
     setLivekitUrl(null);
     setWaitingReason("left_room");
     setLoading(false);
+    setShowEndSessionConfirm(false);
     setShowModerationPanel(false);
     setParticipants([]);
     setParticipantsError(null);
@@ -781,9 +895,15 @@ export default function LiveClassRoomPage() {
     }
   }, [asRole, classId, courseId, lessonId, requestToken, user]);
 
+  const requestEndSessionConfirmation = useCallback(() => {
+    if (asRole !== "teacher" || endingSession) return;
+    setShowEndSessionConfirm(true);
+  }, [asRole, endingSession]);
+
   const endSession = useCallback(async () => {
     if (!classId || !user || asRole !== "teacher") return;
 
+    setShowEndSessionConfirm(false);
     setEndingSession(true);
     setError(null);
     try {
@@ -987,6 +1107,7 @@ export default function LiveClassRoomPage() {
 
   useEffect(() => {
     if (asRole === "teacher") return;
+    setShowEndSessionConfirm(false);
     setShowModerationPanel(false);
     setParticipants([]);
     setParticipantsError(null);
@@ -1132,6 +1253,7 @@ export default function LiveClassRoomPage() {
             currentReason === "session_ended" ? "session_ended" : "left_room",
           );
           setLoading(false);
+          setShowEndSessionConfirm(false);
           setShowModerationPanel(false);
           setParticipants([]);
           setParticipantsError(null);
@@ -1167,7 +1289,7 @@ export default function LiveClassRoomPage() {
             <button
               type="button"
               disabled={endingSession}
-              onClick={endSession}
+              onClick={requestEndSessionConfirmation}
               className="rounded-full bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-500 disabled:opacity-60"
             >
               {endingSession ? "Terminando..." : "Terminar sesión"}
@@ -1182,6 +1304,37 @@ export default function LiveClassRoomPage() {
           </button>
         </div>
       </div>
+      {asRole === "teacher" && showEndSessionConfirm ? (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 px-4">
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 text-white shadow-2xl">
+            <h2 className="text-lg font-semibold">Confirmar fin de sesión</h2>
+            <p className="mt-2 text-sm text-slate-300">
+              ¿Seguro que quieres terminar la sesión en vivo? Esta acción finalizará la clase para todos los
+              participantes.
+            </p>
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={endingSession}
+                onClick={() => {
+                  setShowEndSessionConfirm(false);
+                }}
+                className="rounded-lg border border-slate-600 px-3 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-800 disabled:opacity-60"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={endingSession}
+                onClick={endSession}
+                className="rounded-lg bg-amber-600 px-3 py-2 text-sm font-semibold text-white hover:bg-amber-500 disabled:opacity-60"
+              >
+                {endingSession ? "Terminando..." : "Sí, terminar sesión"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {asRole === "teacher" && showModerationPanel ? (
         <div className="pointer-events-none fixed right-3 top-16 z-30 flex w-[22rem] max-w-[calc(100vw-1.5rem)] justify-end">
           <div className="pointer-events-auto max-h-[72vh] w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-900/95 shadow-2xl backdrop-blur">
