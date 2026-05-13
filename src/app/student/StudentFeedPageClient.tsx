@@ -303,6 +303,8 @@ const normalizeClassType = (rawType: unknown) => {
   return value;
 };
 
+const shouldPromptClassFeedback = (rawType: unknown) => normalizeClassType(rawType) === "video";
+
 const toSafeString = (value: unknown) => {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
@@ -776,6 +778,7 @@ export default function StudentFeedPageClient() {
     (classId: string) => {
       const cls = findClassById(classId);
       if (!cls) return;
+      if (!shouldPromptClassFeedback(cls.type)) return;
       const baseClassId = getBaseClassDocId(cls);
       const previous = baseClassId ? classFeedbackMap[baseClassId] : undefined;
       setClassFeedbackRating(previous?.rating ?? 0);
@@ -3178,7 +3181,7 @@ export default function StudentFeedPageClient() {
         (!previousCompleted && maxProgress >= requiredPct && forumOk) ||
         (seenRef.current[classId] && forumOk);
 
-      if (reachedCompletionThisTick && meta) {
+      if (reachedCompletionThisTick && meta && shouldPromptClassFeedback(meta.type)) {
         const baseClassId = getBaseClassDocId(meta);
         const alreadySubmitted = baseClassId ? Boolean(classFeedbackMap[baseClassId]) : false;
         if (!alreadySubmitted && !classFeedbackPromptedRef.current[classId]) {
@@ -3271,6 +3274,9 @@ export default function StudentFeedPageClient() {
         toast.success("Clase marcada como completada");
 
         if (cls) {
+          if (!shouldPromptClassFeedback(cls.type)) {
+            return;
+          }
           const baseClassId = getBaseClassDocId(cls);
           const alreadySubmitted = baseClassId ? Boolean(classFeedbackMap[baseClassId]) : false;
           if (!alreadySubmitted && !classFeedbackPromptedRef.current[classId]) {
