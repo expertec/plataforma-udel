@@ -623,6 +623,7 @@ export default function StudentFeedPageClient() {
   const [likePendingMap, setLikePendingMap] = useState<Record<string, boolean>>({});
   const [recordingLoadingMap, setRecordingLoadingMap] = useState<Record<string, boolean>>({});
   const [liveRecordingUrlMap, setLiveRecordingUrlMap] = useState<Record<string, string>>({});
+  const [recordingNoticeMap, setRecordingNoticeMap] = useState<Record<string, string>>({});
   const commentsCountLoadCacheRef = useRef<Record<string, boolean>>({});
   const [loadingCommentsMap, setLoadingCommentsMap] = useState<Record<string, boolean>>({});
   const [mobileClassesOpen, setMobileClassesOpen] = useState(false);
@@ -1628,6 +1629,7 @@ export default function StudentFeedPageClient() {
       }
 
       setRecordingLoadingMap((prev) => ({ ...prev, [cls.id]: true }));
+      setRecordingNoticeMap((prev) => ({ ...prev, [cls.id]: "" }));
       try {
         const token = await currentUser.getIdToken();
         const searchParams = new URLSearchParams();
@@ -1647,10 +1649,12 @@ export default function StudentFeedPageClient() {
           throw new Error(payload?.error || "La grabación no está disponible");
         }
         setLiveRecordingUrlMap((prev) => ({ ...prev, [cls.id]: payload.data!.url! }));
+        setRecordingNoticeMap((prev) => ({ ...prev, [cls.id]: "" }));
       } catch (error) {
         console.error("No se pudo abrir la grabación", error);
         const message =
           error instanceof Error ? error.message : "No se pudo abrir la grabación";
+        setRecordingNoticeMap((prev) => ({ ...prev, [cls.id]: message }));
         toast.error(message);
       } finally {
         setRecordingLoadingMap((prev) => ({ ...prev, [cls.id]: false }));
@@ -1942,6 +1946,7 @@ export default function StudentFeedPageClient() {
     const load = async () => {
       setClasses([]);
       setLiveRecordingUrlMap({});
+      setRecordingNoticeMap({});
       setActiveId(null);
       setActiveIndex(0);
       if (previewMode) {
@@ -3724,26 +3729,78 @@ export default function StudentFeedPageClient() {
     if (cls.type === "live") {
       const session = normalizeLiveSession(cls.liveSession);
       const sessionFinalized = isLiveSessionFinalized(session);
+      const recordingStatus = session?.recording.status ?? "idle";
+      const recordingAuto = session?.recording.auto !== false;
       const recordingFailed = session?.recording.status === "failed";
-      const canOpenRecording =
-        sessionFinalized && !recordingFailed && session?.recording.auto !== false;
+      const recordingReady =
+        session?.status === "recording_ready" || recordingStatus === "ready";
+      const canOpenRecording = sessionFinalized && !recordingFailed && recordingAuto;
       const recordingUrl = liveRecordingUrlMap[cls.id];
       const recordingPlayerId = `${cls.id}__live_recording`;
       const showPlayButton = !recordingUrl;
       const playDisabled = recordingLoadingMap[cls.id] === true || !canOpenRecording;
+      const shouldShowActionButton = recordingLoadingMap[cls.id] === true || canOpenRecording;
+
+      let recordingButtonLabel = "Ver grabación";
+      if (recordingLoadingMap[cls.id]) {
+        recordingButtonLabel = "Verificando...";
+      } else if (!recordingAuto) {
+        recordingButtonLabel = "Sin grabación";
+      } else if (recordingFailed) {
+        recordingButtonLabel = "Grabación falló";
+      } else if (!sessionFinalized) {
+        recordingButtonLabel = "Clase en vivo";
+      } else if (!recordingReady) {
+        recordingButtonLabel = "Verificar grabación";
+      }
+
+      const inlineRecordingNotice =
+        recordingNoticeMap[cls.id]?.trim() ||
+        (!recordingAuto
+          ? "Esta clase se cerró sin grabación automática."
+          : recordingFailed
+            ? "La grabación falló y no pudo guardarse."
+            : !sessionFinalized
+              ? "La grabación aparecerá cuando la clase termine."
+              : recordingStatus === "recording" || recordingStatus === "processing"
+                ? "La grabación sigue procesándose. Si el archivo ya terminó de generarse, el botón la recuperará."
+                : recordingReady
+                  ? "La grabación está lista para cargarse."
+                  : "Verifica si la grabación ya terminó de procesarse.");
+
+      const inlineRecordingNoticeClass =
+        !recordingAuto || recordingFailed
+          ? "text-amber-200"
+          : recordingNoticeMap[cls.id]?.trim()
+            ? "text-amber-100"
+            : recordingReady
+              ? "text-emerald-200"
+              : "text-slate-300";
 
       return (
         <div className="flex h-full w-full items-center justify-center bg-neutral-950">
           {showPlayButton ? (
-            <button
-              type="button"
-              onClick={() => handleOpenLiveRecording(cls)}
-              disabled={playDisabled}
-              className="inline-flex items-center gap-2 rounded-full border border-slate-500 px-5 py-3 text-base font-semibold text-slate-100 hover:bg-slate-800 disabled:opacity-60"
-            >
-              <ControlIcon name="play" />
-              {recordingLoadingMap[cls.id] ? "Cargando..." : "Play"}
-            </button>
+            <div className="flex max-w-sm flex-col items-center gap-3 px-6 text-center">
+              {shouldShowActionButton ? (
+                <button
+                  type="button"
+                  onClick={() => handleOpenLiveRecording(cls)}
+                  disabled={playDisabled}
+                  className="inline-flex items-center gap-2 rounded-full border border-slate-500 px-5 py-3 text-base font-semibold text-slate-100 hover:bg-slate-800 disabled:opacity-60"
+                >
+                  <ControlIcon name="play" />
+                  {recordingButtonLabel}
+                </button>
+              ) : (
+                <div className="inline-flex items-center gap-2 rounded-full border border-slate-700 px-5 py-3 text-base font-semibold text-slate-300">
+                  <ControlIcon name="play" />
+                  {recordingButtonLabel}
+                </div>
+              )}
+              <p className={`text-sm leading-6 ${inlineRecordingNoticeClass}`}>
+                {inlineRecordingNotice}
+              </p>
+            </div>
           ) : (
             <div className="h-full w-full overflow-hidden rounded-none bg-black lg:rounded-2xl">
               <VideoPlayer

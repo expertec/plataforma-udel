@@ -8,10 +8,14 @@ import {
 import { mergeTeacherEditableLiveSession } from "@/lib/live-classes/types";
 import { sendWhatsAppTextToStudent } from "@/lib/server/whatsapp-notifier";
 import {
-  buildRecordingObjectPath,
+  buildRecordingOutputPaths,
   ensureLiveKitRoom,
+  ensureRoomCompositeRecordingStarted,
+  extractRecordingBackupLiveManifestPath,
+  extractRecordingBackupManifestPath,
   extractRecordingObjectPath,
-  startRoomCompositeRecording,
+  type LiveRecordingOutputPaths,
+  resolveDefaultRecordingMaxRetryCount,
 } from "@/lib/server/livekit";
 
 export const runtime = "nodejs";
@@ -319,7 +323,7 @@ export async function POST(
     let roomName = "";
     let shouldStartRecording = false;
     let shouldNotifyStudents = false;
-    let preparedObjectPath: string | null = null;
+    let preparedOutputPaths: LiveRecordingOutputPaths | null = null;
     let preparedSession = access.classContext.liveSession;
 
     await db.runTransaction(async (tx) => {
@@ -362,7 +366,7 @@ export async function POST(
       };
 
       if (nextSession.recording.auto && !recordingAlreadyRunning) {
-        preparedObjectPath = buildRecordingObjectPath({
+        preparedOutputPaths = buildRecordingOutputPaths({
           courseId: access.classContext.courseId,
           classId: access.classContext.classId,
           startedAtMs,
@@ -371,9 +375,16 @@ export async function POST(
         nextSession.recording = {
           ...nextSession.recording,
           status: "processing",
-          storagePath: preparedObjectPath,
+          storagePath: preparedOutputPaths.mp4ObjectPath,
+          backupManifestPath: preparedOutputPaths.backupManifestPath,
+          backupLiveManifestPath: preparedOutputPaths.backupLiveManifestPath,
           playbackReadyAt: null,
           durationSec: null,
+          errorMessage: null,
+          errorCode: null,
+          retryCount: 0,
+          maxRetryCount: nextSession.recording.maxRetryCount || resolveDefaultRecordingMaxRetryCount(),
+          lastRetryAt: null,
         };
       }
 
@@ -395,14 +406,27 @@ export async function POST(
     await ensureLiveKitRoom(roomName);
 
     let egressId: string | null = null;
-    if (shouldStartRecording) {
+    if (shouldStartRecording && preparedOutputPaths) {
+      const outputPaths = preparedOutputPaths;
       try {
-        const egressInfo = await startRoomCompositeRecording({
+        const recordingStart = await ensureRoomCompositeRecordingStarted({
           roomName,
-          objectPath: preparedObjectPath ?? "",
+          outputPaths,
         });
-        egressId = egressInfo.egressId || null;
-        const objectPath = extractRecordingObjectPath(egressInfo) || preparedObjectPath || null;
+        egressId = recordingStart.egressInfo.egressId || null;
+        const objectPath =
+          extractRecordingObjectPath(recordingStart.egressInfo) ||
+          recordingStart.outputPaths.mp4ObjectPath ||
+          null;
+        const backupManifestPath =
+          extractRecordingBackupManifestPath(recordingStart.egressInfo) ||
+          recordingStart.outputPaths.backupManifestPath ||
+          null;
+        const backupLiveManifestPath =
+          extractRecordingBackupLiveManifestPath(recordingStart.egressInfo) ||
+          recordingStart.outputPaths.backupLiveManifestPath ||
+          null;
+        const retryCountUsed = recordingStart.retryCountUsed;
         await classRef.set(
           {
             liveSession: {
@@ -410,8 +434,17 @@ export async function POST(
               recording: {
                 ...(preparedSession?.recording ?? {}),
                 egressId,
-                status: "recording",
+                status: recordingStart.recordingStatus,
                 storagePath: objectPath,
+                backupManifestPath,
+                backupLiveManifestPath,
+                retryCount: retryCountUsed,
+                maxRetryCount:
+                  preparedSession?.recording?.maxRetryCount ||
+                  resolveDefaultRecordingMaxRetryCount(),
+                lastRetryAt: retryCountUsed > 0 ? new Date().toISOString() : null,
+                errorMessage: null,
+                errorCode: null,
               },
             },
           },
@@ -419,6 +452,7 @@ export async function POST(
         );
       } catch (egressError) {
         console.error("No se pudo iniciar egress LiveKit", egressError);
+        const errorWithCode = egressError as { message?: unknown; code?: unknown };
         await classRef.set(
           {
             liveSession: {
@@ -427,6 +461,21 @@ export async function POST(
                 ...(preparedSession?.recording ?? {}),
                 status: "failed",
                 egressId: null,
+                storagePath: preparedSession?.recording?.storagePath ?? null,
+                backupManifestPath: preparedSession?.recording?.backupManifestPath ?? null,
+                backupLiveManifestPath:
+                  preparedSession?.recording?.backupLiveManifestPath ?? null,
+                errorMessage:
+                  typeof errorWithCode.message === "string" && errorWithCode.message.trim()
+                    ? errorWithCode.message.trim()
+                    : "No se pudo iniciar egress LiveKit",
+                errorCode:
+                  typeof errorWithCode.code === "number" && Number.isFinite(errorWithCode.code)
+                    ? errorWithCode.code
+                    : null,
+                maxRetryCount:
+                  preparedSession?.recording?.maxRetryCount ||
+                  resolveDefaultRecordingMaxRetryCount(),
               },
             },
           },

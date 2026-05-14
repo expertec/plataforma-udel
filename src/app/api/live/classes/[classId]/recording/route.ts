@@ -5,7 +5,7 @@ import {
   toLiveAccessErrorResponse,
   LiveAccessError,
 } from "@/lib/live-classes/access";
-import { createLiveSessionForClass } from "@/lib/live-classes/types";
+import { createLiveSessionForClass, type LiveClassSession } from "@/lib/live-classes/types";
 import { getLiveKitEgressConfig } from "@/lib/server/livekit";
 
 export const runtime = "nodejs";
@@ -19,14 +19,88 @@ function normalizeObjectPath(value: string): string {
   return value.replace(/^\/+/, "").trim();
 }
 
+function decodePathComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 type ObjectLocation = {
   bucketName: string;
   objectPath: string;
 };
 
-function extractObjectLocation(rawStoragePath: string, defaultBucketName: string): ObjectLocation | null {
+function extractObjectLocationFromUrl(
+  rawUrl: string,
+  defaultBucketName: string,
+): ObjectLocation | null {
+  try {
+    const parsed = new URL(rawUrl);
+    const hostname = parsed.hostname.trim().toLowerCase();
+    const pathParts = parsed.pathname
+      .split("/")
+      .map((part) => decodePathComponent(part))
+      .filter(Boolean);
+    const queryBucket =
+      asTrimmedString(parsed.searchParams.get("bucket")) ||
+      asTrimmedString(parsed.searchParams.get("b"));
+    const queryObjectPath = normalizeObjectPath(
+      decodePathComponent(asTrimmedString(parsed.searchParams.get("name"))),
+    );
+
+    if (queryBucket && queryObjectPath) {
+      return {
+        bucketName: queryBucket,
+        objectPath: queryObjectPath,
+      };
+    }
+
+    const bucketIndex = pathParts.indexOf("b");
+    const objectIndex = pathParts.indexOf("o");
+    if (bucketIndex >= 0 && objectIndex > bucketIndex + 1) {
+      const bucketName = asTrimmedString(pathParts[bucketIndex + 1]);
+      const objectPath = normalizeObjectPath(pathParts.slice(objectIndex + 1).join("/"));
+      if (bucketName && objectPath) {
+        return { bucketName, objectPath };
+      }
+    }
+
+    if (
+      (hostname === "storage.googleapis.com" || hostname === "storage.cloud.google.com") &&
+      pathParts.length >= 2
+    ) {
+      const [bucketName, ...rest] = pathParts;
+      const objectPath = normalizeObjectPath(rest.join("/"));
+      if (bucketName && objectPath) {
+        return {
+          bucketName,
+          objectPath,
+        };
+      }
+    }
+
+    if (hostname === "firebasestorage.googleapis.com" && queryObjectPath) {
+      return {
+        bucketName: queryBucket || defaultBucketName,
+        objectPath: queryObjectPath,
+      };
+    }
+  } catch {
+    // Ignore invalid URLs and continue with the remaining strategies.
+  }
+
+  return null;
+}
+
+function extractObjectLocation(
+  rawStoragePath: string,
+  defaultBucketName: string,
+): ObjectLocation | null {
   const value = rawStoragePath.trim();
   if (!value) return null;
+
   if (value.startsWith("gs://")) {
     const withoutScheme = value.slice("gs://".length);
     const slashIdx = withoutScheme.indexOf("/");
@@ -36,15 +110,11 @@ function extractObjectLocation(rawStoragePath: string, defaultBucketName: string
     if (!bucketName || !objectPath) return null;
     return { bucketName, objectPath };
   }
+
   if (value.startsWith("http://") || value.startsWith("https://")) {
-    const directMatch = value.match(/\/([^/]+)\/o\/([^?]+)/);
-    if (directMatch) {
-      const bucketName = asTrimmedString(directMatch[1]);
-      const objectPath = normalizeObjectPath(decodeURIComponent(directMatch[2]));
-      if (!bucketName || !objectPath) return null;
-      return { bucketName, objectPath };
-    }
+    return extractObjectLocationFromUrl(value, defaultBucketName);
   }
+
   const objectPath = normalizeObjectPath(value);
   if (!objectPath) return null;
   return {
@@ -59,6 +129,106 @@ function isRecordingReady(liveSession: {
 } | null): boolean {
   if (!liveSession) return false;
   return liveSession.status === "recording_ready" || liveSession.recording?.status === "ready";
+}
+
+function buildRecordingPrefixForDate(
+  egressPrefix: string,
+  courseId: string,
+  rawDate: string | null | undefined,
+): string | null {
+  const value = rawDate?.trim();
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  const yyyy = parsed.getUTCFullYear().toString();
+  const mm = (parsed.getUTCMonth() + 1).toString().padStart(2, "0");
+  const dd = parsed.getUTCDate().toString().padStart(2, "0");
+  return [normalizeObjectPath(egressPrefix), courseId, yyyy, mm, dd].filter(Boolean).join("/");
+}
+
+function buildRecordingSearchPrefixes(params: {
+  egressPrefix: string;
+  courseId: string;
+  liveSession: LiveClassSession | null;
+}): string[] {
+  const candidates = [
+    buildRecordingPrefixForDate(
+      params.egressPrefix,
+      params.courseId,
+      params.liveSession?.lastStartedAt,
+    ),
+    buildRecordingPrefixForDate(
+      params.egressPrefix,
+      params.courseId,
+      params.liveSession?.lastEndedAt,
+    ),
+    buildRecordingPrefixForDate(
+      params.egressPrefix,
+      params.courseId,
+      params.liveSession?.recording.playbackReadyAt,
+    ),
+    [normalizeObjectPath(params.egressPrefix), params.courseId].filter(Boolean).join("/"),
+  ];
+
+  return Array.from(new Set(candidates.filter((value): value is string => Boolean(value))));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function extractRecordingTimestamp(objectPath: string, classId: string): number {
+  const fileName = objectPath.split("/").pop() ?? "";
+  const match = fileName.match(new RegExp(`^${escapeRegExp(classId)}-(\\d+)\\.mp4$`, "i"));
+  if (!match) return 0;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isMatchingRecordingObject(objectPath: string, classId: string): boolean {
+  const fileName = objectPath.split("/").pop()?.toLowerCase() ?? "";
+  return fileName.startsWith(`${classId.toLowerCase()}-`) && fileName.endsWith(".mp4");
+}
+
+async function findExistingRecordingObject(params: {
+  bucketName: string;
+  egressPrefix: string;
+  courseId: string;
+  classId: string;
+  liveSession: LiveClassSession | null;
+}): Promise<ObjectLocation | null> {
+  const bucket = getAdminApp().storage().bucket(params.bucketName);
+  const prefixes = buildRecordingSearchPrefixes({
+    egressPrefix: params.egressPrefix,
+    courseId: params.courseId,
+    liveSession: params.liveSession,
+  });
+
+  for (const prefix of prefixes) {
+    const [files] = await bucket.getFiles({
+      prefix,
+      autoPaginate: false,
+      maxResults: 100,
+    });
+    const matches = files
+      .map((file) => normalizeObjectPath(file.name))
+      .filter((objectPath) => isMatchingRecordingObject(objectPath, params.classId))
+      .sort(
+        (a, b) =>
+          extractRecordingTimestamp(b, params.classId) -
+          extractRecordingTimestamp(a, params.classId),
+      );
+
+    if (matches[0]) {
+      return {
+        bucketName: params.bucketName,
+        objectPath: matches[0],
+      };
+    }
+  }
+
+  return null;
 }
 
 export async function GET(
@@ -81,43 +251,73 @@ export async function GET(
     let liveSession = access.classContext.liveSession;
     let recordingReady = isRecordingReady(liveSession);
 
-    let storagePath = liveSession?.recording.storagePath ?? "";
-    let objectLocation = extractObjectLocation(storagePath, egressConfig.egressBucket);
+    const currentStoragePath = liveSession?.recording.storagePath ?? "";
+    let objectLocation = extractObjectLocation(currentStoragePath, egressConfig.egressBucket);
 
-    if (!recordingReady && objectLocation) {
+    if (objectLocation) {
       const storageBucket = getAdminApp().storage().bucket(objectLocation.bucketName);
       const [fileExists] = await storageBucket.file(objectLocation.objectPath).exists();
-      if (fileExists) {
-        const nowIso = new Date().toISOString();
-        const baseSession =
-          liveSession ??
-          createLiveSessionForClass({
-            courseId: access.classContext.courseId,
-            lessonId: access.classContext.lessonId,
-            classId: access.classContext.classId,
-          });
-        const nextSession = {
-          ...baseSession,
-          status: "recording_ready" as const,
-          teacherActive: false,
-          recording: {
-            ...baseSession.recording,
-            status: "ready" as const,
-            storagePath: baseSession.recording.storagePath || objectLocation.objectPath,
-            playbackReadyAt: baseSession.recording.playbackReadyAt ?? nowIso,
-          },
-        };
-        await access.classContext.classRef.set(
-          {
-            liveSession: nextSession,
-          },
-          { merge: true },
-        );
-        liveSession = nextSession;
-        recordingReady = true;
-        storagePath = liveSession.recording.storagePath ?? storagePath;
-        objectLocation = extractObjectLocation(storagePath, egressConfig.egressBucket);
+      if (!fileExists) {
+        objectLocation = null;
       }
+    }
+
+    if (!objectLocation) {
+      objectLocation = await findExistingRecordingObject({
+        bucketName: egressConfig.egressBucket,
+        egressPrefix: egressConfig.egressPrefix,
+        courseId: access.classContext.courseId,
+        classId: access.classContext.classId,
+        liveSession,
+      });
+    }
+
+    if (!recordingReady && objectLocation) {
+      const nowIso = new Date().toISOString();
+      const baseSession =
+        liveSession ??
+        createLiveSessionForClass({
+          courseId: access.classContext.courseId,
+          lessonId: access.classContext.lessonId,
+          classId: access.classContext.classId,
+        });
+      const nextSession = {
+        ...baseSession,
+        status: "recording_ready" as const,
+        teacherActive: false,
+        recording: {
+          ...baseSession.recording,
+          status: "ready" as const,
+          storagePath: objectLocation.objectPath,
+          playbackReadyAt: baseSession.recording.playbackReadyAt ?? nowIso,
+        },
+      };
+      await access.classContext.classRef.set(
+        {
+          liveSession: nextSession,
+        },
+        { merge: true },
+      );
+      liveSession = nextSession;
+      recordingReady = true;
+    } else if (
+      objectLocation &&
+      currentStoragePath.trim() &&
+      currentStoragePath.trim() !== objectLocation.objectPath &&
+      recordingReady
+    ) {
+      await access.classContext.classRef.set(
+        {
+          liveSession: {
+            ...(liveSession ?? {}),
+            recording: {
+              ...(liveSession?.recording ?? {}),
+              storagePath: objectLocation.objectPath,
+            },
+          },
+        },
+        { merge: true },
+      );
     }
 
     if (!recordingReady) {

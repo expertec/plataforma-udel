@@ -5,6 +5,8 @@ import {
   EncodingOptionsPreset,
   GCPUpload,
   RoomServiceClient,
+  SegmentedFileOutput,
+  SegmentedFileProtocol,
   WebhookReceiver,
 } from "livekit-server-sdk";
 import type { EgressInfo, ParticipantInfo, TrackInfo } from "livekit-server-sdk";
@@ -30,6 +32,25 @@ let cachedRoomServiceClient: RoomServiceClient | null = null;
 let cachedEgressClient: EgressClient | null = null;
 let cachedWebhookReceiver: WebhookReceiver | null = null;
 const LIVEKIT_TRACK_SOURCE_MICROPHONE = 2; // TrackSource.MICROPHONE
+const DEFAULT_RECORDING_START_MAX_ATTEMPTS = 2;
+const DEFAULT_RECORDING_MAX_RETRY_COUNT = 2;
+const RECORDING_START_RETRY_BASE_DELAY_MS = 1500;
+
+export type LiveRecordingOutputPaths = {
+  mp4ObjectPath: string;
+  backupManifestPath: string;
+  backupLiveManifestPath: string;
+  backupSegmentPrefix: string;
+};
+
+export type LiveRecordingRuntimeStatus = "recording" | "processing";
+
+export type LiveRecordingStartResult = {
+  egressInfo: EgressInfo;
+  outputPaths: LiveRecordingOutputPaths;
+  retryCountUsed: number;
+  recordingStatus: LiveRecordingRuntimeStatus;
+};
 
 export type LiveRoomParticipantSummary = {
   identity: string;
@@ -239,6 +260,14 @@ export async function stopLiveKitEgress(egressId: string): Promise<boolean> {
     if (isLiveKitNotFoundError(error)) return false;
     throw error;
   }
+}
+
+export async function listActiveLiveKitEgress(roomName?: string) {
+  const normalizedRoomName = roomName?.trim();
+  if (normalizedRoomName) {
+    return getEgressClient().listEgress({ roomName: normalizedRoomName });
+  }
+  return getEgressClient().listEgress();
 }
 
 function parseParticipantRoleFromMetadata(rawMetadata: string | null | undefined): string {
@@ -454,9 +483,47 @@ function normalizePathSegment(value: string): string {
     .replace(/\/+/g, "/");
 }
 
-export function buildRecordingObjectPath(params: {
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function resolveRecordingStartMaxAttempts(rawValue: string | undefined): number {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_RECORDING_START_MAX_ATTEMPTS;
+  return Math.max(1, Math.floor(parsed));
+}
+
+function toRecordingRuntimeStatus(egressInfo: EgressInfo): LiveRecordingRuntimeStatus {
+  if (extractRecordingObjectPath(egressInfo) || extractRecordingBackupManifestPath(egressInfo)) {
+    return "recording";
+  }
+  return "processing";
+}
+
+function extractStorageObjectPathFromLocationOrFilename(params: {
+  location?: string | null;
+  filename?: string | null;
+}): string | null {
+  const location = (params.location ?? "").trim();
+  if (location.startsWith("gs://")) {
+    const withoutScheme = location.slice("gs://".length);
+    const slashIdx = withoutScheme.indexOf("/");
+    if (slashIdx >= 0) {
+      return withoutScheme.slice(slashIdx + 1) || null;
+    }
+  }
+
+  const filename = (params.filename ?? "").trim();
+  if (filename) {
+    return normalizePathSegment(filename) || null;
+  }
+  return null;
+}
+
+function buildRecordingDatedPrefix(params: {
   courseId: string;
-  classId: string;
   startedAtMs: number;
 }): string {
   const rawPrefix = (process.env.LIVEKIT_EGRESS_GCS_PREFIX ?? "live-recordings").trim();
@@ -465,17 +532,79 @@ export function buildRecordingObjectPath(params: {
   const yyyy = date.getUTCFullYear().toString();
   const mm = (date.getUTCMonth() + 1).toString().padStart(2, "0");
   const dd = date.getUTCDate().toString().padStart(2, "0");
-  const fileName = `${params.classId}-${params.startedAtMs}.mp4`;
-  return [prefix, params.courseId, yyyy, mm, dd, fileName].filter(Boolean).join("/");
+  return [prefix, params.courseId, yyyy, mm, dd].filter(Boolean).join("/");
+}
+
+export function buildRecordingOutputPaths(params: {
+  courseId: string;
+  classId: string;
+  startedAtMs: number;
+  retryIndex?: number;
+}): LiveRecordingOutputPaths {
+  const basePrefix = buildRecordingDatedPrefix({
+    courseId: params.courseId,
+    startedAtMs: params.startedAtMs,
+  });
+  const retrySuffix =
+    typeof params.retryIndex === "number" && params.retryIndex > 0 ? `-retry${params.retryIndex}` : "";
+  const baseFileName = `${params.classId}-${params.startedAtMs}${retrySuffix}`;
+  const backupBasePath = [basePrefix, `${baseFileName}-hls`].filter(Boolean).join("/");
+
+  return {
+    mp4ObjectPath: [basePrefix, `${baseFileName}.mp4`].filter(Boolean).join("/"),
+    backupManifestPath: [backupBasePath, "index.m3u8"].join("/"),
+    backupLiveManifestPath: [backupBasePath, "live.m3u8"].join("/"),
+    backupSegmentPrefix: [backupBasePath, "segment"].join("/"),
+  };
+}
+
+function findMatchingActiveEgressForRoom(params: {
+  items: EgressInfo[];
+  expectedObjectPath: string;
+  expectedBackupManifestPath: string;
+}): EgressInfo | null {
+  return (
+    params.items.find((item) => {
+      const filePath = extractRecordingObjectPath(item);
+      if (filePath && filePath === params.expectedObjectPath) return true;
+      const backupPath = extractRecordingBackupManifestPath(item);
+      return Boolean(backupPath && backupPath === params.expectedBackupManifestPath);
+    }) ??
+    params.items[0] ??
+    null
+  );
+}
+
+export function buildRecordingObjectPath(params: {
+  courseId: string;
+  classId: string;
+  startedAtMs: number;
+}): string {
+  return buildRecordingOutputPaths(params).mp4ObjectPath;
 }
 
 export async function startRoomCompositeRecording(params: {
   roomName: string;
-  objectPath: string;
+  outputPaths: LiveRecordingOutputPaths;
 }): Promise<EgressInfo> {
   const egressConfig = getLiveKitEgressConfig();
   const output = new EncodedFileOutput({
-    filepath: normalizePathSegment(params.objectPath),
+    filepath: normalizePathSegment(params.outputPaths.mp4ObjectPath),
+    output: {
+      case: "gcp",
+      value: new GCPUpload({
+        credentials: egressConfig.egressCredentials,
+        bucket: egressConfig.egressBucket,
+      }),
+    },
+  });
+  const segmentsOutput = new SegmentedFileOutput({
+    protocol: SegmentedFileProtocol.HLS_PROTOCOL,
+    filenamePrefix: normalizePathSegment(params.outputPaths.backupSegmentPrefix),
+    playlistName: params.outputPaths.backupManifestPath.split("/").pop() ?? "index.m3u8",
+    livePlaylistName:
+      params.outputPaths.backupLiveManifestPath.split("/").pop() ?? "live.m3u8",
+    segmentDuration: 6,
     output: {
       case: "gcp",
       value: new GCPUpload({
@@ -488,7 +617,7 @@ export async function startRoomCompositeRecording(params: {
   const egressClient = getEgressClient();
   return egressClient.startRoomCompositeEgress(
     params.roomName,
-    { file: output },
+    { file: output, segments: segmentsOutput },
     {
       layout: "grid",
       encodingOptions: EncodingOptionsPreset.H264_1080P_30,
@@ -499,19 +628,88 @@ export async function startRoomCompositeRecording(params: {
 export function extractRecordingObjectPath(egressInfo: EgressInfo): string | null {
   const result = egressInfo.fileResults?.[0];
   if (!result) return null;
+  return extractStorageObjectPathFromLocationOrFilename({
+    location: result.location,
+    filename: result.filename,
+  });
+}
 
-  const location = (result.location ?? "").trim();
-  if (location.startsWith("gs://")) {
-    const withoutScheme = location.slice("gs://".length);
-    const slashIdx = withoutScheme.indexOf("/");
-    if (slashIdx >= 0) {
-      return withoutScheme.slice(slashIdx + 1) || null;
+export function extractRecordingBackupManifestPath(egressInfo: EgressInfo): string | null {
+  const result = egressInfo.segmentResults?.[0];
+  if (!result) return null;
+  return extractStorageObjectPathFromLocationOrFilename({
+    location: result.playlistLocation,
+    filename: result.playlistName,
+  });
+}
+
+export function extractRecordingBackupLiveManifestPath(egressInfo: EgressInfo): string | null {
+  const result = egressInfo.segmentResults?.[0];
+  if (!result) return null;
+  return extractStorageObjectPathFromLocationOrFilename({
+    location: result.livePlaylistLocation,
+    filename: result.livePlaylistName,
+  });
+}
+
+export function resolveDefaultRecordingMaxRetryCount(): number {
+  const parsed = Number(process.env.LIVEKIT_RECORDING_MAX_RETRY_COUNT);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_RECORDING_MAX_RETRY_COUNT;
+  return Math.max(0, Math.floor(parsed));
+}
+
+export async function ensureRoomCompositeRecordingStarted(params: {
+  roomName: string;
+  outputPaths: LiveRecordingOutputPaths;
+  maxAttempts?: number;
+}): Promise<LiveRecordingStartResult> {
+  const maxAttempts =
+    typeof params.maxAttempts === "number" && Number.isFinite(params.maxAttempts)
+      ? Math.max(1, Math.floor(params.maxAttempts))
+      : resolveRecordingStartMaxAttempts(process.env.LIVEKIT_RECORDING_START_MAX_ATTEMPTS);
+
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const egressInfo = await startRoomCompositeRecording({
+        roomName: params.roomName,
+        outputPaths: params.outputPaths,
+      });
+      return {
+        egressInfo,
+        outputPaths: params.outputPaths,
+        retryCountUsed: attempt - 1,
+        recordingStatus: toRecordingRuntimeStatus(egressInfo),
+      };
+    } catch (error) {
+      lastError = error;
+      try {
+        const activeEgressItems = await listActiveLiveKitEgress(params.roomName);
+        const existingEgress = findMatchingActiveEgressForRoom({
+          items: activeEgressItems,
+          expectedObjectPath: params.outputPaths.mp4ObjectPath,
+          expectedBackupManifestPath: params.outputPaths.backupManifestPath,
+        });
+        if (existingEgress) {
+          return {
+            egressInfo: existingEgress,
+            outputPaths: params.outputPaths,
+            retryCountUsed: attempt - 1,
+            recordingStatus: toRecordingRuntimeStatus(existingEgress),
+          };
+        }
+      } catch {
+        // Ignore list failures and continue with bounded retry.
+      }
+
+      if (attempt >= maxAttempts) {
+        throw error;
+      }
+      await sleep(RECORDING_START_RETRY_BASE_DELAY_MS * attempt);
     }
   }
 
-  const filename = (result.filename ?? "").trim();
-  if (filename) {
-    return normalizePathSegment(filename) || null;
-  }
-  return null;
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("No se pudo iniciar la grabación compuesta de LiveKit");
 }

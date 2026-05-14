@@ -6,8 +6,15 @@ export type LiveRecordingData = {
   egressId: string | null;
   status: LiveRecordingStatus;
   storagePath: string | null;
+  backupManifestPath: string | null;
+  backupLiveManifestPath: string | null;
   playbackReadyAt: string | null;
   durationSec: number | null;
+  errorMessage: string | null;
+  errorCode: number | null;
+  retryCount: number;
+  maxRetryCount: number;
+  lastRetryAt: string | null;
 };
 
 export type LiveClassSession = {
@@ -37,6 +44,11 @@ function asNullableString(value: unknown): string | null {
 function asFiniteNumber(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
   return value;
+}
+
+function asNonNegativeInteger(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.floor(value));
 }
 
 function sanitizeRoomToken(value: string, fallback: string): string {
@@ -104,8 +116,15 @@ export function createDefaultLiveSession(params?: {
       egressId: null,
       status: "idle",
       storagePath: null,
+      backupManifestPath: null,
+      backupLiveManifestPath: null,
       playbackReadyAt: null,
       durationSec: null,
+      errorMessage: null,
+      errorCode: null,
+      retryCount: 0,
+      maxRetryCount: 2,
+      lastRetryAt: null,
     },
     lastStartedAt: null,
     lastEndedAt: null,
@@ -136,8 +155,15 @@ export function normalizeLiveSession(value: unknown): LiveClassSession | null {
       egressId: asNullableString(recordingRaw.egressId),
       status: asRecordingStatus(recordingRaw.status),
       storagePath: asNullableString(recordingRaw.storagePath),
+      backupManifestPath: asNullableString(recordingRaw.backupManifestPath),
+      backupLiveManifestPath: asNullableString(recordingRaw.backupLiveManifestPath),
       playbackReadyAt: asNullableString(recordingRaw.playbackReadyAt),
       durationSec: asFiniteNumber(recordingRaw.durationSec),
+      errorMessage: asNullableString(recordingRaw.errorMessage),
+      errorCode: asFiniteNumber(recordingRaw.errorCode),
+      retryCount: asNonNegativeInteger(recordingRaw.retryCount, 0),
+      maxRetryCount: asNonNegativeInteger(recordingRaw.maxRetryCount, 2) || 2,
+      lastRetryAt: asNullableString(recordingRaw.lastRetryAt),
     },
     lastStartedAt: asNullableString(raw.lastStartedAt),
     lastEndedAt: asNullableString(raw.lastEndedAt),

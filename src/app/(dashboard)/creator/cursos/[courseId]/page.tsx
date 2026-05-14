@@ -915,6 +915,50 @@ export default function CourseBuilderPage() {
     [courseId],
   );
 
+  const handleCheckLiveRecording = useCallback(
+    async (lesson: Lesson, classItem: ClassData) => {
+      if (!courseId || classItem.type !== "live") return;
+      const user = auth.currentUser;
+      if (!user) {
+        toast.error("Inicia sesión para revisar la grabación");
+        return;
+      }
+
+      setLiveActionLoadingMap((prev) => ({ ...prev, [classItem.id]: true }));
+      try {
+        const token = await user.getIdToken();
+        const searchParams = new URLSearchParams();
+        searchParams.set("courseId", courseId);
+        if (lesson.id.trim()) searchParams.set("lessonId", lesson.id.trim());
+        const query = searchParams.toString();
+        const response = await fetch(
+          `/api/live/classes/${encodeURIComponent(classItem.id)}/recording${query ? `?${query}` : ""}`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          },
+        );
+        const payload = (await response.json().catch(() => null)) as
+          | { success?: boolean; data?: { url?: string }; error?: string }
+          | null;
+        if (!response.ok || !payload?.success) {
+          throw new Error(payload?.error || "La grabación todavía no está disponible");
+        }
+        toast.success("Grabación encontrada y estado actualizado");
+      } catch (error) {
+        console.error(error);
+        toast.error(
+          error instanceof Error ? error.message : "No se pudo revisar la grabación",
+        );
+      } finally {
+        setLiveActionLoadingMap((prev) => ({ ...prev, [classItem.id]: false }));
+      }
+    },
+    [courseId],
+  );
+
   return (
     <div className="space-y-6">
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -1194,6 +1238,7 @@ export default function CourseBuilderPage() {
                       onEndLiveClass={handleEndLiveClass}
                       onJoinLiveClass={handleJoinLiveClass}
                       onCopyLiveLink={handleCopyLiveClassLink}
+                      onCheckLiveRecording={handleCheckLiveRecording}
                       liveActionLoadingMap={liveActionLoadingMap}
                       showCreationMetadata={showCreationMetadata}
                     />

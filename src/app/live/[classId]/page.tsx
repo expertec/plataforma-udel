@@ -330,6 +330,7 @@ function LiveRoomConference() {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [raisedHands, setRaisedHands] = useState<Record<string, RaisedHandEntry>>({});
   const [handRaised, setHandRaised] = useState(false);
+  const [showReactionBar, setShowReactionBar] = useState(false);
   const [activeReactions, setActiveReactions] = useState<LiveReactionEvent[]>([]);
   const processedSignalIdsRef = useRef<string[]>([]);
   const previousParticipantsCountRef = useRef(0);
@@ -608,37 +609,42 @@ function LiveRoomConference() {
           ))}
         </div>
       ) : null}
-      <div className="pointer-events-none absolute bottom-20 left-1/2 z-20 flex -translate-x-1/2">
-        <div className="pointer-events-auto rounded-2xl border border-slate-700 bg-slate-900/90 px-3 py-2 shadow-xl backdrop-blur">
-          <div className="flex items-center gap-2">
-            {LIVE_REACTIONS.map((emoji) => (
+      {showReactionBar ? (
+        <div className="pointer-events-none absolute bottom-20 left-1/2 z-20 flex w-full -translate-x-1/2 justify-center px-3">
+          <div
+            id="live-reactions-panel"
+            className="pointer-events-auto max-w-[calc(100vw-1.5rem)] rounded-2xl border border-slate-700 bg-slate-900/90 px-3 py-2 shadow-xl backdrop-blur"
+          >
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              {LIVE_REACTIONS.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => {
+                    void sendReaction(emoji);
+                  }}
+                  className="rounded-full bg-slate-800 px-2 py-1 text-lg leading-none hover:bg-slate-700"
+                  title={`Enviar reacción ${emoji}`}
+                  aria-label={`Enviar reacción ${emoji}`}
+                >
+                  {emoji}
+                </button>
+              ))}
               <button
-                key={emoji}
                 type="button"
-                onClick={() => {
-                  void sendReaction(emoji);
-                }}
-                className="rounded-full bg-slate-800 px-2 py-1 text-lg leading-none hover:bg-slate-700"
-                title={`Enviar reacción ${emoji}`}
-                aria-label={`Enviar reacción ${emoji}`}
+                onClick={toggleHandRaised}
+                className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                  handRaised
+                    ? "bg-amber-500 text-amber-950 hover:bg-amber-400"
+                    : "bg-sky-600 text-white hover:bg-sky-500"
+                }`}
               >
-                {emoji}
+                {handRaised ? "Bajar mano" : "Levantar mano"}
               </button>
-            ))}
-            <button
-              type="button"
-              onClick={toggleHandRaised}
-              className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                handRaised
-                  ? "bg-amber-500 text-amber-950 hover:bg-amber-400"
-                  : "bg-sky-600 text-white hover:bg-sky-500"
-              }`}
-            >
-              {handRaised ? "Bajar mano" : "Levantar mano"}
-            </button>
+            </div>
           </div>
         </div>
-      </div>
+      ) : null}
       <LayoutContextProvider onWidgetChange={setWidgetState}>
         <div className="flex min-h-0 flex-1">
           <div className="flex min-h-0 flex-1 flex-col">
@@ -688,6 +694,27 @@ function LiveRoomConference() {
                 >
                   {isScreenSharing ? "Detener pantalla" : "Compartir pantalla"}
                 </TrackToggle>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowReactionBar((current) => !current);
+                  }}
+                  aria-controls="live-reactions-panel"
+                  aria-expanded={showReactionBar}
+                  className={`rounded-lg border px-3 py-2 text-sm font-semibold transition ${
+                    handRaised
+                      ? "border-amber-400 bg-amber-500 text-amber-950 hover:bg-amber-400"
+                      : showReactionBar
+                        ? "border-sky-500 bg-sky-600 text-white hover:bg-sky-500"
+                        : "border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800"
+                  }`}
+                >
+                  {showReactionBar
+                    ? "Ocultar reacciones"
+                    : handRaised
+                      ? "Reacciones + mano arriba"
+                      : "Reacciones"}
+                </button>
                 <ChatToggle>
                   Mensajes
                 </ChatToggle>

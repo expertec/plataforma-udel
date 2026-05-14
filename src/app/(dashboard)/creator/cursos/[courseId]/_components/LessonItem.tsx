@@ -22,6 +22,7 @@ type LessonItemProps = {
   onEndLiveClass?: (lesson: Lesson, classItem: ClassData) => void;
   onJoinLiveClass?: (lesson: Lesson, classItem: ClassData) => void;
   onCopyLiveLink?: (lesson: Lesson, classItem: ClassData) => void;
+  onCheckLiveRecording?: (lesson: Lesson, classItem: ClassData) => void;
   liveActionLoadingMap?: Record<string, boolean>;
   showCreationMetadata?: boolean;
 };
@@ -55,6 +56,7 @@ export function LessonItem({
   onEndLiveClass,
   onJoinLiveClass,
   onCopyLiveLink,
+  onCheckLiveRecording,
   liveActionLoadingMap = {},
   showCreationMetadata = false,
 }: LessonItemProps) {
@@ -150,6 +152,7 @@ export function LessonItem({
                 onEndLiveClass={(classItem) => onEndLiveClass?.(lesson, classItem)}
                 onJoinLiveClass={(classItem) => onJoinLiveClass?.(lesson, classItem)}
                 onCopyLiveLink={(classItem) => onCopyLiveLink?.(lesson, classItem)}
+                onCheckLiveRecording={(classItem) => onCheckLiveRecording?.(lesson, classItem)}
                 liveActionLoading={liveActionLoadingMap[cls.id] ?? false}
                 dragProps={{
                   draggable: canReorderClasses,
