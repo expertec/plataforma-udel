@@ -6,6 +6,7 @@ export const INTEGRATION_API_KEY_PREFIX = "udlx_live";
 export const DEFAULT_API_KEY_TTL_DAYS = 90;
 export const PLATFORM_SCOPE = "platform.*";
 export const FINANCE_WEBHOOK_SCOPE = "finance.webhook.student-registration";
+export const FINANCE_WEBHOOK_ARCHIVE_SCOPE = "finance.webhook.student-deactivation";
 
 type KeyStatus = "active" | "revoked";
 type RouteStatus = KeyStatus | "expired";

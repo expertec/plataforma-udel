@@ -23,6 +23,7 @@ import * as XLSX from "xlsx";
 import { auth } from "@/lib/firebase/client";
 import { getGroupsByPlantel, getGroupsForTeacher } from "@/lib/firebase/groups-service";
 import { db } from "@/lib/firebase/firestore";
+import { isStudentStatusActive } from "@/lib/students/status";
 
 const ACTIVITY_DAYS_THRESHOLD = 7;
 const SUBMISSION_DAYS_THRESHOLD = 14;
@@ -300,7 +301,9 @@ export function StudentDropoutRiskTab({ scopeTeacherId = null, scopePlantelId = 
           groupName?: unknown;
           enrolledAt?: unknown;
           createdAt?: unknown;
+          status?: unknown;
         };
+        if (!isStudentStatusActive(data.status)) return;
         const studentId =
           typeof data.studentId === "string" && data.studentId.trim().length > 0
             ? data.studentId.trim()
@@ -368,7 +371,12 @@ export function StudentDropoutRiskTab({ scopeTeacherId = null, scopePlantelId = 
 
       const profileByStudent = new Map<
         string,
-        { whatsapp: string; dropoutRiskTag: DropoutRiskTag; notes: DropoutRiskNote[] }
+        {
+          whatsapp: string;
+          dropoutRiskTag: DropoutRiskTag;
+          notes: DropoutRiskNote[];
+          isActive: boolean;
+        }
       >();
       const profileTasks = chunkArray(
         students.map((student) => student.studentId),
@@ -385,6 +393,7 @@ export function StudentDropoutRiskTab({ scopeTeacherId = null, scopePlantelId = 
               whatsapp: resolveStudentWhatsApp(data),
               dropoutRiskTag: resolveDropoutRiskTag(data.dropoutRiskTag),
               notes: resolveDropoutRiskNotes(data.dropoutRiskNotes),
+              isActive: isStudentStatusActive(data.estado ?? data.status),
             });
           });
           return;
@@ -402,6 +411,7 @@ export function StudentDropoutRiskTab({ scopeTeacherId = null, scopePlantelId = 
                 whatsapp: resolveStudentWhatsApp(data),
                 dropoutRiskTag: resolveDropoutRiskTag(data.dropoutRiskTag),
                 notes: resolveDropoutRiskNotes(data.dropoutRiskNotes),
+                isActive: isStudentStatusActive(data.estado ?? data.status),
               });
             } catch {
               // Si un alumno puntual no es legible por reglas, se omite sin romper el reporte completo.
@@ -411,8 +421,16 @@ export function StudentDropoutRiskTab({ scopeTeacherId = null, scopePlantelId = 
       });
       await runInBatches(profileTasks, QUERY_BATCH_SIZE);
 
+      const activeStudents = students.filter(
+        (student) => profileByStudent.get(student.studentId)?.isActive !== false,
+      );
+      if (activeStudents.length === 0) {
+        setRows([]);
+        return;
+      }
+
       const lastProgressByStudent = new Map<string, Date>();
-      const progressTasks = students.flatMap((student) =>
+      const progressTasks = activeStudents.flatMap((student) =>
         student.enrollmentIds.map((enrollmentId) => async () => {
           const progressSnap = await getDocs(
             query(
@@ -442,7 +460,7 @@ export function StudentDropoutRiskTab({ scopeTeacherId = null, scopePlantelId = 
       await runInBatches(progressTasks, QUERY_BATCH_SIZE);
 
       const lastSubmissionByStudent = new Map<string, Date>();
-      const submissionTasks = students.map((student) => async () => {
+      const submissionTasks = activeStudents.map((student) => async () => {
         if (scopedGroupIds.size > 0) {
           const snaps = await Promise.all(
             student.groupIds
@@ -488,7 +506,7 @@ export function StudentDropoutRiskTab({ scopeTeacherId = null, scopePlantelId = 
       await runInBatches(submissionTasks, QUERY_BATCH_SIZE);
 
       const now = new Date();
-      const computed = students.map((student) => {
+      const computed = activeStudents.map((student) => {
         const lastProgress = lastProgressByStudent.get(student.studentId) ?? null;
         const lastSubmission = lastSubmissionByStudent.get(student.studentId) ?? null;
         const lastActivity = maxDate(lastProgress, lastSubmission);

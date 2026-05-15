@@ -107,35 +107,47 @@ export function StudentGradesModal({
           new Set(scopeGroupIds.map((groupId) => groupId.trim()).filter((groupId) => groupId.length > 0)),
         );
         let enrollmentPermissionDenied = false;
-        const enrollmentDocs =
-          normalizedScopeGroupIds.length > 0
-            ? (
-                await Promise.allSettled(
-                  normalizedScopeGroupIds.map((groupId) =>
-                    getDoc(doc(db, "studentEnrollments", `${groupId}_${studentId}`)),
-                  ),
-                )
+        let enrollmentDocs:
+          | Array<Awaited<ReturnType<typeof getDoc>>>
+          | Array<Awaited<ReturnType<typeof getDocs>>["docs"][number]> = [];
+        if (normalizedScopeGroupIds.length > 0) {
+          enrollmentDocs = (
+            await Promise.allSettled(
+              normalizedScopeGroupIds.map((groupId) =>
+                getDoc(doc(db, "studentEnrollments", `${groupId}_${studentId}`)),
+              ),
+            )
+          ).flatMap((result) => {
+            if (result.status === "rejected") {
+              if (isPermissionDeniedError(result.reason)) {
+                enrollmentPermissionDenied = true;
+                return [];
+              }
+              throw result.reason;
+            }
+            return result.value.exists() ? [result.value] : [];
+          });
+        } else {
+          try {
+            enrollmentDocs = (
+              await getDocs(
+                query(
+                  collection(db, "studentEnrollments"),
+                  ...(scopePlantelId
+                    ? [where("studentId", "==", studentId), where("plantelId", "==", scopePlantelId)]
+                    : [where("studentId", "==", studentId)]),
+                ),
               )
-                .flatMap((result) => {
-                  if (result.status === "rejected") {
-                    if (isPermissionDeniedError(result.reason)) {
-                      enrollmentPermissionDenied = true;
-                      return [];
-                    }
-                    throw result.reason;
-                  }
-                  return result.value.exists() ? [result.value] : [];
-                })
-            : (
-                await getDocs(
-                  query(
-                    collection(db, "studentEnrollments"),
-                    ...(scopePlantelId
-                      ? [where("studentId", "==", studentId), where("plantelId", "==", scopePlantelId)]
-                      : [where("studentId", "==", studentId)]),
-                  ),
-                )
-              ).docs;
+            ).docs;
+          } catch (error) {
+            if (isPermissionDeniedError(error)) {
+              enrollmentPermissionDenied = true;
+              enrollmentDocs = [];
+            } else {
+              throw error;
+            }
+          }
+        }
 
         const closureRows = new Map<string, GradeRow>();
         const enrollmentGroupNames = new Map<string, string>();

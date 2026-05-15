@@ -587,7 +587,9 @@ export async function POST(request: NextRequest) {
       "";
 
     if (!created) {
-      const authUpdate: { displayName?: string; password?: string } = {};
+      const authUpdate: { displayName?: string; password?: string; disabled?: boolean } = {
+        disabled: false,
+      };
       if ((userRecord.displayName ?? "") !== normalizedName) {
         authUpdate.displayName = normalizedName;
       }

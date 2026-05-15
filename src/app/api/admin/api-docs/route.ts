@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { FINANCE_WEBHOOK_SCOPE } from "@/lib/security/integration-api-keys";
+import {
+  FINANCE_WEBHOOK_ARCHIVE_SCOPE,
+  FINANCE_WEBHOOK_SCOPE,
+} from "@/lib/security/integration-api-keys";
 import {
   requireAdminTeacher,
   toRouteErrorResponse,
@@ -34,7 +37,8 @@ function resolvePublicBaseUrl(request: NextRequest): string {
 }
 
 function buildGuideMarkdown(baseUrl: string): string {
-  const endpoint = `${baseUrl}/api/finance/webhook/student-registration`;
+  const registrationEndpoint = `${baseUrl}/api/finance/webhook/student-registration`;
+  const deactivationEndpoint = `${baseUrl}/api/finance/webhook/student-deactivation`;
   const defaultPassword = process.env.FINANCE_WEBHOOK_DEFAULT_PASSWORD?.trim() || "ascensoUDEL";
   const supportContact = process.env.API_DOCS_DEFAULT_CONTACT?.trim() || "Equipo Plataforma UDEL";
 
@@ -42,12 +46,28 @@ function buildGuideMarkdown(baseUrl: string): string {
 
 ## 1) Endpoint de alta de alumnos (Webhook/API entrante)
 
-- URL: \`${endpoint}\`
+- URL: \`${registrationEndpoint}\`
 - Método: \`POST\`
 - Content-Type: \`application/json\`
 - Scope recomendado de API key: \`${FINANCE_WEBHOOK_SCOPE}\`
 
-## 2) Autenticación
+El endpoint de alta se mantiene compatible con el payload actual. Si el alumno ya existe pero estaba archivado, la plataforma lo reactiva y conserva el flujo normal de alta.
+
+## 2) Endpoint de baja de alumnos (Archivado)
+
+- URL: \`${deactivationEndpoint}\`
+- Método: \`POST\`
+- Content-Type: \`application/json\`
+- Scope recomendado de API key: \`${FINANCE_WEBHOOK_ARCHIVE_SCOPE}\`
+
+La baja **no elimina** al alumno. La plataforma lo archiva:
+
+- se conserva su historial
+- deja de aparecer en listados operativos
+- deja de contar en grupos y estadísticas
+- se bloquea su acceso a la plataforma
+
+## 3) Autenticación
 
 Puedes enviar la llave en cualquiera de estos headers:
 
@@ -59,7 +79,7 @@ Formato de llave emitida por panel:
 
 \`udlx_live_<publicId>_<secret>\`
 
-## 3) Payload mínimo recomendado
+## 4) Payload mínimo recomendado para alta
 
 \`\`\`json
 {
@@ -76,7 +96,7 @@ Formato de llave emitida por panel:
 
 Nota: si no envías \`password\`, la plataforma usará la contraseña por defecto configurada (\`${defaultPassword}\`).
 
-## 4) Payload extendido (opcional)
+## 5) Payload extendido para alta (opcional)
 
 \`\`\`json
 {
@@ -111,23 +131,51 @@ Programa de estudio:
 - \`program\`: nombre directo del programa.
 - \`programId\`: ID del documento en \`programs\` (tiene prioridad sobre \`program\`).
 
-## 5) Respuestas esperadas
+## 6) Payload recomendado para baja
+
+\`\`\`json
+{
+  "event": "student.deactivated",
+  "student": {
+    "email": "alumno@dominio.com"
+  }
+}
+\`\`\`
+
+También puedes enviar un identificador explícito:
+
+\`\`\`json
+{
+  "event": "alumno.baja",
+  "eventId": "pv-2026-baja-0007",
+  "student": {
+    "studentId": "uid_o_id_externo",
+    "email": "alumno@dominio.com"
+  },
+  "reason": "Baja administrativa"
+}
+\`\`\`
+
+La baja acepta \`studentId\`, \`alumnoId\`, \`uid\`, \`userId\` o \`email/correo\`.
+
+## 7) Respuestas esperadas
 
 - \`200\`: alumno creado o sincronizado correctamente.
+- \`200\`: alumno archivado correctamente.
 - \`202\`: evento ignorado (no corresponde a alumno).
 - \`400\`: payload inválido o campos requeridos faltantes.
 - \`401\`: autenticación inválida.
 - \`409\`: el correo existe con rol distinto a estudiante.
 - \`500\`: error interno del servidor.
 
-## 6) Recomendaciones operativas
+## 8) Recomendaciones operativas
 
 - Crear una API key por integración/sistema.
 - Definir expiración y rotar llaves de forma periódica.
 - Revocar inmediatamente llaves comprometidas.
 - Registrar \`eventId\` para trazabilidad e idempotencia del lado integrador.
 
-## 7) Soporte
+## 9) Soporte
 
 - Contacto técnico: ${supportContact}
 `;

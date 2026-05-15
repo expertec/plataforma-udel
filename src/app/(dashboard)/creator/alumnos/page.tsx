@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MoreVertical } from "lucide-react";
-import { collection, getDocs, query, where, type DocumentSnapshot } from "firebase/firestore";
+import { type DocumentSnapshot } from "firebase/firestore";
 import toast from "react-hot-toast";
 import * as XLSX from "xlsx";
 import { createPortal } from "react-dom";
@@ -17,16 +17,22 @@ import {
 import { getPrograms } from "@/lib/firebase/programs-service";
 import {
   createStudentAccount,
-  deactivateStudent,
+  archiveStudent,
   getStudentUsersPaginated,
   getStudentsCount,
   StudentUser,
   createStudentIfNotExists,
   checkStudentExists,
+  updateStudentPlantelAssignment,
 } from "@/lib/firebase/students-service";
 import { getGroupsByPlantel, getGroupStudents, getGroupsForTeacher } from "@/lib/firebase/groups-service";
-import { getUserPlantelAssignment, PlantelAssignment } from "@/lib/firebase/planteles-service";
-import { db } from "@/lib/firebase/firestore";
+import {
+  getPlanteles,
+  getUserPlantelAssignment,
+  Plantel,
+  PlantelAssignment,
+} from "@/lib/firebase/planteles-service";
+import { suggestPlantelByPhone, type SuggestedPlantelByPhone } from "@/lib/planteles/lada-suggestions";
 import { StudentAllSubmissionsModal } from "./_components/StudentAllSubmissionsModal";
 import { StudentGradesModal } from "./_components/StudentGradesModal";
 import { StudentDropoutRiskTab } from "./_components/StudentDropoutRiskTab";
@@ -50,6 +56,23 @@ type ImportResult = {
   message?: string;
 };
 
+type ApiErrorResponse = {
+  error?: string;
+};
+
+type UpdatePasswordsResponse = ApiErrorResponse & {
+  success?: boolean;
+  results?: Array<{
+    email: string;
+    success: boolean;
+    error?: string;
+  }>;
+  summary?: {
+    updated?: number;
+    failed?: number;
+  };
+};
+
 type ActionMenuState = {
   studentId: string;
   top: number;
@@ -57,27 +80,49 @@ type ActionMenuState = {
   openUp: boolean;
 };
 
-const FIRESTORE_IN_QUERY_LIMIT = 30;
-
-function chunkArray<T>(items: T[], chunkSize: number): T[][] {
-  if (chunkSize <= 0) return [items];
-  const chunks: T[][] = [];
-  for (let idx = 0; idx < items.length; idx += chunkSize) {
-    chunks.push(items.slice(idx, idx + chunkSize));
-  }
-  return chunks;
-}
-
-const isPermissionDeniedError = (error: unknown): boolean =>
-  typeof error === "object" &&
-  error !== null &&
-  "code" in error &&
-  (error as { code?: unknown }).code === "permission-denied";
-
 const isValidEmail = (email: string): boolean => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
 };
+
+function getStudentPlantelIds(student: StudentUser): string[] {
+  return Array.isArray(student.plantelIds)
+    ? student.plantelIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+}
+
+function getStudentPlantelNames(student: StudentUser): string[] {
+  return Array.isArray(student.plantelNames)
+    ? student.plantelNames.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+}
+
+function getStudentSinglePlantelId(student: StudentUser): string {
+  const plantelIds = getStudentPlantelIds(student);
+  return plantelIds.length === 1 ? plantelIds[0] : "";
+}
+
+function getStudentPlantelSummary(student: StudentUser): string {
+  const plantelNames = getStudentPlantelNames(student);
+  if (plantelNames.length > 0) {
+    return plantelNames.join(", ");
+  }
+
+  const plantelIds = getStudentPlantelIds(student);
+  if (plantelIds.length > 0) {
+    return plantelIds.join(", ");
+  }
+
+  return "Sin plantel";
+}
+
+function getStudentPhoneForPlantelSuggestion(student: StudentUser): string {
+  return student.whatsapp ?? student.phone ?? "";
+}
+
+function getStudentGuidePhone(student: StudentUser): string {
+  return getStudentPhoneForPlantelSuggestion(student).trim();
+}
 
 export default function AlumnosPage() {
   const [students, setStudents] = useState<StudentUser[]>([]);
@@ -100,8 +145,10 @@ export default function AlumnosPage() {
   const [programOptions, setProgramOptions] = useState<string[]>([]);
   const [programLoading, setProgramLoading] = useState(false);
   const [programUpdatingId, setProgramUpdatingId] = useState<string | null>(null);
+  const [planteles, setPlanteles] = useState<Plantel[]>([]);
+  const [plantelesLoading, setPlantelesLoading] = useState(false);
+  const [plantelUpdatingId, setPlantelUpdatingId] = useState<string | null>(null);
   const [openActionMenu, setOpenActionMenu] = useState<ActionMenuState | null>(null);
-  const [createModalOpen, setCreateModalOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [plantelAssignment, setPlantelAssignment] = useState<PlantelAssignment | null>(null);
@@ -134,7 +181,6 @@ export default function AlumnosPage() {
   const searchTokenRef = useRef(0);
 
   // Estado para paginación
-  const [lastDoc, setLastDoc] = useState<DocumentSnapshot | null>(null);
   const [hasMoreStudents, setHasMoreStudents] = useState(false);
   const [totalStudentsCount, setTotalStudentsCount] = useState<number | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -199,7 +245,6 @@ export default function AlumnosPage() {
     } else {
       setLoading(true);
       lastDocRef.current = null;
-      setLastDoc(null);
       setStudents([]);
     }
 
@@ -214,105 +259,15 @@ export default function AlumnosPage() {
         }
 
         if (isCoordinator) {
-          // En pestaña de Alumnos, coordinación debe ver solo alumnos vinculados a su plantel.
+          // Coordinación consulta alumnos desde users/{uid}.plantelIds para reflejar
+          // el padrón completo del plantel, no solo los que ya están inscritos en grupos.
           const scopedGroups = await getGroupsByPlantel(coordinatorPlantelId);
           const scopedGroupIds = Array.from(
             new Set(scopedGroups.map((group) => group.id).filter((groupId) => groupId.trim().length > 0)),
           );
           setCoordinatorScopeGroupIds(scopedGroupIds);
-
-          if (scopedGroupIds.length === 0) {
-            setStudents([]);
-            setTotalStudentsCount(0);
-            setHasMoreStudents(false);
-            setLastDoc(null);
-            lastDocRef.current = null;
-            return;
-          }
-
-          const studentMap = new Map<string, StudentUser>();
-          let enrollmentReadDenied = false;
-          try {
-            const enrollmentTasks = chunkArray(scopedGroupIds, FIRESTORE_IN_QUERY_LIMIT).map((groupIdsBatch) =>
-              getDocs(
-                query(collection(db, "studentEnrollments"), where("groupId", "in", groupIdsBatch)),
-              ),
-            );
-            const enrollmentSnaps = await Promise.all(enrollmentTasks);
-            enrollmentSnaps.forEach((snapshot) => {
-              snapshot.docs.forEach((docSnap) => {
-                const data = docSnap.data() as {
-                  studentId?: unknown;
-                  studentName?: unknown;
-                  studentEmail?: unknown;
-                  status?: unknown;
-                };
-                const studentId =
-                  typeof data.studentId === "string" && data.studentId.trim().length > 0
-                    ? data.studentId.trim()
-                    : "";
-                if (!studentId) return;
-                if (studentMap.has(studentId)) return;
-                const studentEmail =
-                  typeof data.studentEmail === "string" ? data.studentEmail.trim() : "";
-                if (!studentEmail) return;
-                const studentName =
-                  typeof data.studentName === "string" && data.studentName.trim().length > 0
-                    ? data.studentName.trim()
-                    : "Alumno";
-                const status = typeof data.status === "string" ? data.status : "active";
-
-                studentMap.set(studentId, {
-                  id: studentId,
-                  name: studentName,
-                  email: studentEmail,
-                  estado: status,
-                  program: "",
-                });
-              });
-            });
-          } catch (error) {
-            if (!isPermissionDeniedError(error)) throw error;
-            enrollmentReadDenied = true;
-            console.warn(
-              "Sin permisos para leer studentEnrollments en vista de coordinador. Se usará fallback por grupos/students.",
-              error,
-            );
-          }
-
-          // Fallback para coordinador: reconstruir listado desde subcolecciones legibles del grupo.
-          // Esto evita romper la pestaña cuando hay docs legacy/no legibles en studentEnrollments.
-          if (enrollmentReadDenied || studentMap.size === 0) {
-            const groupStudentSnaps = await Promise.all(
-              scopedGroupIds.map((groupId) => getGroupStudents(groupId)),
-            );
-            groupStudentSnaps.forEach((groupStudents) => {
-              groupStudents.forEach((student) => {
-                if (!student.id || !student.studentEmail) return;
-                if (studentMap.has(student.id)) return;
-                studentMap.set(student.id, {
-                  id: student.id,
-                  name: student.studentName || "Alumno",
-                  email: student.studentEmail,
-                  estado: student.status || "active",
-                  program: "",
-                });
-              });
-            });
-          }
-
-          const nextStudents = Array.from(studentMap.values()).sort((a, b) =>
-            a.name.localeCompare(b.name, "es"),
-          );
-          setStudents(nextStudents);
-          setTotalStudentsCount(nextStudents.length);
-          setHasMoreStudents(false);
-          setLastDoc(null);
-          lastDocRef.current = null;
-          return;
         }
 
-        // Usar paginación para admin teachers.
         const result = await getStudentUsersPaginated(
           50, // Cargar 50 estudiantes por página
           loadMore ? lastDocRef.current : null,
@@ -324,14 +279,14 @@ export default function AlumnosPage() {
           setStudents((prev) => [...prev, ...result.students]);
         } else {
           setStudents(result.students);
-          // Obtener conteo total solo en la primera carga
           const count = await getStudentsCount(coordinatorPlantelId);
           setTotalStudentsCount(count);
         }
 
-        setCoordinatorScopeGroupIds([]);
+        if (isAdmin) {
+          setCoordinatorScopeGroupIds([]);
+        }
         lastDocRef.current = result.lastDoc;
-        setLastDoc(result.lastDoc);
         setHasMoreStudents(result.hasMore);
         return;
       }
@@ -397,6 +352,42 @@ export default function AlumnosPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isAdminTeacherRole(userRole)) {
+      setPlanteles([]);
+      setPlantelesLoading(false);
+      return;
+    }
+
+    let active = true;
+    const loadPlanteles = async () => {
+      setPlantelesLoading(true);
+      try {
+        const data = await getPlanteles();
+        if (!active) return;
+        setPlanteles(data);
+      } catch (err) {
+        console.error(err);
+        toast.error("No se pudieron cargar los planteles");
+      } finally {
+        if (active) setPlantelesLoading(false);
+      }
+    };
+
+    void loadPlanteles();
+    return () => {
+      active = false;
+    };
+  }, [userRole]);
+
+  const applyStudentPatch = useCallback((studentId: string, patch: Partial<StudentUser>) => {
+    setStudents((prev) => prev.map((student) => (student.id === studentId ? { ...student, ...patch } : student)));
+    setSearchResults((prev) => prev.map((student) => (student.id === studentId ? { ...student, ...patch } : student)));
+    setSelectedStudent((prev) => (prev?.id === studentId ? { ...prev, ...patch } : prev));
+    setSelectedStudentForGrades((prev) => (prev?.id === studentId ? { ...prev, ...patch } : prev));
+    setSelectedStudentForSubmissions((prev) => (prev?.id === studentId ? { ...prev, ...patch } : prev));
+  }, []);
+
   const handleCreateStudent = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!newStudent.email || !newStudent.password) {
@@ -451,20 +442,64 @@ export default function AlumnosPage() {
         }),
       });
 
-      const data = await response.json();
+      const data = (await response.json()) as ApiErrorResponse;
       if (!response.ok) {
         throw new Error(data.error || "No se pudo actualizar el programa");
       }
 
-      setStudents((prev) =>
-        prev.map((s) => (s.id === student.id ? { ...s, program: programName } : s)),
-      );
+      applyStudentPatch(student.id, { program: programName });
       toast.success("Programa actualizado");
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
-      toast.error(err.message || "No se pudo actualizar el programa");
+      toast.error(err instanceof Error ? err.message : "No se pudo actualizar el programa");
     } finally {
       setProgramUpdatingId(null);
+    }
+  };
+
+  const handleUpdatePlantelInline = async (student: StudentUser, nextPlantelId: string) => {
+    const currentPlantelIds = getStudentPlantelIds(student);
+    if (currentPlantelIds.length > 1) {
+      toast.error("Este alumno ya tiene varios planteles vinculados. Revísalo manualmente antes de cambiarlo.");
+      return;
+    }
+
+    const normalizedPlantelId = nextPlantelId.trim();
+    const currentPlantelId = currentPlantelIds[0] ?? "";
+    if (currentPlantelId === normalizedPlantelId) return;
+
+    const selectedPlantel = normalizedPlantelId
+      ? planteles.find((plantel) => plantel.id === normalizedPlantelId) ?? null
+      : null;
+
+    if (normalizedPlantelId && !selectedPlantel) {
+      toast.error("El plantel seleccionado ya no está disponible");
+      return;
+    }
+
+    setPlantelUpdatingId(student.id);
+    try {
+      await updateStudentPlantelAssignment({
+        studentId: student.id,
+        plantelId: selectedPlantel?.id ?? null,
+        plantelName: selectedPlantel?.name ?? null,
+      });
+
+      applyStudentPatch(student.id, {
+        plantelIds: selectedPlantel ? [selectedPlantel.id] : [],
+        plantelNames: selectedPlantel ? [selectedPlantel.name] : [],
+      });
+
+      toast.success(
+        selectedPlantel
+          ? `Plantel asignado: ${selectedPlantel.name}`
+          : "Plantel removido del alumno",
+      );
+    } catch (err) {
+      console.error(err);
+      toast.error(err instanceof Error ? err.message : "No se pudo actualizar el plantel");
+    } finally {
+      setPlantelUpdatingId(null);
     }
   };
 
@@ -706,9 +741,31 @@ export default function AlumnosPage() {
       (student) =>
         student.name.toLowerCase().includes(query) ||
         student.email.toLowerCase().includes(query) ||
-        (student.program ?? "").toLowerCase().includes(query)
+        (student.program ?? "").toLowerCase().includes(query) ||
+        getStudentPlantelSummary(student).toLowerCase().includes(query) ||
+        (student.phone ?? "").toLowerCase().includes(query) ||
+        (student.whatsapp ?? "").toLowerCase().includes(query)
       );
   }, [students, searchResults, searchQuery, isSearchActive, canRunGlobalSearch]);
+
+  const plantelSuggestionByStudentId = useMemo(() => {
+    const suggestions = new Map<string, SuggestedPlantelByPhone>();
+    if (planteles.length === 0) return suggestions;
+
+    const allStudents = new Map<string, StudentUser>();
+    students.forEach((student) => allStudents.set(student.id, student));
+    searchResults.forEach((student) => allStudents.set(student.id, student));
+
+    allStudents.forEach((student, studentId) => {
+      if (getStudentPlantelIds(student).length > 0) return;
+      const suggestion = suggestPlantelByPhone(planteles, getStudentPhoneForPlantelSuggestion(student));
+      if (suggestion) {
+        suggestions.set(studentId, suggestion);
+      }
+    });
+
+    return suggestions;
+  }, [students, searchResults, planteles]);
 
   const actionMenuStudent = useMemo(() => {
     if (!openActionMenu) return null;
@@ -866,13 +923,13 @@ export default function AlumnosPage() {
         ),
       });
 
-      const data = await response.json();
+      const data = (await response.json()) as UpdatePasswordsResponse;
 
       if (!response.ok) {
         throw new Error(data.error || "Error al actualizar contraseñas");
       }
 
-      const results: ImportResult[] = data.results.map((r: any) => ({
+      const results: ImportResult[] = (data.results ?? []).map((r) => ({
         row: validRows.find((v) => v.email === r.email)?.row ?? 0,
         email: r.email,
         status: r.success ? "created" : "error",
@@ -881,11 +938,11 @@ export default function AlumnosPage() {
 
       setPasswordResults(results);
       toast.success(
-        `Actualización finalizada: ${data.summary.updated} actualizadas, ${data.summary.failed} errores.`
+        `Actualización finalizada: ${data.summary?.updated ?? 0} actualizadas, ${data.summary?.failed ?? 0} errores.`
       );
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
-      toast.error(err.message || "Error al actualizar contraseñas");
+      toast.error(err instanceof Error ? err.message : "Error al actualizar contraseñas");
     } finally {
       setUpdatingPasswords(false);
     }
@@ -893,15 +950,25 @@ export default function AlumnosPage() {
 
   const handleDeleteStudent = async (student: StudentUser) => {
     if (!student.id) return;
-    if (!window.confirm(`¿Eliminar a ${student.name}? Se eliminarán sus inscripciones.`)) return;
+    if (
+      !window.confirm(
+        `¿Dar de baja a ${student.name}? El alumno quedará archivado, perderá acceso y dejará de contar en grupos y estadísticas.`,
+      )
+    ) {
+      return;
+    }
     setDeletingStudentId(student.id);
     try {
-      await deactivateStudent(student.id);
-      toast.success("Alumno desactivado");
+      await archiveStudent({
+        userId: student.id,
+        email: student.email,
+        reason: "Baja desde panel de alumnos",
+      });
+      toast.success("Alumno dado de baja");
       await loadStudents();
     } catch (err) {
       console.error(err);
-      toast.error("No se pudo eliminar al alumno");
+      toast.error("No se pudo dar de baja al alumno");
     } finally {
       setDeletingStudentId(null);
     }
@@ -987,9 +1054,9 @@ export default function AlumnosPage() {
       } else {
         throw new Error(data.error || "Error al actualizar datos");
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
-      toast.error(err.message || "No se pudo actualizar los datos");
+      toast.error(err instanceof Error ? err.message : "No se pudo actualizar los datos");
     } finally {
       setChangingPassword(false);
     }
@@ -1014,7 +1081,7 @@ export default function AlumnosPage() {
         ]),
       });
 
-      const data = await response.json();
+      const data = (await response.json()) as UpdatePasswordsResponse;
 
       if (!response.ok) {
         throw new Error(data.error || "Error al cambiar la contraseña");
@@ -1028,9 +1095,9 @@ export default function AlumnosPage() {
       } else {
         throw new Error(data.results?.[0]?.error || "Error al cambiar la contraseña");
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
-      toast.error(err.message || "No se pudo cambiar la contraseña");
+      toast.error(err instanceof Error ? err.message : "No se pudo cambiar la contraseña");
     } finally {
       setChangingPassword(false);
     }
@@ -1078,8 +1145,10 @@ export default function AlumnosPage() {
           <span className="text-sm text-slate-600">
             {isAdmin
               ? 'Lista de usuarios con rol estudiante (colección "users").'
-              : canViewAllStudents
-                ? 'Lista global de usuarios con rol estudiante (solo lectura).'
+              : isCoordinator
+                ? "Solo se muestran alumnos vinculados a tu plantel."
+                : canViewAllStudents
+                  ? 'Lista global de usuarios con rol estudiante (solo lectura).'
                 : "Solo se muestran los alumnos de los grupos que tienes asignados."}
           </span>
         </div>
@@ -1545,7 +1614,7 @@ export default function AlumnosPage() {
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Buscar por nombre o email..."
+                    placeholder="Buscar por nombre, email, plantel o teléfono..."
                     className="w-full rounded-lg border border-slate-300 px-4 py-2 pl-10 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
                   />
                   <svg
@@ -1609,17 +1678,24 @@ export default function AlumnosPage() {
                       <table className="min-w-full text-sm text-slate-800">
                       <thead className="bg-slate-50 text-xs font-semibold text-slate-600">
                         <tr className="border-b border-slate-200">
-                          <th className="w-[20%] px-4 py-2 text-left">Nombre</th>
-                          <th className="w-[22%] px-4 py-2 text-left">Email</th>
-                          <th className="w-[18%] px-4 py-2 text-left">Programa</th>
-                          <th className="w-[10%] px-4 py-2 text-left">Inscrito</th>
-                          <th className="w-[10%] px-4 py-2 text-left">Estado</th>
-                          <th className="w-[14%] px-4 py-2 text-right">Acciones</th>
+                          <th className="min-w-[180px] px-4 py-2 text-left">Nombre</th>
+                          <th className="min-w-[220px] px-4 py-2 text-left">Email</th>
+                          <th className="min-w-[170px] px-4 py-2 text-left">Programa</th>
+                          <th className="min-w-[240px] px-4 py-2 text-left">Plantel</th>
+                          <th className="min-w-[90px] px-4 py-2 text-left">Inscrito</th>
+                          <th className="min-w-[100px] px-4 py-2 text-left">Estado</th>
+                          <th className="min-w-[120px] px-4 py-2 text-right">Acciones</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {filteredStudents.map((s) => {
                           const isMenuOpen = openActionMenu?.studentId === s.id;
+                          const studentPlantelIds = getStudentPlantelIds(s);
+                          const hasMultiplePlanteles = studentPlantelIds.length > 1;
+                          const currentPlantelId = getStudentSinglePlantelId(s);
+                          const currentPlantelSummary = getStudentPlantelSummary(s);
+                          const plantelSuggestion = plantelSuggestionByStudentId.get(s.id);
+                          const guidePhone = !hasMultiplePlanteles && !currentPlantelId ? getStudentGuidePhone(s) : "";
                           return (
                           <tr key={s.id} className="align-middle">
                             <td className="px-4 py-3 text-sm font-medium text-slate-900">{s.name}</td>
@@ -1646,6 +1722,65 @@ export default function AlumnosPage() {
                                 </select>
                               ) : (
                                 s.program || "—"
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-slate-700">
+                              {isAdminTeacherRole(userRole) ? (
+                                <div className="min-w-[220px] space-y-1">
+                                  <select
+                                    value={hasMultiplePlanteles ? "__multiple__" : currentPlantelId}
+                                    onChange={(e) => handleUpdatePlantelInline(s, e.target.value)}
+                                    disabled={
+                                      plantelesLoading ||
+                                      plantelUpdatingId === s.id ||
+                                      hasMultiplePlanteles
+                                    }
+                                    className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-blue-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-slate-100"
+                                  >
+                                    <option value="">
+                                      {plantelesLoading ? "Cargando..." : "Sin plantel"}
+                                    </option>
+                                    {hasMultiplePlanteles ? (
+                                      <option value="__multiple__">Múltiples planteles</option>
+                                    ) : null}
+                                    {currentPlantelId &&
+                                    !planteles.some((plantel) => plantel.id === currentPlantelId) ? (
+                                      <option value={currentPlantelId}>{currentPlantelSummary}</option>
+                                    ) : null}
+                                    {planteles.map((plantel) => (
+                                      <option key={plantel.id} value={plantel.id}>
+                                        {plantel.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  {hasMultiplePlanteles ? (
+                                    <p className="text-[11px] text-amber-700">
+                                      Vinculado a varios planteles: {currentPlantelSummary}
+                                    </p>
+                                  ) : (
+                                    <div className="space-y-1">
+                                      {plantelSuggestion && plantelSuggestion.plantelId !== currentPlantelId ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleUpdatePlantelInline(s, plantelSuggestion.plantelId)}
+                                          disabled={plantelUpdatingId === s.id}
+                                          className="text-left text-[11px] font-semibold text-blue-600 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                        >
+                                          Sugerido por lada {plantelSuggestion.lada}: {plantelSuggestion.plantelName}
+                                        </button>
+                                      ) : null}
+                                      <p className="text-[11px] text-slate-500">
+                                        {currentPlantelSummary}
+                                        {!currentPlantelId && guidePhone ? ` · ${guidePhone}` : ""}
+                                      </p>
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <>
+                                  {currentPlantelSummary}
+                                  {!currentPlantelId && guidePhone ? ` · ${guidePhone}` : ""}
+                                </>
                               )}
                             </td>
                             <td className="px-4 py-3 text-sm text-slate-600">N/D</td>
@@ -1772,7 +1907,7 @@ export default function AlumnosPage() {
                   disabled={deletingStudentId === actionMenuStudent.id}
                   className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {deletingStudentId === actionMenuStudent.id ? "Eliminando..." : "Eliminar"}
+                  {deletingStudentId === actionMenuStudent.id ? "Archivando..." : "Dar de baja"}
                 </button>
               </div>
             </div>,

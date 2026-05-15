@@ -5,9 +5,12 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useState } from "react";
 import { sendPasswordResetEmail, signInWithEmailAndPassword } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
 import toast from "react-hot-toast";
 import { auth, prepareAuthPersistence } from "@/lib/firebase/client";
+import { db } from "@/lib/firebase/firestore";
 import { resolveUserRole } from "@/lib/firebase/roles";
+import { isStudentStatusBlocked } from "@/lib/students/status";
 import Image from "next/image";
 
 type LoginCardProps = {
@@ -39,6 +42,13 @@ export function LoginCard({
     try {
       await prepareAuthPersistence(remember);
       const cred = await signInWithEmailAndPassword(auth, email, password);
+      const userSnap = await getDoc(doc(db, "users", cred.user.uid));
+      const userData = userSnap.data() as Record<string, unknown> | undefined;
+      if (isStudentStatusBlocked(userData?.estado ?? userData?.status)) {
+        await auth.signOut();
+        toast.error("Tu acceso está archivado. Contacta a administración.");
+        return;
+      }
       const role = await resolveUserRole(cred.user);
 
       if (!role) {
@@ -59,6 +69,8 @@ export function LoginCard({
       const message =
         code === "auth/invalid-credential" || code === "auth/wrong-password" || code === "auth/user-not-found"
           ? "Credenciales inválidas."
+          : code === "auth/user-disabled"
+            ? "Tu acceso está archivado o deshabilitado. Contacta a administración."
           : code === "auth/network-request-failed"
             ? "No se pudo conectar al servicio de acceso. Revisa tu red o intenta sin modo privado."
             : code === "auth/web-storage-unsupported"

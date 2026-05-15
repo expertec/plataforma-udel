@@ -48,8 +48,8 @@ export default function CreatorPage() {
           getCourses(teacherId, DASHBOARD_LIMIT),
           isAdminTeacherRole(role)
             ? getAllGroups(DASHBOARD_LIMIT)
-            : isCoordinator && plantelAssignment?.plantelId
-              ? getCoordinatorScopeGroups(plantelAssignment.plantelId, DASHBOARD_LIMIT)
+            : isCoordinator
+              ? getCoordinatorScopeGroups(plantelAssignment?.plantelId ?? "", user.uid, DASHBOARD_LIMIT)
               : getGroupsForTeacher(user.uid, DASHBOARD_LIMIT),
         ]);
         setCourses(coursesData);

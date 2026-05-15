@@ -13,6 +13,7 @@ import {
   setAssistantTeachers,
   setMentorCourseAccess,
   updateGroupCampusGradeSettings,
+  updateGroupCoordinator,
   updateGroupInPersonMode,
   updateGroupPlantel,
 } from "@/lib/firebase/groups-service";
@@ -57,6 +58,10 @@ export default function GroupDetailPage() {
   const [planteles, setPlanteles] = useState<Plantel[]>([]);
   const [selectedPlantelId, setSelectedPlantelId] = useState("");
   const [savingPlantel, setSavingPlantel] = useState(false);
+  const [coordinatorOptions, setCoordinatorOptions] = useState<TeacherUser[]>([]);
+  const [selectedCoordinatorId, setSelectedCoordinatorId] = useState("");
+  const [savingCoordinator, setSavingCoordinator] = useState(false);
+  const [loadingCoordinatorOptions, setLoadingCoordinatorOptions] = useState(false);
   const [removingAssistantId, setRemovingAssistantId] = useState<string | null>(null);
   const [savingMentorAccessIds, setSavingMentorAccessIds] = useState<Set<string>>(new Set());
   const [unlinkingCourseId, setUnlinkingCourseId] = useState<string | null>(null);
@@ -179,7 +184,33 @@ export default function GroupDetailPage() {
     });
     setInPersonMode(group.isInPerson === true);
     setSelectedPlantelId(group.plantelId ?? "");
+    setSelectedCoordinatorId(group.coordinatorId ?? "");
   }, [group]);
+
+  useEffect(() => {
+    if (!isAdminTeacherRole(userRole) || !group || group.isInPerson === true) {
+      setCoordinatorOptions([]);
+      return;
+    }
+    let cancelled = false;
+    const loadCoordinators = async () => {
+      setLoadingCoordinatorOptions(true);
+      try {
+        const teachers = await getTeacherUsers(300);
+        if (cancelled) return;
+        setCoordinatorOptions(teachers.filter((teacher) => teacher.role === "coordinadorPlantel"));
+      } catch (err) {
+        console.error(err);
+        toast.error("No se pudieron cargar los coordinadores");
+      } finally {
+        if (!cancelled) setLoadingCoordinatorOptions(false);
+      }
+    };
+    void loadCoordinators();
+    return () => {
+      cancelled = true;
+    };
+  }, [group, userRole]);
 
   useEffect(() => {
     if (!isAdminTeacherRole(userRole)) return;
@@ -228,11 +259,14 @@ export default function GroupDetailPage() {
     [assignedCourseIds, explicitCourseIds, group?.courseId],
   );
   const currentUserId = currentUser?.uid ?? null;
+  const coordinatorPlantelId = plantelAssignment?.plantelId ?? "";
   const isCoordinatorForGroup = Boolean(
     group &&
       isCampusCoordinatorRole(userRole) &&
-      plantelAssignment?.plantelId &&
-      (group.plantelId === plantelAssignment.plantelId || group.isInPerson === false),
+      (
+        (coordinatorPlantelId && group.plantelId === coordinatorPlantelId) ||
+        (group.isInPerson !== true && group.coordinatorId === currentUserId)
+      ),
   );
   const canManageMentors = Boolean(
     group &&
@@ -318,11 +352,10 @@ export default function GroupDetailPage() {
   useEffect(() => {
     if (loading) return;
     if (!group || !currentUserId) return;
-    if (isCampusCoordinatorRole(userRole) && !plantelAssignment?.plantelId) return;
     if (canAccessGroupContent) return;
     toast("Tu acceso a este grupo fue retirado.");
     router.replace("/creator/grupos");
-  }, [canAccessGroupContent, currentUserId, group, loading, plantelAssignment?.plantelId, router, userRole]);
+  }, [canAccessGroupContent, currentUserId, group, loading, router]);
 
   const getMentorAllowedCourseIds = (mentorId: string): string[] => {
     if (!group) return [];
@@ -629,6 +662,46 @@ export default function GroupDetailPage() {
     }
   };
 
+  const handleSaveCoordinator = async () => {
+    if (!group) return;
+    if (!canManageGroupPlantel) {
+      toast.error("No tienes permisos para asignar coordinador.");
+      return;
+    }
+    if (group.isInPerson === true) {
+      toast.error("La asignación de coordinador aplica solo a grupos en línea.");
+      return;
+    }
+    const selectedCoordinator = coordinatorOptions.find((teacher) => teacher.id === selectedCoordinatorId);
+    if (!selectedCoordinator) {
+      toast.error("Selecciona un coordinador.");
+      return;
+    }
+    setSavingCoordinator(true);
+    try {
+      await updateGroupCoordinator({
+        groupId: group.id,
+        coordinatorId: selectedCoordinator.id,
+        coordinatorName: selectedCoordinator.name,
+      });
+      setGroup((prev) =>
+        prev
+          ? {
+              ...prev,
+              coordinatorId: selectedCoordinator.id,
+              coordinatorName: selectedCoordinator.name,
+            }
+          : prev,
+      );
+      toast.success("Coordinador del grupo en línea actualizado.");
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo actualizar el coordinador del grupo.");
+    } finally {
+      setSavingCoordinator(false);
+    }
+  };
+
   return (
     <div className="space-y-6 p-8">
       <div className="flex items-center justify-between">
@@ -681,6 +754,12 @@ export default function GroupDetailPage() {
             <p className="mt-1 text-sm text-slate-600">
               Plantel: <span className="font-medium">{group.plantelName || "Sin plantel asignado"}</span>
             </p>
+            {group.isInPerson !== true ? (
+              <p className="mt-1 text-sm text-slate-600">
+                Coordinador en línea:{" "}
+                <span className="font-medium">{group.coordinatorName || "Sin coordinador asignado"}</span>
+              </p>
+            ) : null}
             {assignedCourses.length > 0 ? (
               <div className="mt-2 text-sm text-slate-600">
                 <p className="font-semibold text-slate-800">Materias asignadas</p>
@@ -803,7 +882,7 @@ export default function GroupDetailPage() {
                     <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Plantel</p>
                     <h3 className="mt-1 text-lg font-semibold text-slate-900">Asignación del grupo</h3>
                     <p className="text-sm text-slate-600">
-                      Los coordinadores solo podrán ver los grupos vinculados a su plantel.
+                      Los coordinadores ven grupos de su plantel y, en línea, solo los que tengan asignados.
                     </p>
                     <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
                       <select
@@ -829,6 +908,45 @@ export default function GroupDetailPage() {
                         className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         {savingPlantel ? "Guardando..." : "Guardar plantel"}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+                {canManageGroupPlantel && group.isInPerson !== true ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Coordinación</p>
+                    <h3 className="mt-1 text-lg font-semibold text-slate-900">Coordinador del grupo en línea</h3>
+                    <p className="text-sm text-slate-600">
+                      Solo el coordinador asignado podrá ver este grupo en línea fuera de su plantel.
+                    </p>
+                    <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                      <select
+                        value={selectedCoordinatorId}
+                        onChange={(event) => setSelectedCoordinatorId(event.target.value)}
+                        className="min-w-64 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        disabled={loadingCoordinatorOptions}
+                      >
+                        <option value="">
+                          {loadingCoordinatorOptions ? "Cargando coordinadores..." : "Seleccionar coordinador"}
+                        </option>
+                        {coordinatorOptions.map((teacher) => (
+                          <option key={teacher.id} value={teacher.id}>
+                            {teacher.name}
+                            {teacher.plantelName ? ` · ${teacher.plantelName}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={handleSaveCoordinator}
+                        disabled={
+                          savingCoordinator ||
+                          !selectedCoordinatorId ||
+                          selectedCoordinatorId === (group.coordinatorId ?? "")
+                        }
+                        className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {savingCoordinator ? "Guardando..." : "Guardar coordinador"}
                       </button>
                     </div>
                   </div>

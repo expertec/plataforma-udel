@@ -83,15 +83,20 @@ service cloud.firestore {
     function isGroupInUserPlantel(groupPath) {
       return exists(groupPath) && isGroupDataInUserPlantel(get(groupPath).data);
     }
+    function isCoordinatorAssignedInGroupData(groupData) {
+      return isCampusCoordinator() &&
+        groupData.coordinatorId is string &&
+        groupData.coordinatorId == request.auth.uid;
+    }
     // Alcance de solo lectura para coordinación:
     // - grupos de su plantel
-    // - grupos en línea (isInPerson != true; compatible con grupos legacy sin campo)
+    // - grupos en línea asignados al coordinador
     function isGroupDataInCoordinatorReadScope(groupData) {
       let isOnlineGroup = !(groupData.isInPerson is bool && groupData.isInPerson == true);
       return isCampusCoordinator() &&
         (
           isGroupDataInUserPlantel(groupData) ||
-          isOnlineGroup
+          (isOnlineGroup && isCoordinatorAssignedInGroupData(groupData))
         );
     }
     function isGroupInCoordinatorReadScope(groupPath) {

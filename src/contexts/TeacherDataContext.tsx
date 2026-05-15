@@ -81,8 +81,8 @@ export function TeacherDataProvider({ children }: { children: ReactNode }) {
       const data =
         userRole && isAdminTeacherRole(userRole)
           ? await getAllGroups(50)
-          : userRole && isCampusCoordinatorRole(userRole) && plantelAssignment?.plantelId
-            ? await getCoordinatorScopeGroups(plantelAssignment.plantelId, 50)
+          : userRole && isCampusCoordinatorRole(userRole) && currentUser?.uid
+            ? await getCoordinatorScopeGroups(plantelAssignment?.plantelId ?? "", currentUser.uid, 50)
             : await getGroupsForTeacher(currentUser.uid, 50);
       setGroups(data);
     } catch (err) {

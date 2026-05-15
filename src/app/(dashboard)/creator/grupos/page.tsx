@@ -86,8 +86,8 @@ export default function GroupsPage() {
       const isCoordinator = isCampusCoordinatorRole(userRole);
       const ownGroupsPromise = isAdminTeacher
         ? getAllGroups()
-        : isCoordinator && plantelAssignment?.plantelId
-          ? getCoordinatorScopeGroups(plantelAssignment.plantelId)
+        : isCoordinator
+          ? getCoordinatorScopeGroups(plantelAssignment?.plantelId ?? "", currentUser.uid)
           : getGroups(currentUser.uid);
       const assistantGroupsPromise =
         isAdminTeacher || isCoordinator ? Promise.resolve([]) : getGroupsWhereAssistant(currentUser.uid);
@@ -266,7 +266,7 @@ export default function GroupsPage() {
               {hasGlobalGroupsView
                 ? "Todos los grupos"
                 : isCampusCoordinator
-                  ? `Grupos de ${plantelAssignment?.plantelName || "tu plantel"} + en línea`
+                  ? `Grupos de ${plantelAssignment?.plantelName || "tu plantel"} + en línea asignados`
                   : "Mis grupos asignados"}
             </h1>
           </div>
@@ -297,7 +297,7 @@ export default function GroupsPage() {
         ) : totalGroups === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-600 shadow-sm">
             {isCampusCoordinator && !plantelAssignment?.plantelId
-              ? "Tu cuenta de coordinador todavía no tiene plantel asignado."
+              ? "Tu cuenta de coordinador no tiene plantel asignado. Solo verás grupos en línea que te asignen."
               : canCreateGroups
                 ? "Aún no hay grupos registrados."
                 : "Aún no te han asignado grupos ni mentorías."}

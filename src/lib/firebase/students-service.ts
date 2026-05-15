@@ -1,22 +1,21 @@
 import {
   collection,
-  collectionGroup,
   doc,
   getDocs,
-  getCountFromServer,
   limit,
   orderBy,
   query,
   serverTimestamp,
   startAfter,
   updateDoc,
-  where,
-  writeBatch,
   DocumentSnapshot,
+  where,
 } from "firebase/firestore";
 import type { QueryConstraint } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
+import { auth } from "./client";
 import { createAccountWithRole, updateUserPassword } from "./user-management";
+import { isStudentStatusActive } from "@/lib/students/status";
 
 export type StudentUser = {
   id: string;
@@ -24,6 +23,7 @@ export type StudentUser = {
   email: string;
   estado?: string;
   phone?: string | null;
+  whatsapp?: string | null;
   program?: string;
   plantelIds?: string[];
   plantelNames?: string[];
@@ -37,6 +37,26 @@ export type PaginatedStudentsResult = {
 };
 
 const DEFAULT_PAGE_SIZE = 50;
+
+function resolveStudentWhatsApp(data: Record<string, unknown>): string | null {
+  const candidates = [
+    data.whatsapp,
+    data.whatsApp,
+    data.whatsappPhone,
+    data.whatsappNumber,
+    data.phone,
+    data.telefono,
+    data.tel,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+  }
+
+  return null;
+}
 
 /**
  * Obtiene estudiantes con paginación para reducir lecturas de Firestore
@@ -72,22 +92,37 @@ export async function getStudentUsersPaginated(
 
   let students = docs
     .map((docSnap) => {
-    const d = docSnap.data();
-    return {
-      id: docSnap.id,
-      name: d.displayName ?? d.name ?? "Alumno",
-      email: d.email ?? "",
-      estado: d.estado ?? d.status,
-      phone: d.phone ?? null,
-      program: d.program ?? "",
-      plantelIds: Array.isArray(d.plantelIds) ? d.plantelIds : [],
-      plantelNames: Array.isArray(d.plantelNames) ? d.plantelNames : [],
-    };
+      const d = docSnap.data();
+      return {
+        id: docSnap.id,
+        name: d.displayName ?? d.name ?? "Alumno",
+        email: d.email ?? "",
+        estado: d.estado ?? d.status,
+        phone: d.phone ?? null,
+        whatsapp: resolveStudentWhatsApp(d),
+        program: d.program ?? "",
+        plantelIds: Array.isArray(d.plantelIds) ? d.plantelIds : [],
+        plantelNames: Array.isArray(d.plantelNames) ? d.plantelNames : [],
+        role: d.role ?? null,
+      };
     })
     .filter((student) => {
+      if (student.role !== "student") return false;
+      if (!isStudentStatusActive(student.estado)) return false;
       if (!normalizedPlantelId) return true;
       return student.plantelIds.includes(normalizedPlantelId);
-    });
+    })
+    .map((student) => ({
+      id: student.id,
+      name: student.name,
+      email: student.email,
+      estado: student.estado,
+      phone: student.phone,
+      whatsapp: student.whatsapp,
+      program: student.program,
+      plantelIds: student.plantelIds,
+      plantelNames: student.plantelNames,
+    }));
 
   // Filtrar localmente si hay búsqueda (para búsquedas simples)
   if (searchQuery) {
@@ -116,8 +151,13 @@ export async function getStudentsCount(plantelId?: string): Promise<number> {
   const q = normalizedPlantelId
     ? query(usersRef, where("plantelIds", "array-contains", normalizedPlantelId))
     : query(usersRef, where("role", "==", "student"));
-  const snapshot = await getCountFromServer(q);
-  return snapshot.data().count;
+  const snapshot = await getDocs(q);
+  return snapshot.docs.reduce((count, docSnap) => {
+    const data = docSnap.data();
+    if (data.role !== "student") return count;
+    if (!isStudentStatusActive(data.estado ?? data.status)) return count;
+    return count + 1;
+  }, 0);
 }
 
 /**
@@ -132,18 +172,53 @@ export async function getStudentUsers(maxResults: number = DEFAULT_PAGE_SIZE): P
     limit(maxResults), // SIEMPRE aplicar límite por defecto
   ];
   const snap = await getDocs(query(usersRef, ...constraints));
-  return snap.docs.map((docSnap) => {
-    const d = docSnap.data();
-    return {
-      id: docSnap.id,
-      name: d.displayName ?? d.name ?? "Alumno",
-      email: d.email ?? "",
-      estado: d.estado ?? d.status,
-      phone: d.phone ?? null,
-      program: d.program ?? "",
-      plantelIds: Array.isArray(d.plantelIds) ? d.plantelIds : [],
-      plantelNames: Array.isArray(d.plantelNames) ? d.plantelNames : [],
-    };
+  return snap.docs
+    .map((docSnap) => {
+      const d = docSnap.data();
+      return {
+        id: docSnap.id,
+        name: d.displayName ?? d.name ?? "Alumno",
+        email: d.email ?? "",
+        estado: d.estado ?? d.status,
+        phone: d.phone ?? null,
+        whatsapp: resolveStudentWhatsApp(d),
+        program: d.program ?? "",
+        plantelIds: Array.isArray(d.plantelIds) ? d.plantelIds : [],
+        plantelNames: Array.isArray(d.plantelNames) ? d.plantelNames : [],
+        role: d.role ?? null,
+      };
+    })
+    .filter((student) => student.role === "student" && isStudentStatusActive(student.estado))
+    .map((student) => ({
+      id: student.id,
+      name: student.name,
+      email: student.email,
+      estado: student.estado,
+      phone: student.phone,
+      whatsapp: student.whatsapp,
+      program: student.program,
+      plantelIds: student.plantelIds,
+      plantelNames: student.plantelNames,
+    }));
+}
+
+export async function updateStudentPlantelAssignment(params: {
+  studentId: string;
+  plantelId?: string | null;
+  plantelName?: string | null;
+}): Promise<void> {
+  const studentId = params.studentId.trim();
+  const plantelId = params.plantelId?.trim() ?? "";
+  const plantelName = params.plantelName?.trim() ?? "";
+
+  if (!studentId) {
+    throw new Error("El alumno es requerido");
+  }
+
+  await updateDoc(doc(db, "users", studentId), {
+    plantelIds: plantelId ? [plantelId] : [],
+    plantelNames: plantelName ? [plantelName] : [],
+    updatedAt: serverTimestamp(),
   });
 }
 
@@ -285,24 +360,43 @@ export async function ensureStudentAccount(params: {
   return { uid, alreadyExisted: false, passwordUpdated: true };
 }
 
-export async function deactivateStudent(userId: string): Promise<void> {
+export async function archiveStudent(params: {
+  userId: string;
+  email?: string;
+  reason?: string;
+}): Promise<void> {
+  const userId = params.userId.trim();
   if (!userId) return;
-  const batch = writeBatch(db);
-  batch.update(doc(db, "users", userId), {
-    status: "deleted",
-    updatedAt: serverTimestamp(),
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error("No hay sesión activa para archivar al alumno");
+  }
+
+  const token = await currentUser.getIdToken();
+  const response = await fetch("/api/students/archive", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      studentId: userId,
+      email: params.email?.trim().toLowerCase() || undefined,
+      reason: params.reason?.trim() || undefined,
+    }),
   });
-  const enrollmentsSnap = await getDocs(
-    query(collection(db, "studentEnrollments"), where("studentId", "==", userId)),
-  );
-  enrollmentsSnap.docs.forEach((enrollment) => batch.delete(enrollment.ref));
 
-  const studentEnrollmentsGroup = await getDocs(
-    query(collectionGroup(db, "students"), where("studentId", "==", userId)),
-  );
-  studentEnrollmentsGroup.docs.forEach((docSnap) => batch.delete(doc(db, "studentEnrollments", `${docSnap.ref.parent.parent?.id}_${userId}`)));
+  const payload = (await response.json().catch(() => ({}))) as {
+    success?: boolean;
+    error?: string;
+  };
+  if (!response.ok || payload.success !== true) {
+    throw new Error(payload.error || "No se pudo archivar al alumno");
+  }
+}
 
-  await batch.commit();
+export async function deactivateStudent(userId: string, email?: string): Promise<void> {
+  return archiveStudent({ userId, email });
 }
 
 export async function updateStudentPassword(params: {

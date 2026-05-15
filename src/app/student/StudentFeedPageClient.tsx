@@ -53,6 +53,7 @@ import {
   type SurveyAnswer,
   type SurveyQuestion,
 } from "@/lib/firebase/satisfaction-surveys-service";
+import { isStudentStatusBlocked } from "@/lib/students/status";
 import { v4 as uuidv4 } from "uuid";
 import sanitizeHtml from "sanitize-html";
 import { normalizeLiveSession, type LiveClassSession } from "@/lib/live-classes/types";
@@ -663,6 +664,7 @@ export default function StudentFeedPageClient() {
   const previewCourseId = searchParams.get("previewCourseId") ?? searchParams.get("courseId");
   const previewMode = Boolean(previewCourseId);
   const router = useRouter();
+  const blockedAccessHandledRef = useRef(false);
   const activePendingSurvey = pendingSurveys.length > 0 ? pendingSurveys[0] : null;
   const [liveNowTickMs, setLiveNowTickMs] = useState(() => Date.now());
 
@@ -1860,32 +1862,44 @@ export default function StudentFeedPageClient() {
 
   useEffect(() => {
     if (!currentUser?.uid) {
+      blockedAccessHandledRef.current = false;
       setMustChangePassword(false);
       setStudentCreatedAt(null);
       return;
     }
-    let active = true;
-    const loadFlag = async () => {
-      try {
-        const snap = await getDoc(doc(db, "users", currentUser.uid));
-        if (!active) return;
+    const unsubscribe = onSnapshot(
+      doc(db, "users", currentUser.uid),
+      async (snap) => {
         const userData = snap.data() as Record<string, unknown> | undefined;
+        if (isStudentStatusBlocked(userData?.estado ?? userData?.status)) {
+          if (blockedAccessHandledRef.current) return;
+          blockedAccessHandledRef.current = true;
+          setMustChangePassword(false);
+          setStudentCreatedAt(null);
+          setBillingBlocked(null);
+          setError("Tu acceso fue archivado. Contacta a administración.");
+          toast.error("Tu acceso fue archivado. Contacta a administración.");
+          try {
+            await signOut(auth);
+          } finally {
+            router.replace("/");
+          }
+          return;
+        }
+
+        blockedAccessHandledRef.current = false;
         const flag = userData?.mustChangePassword;
         setStudentCreatedAt(toDateFromUnknown(userData?.createdAt));
         setMustChangePassword(flag === undefined ? true : Boolean(flag));
-      } catch (err) {
-        console.warn("No se pudo leer mustChangePassword:", err);
-        if (active) {
-          setMustChangePassword(false);
-          setStudentCreatedAt(null);
-        }
-      }
-    };
-    loadFlag();
-    return () => {
-      active = false;
-    };
-  }, [currentUser?.uid]);
+      },
+      (err) => {
+        console.warn("No se pudo leer estado del alumno:", err);
+        setMustChangePassword(false);
+        setStudentCreatedAt(null);
+      },
+    );
+    return () => unsubscribe();
+  }, [currentUser?.uid, router]);
 
   // Cargar estado de tarea enviada cuando se abre el panel de tarea
   useEffect(() => {
@@ -2289,38 +2303,40 @@ export default function StudentFeedPageClient() {
             );
             if (!membershipSnap.empty) {
               const membership = membershipSnap.docs[0];
-              const groupIdFromRef = membership.ref.parent.parent?.id;
-              if (groupIdFromRef) {
-                const groupDoc = await getDoc(doc(db, "groups", groupIdFromRef));
-                if (groupDoc.exists()) {
-                  const gd = groupDoc.data();
-                  // Crea el enrollment faltante para que futuras cargas sean directas
-                  await setDoc(
-                    doc(db, "studentEnrollments", `${groupIdFromRef}_${currentUser.uid}`),
-                    {
-                      studentId: currentUser.uid,
-                      studentName: membership.data().studentName ?? "",
-                      studentEmail: membership.data().studentEmail ?? "",
-                      groupId: groupIdFromRef,
-                      groupName: gd.groupName ?? "",
-                      courseId: gd.courseId ?? "",
-                      courseName: gd.courseName ?? "",
-                      teacherName: gd.teacherName ?? "",
-                      status: "active",
-                      enrolledAt: gd.updatedAt ?? new Date(),
-                      finalGrade: null,
-                    },
-                    { merge: true },
-                  );
-                  // Volver a cargar el enrollment recién creado
-                  enrSnap = await getDocs(
-                    query(
-                      collection(db, "studentEnrollments"),
-                      where("studentId", "==", currentUser.uid),
-                      orderBy("enrolledAt", "desc"),
-                      limit(1),
-                    ),
-                  );
+              if (!isStudentStatusBlocked(membership.data().status)) {
+                const groupIdFromRef = membership.ref.parent.parent?.id;
+                if (groupIdFromRef) {
+                  const groupDoc = await getDoc(doc(db, "groups", groupIdFromRef));
+                  if (groupDoc.exists()) {
+                    const gd = groupDoc.data();
+                    // Crea el enrollment faltante para que futuras cargas sean directas
+                    await setDoc(
+                      doc(db, "studentEnrollments", `${groupIdFromRef}_${currentUser.uid}`),
+                      {
+                        studentId: currentUser.uid,
+                        studentName: membership.data().studentName ?? "",
+                        studentEmail: membership.data().studentEmail ?? "",
+                        groupId: groupIdFromRef,
+                        groupName: gd.groupName ?? "",
+                        courseId: gd.courseId ?? "",
+                        courseName: gd.courseName ?? "",
+                        teacherName: gd.teacherName ?? "",
+                        status: "active",
+                        enrolledAt: gd.updatedAt ?? new Date(),
+                        finalGrade: null,
+                      },
+                      { merge: true },
+                    );
+                    // Volver a cargar el enrollment recién creado
+                    enrSnap = await getDocs(
+                      query(
+                        collection(db, "studentEnrollments"),
+                        where("studentId", "==", currentUser.uid),
+                        orderBy("enrolledAt", "desc"),
+                        limit(1),
+                      ),
+                    );
+                  }
                 }
               }
             }
@@ -2329,7 +2345,11 @@ export default function StudentFeedPageClient() {
           }
         }
 
-        if (enrSnap.empty) {
+        const activeEnrollmentDocs = enrSnap.docs.filter((docSnap) =>
+          !isStudentStatusBlocked(docSnap.data().status),
+        );
+
+        if (activeEnrollmentDocs.length === 0) {
           setError(
             "No tienes cursos asignados todavía. Pide a tu profesor que te inscriba en un grupo.",
           );
@@ -2340,7 +2360,7 @@ export default function StudentFeedPageClient() {
         }
 
         // Guardar todos los enrollmentIds
-        const allEnrollmentIds = enrSnap.docs.map(doc => doc.id);
+        const allEnrollmentIds = activeEnrollmentDocs.map((doc) => doc.id);
         setEnrollmentIds(allEnrollmentIds);
         setLoadingProgress(25);
 
@@ -2361,11 +2381,11 @@ export default function StudentFeedPageClient() {
         const nextCourseClosures: Record<string, CourseClosureState> = {};
         let firstStudentName = "";
         const groupNames: string[] = [];
-        const totalEnrollments = enrSnap.docs.length;
+        const totalEnrollments = activeEnrollmentDocs.length;
 
         // 2) Iterar sobre TODOS los enrollments (con manejo de errores por enrollment)
-        for (let enrollIdx = 0; enrollIdx < enrSnap.docs.length; enrollIdx++) {
-          const enrollmentDoc = enrSnap.docs[enrollIdx];
+        for (let enrollIdx = 0; enrollIdx < activeEnrollmentDocs.length; enrollIdx++) {
+          const enrollmentDoc = activeEnrollmentDocs[enrollIdx];
           // Actualizar progreso (50-85% se divide entre enrollments)
           const enrollProgress = 50 + Math.round((enrollIdx / totalEnrollments) * 35);
           setLoadingProgress(enrollProgress);
