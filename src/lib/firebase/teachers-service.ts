@@ -2,6 +2,7 @@ import { collection, doc, getDocs, orderBy, query, serverTimestamp, updateDoc, w
 import { db } from "@/lib/firebase/firestore";
 import { createAccountWithRole } from "./user-management";
 import { getAllGroups, Group } from "./groups-service";
+import { getPlantelAssignmentsFromData } from "./planteles-service";
 
 export type TeacherUser = {
   id: string;
@@ -9,6 +10,8 @@ export type TeacherUser = {
   email: string;
   role: "teacher" | "adminTeacher" | "superAdminTeacher" | "coordinadorPlantel";
   phone?: string | null;
+  plantelIds?: string[];
+  plantelNames?: string[];
   plantelId?: string | null;
   plantelName?: string | null;
 };
@@ -337,6 +340,8 @@ export async function getTeacherUsers(max = 100): Promise<TeacherUser[]> {
   const snap = await getDocs(q);
   return snap.docs.map((docSnap) => {
     const d = docSnap.data();
+    const plantelAssignments = getPlantelAssignmentsFromData(d as Record<string, unknown>);
+    const primaryPlantel = plantelAssignments[0] ?? null;
     return {
       id: docSnap.id,
       name: d.displayName ?? d.name ?? "Profesor",
@@ -348,8 +353,10 @@ export async function getTeacherUsers(max = 100): Promise<TeacherUser[]> {
           ? d.role
           : "teacher",
       phone: d.phone ?? null,
-      plantelId: typeof d.plantelId === "string" ? d.plantelId : null,
-      plantelName: typeof d.plantelName === "string" ? d.plantelName : null,
+      plantelIds: plantelAssignments.map((assignment) => assignment.plantelId),
+      plantelNames: plantelAssignments.map((assignment) => assignment.plantelName),
+      plantelId: primaryPlantel?.plantelId ?? null,
+      plantelName: primaryPlantel?.plantelName ?? null,
     };
   });
 }

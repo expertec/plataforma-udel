@@ -74,11 +74,26 @@ service cloud.firestore {
           ? userDoc().data.plantelId
           : null;
     }
+    function userPlantelIds() {
+      let legacyPlantelId = userPlantelId();
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        userDoc().data.plantelIds is list
+          ? userDoc().data.plantelIds
+          : legacyPlantelId != null
+            ? [legacyPlantelId]
+            : [];
+    }
+    function userHasPlantelId(plantelId) {
+      return isCampusCoordinator() &&
+        plantelId is string &&
+        plantelId.size() > 0 &&
+        userPlantelIds().hasAny([plantelId]);
+    }
     function isGroupDataInUserPlantel(groupData) {
       return isCampusCoordinator() &&
-        userPlantelId() != null &&
         groupData.plantelId is string &&
-        groupData.plantelId == userPlantelId();
+        userHasPlantelId(groupData.plantelId);
     }
     function isGroupInUserPlantel(groupPath) {
       return exists(groupPath) && isGroupDataInUserPlantel(get(groupPath).data);
@@ -175,9 +190,8 @@ service cloud.firestore {
             ) ||
             (
               isCampusCoordinator() &&
-              userPlantelId() != null &&
               enrollmentData.plantelId is string &&
-              enrollmentData.plantelId == userPlantelId()
+              userHasPlantelId(enrollmentData.plantelId)
             ) ||
             (
               isCampusCoordinator() &&
@@ -193,11 +207,10 @@ service cloud.firestore {
     }
     function canCampusCoordinatorUpdateStudentRisk() {
       return isCampusCoordinator() &&
-        userPlantelId() != null &&
         resource.data.role is string &&
         resource.data.role == 'student' &&
         resource.data.plantelIds is list &&
-        resource.data.plantelIds.hasAny([userPlantelId()]) &&
+        resource.data.plantelIds.hasAny(userPlantelIds()) &&
         request.resource.data.diff(resource.data).changedKeys().hasOnly([
           'dropoutRiskTag',
           'dropoutRiskTaggedAt',
@@ -348,11 +361,11 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isSelf(userId) || isAdmin() || isAdminTeacher() || (
         isCampusCoordinator() &&
-        userPlantelId() != null && (
+        userPlantelIds().size() > 0 && (
           resource.data.role is string &&
           resource.data.role == 'student' &&
           resource.data.plantelIds is list &&
-          resource.data.plantelIds.hasAny([userPlantelId()])
+          resource.data.plantelIds.hasAny(userPlantelIds())
         )
       );
       allow create: if isAdmin() || isAdminTeacher() || canSelfUpsertProfile(userId);
@@ -524,7 +537,7 @@ service cloud.firestore {
           isCampusCoordinator() &&
           request.resource.data.teacherId == request.auth.uid &&
           request.resource.data.plantelId is string &&
-          request.resource.data.plantelId == userPlantelId()
+          userHasPlantelId(request.resource.data.plantelId)
         );
       allow update: if isAdmin() || isAdminTeacher() ||
         (

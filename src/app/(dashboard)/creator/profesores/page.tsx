@@ -89,6 +89,38 @@ const toCourseDetailsText = (
     .join(" | ");
 };
 
+function getTeacherPlantelIds(teacher: TeacherUser): string[] {
+  if (Array.isArray(teacher.plantelIds) && teacher.plantelIds.length > 0) {
+    return teacher.plantelIds.filter(
+      (value): value is string => typeof value === "string" && value.trim().length > 0,
+    );
+  }
+  return teacher.plantelId ? [teacher.plantelId] : [];
+}
+
+function getTeacherPlantelNames(teacher: TeacherUser): string[] {
+  if (Array.isArray(teacher.plantelNames) && teacher.plantelNames.length > 0) {
+    return teacher.plantelNames.filter(
+      (value): value is string => typeof value === "string" && value.trim().length > 0,
+    );
+  }
+  return teacher.plantelName ? [teacher.plantelName] : [];
+}
+
+function getTeacherPlantelSummary(teacher: TeacherUser): string {
+  const names = getTeacherPlantelNames(teacher);
+  if (names.length > 0) return names.join(", ");
+  const ids = getTeacherPlantelIds(teacher);
+  return ids.length > 0 ? ids.join(", ") : "Sin plantel";
+}
+
+function haveSameIds(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  const leftSorted = [...left].sort();
+  const rightSorted = [...right].sort();
+  return leftSorted.every((value, index) => value === rightSorted[index]);
+}
+
 function mergeAuthHeaders(token: string, headers?: HeadersInit): Headers {
   const merged = new Headers(headers ?? {});
   merged.set("Authorization", `Bearer ${token}`);
@@ -124,7 +156,7 @@ export default function ProfesoresPage() {
   const [newPhone, setNewPhone] = useState("");
   const [newRole, setNewRole] = useState<EditableTeacherRole>("teacher");
   const [planteles, setPlanteles] = useState<Plantel[]>([]);
-  const [selectedPlantelId, setSelectedPlantelId] = useState("");
+  const [selectedPlantelIds, setSelectedPlantelIds] = useState<string[]>([]);
   const [newPlantelName, setNewPlantelName] = useState("");
   const [creatingPlantel, setCreatingPlantel] = useState(false);
   const [changingPassword, setChangingPassword] = useState(false);
@@ -330,7 +362,7 @@ export default function ProfesoresPage() {
     setNewName(teacher.name);
     setNewPhone(teacher.phone || "");
     setNewRole(isEditableTeacherRole(teacher.role) ? teacher.role : "teacher");
-    setSelectedPlantelId(teacher.plantelId ?? "");
+    setSelectedPlantelIds(getTeacherPlantelIds(teacher));
     setNewPlantelName("");
     setEditProfileModalOpen(true);
   };
@@ -350,13 +382,16 @@ export default function ProfesoresPage() {
     const phoneChanged = newPhone.trim() !== (selectedTeacher.phone || "");
     const roleChanged =
       isEditableTeacherRole(selectedTeacher.role) && newRole !== selectedTeacher.role;
-    const selectedPlantel = planteles.find((plantel) => plantel.id === selectedPlantelId);
+    const selectedPlanteles = planteles.filter((plantel) => selectedPlantelIds.includes(plantel.id));
     const plantelChanged =
       newRole === "coordinadorPlantel" &&
-      selectedPlantelId !== (selectedTeacher.plantelId ?? "");
+      !haveSameIds(
+        selectedPlanteles.map((plantel) => plantel.id),
+        getTeacherPlantelIds(selectedTeacher),
+      );
 
-    if (newRole === "coordinadorPlantel" && !selectedPlantel) {
-      toast.error("Selecciona un plantel para el coordinador.");
+    if (newRole === "coordinadorPlantel" && selectedPlanteles.length === 0) {
+      toast.error("Selecciona al menos un plantel para el coordinador.");
       return;
     }
 
@@ -374,8 +409,22 @@ export default function ProfesoresPage() {
           body: JSON.stringify({
             teacherId: selectedTeacher.id,
             newRole,
-            plantelId: newRole === "coordinadorPlantel" ? selectedPlantel?.id : null,
-            plantelName: newRole === "coordinadorPlantel" ? selectedPlantel?.name : null,
+            plantelIds:
+              newRole === "coordinadorPlantel"
+                ? selectedPlanteles.map((plantel) => plantel.id)
+                : [],
+            plantelNames:
+              newRole === "coordinadorPlantel"
+                ? selectedPlanteles.map((plantel) => plantel.name)
+                : [],
+            plantelId:
+              newRole === "coordinadorPlantel"
+                ? selectedPlanteles[0]?.id ?? null
+                : null,
+            plantelName:
+              newRole === "coordinadorPlantel"
+                ? selectedPlanteles[0]?.name ?? null
+                : null,
           }),
         });
         const roleData = (await roleResponse.json().catch(() => ({}))) as { error?: string };
@@ -430,7 +479,9 @@ export default function ProfesoresPage() {
         if (prev.some((item) => item.id === plantel.id)) return prev;
         return [...prev, plantel].sort((a, b) => a.name.localeCompare(b.name, "es"));
       });
-      setSelectedPlantelId(plantel.id);
+      setSelectedPlantelIds((prev) =>
+        prev.includes(plantel.id) ? prev : [...prev, plantel.id],
+      );
       setNewPlantelName("");
       toast.success("Plantel agregado.");
     } catch (err) {
@@ -618,7 +669,7 @@ export default function ProfesoresPage() {
         teacher.name.toLowerCase().includes(normalizedQuery) ||
         teacher.email.toLowerCase().includes(normalizedQuery) ||
         (teacher.phone || "").toLowerCase().includes(normalizedQuery) ||
-        (teacher.plantelName || "").toLowerCase().includes(normalizedQuery) ||
+        getTeacherPlantelSummary(teacher).toLowerCase().includes(normalizedQuery) ||
         searchableRole.includes(normalizedQuery)
       );
     });
@@ -1064,7 +1115,7 @@ export default function ProfesoresPage() {
                         {getTeacherRoleLabel(teacher.role)}
                         {teacher.role === "coordinadorPlantel" ? (
                           <span className="mt-0.5 block text-[11px] font-normal text-slate-500">
-                            {teacher.plantelName || "Sin plantel"}
+                            {getTeacherPlantelSummary(teacher)}
                           </span>
                         ) : null}
                       </span>
@@ -1160,20 +1211,34 @@ export default function ProfesoresPage() {
               {newRole === "coordinadorPlantel" ? (
                 <div className="space-y-2 rounded-lg border border-blue-100 bg-blue-50 p-3">
                   <div className="space-y-1">
-                    <label className="text-sm font-medium text-slate-700">Plantel asignado</label>
-                    <select
-                      value={selectedPlantelId}
-                      onChange={(e) => setSelectedPlantelId(e.target.value)}
-                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                      required
-                    >
-                      <option value="">Seleccionar plantel</option>
+                    <label className="text-sm font-medium text-slate-700">Planteles asignados</label>
+                    <div className="max-h-52 space-y-2 overflow-auto rounded-lg border border-slate-200 bg-white p-3">
                       {planteles.map((plantel) => (
-                        <option key={plantel.id} value={plantel.id}>
-                          {plantel.name}
-                        </option>
+                        <label
+                          key={plantel.id}
+                          className="flex items-center gap-2 text-sm text-slate-800"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedPlantelIds.includes(plantel.id)}
+                            onChange={(event) =>
+                              setSelectedPlantelIds((prev) =>
+                                event.target.checked
+                                  ? prev.includes(plantel.id)
+                                    ? prev
+                                    : [...prev, plantel.id]
+                                  : prev.filter((value) => value !== plantel.id),
+                              )
+                            }
+                            className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span>{plantel.name}</span>
+                        </label>
                       ))}
-                    </select>
+                    </div>
+                    <p className="text-xs text-slate-600">
+                      Seleccionados: {selectedPlantelIds.length}
+                    </p>
                   </div>
                   <div className="flex gap-2">
                     <input
@@ -1200,6 +1265,7 @@ export default function ProfesoresPage() {
                   onClick={() => {
                     setEditProfileModalOpen(false);
                     setSelectedTeacher(null);
+                    setSelectedPlantelIds([]);
                   }}
                   className="flex-1 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                   disabled={updatingProfile}

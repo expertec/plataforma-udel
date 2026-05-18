@@ -57,6 +57,10 @@ import { isStudentStatusBlocked } from "@/lib/students/status";
 import { v4 as uuidv4 } from "uuid";
 import sanitizeHtml from "sanitize-html";
 import { normalizeLiveSession, type LiveClassSession } from "@/lib/live-classes/types";
+import {
+  loadStudentPreviewSnapshot,
+  type StudentPreviewFeedItem,
+} from "@/lib/student-preview";
 
 type FeedClass = {
   id: string;
@@ -434,6 +438,35 @@ const buildLiveClassHref = (params: {
   return `/live/${baseClassId}${liveSearchParams.toString() ? `?${liveSearchParams.toString()}` : ""}`;
 };
 
+const mapPreviewFeedItemToFeedClass = (item: StudentPreviewFeedItem): FeedClass => ({
+  id: item.id,
+  classDocId: item.classDocId,
+  title: item.title,
+  type: normalizeClassType(item.type),
+  courseId: item.courseId,
+  courseTitle: item.courseTitle,
+  lessonId: item.lessonId,
+  enrollmentId: undefined,
+  groupId: undefined,
+  groupIsInPerson: false,
+  classTitle: item.classTitle ?? item.title,
+  videoUrl: item.videoUrl ?? "",
+  audioUrl: item.audioUrl ?? "",
+  content: item.content ?? "",
+  images: Array.isArray(item.images) ? item.images.filter(Boolean) : [],
+  hasAssignment: item.hasAssignment ?? false,
+  assignmentTemplateUrl: item.assignmentTemplateUrl ?? "",
+  assignmentSubmissionType: item.assignmentSubmissionType === "audio" ? "audio" : "file",
+  isClassroomActivity: item.isClassroomActivity ?? false,
+  showInStudentPlatform: item.showInStudentPlatform ?? true,
+  lessonTitle: item.lessonTitle ?? item.lessonName ?? "Lección",
+  lessonName: item.lessonName ?? item.lessonTitle ?? "Lección",
+  likesCount: item.likesCount ?? 0,
+  forumEnabled: item.forumEnabled ?? false,
+  forumRequiredFormat: item.forumRequiredFormat ?? null,
+  liveSession: normalizeLiveSession(item.liveSession),
+});
+
 const loadLocalProgress = (uid: string) => {
   if (typeof window === "undefined") return { progress: {}, completed: {}, seen: {} };
   try {
@@ -736,6 +769,69 @@ export default function StudentFeedPageClient() {
   const findClassById = useCallback(
     (id: string | null | undefined) => classes.find((c) => c.id === id) ?? null,
     [classes],
+  );
+
+  const applyPreviewFeed = useCallback(
+    (courseId: string, courseTitle: string, feed: FeedClass[]) => {
+      if (feed.length === 0) {
+        setError("Este curso aún no tiene clases para previsualizar.");
+        setClasses([]);
+        setActiveId(null);
+        setActiveIndex(0);
+        return;
+      }
+
+      setError(null);
+      setEnrollmentId(null);
+      setGroupId(null);
+      setCourseClosureMap({});
+      setCourseTitleMap((prev) => ({
+        ...prev,
+        [courseId]: courseTitle,
+      }));
+      setCourseName(courseTitle);
+      setGroupName("Vista previa del alumno");
+      setStudentName(currentUser?.displayName ?? "Profesor");
+
+      const previewProgress: Record<string, number> = {};
+      const previewCompleted: Record<string, boolean> = {};
+      const previewSeen: Record<string, boolean> = {};
+      const forumStatus: Record<string, boolean> = {};
+      const initialLikes: Record<string, number> = {};
+      const previewCoverMap: Record<string, string> = {};
+
+      feed.forEach((item) => {
+        previewProgress[item.id] = 100;
+        previewCompleted[item.id] = true;
+        previewSeen[item.id] = true;
+        if (item.forumEnabled) {
+          forumStatus[item.id] = true;
+        }
+        initialLikes[item.id] = item.likesCount ?? 0;
+        const courseKey = item.courseId ?? "sin-curso";
+        if (!previewCoverMap[courseKey] && item.images?.[0]) {
+          previewCoverMap[courseKey] = item.images[0];
+        }
+      });
+
+      setProgressMap(previewProgress);
+      progressRef.current = previewProgress;
+      setCompletedMap(previewCompleted);
+      completedRef.current = previewCompleted;
+      setSeenMap(previewSeen);
+      seenRef.current = previewSeen;
+      setForumDoneMap((prev) => ({ ...prev, ...forumStatus }));
+      setForumsReady(true);
+      setProgressReady(true);
+      setClasses(feed);
+      setLikesMap(initialLikes);
+      setLikedMap({});
+      setLikePendingMap({});
+      setActiveIndex(0);
+      setActiveId(feed[0]?.id ?? null);
+      setCourseCoverMap((prev) => ({ ...prev, ...previewCoverMap }));
+    },
+    [currentUser?.displayName],
   );
 
   const isForumSatisfied = useCallback(
@@ -1966,17 +2062,38 @@ export default function StudentFeedPageClient() {
       if (previewMode) {
         if (!previewCourseId) return;
         if (!currentUser?.uid) {
-          setError("Inicia sesión para ver la vista previa del curso.");
+          const cachedPreview = loadStudentPreviewSnapshot(previewCourseId);
+          if (cachedPreview) {
+            applyPreviewFeed(
+              previewCourseId,
+              cachedPreview.courseTitle,
+              cachedPreview.feed.map(mapPreviewFeedItemToFeedClass),
+            );
+            setLoading(false);
+            return;
+          }
+
+          setError(
+            "No se pudo abrir la vista previa en esta pestaña. Regresa al builder y vuelve a intentarlo.",
+          );
           setLoading(false);
           return;
         }
         try {
           setProgressReady(false);
           initialPositionedRef.current = false;
+          const cachedPreview = loadStudentPreviewSnapshot(previewCourseId);
+          if (cachedPreview) {
+            applyPreviewFeed(
+              previewCourseId,
+              cachedPreview.courseTitle,
+              cachedPreview.feed.map(mapPreviewFeedItemToFeedClass),
+            );
+            setLoading(false);
+            return;
+          }
+
           setError(null);
-          setEnrollmentId(null);
-          setGroupId(null);
-          setCourseClosureMap({});
           const courseDoc = await getDoc(doc(db, "courses", previewCourseId));
           if (!courseDoc.exists()) {
             setError("No se encontró el curso para previsualizar.");
@@ -2035,61 +2152,7 @@ export default function StudentFeedPageClient() {
             });
           }
 
-          if (feed.length === 0) {
-            setError("Este curso aún no tiene clases para previsualizar.");
-            setClasses([]);
-            setActiveId(null);
-            setActiveIndex(0);
-            setLoading(false);
-            return;
-          }
-
-          setCourseTitleMap((prev) => ({
-            ...prev,
-            [previewCourseId]: courseTitle,
-          }));
-          setCourseName(courseTitle);
-          setGroupName("Vista previa del alumno");
-          setStudentName(currentUser.displayName ?? "Profesor");
-
-          const previewProgress: Record<string, number> = {};
-          const previewCompleted: Record<string, boolean> = {};
-          const previewSeen: Record<string, boolean> = {};
-          const forumStatus: Record<string, boolean> = {};
-          const initialLikes: Record<string, number> = {};
-          feed.forEach((item) => {
-            previewProgress[item.id] = 100;
-            previewCompleted[item.id] = true;
-            previewSeen[item.id] = true;
-            if (item.forumEnabled) {
-              forumStatus[item.id] = true;
-            }
-            initialLikes[item.id] = item.likesCount ?? 0;
-          });
-
-          setProgressMap(previewProgress);
-          progressRef.current = previewProgress;
-          setCompletedMap(previewCompleted);
-          completedRef.current = previewCompleted;
-          setSeenMap(previewSeen);
-          seenRef.current = previewSeen;
-          setForumDoneMap((prev) => ({ ...prev, ...forumStatus }));
-          setForumsReady(true);
-          setProgressReady(true);
-          setClasses(feed);
-          setLikesMap(initialLikes);
-          setLikedMap({});
-          setLikePendingMap({});
-          setActiveIndex(0);
-          setActiveId(feed[0]?.id ?? null);
-          const previewCoverMap: Record<string, string> = {};
-          feed.forEach((item) => {
-            const courseKey = item.courseId ?? "sin-curso";
-            if (!previewCoverMap[courseKey] && item.images?.[0]) {
-              previewCoverMap[courseKey] = item.images[0];
-            }
-          });
-          setCourseCoverMap((prev) => ({ ...prev, ...previewCoverMap }));
+          applyPreviewFeed(previewCourseId, courseTitle, feed);
         } catch (err) {
           console.error(err);
           setError("No se pudo cargar la vista previa del curso");
@@ -2591,7 +2654,7 @@ export default function StudentFeedPageClient() {
     if (!authLoading) {
       load();
     }
-  }, [authLoading, currentUser?.uid, previewCourseId, previewMode]);
+  }, [applyPreviewFeed, authLoading, currentUser?.uid, previewCourseId, previewMode]);
 
   useEffect(() => {
     if (previewMode) return;

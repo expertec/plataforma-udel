@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   addStudentsToGroup,
@@ -17,7 +17,7 @@ import {
   updateGroupInPersonMode,
   updateGroupPlantel,
 } from "@/lib/firebase/groups-service";
-import { getPlanteles, getUserPlantelAssignment, Plantel, PlantelAssignment } from "@/lib/firebase/planteles-service";
+import { getPlanteles, getUserPlantelAssignments, Plantel, PlantelAssignment } from "@/lib/firebase/planteles-service";
 import { Course, getCourses } from "@/lib/firebase/courses-service";
 import { getStudentUsersPaginated, StudentUser } from "@/lib/firebase/students-service";
 import { getTeacherUsers, TeacherUser } from "@/lib/firebase/teachers-service";
@@ -54,7 +54,7 @@ export default function GroupDetailPage() {
   const [savingTeachers, setSavingTeachers] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
-  const [plantelAssignment, setPlantelAssignment] = useState<PlantelAssignment | null>(null);
+  const [plantelAssignments, setPlantelAssignments] = useState<PlantelAssignment[]>([]);
   const [planteles, setPlanteles] = useState<Plantel[]>([]);
   const [selectedPlantelId, setSelectedPlantelId] = useState("");
   const [savingPlantel, setSavingPlantel] = useState(false);
@@ -155,20 +155,20 @@ export default function GroupDetailPage() {
       setCurrentUser(u);
       if (!u) {
         setUserRole(null);
-        setPlantelAssignment(null);
+        setPlantelAssignments([]);
         return;
       }
       try {
         const role = await resolveUserRole(u);
         setUserRole(role);
         if (role === "coordinadorPlantel") {
-          setPlantelAssignment(await getUserPlantelAssignment(u.uid));
+          setPlantelAssignments(await getUserPlantelAssignments(u.uid));
         } else {
-          setPlantelAssignment(null);
+          setPlantelAssignments([]);
         }
       } catch {
         setUserRole(null);
-        setPlantelAssignment(null);
+        setPlantelAssignments([]);
       }
     });
     return () => unsub();
@@ -259,12 +259,12 @@ export default function GroupDetailPage() {
     [assignedCourseIds, explicitCourseIds, group?.courseId],
   );
   const currentUserId = currentUser?.uid ?? null;
-  const coordinatorPlantelId = plantelAssignment?.plantelId ?? "";
+  const coordinatorPlantelIds = plantelAssignments.map((assignment) => assignment.plantelId);
   const isCoordinatorForGroup = Boolean(
     group &&
       isCampusCoordinatorRole(userRole) &&
       (
-        (coordinatorPlantelId && group.plantelId === coordinatorPlantelId) ||
+        ((group.plantelId ?? "") && coordinatorPlantelIds.includes(group.plantelId ?? "")) ||
         (group.isInPerson !== true && group.coordinatorId === currentUserId)
       ),
   );
@@ -932,7 +932,11 @@ export default function GroupDetailPage() {
                         {coordinatorOptions.map((teacher) => (
                           <option key={teacher.id} value={teacher.id}>
                             {teacher.name}
-                            {teacher.plantelName ? ` · ${teacher.plantelName}` : ""}
+                            {teacher.plantelNames && teacher.plantelNames.length > 0
+                              ? ` · ${teacher.plantelNames.join(", ")}`
+                              : teacher.plantelName
+                                ? ` · ${teacher.plantelName}`
+                                : ""}
                           </option>
                         ))}
                       </select>
@@ -1235,7 +1239,7 @@ export default function GroupDetailPage() {
           open={studentsModalOpen}
           onClose={() => setStudentsModalOpen(false)}
           groupId={group.id}
-          scopePlantelId={isCoordinatorForGroup ? plantelAssignment?.plantelId ?? "" : ""}
+          scopePlantelId={isCoordinatorForGroup ? group.plantelId ?? "" : ""}
           onReload={async () => {
             setLoadingStudents(true);
             try {
@@ -1550,7 +1554,7 @@ function SelectStudentsModal({
   const lastDocRef = useRef<DocumentSnapshot | null>(null);
   const searchTokenRef = useRef(0);
 
-  const loadInitialStudents = async () => {
+  const loadInitialStudents = useCallback(async () => {
     setLoading(true);
     try {
       const result = await getStudentUsersPaginated(50, null, undefined, scopePlantelId);
@@ -1566,7 +1570,7 @@ function SelectStudentsModal({
     } finally {
       setLoading(false);
     }
-  };
+  }, [scopePlantelId]);
 
   useEffect(() => {
     if (!open) return;
@@ -1576,7 +1580,7 @@ function SelectStudentsModal({
     setSearching(false);
     searchTokenRef.current += 1;
     void loadInitialStudents();
-  }, [open, scopePlantelId]);
+  }, [loadInitialStudents, open]);
 
   const isSearchActive = search.trim().length > 0;
 

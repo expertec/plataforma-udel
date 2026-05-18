@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
-import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
   ClassItem as ClassData,
@@ -12,7 +11,7 @@ import {
   updateCourse,
   updateLesson,
 } from "@/lib/firebase/courses-service";
-import { collection, doc, onSnapshot, orderBy, query, Unsubscribe } from "firebase/firestore";
+import { collection, doc, getDocs, onSnapshot, orderBy, query, Unsubscribe } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { deleteClass, deleteLesson } from "@/lib/firebase/courses-service";
 import { LessonItem } from "./_components/LessonItem";
@@ -30,7 +29,7 @@ import {
   linkCourseToGroup,
   Group,
 } from "@/lib/firebase/groups-service";
-import { getPlanteles, getUserPlantelAssignment, Plantel, PlantelAssignment } from "@/lib/firebase/planteles-service";
+import { getPlanteles, getUserPlantelAssignments, Plantel, PlantelAssignment } from "@/lib/firebase/planteles-service";
 import { getAlumnos } from "@/lib/firebase/alumnos-service";
 import {
   isAdminTeacherRole,
@@ -41,6 +40,10 @@ import {
 import { EntregasTab } from "@/app/(dashboard)/creator/grupos/[groupId]/_components/EntregasTab";
 import { getPrograms } from "@/lib/firebase/programs-service";
 import { normalizeLiveSession } from "@/lib/live-classes/types";
+import {
+  saveStudentPreviewSnapshot,
+  type StudentPreviewFeedItem,
+} from "@/lib/student-preview";
 
 type ConfirmState =
   | { open: false }
@@ -139,7 +142,7 @@ export default function CourseBuilderPage() {
   const [groupSearch, setGroupSearch] = useState("");
   const [currentUser, setCurrentUser] = useState(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
-  const [plantelAssignment, setPlantelAssignment] = useState<PlantelAssignment | null>(null);
+  const [plantelAssignments, setPlantelAssignments] = useState<PlantelAssignment[]>([]);
   const [planteles, setPlanteles] = useState<Plantel[]>([]);
   const [newGroupPlantelId, setNewGroupPlantelId] = useState("");
   const [roleLoading, setRoleLoading] = useState(true);
@@ -165,16 +168,13 @@ export default function CourseBuilderPage() {
   const showCreationMetadata = isAdminTeacherRole(userRole);
   const availablePlanteles = useMemo<Plantel[]>(() => {
     if (isAdminTeacherRole(userRole)) return planteles;
-    if (!plantelAssignment) return [];
-    return [
-      {
-        id: plantelAssignment.plantelId,
-        name: plantelAssignment.plantelName,
-        normalizedName: "",
-        status: "active",
-      },
-    ];
-  }, [plantelAssignment, planteles, userRole]);
+    return plantelAssignments.map((assignment) => ({
+      id: assignment.plantelId,
+      name: assignment.plantelName,
+      normalizedName: "",
+      status: "active",
+    }));
+  }, [plantelAssignments, planteles, userRole]);
   const selectedNewGroupPlantel = useMemo(
     () => availablePlanteles.find((plantel) => plantel.id === newGroupPlantelId) ?? null,
     [availablePlanteles, newGroupPlantelId],
@@ -210,7 +210,7 @@ export default function CourseBuilderPage() {
       setCurrentUser(u);
       if (!u) {
         setUserRole(null);
-        setPlantelAssignment(null);
+        setPlantelAssignments([]);
         setRoleLoading(false);
         return;
       }
@@ -219,16 +219,17 @@ export default function CourseBuilderPage() {
         const role = await resolveUserRole(u);
         if (!cancelled) setUserRole(role);
         if (role === "coordinadorPlantel") {
-          const assignment = await getUserPlantelAssignment(u.uid);
+          const assignments = await getUserPlantelAssignments(u.uid);
           if (!cancelled) {
-            setPlantelAssignment(assignment);
-            setNewGroupPlantelId(assignment?.plantelId ?? "");
+            setPlantelAssignments(assignments);
+            setNewGroupPlantelId(assignments[0]?.plantelId ?? "");
           }
         } else if (!cancelled) {
-          setPlantelAssignment(null);
+          setPlantelAssignments([]);
         }
       } catch {
         if (!cancelled) setUserRole(null);
+        if (!cancelled) setPlantelAssignments([]);
       } finally {
         if (!cancelled) setRoleLoading(false);
       }
@@ -390,16 +391,18 @@ export default function CourseBuilderPage() {
     setLoadingGroups(true);
     setLoadError(null);
     try {
-      const coordinatorPlantelId = isCampusCoordinatorRole(userRole) ? plantelAssignment?.plantelId ?? "" : "";
+      const coordinatorPlantelIds = isCampusCoordinatorRole(userRole)
+        ? plantelAssignments.map((assignment) => assignment.plantelId)
+        : [];
       const [groups, activeGroups] = await Promise.all([
         getGroupsByCourse(
           courseId,
-          isAdminTeacherRole(userRole) || coordinatorPlantelId ? undefined : currentUser.uid,
-          coordinatorPlantelId,
+          isAdminTeacherRole(userRole) || coordinatorPlantelIds.length > 0 ? undefined : currentUser.uid,
+          coordinatorPlantelIds,
         ),
         getActiveGroups(
-          isAdminTeacherRole(userRole) || coordinatorPlantelId ? undefined : currentUser.uid,
-          coordinatorPlantelId,
+          isAdminTeacherRole(userRole) || coordinatorPlantelIds.length > 0 ? undefined : currentUser.uid,
+          coordinatorPlantelIds,
         ),
       ]);
       setCourseGroups(
@@ -546,6 +549,128 @@ export default function CourseBuilderPage() {
         g.plantelName?.toLowerCase?.()?.includes(term),
     );
   }, [allGroups, groupSearch]);
+
+  const loadClassesForPreview = useCallback(
+    async (lessonId: string) => {
+      if (!courseId) return [];
+
+      const cached = classesMap[lessonId];
+      if (cached) return cached;
+
+      const classesRef = collection(db, "courses", courseId, "lessons", lessonId, "classes");
+      const classesQuery = query(classesRef, orderBy("order", "asc"));
+      const snap = await getDocs(classesQuery);
+      const data: ClassData[] = snap.docs.map((docSnap) => {
+        const d = docSnap.data();
+        return {
+          id: docSnap.id,
+          title: d.title ?? "Clase sin título",
+          type: d.type ?? "video",
+          order: d.order ?? 0,
+          duration: d.duration,
+          videoUrl: d.videoUrl ?? "",
+          audioUrl: d.audioUrl ?? "",
+          content: d.content ?? "",
+          imageUrls: d.imageUrls ?? [],
+          hasAssignment: d.hasAssignment ?? false,
+          assignmentTemplateUrl: d.assignmentTemplateUrl ?? "",
+          assignmentSubmissionType: d.assignmentSubmissionType === "audio" ? "audio" : "file",
+          isClassroomActivity: d.isClassroomActivity ?? false,
+          showInStudentPlatform: d.showInStudentPlatform ?? true,
+          forumEnabled: d.forumEnabled ?? false,
+          forumRequiredFormat: d.forumRequiredFormat ?? null,
+          liveSession: normalizeLiveSession(d.liveSession),
+        };
+      });
+
+      setClassesMap((prev) => ({ ...prev, [lessonId]: data }));
+      return data;
+    },
+    [classesMap, courseId],
+  );
+
+  const buildPreviewFeed = useCallback(async (): Promise<StudentPreviewFeedItem[]> => {
+    if (!courseId) return [];
+
+    const courseTitle = courseInfo?.title?.trim() || "Curso";
+    const lessonsWithClasses = await Promise.all(
+      lessonsDeduped.map(async (lesson) => ({
+        lesson,
+        classes: await loadClassesForPreview(lesson.id),
+      })),
+    );
+
+    return lessonsWithClasses.flatMap(({ lesson, classes }) =>
+      classes.map((classItem) => ({
+        id: `${courseId}_${classItem.id}`,
+        classDocId: classItem.id,
+        title: classItem.title ?? "Clase sin título",
+        type: classItem.type ?? "video",
+        courseId,
+        courseTitle,
+        lessonId: lesson.id,
+        classTitle: classItem.title ?? "Clase sin título",
+        videoUrl: classItem.videoUrl ?? "",
+        audioUrl: classItem.audioUrl ?? "",
+        content: classItem.content ?? "",
+        images: Array.isArray(classItem.imageUrls)
+          ? classItem.imageUrls
+              .map((url) => (typeof url === "string" ? url.trim() : ""))
+              .filter(Boolean)
+          : [],
+        hasAssignment: classItem.hasAssignment ?? false,
+        assignmentTemplateUrl: classItem.assignmentTemplateUrl ?? "",
+        assignmentSubmissionType: classItem.assignmentSubmissionType === "audio" ? "audio" : "file",
+        isClassroomActivity: classItem.isClassroomActivity ?? false,
+        showInStudentPlatform: classItem.showInStudentPlatform ?? true,
+        lessonTitle: lesson.title ?? "Lección",
+        lessonName: lesson.title ?? "Lección",
+        likesCount: 0,
+        forumEnabled: classItem.forumEnabled ?? false,
+        forumRequiredFormat: classItem.forumRequiredFormat ?? null,
+        liveSession: normalizeLiveSession(classItem.liveSession),
+      })),
+    );
+  }, [courseId, courseInfo?.title, lessonsDeduped, loadClassesForPreview]);
+
+  const handleOpenStudentPreview = useCallback(async () => {
+    if (!courseId) return;
+
+    const previewUrl = `/student?previewCourseId=${encodeURIComponent(courseId)}`;
+    const previewWindow = typeof window !== "undefined" ? window.open("about:blank", "_blank") : null;
+
+    try {
+      const feed = await buildPreviewFeed();
+      if (!feed.length) {
+        throw new Error("Este curso aún no tiene clases para previsualizar.");
+      }
+
+      saveStudentPreviewSnapshot({
+        version: 1,
+        courseId,
+        courseTitle: courseInfo?.title?.trim() || "Curso",
+        savedAt: new Date().toISOString(),
+        generatedByUid: currentUser?.uid ?? undefined,
+        feed,
+      });
+
+      if (previewWindow) {
+        previewWindow.location.assign(previewUrl);
+        previewWindow.focus();
+        return;
+      }
+
+      router.push(previewUrl);
+    } catch (error) {
+      if (previewWindow && !previewWindow.closed) {
+        previewWindow.close();
+      }
+      console.error(error);
+      toast.error(
+        error instanceof Error ? error.message : "No se pudo abrir la vista previa del alumno",
+      );
+    }
+  }, [buildPreviewFeed, courseId, courseInfo?.title, currentUser?.uid, router]);
 
   const handleLessonCreated = (
     lessonId: string,
@@ -975,13 +1100,13 @@ export default function CourseBuilderPage() {
             ← Volver a cursos
           </button>
           <div className="flex items-center gap-3">
-            <Link
-              href={`/student?previewCourseId=${courseId}`}
-              target="_blank"
+            <button
+              type="button"
+              onClick={handleOpenStudentPreview}
               className="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50"
             >
               Vista previa alumno
-            </Link>
+            </button>
             <span className="text-xs text-slate-500">ID: {courseId}</span>
           </div>
         </div>

@@ -14,6 +14,7 @@ type Props = {
   planteles: Plantel[];
   defaultPlantelId?: string;
   lockPlantel?: boolean;
+  allowCreatePlantel?: boolean;
   teacherId: string;
   teacherName: string;
   onCreated: (group: Group) => void;
@@ -27,6 +28,7 @@ export function CreateGroupModal({
   planteles,
   defaultPlantelId = "",
   lockPlantel = false,
+  allowCreatePlantel = true,
   teacherId,
   teacherName,
   onCreated,
@@ -240,7 +242,7 @@ export function CreateGroupModal({
                 </option>
               ))}
             </select>
-            {!lockPlantel ? (
+            {allowCreatePlantel ? (
               <div className="mt-2 flex gap-2">
                 <input
                   type="text"

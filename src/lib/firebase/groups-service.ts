@@ -91,6 +91,17 @@ const toUniqueStringArray = (value: unknown): string[] => {
   );
 };
 
+const normalizePlantelScope = (
+  value?: string | string[] | null,
+): string[] =>
+  Array.from(
+    new Set(
+      (Array.isArray(value) ? value : value ? [value] : [])
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  );
+
 const toDateFromUnknown = (value: unknown): Date | null => {
   if (!value) return null;
 
@@ -475,6 +486,14 @@ const sortGroupsByCreatedAtDesc = (groups: Group[]): Group[] =>
     (a, b) => (b.createdAt?.getTime?.() ?? 0) - (a.createdAt?.getTime?.() ?? 0),
   );
 
+const mergeUniqueGroups = (groupLists: Group[][]): Group[] => {
+  const map = new Map<string, Group>();
+  groupLists.flat().forEach((group) => {
+    map.set(group.id, group);
+  });
+  return sortGroupsByCreatedAtDesc(Array.from(map.values()));
+};
+
 export async function getGroupsByPlantel(plantelId: string, maxResults?: number): Promise<Group[]> {
   const normalizedPlantelId = plantelId.trim();
   if (!normalizedPlantelId) return [];
@@ -483,6 +502,20 @@ export async function getGroupsByPlantel(plantelId: string, maxResults?: number)
   );
   const groups = sortGroupsByCreatedAtDesc(
     snap.docs.map((docSnap) => toGroup(docSnap.id, docSnap.data())),
+  );
+  return typeof maxResults === "number" && maxResults > 0 ? groups.slice(0, maxResults) : groups;
+}
+
+export async function getGroupsByPlanteles(
+  plantelIds: string[],
+  maxResults?: number,
+): Promise<Group[]> {
+  const normalizedPlantelIds = normalizePlantelScope(plantelIds);
+  if (normalizedPlantelIds.length === 0) return [];
+  const groups = mergeUniqueGroups(
+    await Promise.all(
+      normalizedPlantelIds.map((plantelId) => getGroupsByPlantel(plantelId)),
+    ),
   );
   return typeof maxResults === "number" && maxResults > 0 ? groups.slice(0, maxResults) : groups;
 }
@@ -517,16 +550,16 @@ export async function getOnlineGroupsForCoordinator(
 }
 
 export async function getCoordinatorScopeGroups(
-  plantelId: string,
+  plantelScope: string | string[],
   coordinatorId: string,
   maxResults?: number,
 ): Promise<Group[]> {
-  const normalizedPlantelId = plantelId.trim();
+  const normalizedPlantelIds = normalizePlantelScope(plantelScope);
   const normalizedCoordinatorId = coordinatorId.trim();
   if (!normalizedCoordinatorId) return [];
 
-  const campusGroupsPromise = normalizedPlantelId
-    ? getGroupsByPlantel(normalizedPlantelId)
+  const campusGroupsPromise = normalizedPlantelIds.length > 0
+    ? getGroupsByPlanteles(normalizedPlantelIds)
     : Promise.resolve([]);
   const [campusGroups, onlineGroups] = await Promise.all([
     campusGroupsPromise,
@@ -547,6 +580,14 @@ export async function getActiveGroupsByPlantel(plantelId: string, maxResults?: n
   return groups.filter((group) => group.status === "active");
 }
 
+export async function getActiveGroupsByPlanteles(
+  plantelIds: string[],
+  maxResults?: number,
+): Promise<Group[]> {
+  const groups = await getGroupsByPlanteles(plantelIds, maxResults);
+  return groups.filter((group) => group.status === "active");
+}
+
 export async function getGroup(groupId: string): Promise<Group | null> {
   const ref = doc(db, "groups", groupId);
   let snap;
@@ -559,7 +600,20 @@ export async function getGroup(groupId: string): Promise<Group | null> {
   return toGroup(snap.id, snap.data());
 }
 
-export async function getGroupsByCourse(courseId: string, teacherId?: string, plantelId?: string): Promise<Group[]> {
+export async function getGroupsByCourse(
+  courseId: string,
+  teacherId?: string,
+  plantelScope?: string | string[],
+): Promise<Group[]> {
+  const normalizedPlantelIds = normalizePlantelScope(plantelScope);
+  if (normalizedPlantelIds.length > 1) {
+    return mergeUniqueGroups(
+      await Promise.all(
+        normalizedPlantelIds.map((plantelId) => getGroupsByCourse(courseId, teacherId, plantelId)),
+      ),
+    );
+  }
+  const plantelId = normalizedPlantelIds[0];
   const ref = collection(db, "groups");
   const constraintsBase: QueryConstraint[] = plantelId ? [] : [orderBy("createdAt", "desc")];
   const constraintsByCourseId: QueryConstraint[] = [where("courseId", "==", courseId), ...constraintsBase];
@@ -589,7 +643,19 @@ export async function getGroupsByCourse(courseId: string, teacherId?: string, pl
   return sortGroupsByCreatedAtDesc(Array.from(map.values()));
 }
 
-export async function getActiveGroups(teacherId?: string, plantelId?: string): Promise<Group[]> {
+export async function getActiveGroups(
+  teacherId?: string,
+  plantelScope?: string | string[],
+): Promise<Group[]> {
+  const normalizedPlantelIds = normalizePlantelScope(plantelScope);
+  if (normalizedPlantelIds.length > 1) {
+    return mergeUniqueGroups(
+      await Promise.all(
+        normalizedPlantelIds.map((plantelId) => getActiveGroups(teacherId, plantelId)),
+      ),
+    );
+  }
+  const plantelId = normalizedPlantelIds[0];
   if (plantelId) {
     return getActiveGroupsByPlantel(plantelId);
   }

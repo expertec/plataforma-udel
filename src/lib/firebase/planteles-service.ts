@@ -123,6 +123,94 @@ function replacePlantelNameArray(value: unknown, oldName: string, newName: strin
   return [...nextNames, newName];
 }
 
+function toUniqueStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value.filter(
+        (item): item is string => typeof item === "string" && item.trim().length > 0,
+      ),
+    ),
+  );
+}
+
+function dedupePlantelAssignments(assignments: PlantelAssignment[]): PlantelAssignment[] {
+  const map = new Map<string, PlantelAssignment>();
+  assignments.forEach((assignment) => {
+    const plantelId = assignment.plantelId.trim();
+    if (!plantelId) return;
+    const existing = map.get(plantelId);
+    const plantelName = assignment.plantelName.trim();
+    if (!existing) {
+      map.set(plantelId, { plantelId, plantelName });
+      return;
+    }
+    if (!existing.plantelName && plantelName) {
+      map.set(plantelId, { plantelId, plantelName });
+    }
+  });
+  return Array.from(map.values());
+}
+
+export function getPlantelAssignmentsFromData(data: Record<string, unknown>): PlantelAssignment[] {
+  const plantelIds = toUniqueStringArray(data.plantelIds);
+  const plantelNames = Array.isArray(data.plantelNames)
+    ? data.plantelNames.filter((item): item is string => typeof item === "string")
+    : [];
+
+  if (plantelIds.length > 0) {
+    return dedupePlantelAssignments(
+      plantelIds.map((plantelId, index) => ({
+        plantelId,
+        plantelName: plantelNames[index]?.trim() ?? "",
+      })),
+    );
+  }
+
+  const legacyPlantelId = typeof data.plantelId === "string" ? data.plantelId.trim() : "";
+  if (!legacyPlantelId) return [];
+  return [
+    {
+      plantelId: legacyPlantelId,
+      plantelName: typeof data.plantelName === "string" ? data.plantelName.trim() : "",
+    },
+  ];
+}
+
+function replacePlantelAssignmentName(
+  assignments: PlantelAssignment[],
+  plantelId: string,
+  plantelName: string,
+): PlantelAssignment[] {
+  return dedupePlantelAssignments(
+    assignments.map((assignment) =>
+      assignment.plantelId === plantelId
+        ? { ...assignment, plantelName }
+        : assignment,
+    ),
+  );
+}
+
+function removePlantelAssignment(
+  assignments: PlantelAssignment[],
+  plantelId: string,
+): PlantelAssignment[] {
+  return dedupePlantelAssignments(
+    assignments.filter((assignment) => assignment.plantelId !== plantelId),
+  );
+}
+
+function toPlantelAssignmentFields(assignments: PlantelAssignment[]): Record<string, unknown> {
+  const nextAssignments = dedupePlantelAssignments(assignments);
+  const primaryAssignment = nextAssignments[0] ?? null;
+  return {
+    plantelIds: nextAssignments.map((assignment) => assignment.plantelId),
+    plantelNames: nextAssignments.map((assignment) => assignment.plantelName),
+    plantelId: primaryAssignment?.plantelId ?? deleteField(),
+    plantelName: primaryAssignment?.plantelName ?? deleteField(),
+  };
+}
+
 function removePlantelNameFromArray(value: unknown, plantelName: string): string[] {
   const normalizedPlantelName = normalizePlantelName(plantelName);
   if (!Array.isArray(value)) return [];
@@ -222,7 +310,7 @@ export async function updatePlantel(plantelId: string, name: string): Promise<Pl
     throw new Error("Ya existe otro plantel con ese nombre");
   }
 
-  const [coordinatorUsersSnap, studentUsersSnap, groupsSnap, enrollmentsSnap] = await Promise.all([
+  const [legacyCoordinatorUsersSnap, usersWithPlantelArraySnap, groupsSnap, enrollmentsSnap] = await Promise.all([
     getDocs(query(collection(db, "users"), where("plantelId", "==", normalizedPlantelId))),
     getDocs(query(collection(db, "users"), where("plantelIds", "array-contains", normalizedPlantelId))),
     getDocs(query(collection(db, "groups"), where("plantelId", "==", normalizedPlantelId))),
@@ -240,13 +328,27 @@ export async function updatePlantel(plantelId: string, name: string): Promise<Pl
     updatedAt: serverTimestamp(),
   });
 
-  coordinatorUsersSnap.docs.forEach((userDoc) => {
+  const coordinatorUsersByPath = new Map<string, typeof legacyCoordinatorUsersSnap.docs[number]>();
+  const studentUsersByPath = new Map<string, typeof usersWithPlantelArraySnap.docs[number]>();
+  [...legacyCoordinatorUsersSnap.docs, ...usersWithPlantelArraySnap.docs].forEach((userDoc) => {
+    const data = userDoc.data();
+    if (data.role === "student") {
+      studentUsersByPath.set(userDoc.ref.path, userDoc);
+      return;
+    }
+    coordinatorUsersByPath.set(userDoc.ref.path, userDoc);
+  });
+
+  coordinatorUsersByPath.forEach((userDoc) => {
+    const assignments = getPlantelAssignmentsFromData(userDoc.data());
     queueUpdate(updates, userDoc.ref, {
-      plantelName: trimmed,
+      ...toPlantelAssignmentFields(
+        replacePlantelAssignmentName(assignments, normalizedPlantelId, trimmed),
+      ),
       updatedAt: serverTimestamp(),
     });
   });
-  studentUsersSnap.docs.forEach((userDoc) => {
+  studentUsersByPath.forEach((userDoc) => {
     queueUpdate(updates, userDoc.ref, {
       plantelNames: replacePlantelNameArray(userDoc.data().plantelNames, currentPlantel.name, trimmed),
       updatedAt: serverTimestamp(),
@@ -296,7 +398,7 @@ export async function deletePlantel(plantelId: string): Promise<void> {
   }
 
   const currentPlantel = toPlantel(plantelSnap.id, plantelSnap.data());
-  const [coordinatorUsersSnap, studentUsersSnap, groupsSnap, enrollmentsSnap] = await Promise.all([
+  const [legacyCoordinatorUsersSnap, usersWithPlantelArraySnap, groupsSnap, enrollmentsSnap] = await Promise.all([
     getDocs(query(collection(db, "users"), where("plantelId", "==", normalizedPlantelId))),
     getDocs(query(collection(db, "users"), where("plantelIds", "array-contains", normalizedPlantelId))),
     getDocs(query(collection(db, "groups"), where("plantelId", "==", normalizedPlantelId))),
@@ -312,18 +414,31 @@ export async function deletePlantel(plantelId: string): Promise<void> {
     updatedAt: serverTimestamp(),
   });
 
-  coordinatorUsersSnap.docs.forEach((userDoc) => {
+  const coordinatorUsersByPath = new Map<string, typeof legacyCoordinatorUsersSnap.docs[number]>();
+  const studentUsersByPath = new Map<string, typeof usersWithPlantelArraySnap.docs[number]>();
+  [...legacyCoordinatorUsersSnap.docs, ...usersWithPlantelArraySnap.docs].forEach((userDoc) => {
+    const data = userDoc.data();
+    if (data.role === "student") {
+      studentUsersByPath.set(userDoc.ref.path, userDoc);
+      return;
+    }
+    coordinatorUsersByPath.set(userDoc.ref.path, userDoc);
+  });
+
+  coordinatorUsersByPath.forEach((userDoc) => {
+    const assignments = getPlantelAssignmentsFromData(userDoc.data());
     queueUpdate(updates, userDoc.ref, {
-      plantelId: deleteField(),
-      plantelName: deleteField(),
+      ...toPlantelAssignmentFields(removePlantelAssignment(assignments, normalizedPlantelId)),
       updatedAt: serverTimestamp(),
     });
   });
-  studentUsersSnap.docs.forEach((userDoc) => {
+  studentUsersByPath.forEach((userDoc) => {
     const data = userDoc.data();
     queueUpdate(updates, userDoc.ref, {
       plantelIds: removePlantelIdFromArray(data.plantelIds, normalizedPlantelId),
       plantelNames: removePlantelNameFromArray(data.plantelNames, currentPlantel.name),
+      plantelId: deleteField(),
+      plantelName: deleteField(),
       updatedAt: serverTimestamp(),
     });
   });
@@ -354,19 +469,28 @@ export async function deletePlantel(plantelId: string): Promise<void> {
   await commitQueuedUpdates(updates.values());
 }
 
-export async function getUserPlantelAssignment(userId: string): Promise<PlantelAssignment | null> {
-  if (!userId) return null;
+export async function getUserPlantelAssignments(userId: string): Promise<PlantelAssignment[]> {
+  if (!userId) return [];
   const snap = await getDoc(doc(db, "users", userId));
-  if (!snap.exists()) return null;
-  const data = snap.data();
-  const plantelId = typeof data.plantelId === "string" ? data.plantelId.trim() : "";
-  if (!plantelId) return null;
-  const plantelName =
-    (typeof data.plantelName === "string" && data.plantelName.trim()) ||
-    (await getPlantel(plantelId))?.name ||
-    "";
-  return {
-    plantelId,
-    plantelName,
-  };
+  if (!snap.exists()) return [];
+  const data = snap.data() as Record<string, unknown>;
+  const assignments = getPlantelAssignmentsFromData(data);
+  if (assignments.length === 0) return [];
+
+  const resolvedAssignments = await Promise.all(
+    assignments.map(async (assignment) => {
+      if (assignment.plantelName) return assignment;
+      const plantel = await getPlantel(assignment.plantelId);
+      return {
+        plantelId: assignment.plantelId,
+        plantelName: plantel?.name ?? "",
+      };
+    }),
+  );
+  return dedupePlantelAssignments(resolvedAssignments);
+}
+
+export async function getUserPlantelAssignment(userId: string): Promise<PlantelAssignment | null> {
+  const assignments = await getUserPlantelAssignments(userId);
+  return assignments[0] ?? null;
 }

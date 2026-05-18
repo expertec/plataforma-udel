@@ -5,7 +5,7 @@ import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import { Course, getCourses } from "@/lib/firebase/courses-service";
 import { Group, getAllGroups, getCoordinatorScopeGroups, getGroupsForTeacher } from "@/lib/firebase/groups-service";
-import { getUserPlantelAssignment, PlantelAssignment } from "@/lib/firebase/planteles-service";
+import { getUserPlantelAssignments, PlantelAssignment } from "@/lib/firebase/planteles-service";
 import {
   resolveUserRole,
   UserRole,
@@ -36,18 +36,12 @@ const TeacherDataContext = createContext<TeacherDataContextType | undefined>(und
 // Tiempo de expiración del caché (5 minutos)
 const CACHE_TTL = 5 * 60 * 1000;
 
-type CacheData = {
-  courses: Course[];
-  groups: Group[];
-  timestamp: number;
-};
-
 export function TeacherDataProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [courses, setCourses] = useState<Course[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
-  const [plantelAssignment, setPlantelAssignment] = useState<PlantelAssignment | null>(null);
+  const [plantelAssignments, setPlantelAssignments] = useState<PlantelAssignment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cacheTimestamp, setCacheTimestamp] = useState<number>(0);
@@ -82,14 +76,18 @@ export function TeacherDataProvider({ children }: { children: ReactNode }) {
         userRole && isAdminTeacherRole(userRole)
           ? await getAllGroups(50)
           : userRole && isCampusCoordinatorRole(userRole) && currentUser?.uid
-            ? await getCoordinatorScopeGroups(plantelAssignment?.plantelId ?? "", currentUser.uid, 50)
+            ? await getCoordinatorScopeGroups(
+                plantelAssignments.map((assignment) => assignment.plantelId),
+                currentUser.uid,
+                50,
+              )
             : await getGroupsForTeacher(currentUser.uid, 50);
       setGroups(data);
     } catch (err) {
       console.error("Error cargando grupos:", err);
       setError("No se pudieron cargar los grupos");
     }
-  }, [currentUser, plantelAssignment?.plantelId, userRole]);
+  }, [currentUser, plantelAssignments, userRole]);
 
   // Refrescar todo
   const refreshAll = useCallback(async () => {
@@ -121,7 +119,7 @@ export function TeacherDataProvider({ children }: { children: ReactNode }) {
 
       if (!user) {
         setUserRole(null);
-        setPlantelAssignment(null);
+        setPlantelAssignments([]);
         setCourses([]);
         setGroups([]);
         setLoading(false);
@@ -133,14 +131,14 @@ export function TeacherDataProvider({ children }: { children: ReactNode }) {
         const role = await resolveUserRole(user);
         setUserRole(role);
         if (role && isCampusCoordinatorRole(role)) {
-          setPlantelAssignment(await getUserPlantelAssignment(user.uid));
+          setPlantelAssignments(await getUserPlantelAssignments(user.uid));
         } else {
-          setPlantelAssignment(null);
+          setPlantelAssignments([]);
         }
       } catch (err) {
         console.error("Error obteniendo rol:", err);
         setUserRole(null);
-        setPlantelAssignment(null);
+        setPlantelAssignments([]);
       }
     });
 

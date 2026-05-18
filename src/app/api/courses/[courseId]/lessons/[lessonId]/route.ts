@@ -100,7 +100,7 @@ function getMentorAllowedCourseIds(
 async function resolveTeacherContext(request: NextRequest): Promise<{
   uid: string;
   role: TeacherRole;
-  coordinatorPlantelId: string;
+  coordinatorPlantelIds: string[];
 }> {
   const token = extractBearerToken(request.headers.get("authorization"));
   if (!token) {
@@ -124,31 +124,45 @@ async function resolveTeacherContext(request: NextRequest): Promise<{
     throw new RouteAccessError(403, "Acceso restringido a docentes");
   }
 
-  const coordinatorPlantelId = asTrimmedString(userData.plantelId);
-  return { uid, role, coordinatorPlantelId };
+  const coordinatorPlantelIds = asUniqueStringArray(userData.plantelIds);
+  if (coordinatorPlantelIds.length > 0) {
+    return { uid, role, coordinatorPlantelIds };
+  }
+  const legacyPlantelId = asTrimmedString(userData.plantelId);
+  return {
+    uid,
+    role,
+    coordinatorPlantelIds: legacyPlantelId ? [legacyPlantelId] : [],
+  };
 }
 
 async function canCampusCoordinatorManageCourse(params: {
   courseId: string;
-  plantelId: string;
+  plantelIds: string[];
 }): Promise<boolean> {
-  const { courseId, plantelId } = params;
-  if (!plantelId) return false;
+  const { courseId, plantelIds } = params;
+  if (plantelIds.length === 0) return false;
   const db = getAdminFirestore();
-  const groupsSnap = await db.collection("groups").where("plantelId", "==", plantelId).get();
-  return groupsSnap.docs.some((groupDoc) => {
-    const groupData = groupDoc.data() as Record<string, unknown>;
-    return getGroupCourseIds(groupData).includes(courseId);
-  });
+  const groupSnaps = await Promise.all(
+    plantelIds.map((plantelId) =>
+      db.collection("groups").where("plantelId", "==", plantelId).get(),
+    ),
+  );
+  return groupSnaps.some((groupsSnap) =>
+    groupsSnap.docs.some((groupDoc) => {
+      const groupData = groupDoc.data() as Record<string, unknown>;
+      return getGroupCourseIds(groupData).includes(courseId);
+    }),
+  );
 }
 
 async function canUserManageCourse(params: {
   courseId: string;
   uid: string;
   role: TeacherRole;
-  coordinatorPlantelId: string;
+  coordinatorPlantelIds: string[];
 }): Promise<{ allowed: boolean; mentorIds: string[]; shouldBackfillMentor: boolean }> {
-  const { courseId, uid, role, coordinatorPlantelId } = params;
+  const { courseId, uid, role, coordinatorPlantelIds } = params;
   const db = getAdminFirestore();
 
   const courseRef = db.collection("courses").doc(courseId);
@@ -172,7 +186,7 @@ async function canUserManageCourse(params: {
   if (role === "coordinadorPlantel") {
     const hasCampusAccess = await canCampusCoordinatorManageCourse({
       courseId,
-      plantelId: coordinatorPlantelId,
+      plantelIds: coordinatorPlantelIds,
     });
     if (hasCampusAccess) {
       return { allowed: true, mentorIds, shouldBackfillMentor: false };
@@ -265,7 +279,7 @@ export async function PATCH(
       courseId: normalizedCourseId,
       uid: teacherContext.uid,
       role: teacherContext.role,
-      coordinatorPlantelId: teacherContext.coordinatorPlantelId,
+      coordinatorPlantelIds: teacherContext.coordinatorPlantelIds,
     });
 
     if (!access.allowed) {

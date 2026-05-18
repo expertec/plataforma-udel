@@ -15,6 +15,7 @@ type Props = {
   planteles: Plantel[];
   defaultPlantelId?: string;
   lockPlantel?: boolean;
+  allowCreatePlantel?: boolean;
   teacherId: string;
   teacherName: string;
   onImported: () => void;
@@ -46,6 +47,7 @@ export function BulkCreateGroupsModal({
   planteles,
   defaultPlantelId = "",
   lockPlantel = false,
+  allowCreatePlantel = true,
   teacherId,
   teacherName,
   onImported,
@@ -140,8 +142,8 @@ export function BulkCreateGroupsModal({
         plantel.normalizedName === normalized,
     );
     if (found) return found;
-    if (lockPlantel) {
-      throw new Error("El plantel no coincide con tu asignación");
+    if (lockPlantel || !allowCreatePlantel) {
+      throw new Error("El plantel no coincide con tus asignaciones");
     }
 
     const created = await createPlantel(rawPlantel);

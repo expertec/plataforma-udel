@@ -6,7 +6,7 @@ import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import { Course, getCourses } from "@/lib/firebase/courses-service";
 import { Group, getAllGroups, getCoordinatorScopeGroups, getGroupsForTeacher } from "@/lib/firebase/groups-service";
-import { getUserPlantelAssignment } from "@/lib/firebase/planteles-service";
+import { getUserPlantelAssignments } from "@/lib/firebase/planteles-service";
 import {
   isAdminTeacherRole,
   isCampusCoordinatorRole,
@@ -40,7 +40,9 @@ export default function CreatorPage() {
         setUserRole(role);
         const teacherId = isAdminTeacherRole(role) ? undefined : user.uid;
         const isCoordinator = isCampusCoordinatorRole(role);
-        const plantelAssignment = isCoordinator ? await getUserPlantelAssignment(user.uid) : null;
+        const coordinatorPlantelIds = isCoordinator
+          ? (await getUserPlantelAssignments(user.uid)).map((assignment) => assignment.plantelId)
+          : [];
         // Limitar la carga inicial para reducir lecturas de Firestore
         // Dashboard solo necesita mostrar resumen, no todos los datos
         const DASHBOARD_LIMIT = 20; // Suficiente para estadísticas y preview
@@ -49,7 +51,7 @@ export default function CreatorPage() {
           isAdminTeacherRole(role)
             ? getAllGroups(DASHBOARD_LIMIT)
             : isCoordinator
-              ? getCoordinatorScopeGroups(plantelAssignment?.plantelId ?? "", user.uid, DASHBOARD_LIMIT)
+              ? getCoordinatorScopeGroups(coordinatorPlantelIds, user.uid, DASHBOARD_LIMIT)
               : getGroupsForTeacher(user.uid, DASHBOARD_LIMIT),
         ]);
         setCourses(coursesData);

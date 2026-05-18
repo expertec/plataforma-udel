@@ -15,7 +15,7 @@ import {
   getGroups,
   getGroupsWhereAssistant,
 } from "@/lib/firebase/groups-service";
-import { getPlanteles, getUserPlantelAssignment, Plantel, PlantelAssignment } from "@/lib/firebase/planteles-service";
+import { getPlanteles, getUserPlantelAssignments, Plantel, PlantelAssignment } from "@/lib/firebase/planteles-service";
 import toast from "react-hot-toast";
 import { RoleGate } from "@/components/auth/RoleGate";
 import {
@@ -30,7 +30,7 @@ export default function GroupsPage() {
   const [assistantGroups, setAssistantGroups] = useState<Group[]>([]);
   const [courses, setCourses] = useState<{ id: string; title: string }[]>([]);
   const [planteles, setPlanteles] = useState<Plantel[]>([]);
-  const [plantelAssignment, setPlantelAssignment] = useState<PlantelAssignment | null>(null);
+  const [plantelAssignments, setPlantelAssignments] = useState<PlantelAssignment[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [bulkModalOpen, setBulkModalOpen] = useState(false);
@@ -52,18 +52,18 @@ export default function GroupsPage() {
           const role = await resolveUserRole(u);
           if (!cancelled) setUserRole(role);
           if (role === "coordinadorPlantel") {
-            const assignment = await getUserPlantelAssignment(u.uid);
-            if (!cancelled) setPlantelAssignment(assignment);
+            const assignments = await getUserPlantelAssignments(u.uid);
+            if (!cancelled) setPlantelAssignments(assignments);
           } else if (!cancelled) {
-            setPlantelAssignment(null);
+            setPlantelAssignments([]);
           }
         } catch {
           if (!cancelled) setUserRole(null);
-          if (!cancelled) setPlantelAssignment(null);
+          if (!cancelled) setPlantelAssignments([]);
         }
       } else if (!cancelled) {
         setUserRole(null);
-        setPlantelAssignment(null);
+        setPlantelAssignments([]);
       }
     });
     return () => {
@@ -84,10 +84,11 @@ export default function GroupsPage() {
     try {
       const isAdminTeacher = isAdminTeacherRole(userRole);
       const isCoordinator = isCampusCoordinatorRole(userRole);
+      const coordinatorPlantelIds = plantelAssignments.map((assignment) => assignment.plantelId);
       const ownGroupsPromise = isAdminTeacher
         ? getAllGroups()
         : isCoordinator
-          ? getCoordinatorScopeGroups(plantelAssignment?.plantelId ?? "", currentUser.uid)
+          ? getCoordinatorScopeGroups(coordinatorPlantelIds, currentUser.uid)
           : getGroups(currentUser.uid);
       const assistantGroupsPromise =
         isAdminTeacher || isCoordinator ? Promise.resolve([]) : getGroupsWhereAssistant(currentUser.uid);
@@ -143,7 +144,7 @@ export default function GroupsPage() {
     } finally {
       setLoading(false);
     }
-  }, [currentUser?.uid, plantelAssignment?.plantelId, userRole]);
+  }, [currentUser?.uid, plantelAssignments, userRole]);
 
   useEffect(() => {
     if (!authLoading) {
@@ -235,7 +236,8 @@ export default function GroupsPage() {
   const isAdminTeacher = isAdminTeacherRole(userRole);
   const isCampusCoordinator = isCampusCoordinatorRole(userRole);
   const isTeacher = userRole === "teacher";
-  const coordinatorHasPlantel = !isCampusCoordinator || Boolean(plantelAssignment?.plantelId);
+  const primaryPlantelAssignment = plantelAssignments[0] ?? null;
+  const coordinatorHasPlantel = !isCampusCoordinator || plantelAssignments.length > 0;
   const canCreateGroups = isAdminTeacher || (isCampusCoordinator && coordinatorHasPlantel);
   const canViewPrimaryGroups = isAdminTeacher || isCampusCoordinator || isTeacher;
   const hasGlobalGroupsView = isAdminTeacher;
@@ -243,16 +245,13 @@ export default function GroupsPage() {
     isAdminTeacher || (isCampusCoordinator && group.teacherId === currentUser?.uid);
   const availablePlanteles = useMemo<Plantel[]>(() => {
     if (isAdminTeacher) return planteles;
-    if (!plantelAssignment) return [];
-    return [
-      {
-        id: plantelAssignment.plantelId,
-        name: plantelAssignment.plantelName,
-        normalizedName: "",
-        status: "active",
-      },
-    ];
-  }, [isAdminTeacher, plantelAssignment, planteles]);
+    return plantelAssignments.map((assignment) => ({
+      id: assignment.plantelId,
+      name: assignment.plantelName,
+      normalizedName: "",
+      status: "active",
+    }));
+  }, [isAdminTeacher, plantelAssignments, planteles]);
 
   return (
     <RoleGate allowedRole={["teacher", "adminTeacher", "superAdminTeacher", "coordinadorPlantel"]}>
@@ -266,7 +265,9 @@ export default function GroupsPage() {
               {hasGlobalGroupsView
                 ? "Todos los grupos"
                 : isCampusCoordinator
-                  ? `Grupos de ${plantelAssignment?.plantelName || "tu plantel"} + en línea asignados`
+                  ? plantelAssignments.length === 1
+                    ? `Grupos de ${plantelAssignments[0]?.plantelName || "tu plantel"} + en línea asignados`
+                    : "Grupos de tus planteles + en línea asignados"
                   : "Mis grupos asignados"}
             </h1>
           </div>
@@ -296,8 +297,8 @@ export default function GroupsPage() {
           </div>
         ) : totalGroups === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-600 shadow-sm">
-            {isCampusCoordinator && !plantelAssignment?.plantelId
-              ? "Tu cuenta de coordinador no tiene plantel asignado. Solo verás grupos en línea que te asignen."
+            {isCampusCoordinator && plantelAssignments.length === 0
+              ? "Tu cuenta de coordinador no tiene planteles asignados. Solo verás grupos en línea que te asignen."
               : canCreateGroups
                 ? "Aún no hay grupos registrados."
                 : "Aún no te han asignado grupos ni mentorías."}
@@ -447,8 +448,9 @@ export default function GroupsPage() {
           onClose={() => setModalOpen(false)}
           courses={courses}
           planteles={availablePlanteles}
-          defaultPlantelId={plantelAssignment?.plantelId ?? ""}
-          lockPlantel={isCampusCoordinator}
+          defaultPlantelId={primaryPlantelAssignment?.plantelId ?? ""}
+          lockPlantel={isCampusCoordinator && availablePlanteles.length <= 1}
+          allowCreatePlantel={isAdminTeacher}
           teacherId={currentUser?.uid ?? ""}
           teacherName={currentUser?.displayName ?? "Profesor"}
           onCreated={handleCreated}
@@ -465,8 +467,9 @@ export default function GroupsPage() {
           onClose={() => setBulkModalOpen(false)}
           courses={courses}
           planteles={availablePlanteles}
-          defaultPlantelId={plantelAssignment?.plantelId ?? ""}
-          lockPlantel={isCampusCoordinator}
+          defaultPlantelId={primaryPlantelAssignment?.plantelId ?? ""}
+          lockPlantel={isCampusCoordinator && availablePlanteles.length <= 1}
+          allowCreatePlantel={isAdminTeacher}
           teacherId={currentUser?.uid ?? ""}
           teacherName={currentUser?.displayName ?? "Profesor"}
           onImported={() => {
