@@ -91,6 +91,18 @@ type LiveClassDiagnosticResponse = {
   error?: string;
 };
 
+type LiveRecordingAccess = {
+  url: string;
+  expiresAt: string;
+  objectPath: string;
+};
+
+type LiveRecordingAccessResponse = {
+  success?: boolean;
+  data?: LiveRecordingAccess;
+  error?: string;
+};
+
 type StorageVideoItem = {
   objectPath: string;
   fileName: string;
@@ -102,6 +114,35 @@ type StorageVideoItem = {
   sizeBytes: number | null;
   contentType: string;
 };
+
+type StorageDisplayItem =
+  | {
+      kind: "mp4";
+      key: string;
+      title: string;
+      objectPath: string;
+      updatedAt: string | null;
+      sizeBytes: number | null;
+      contentType: string;
+      urlExpiresAt: string;
+      primaryUrl: string;
+      primaryLabel: string;
+    }
+  | {
+      kind: "hls_bundle";
+      key: string;
+      title: string;
+      objectPath: string;
+      updatedAt: string | null;
+      sizeBytes: number | null;
+      contentType: string;
+      urlExpiresAt: string;
+      primaryUrl: string;
+      primaryLabel: string;
+      secondaryUrl: string | null;
+      secondaryLabel: string | null;
+      manifestCount: number;
+    };
 
 type LiveRecordingsResponse = {
   success?: boolean;
@@ -181,6 +222,98 @@ const formatBytes = (value: number | null | undefined) => {
   return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 };
 
+const toSortMs = (value: string | null | undefined) => {
+  if (!value) return 0;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const getHlsBundleBasePath = (objectPath: string) =>
+  objectPath.replace(/\/(?:index|live)\.m3u8$/i, "");
+
+const getLastPathSegment = (value: string) => value.split("/").pop() ?? value;
+
+const buildStorageDisplayItems = (items: StorageVideoItem[]): StorageDisplayItem[] => {
+  const displayItems: StorageDisplayItem[] = [];
+  const hlsBundles = new Map<
+    string,
+    { indexManifest: StorageVideoItem | null; liveManifest: StorageVideoItem | null; sizeBytes: number }
+  >();
+
+  items.forEach((item) => {
+    if (item.artifactType === "mp4") {
+      displayItems.push({
+        kind: "mp4",
+        key: item.objectPath,
+        title: item.fileName,
+        objectPath: item.objectPath,
+        updatedAt: item.updatedAt,
+        sizeBytes: item.sizeBytes,
+        contentType: item.contentType,
+        urlExpiresAt: item.urlExpiresAt,
+        primaryUrl: item.signedUrl,
+        primaryLabel: "Abrir video",
+      });
+      return;
+    }
+
+    const bundleKey = getHlsBundleBasePath(item.objectPath);
+    const current =
+      hlsBundles.get(bundleKey) ??
+      {
+        indexManifest: null,
+        liveManifest: null,
+        sizeBytes: 0,
+      };
+
+    if (item.fileName.toLowerCase() === "index.m3u8") {
+      current.indexManifest = item;
+    } else if (item.fileName.toLowerCase() === "live.m3u8") {
+      current.liveManifest = item;
+    }
+    current.sizeBytes += typeof item.sizeBytes === "number" ? item.sizeBytes : 0;
+    hlsBundles.set(bundleKey, current);
+  });
+
+  hlsBundles.forEach((bundle, bundleKey) => {
+    const primary = bundle.indexManifest ?? bundle.liveManifest;
+    if (!primary) return;
+    const secondary = bundle.indexManifest && bundle.liveManifest
+      ? primary.objectPath === bundle.indexManifest.objectPath
+        ? bundle.liveManifest
+        : bundle.indexManifest
+      : null;
+
+    displayItems.push({
+      kind: "hls_bundle",
+      key: bundleKey,
+      title: getLastPathSegment(bundleKey) || "Respaldo HLS",
+      objectPath: bundleKey,
+      updatedAt:
+        toSortMs(bundle.indexManifest?.updatedAt) >= toSortMs(bundle.liveManifest?.updatedAt)
+          ? bundle.indexManifest?.updatedAt ?? bundle.liveManifest?.updatedAt ?? null
+          : bundle.liveManifest?.updatedAt ?? bundle.indexManifest?.updatedAt ?? null,
+      sizeBytes: bundle.sizeBytes || null,
+      contentType: "application/vnd.apple.mpegurl",
+      urlExpiresAt: primary.urlExpiresAt,
+      primaryUrl: primary.signedUrl,
+      primaryLabel:
+        primary.fileName.toLowerCase() === "index.m3u8"
+          ? "Abrir manifest principal"
+          : "Abrir manifest live",
+      secondaryUrl: secondary?.signedUrl ?? null,
+      secondaryLabel: secondary
+        ? secondary.fileName.toLowerCase() === "index.m3u8"
+          ? "Abrir manifest principal"
+          : "Abrir manifest live"
+        : null,
+      manifestCount: Number(Boolean(bundle.indexManifest)) + Number(Boolean(bundle.liveManifest)),
+    });
+  });
+
+  return displayItems.sort((a, b) => toSortMs(b.updatedAt) - toSortMs(a.updatedAt));
+};
+
 export default function CreatorLiveClassesPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
@@ -204,6 +337,12 @@ export default function CreatorLiveClassesPage() {
   const [monitorFilter, setMonitorFilter] = useState<MonitorStatus | "all">("all");
   const [diagnosticLoadingMap, setDiagnosticLoadingMap] = useState<Record<string, boolean>>({});
   const [diagnosticMap, setDiagnosticMap] = useState<Record<string, LiveClassDiagnostic>>({});
+  const [recordingAccessLoadingMap, setRecordingAccessLoadingMap] = useState<
+    Record<string, boolean>
+  >({});
+  const [recordingAccessMap, setRecordingAccessMap] = useState<
+    Record<string, LiveRecordingAccess>
+  >({});
   const [storageLoading, setStorageLoading] = useState(false);
   const [storageItems, setStorageItems] = useState<StorageVideoItem[]>([]);
   const [storagePrefix, setStoragePrefix] = useState("live-recordings");
@@ -280,15 +419,19 @@ export default function CreatorLiveClassesPage() {
   }, [currentUser]);
 
   const fetchStorage = useCallback(
-    async (reset: boolean) => {
+    async (params: { reset: boolean; cursor?: string | null }) => {
       if (!currentUser) return;
       setStorageLoading(true);
       try {
         const token = await currentUser.getIdToken();
         const searchParams = new URLSearchParams();
         searchParams.set("limit", "12");
-        if (!reset && storageNextPageToken) {
-          searchParams.set("pageToken", storageNextPageToken);
+        const normalizedSearch = storageSearch.trim();
+        if (normalizedSearch) {
+          searchParams.set("query", normalizedSearch);
+        }
+        if (!params.reset && params.cursor) {
+          searchParams.set("pageToken", params.cursor);
         }
         const response = await fetch(`/api/admin/live-recordings?${searchParams.toString()}`, {
           method: "GET",
@@ -304,7 +447,14 @@ export default function CreatorLiveClassesPage() {
         }
 
         const nextItems = payload.data.items ?? [];
-        setStorageItems((prev) => (reset ? nextItems : [...prev, ...nextItems]));
+        setStorageItems((prev) => {
+          const combined = params.reset ? nextItems : [...prev, ...nextItems];
+          const deduped = new Map<string, StorageVideoItem>();
+          combined.forEach((item) => {
+            deduped.set(item.objectPath, item);
+          });
+          return Array.from(deduped.values());
+        });
         setStoragePrefix(payload.data.prefix ?? "live-recordings");
         setStorageBucket(payload.data.bucketName ?? "");
         setStorageFetchedAt(payload.data.fetchedAt ?? new Date().toISOString());
@@ -319,7 +469,7 @@ export default function CreatorLiveClassesPage() {
         setStorageLoading(false);
       }
     },
-    [currentUser, storageNextPageToken],
+    [currentUser, storageSearch],
   );
 
   const fetchDiagnostic = useCallback(
@@ -361,17 +511,79 @@ export default function CreatorLiveClassesPage() {
     [currentUser],
   );
 
+  const fetchRecordingAccess = useCallback(
+    async (item: LiveClassMonitorItem) => {
+      if (!currentUser) return null;
+      setRecordingAccessLoadingMap((prev) => ({ ...prev, [item.docPath]: true }));
+      try {
+        const token = await currentUser.getIdToken();
+        const searchParams = new URLSearchParams();
+        searchParams.set("courseId", item.courseId);
+        searchParams.set("lessonId", item.lessonId);
+        const response = await fetch(
+          `/api/live/classes/${encodeURIComponent(item.classId)}/recording?${searchParams.toString()}`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          },
+        );
+        const payload = (await response.json().catch(() => null)) as
+          | LiveRecordingAccessResponse
+          | null;
+        if (!response.ok || !payload?.success || !payload.data) {
+          throw new Error(payload?.error || "No se pudo resolver la grabación");
+        }
+        setRecordingAccessMap((prev) => ({ ...prev, [item.docPath]: payload.data! }));
+        await fetchMonitor();
+        toast.success("La grabación quedó disponible en la plataforma.");
+        return payload.data;
+      } catch (error) {
+        console.error(error);
+        toast.error(
+          error instanceof Error ? error.message : "No se pudo resolver la grabación",
+        );
+        return null;
+      } finally {
+        setRecordingAccessLoadingMap((prev) => ({ ...prev, [item.docPath]: false }));
+      }
+    },
+    [currentUser, fetchMonitor],
+  );
+
+  const copyRecordingLink = useCallback(async (item: LiveClassMonitorItem) => {
+    const access = recordingAccessMap[item.docPath];
+    if (!access?.url) {
+      toast.error("Primero genera el enlace temporal.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(access.url);
+      toast.success("Enlace temporal copiado.");
+    } catch (error) {
+      console.error(error);
+      toast.error("No se pudo copiar el enlace.");
+    }
+  }, [recordingAccessMap]);
+
   useEffect(() => {
     if (!authReady || !currentUser || !isAdminTeacherRole(userRole)) return;
     fetchMonitor();
   }, [authReady, currentUser, userRole, fetchMonitor]);
 
   useEffect(() => {
-    if (activeTab !== "storage" || storageLoaded || !currentUser || !isAdminTeacherRole(userRole)) {
+    if (activeTab !== "storage" || !currentUser || !isAdminTeacherRole(userRole)) {
       return;
     }
-    fetchStorage(true);
-  }, [activeTab, storageLoaded, currentUser, userRole, fetchStorage]);
+    const timeout = setTimeout(
+      () => {
+        void fetchStorage({ reset: true });
+      },
+      storageLoaded ? 250 : 0,
+    );
+    return () => clearTimeout(timeout);
+  }, [activeTab, storageLoaded, currentUser, userRole, storageSearch, fetchStorage]);
 
   const filteredMonitorItems = useMemo(() => {
     const query = monitorSearch.trim().toLowerCase();
@@ -393,14 +605,19 @@ export default function CreatorLiveClassesPage() {
     });
   }, [monitorFilter, monitorItems, monitorSearch]);
 
+  const displayStorageItems = useMemo(
+    () => buildStorageDisplayItems(storageItems),
+    [storageItems],
+  );
+
   const filteredStorageItems = useMemo(() => {
     const query = storageSearch.trim().toLowerCase();
-    if (!query) return storageItems;
-    return storageItems.filter((item) => {
-      const haystack = `${item.fileName} ${item.objectPath}`.toLowerCase();
+    if (!query) return displayStorageItems;
+    return displayStorageItems.filter((item) => {
+      const haystack = `${item.title} ${item.objectPath}`.toLowerCase();
       return haystack.includes(query);
     });
-  }, [storageItems, storageSearch]);
+  }, [displayStorageItems, storageSearch]);
 
   const totalLiveClasses = monitorItems.length;
 
@@ -430,7 +647,7 @@ export default function CreatorLiveClassesPage() {
               </button>
               <button
                 type="button"
-                onClick={() => fetchStorage(true)}
+                onClick={() => void fetchStorage({ reset: true })}
                 disabled={storageLoading || !currentUser}
                 className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
               >
@@ -606,14 +823,55 @@ export default function CreatorLiveClassesPage() {
                           </div>
                         </td>
                         <td className="px-3 py-3 text-slate-600">
-                          <button
-                            type="button"
-                            onClick={() => fetchDiagnostic(item)}
-                            disabled={diagnosticLoadingMap[item.docPath] === true}
-                            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-                          >
-                            {diagnosticLoadingMap[item.docPath] ? "Analizando..." : "Diagnóstico"}
-                          </button>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => fetchDiagnostic(item)}
+                              disabled={diagnosticLoadingMap[item.docPath] === true}
+                              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                            >
+                              {diagnosticLoadingMap[item.docPath] ? "Analizando..." : "Diagnóstico"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void fetchRecordingAccess(item)}
+                              disabled={recordingAccessLoadingMap[item.docPath] === true}
+                              className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
+                            >
+                              {recordingAccessLoadingMap[item.docPath] === true
+                                ? "Resolviendo..."
+                                : "Forzar disponibilidad"}
+                            </button>
+                          </div>
+                          {recordingAccessMap[item.docPath] ? (
+                            <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs leading-5 text-emerald-900">
+                              <p className="font-semibold">Grabación lista para abrir o compartir.</p>
+                              <div className="mt-2 break-all text-emerald-800">
+                                {recordingAccessMap[item.docPath].objectPath}
+                              </div>
+                              <div className="mt-1 text-emerald-700">
+                                Enlace temporal vence:{" "}
+                                {formatDateTime(recordingAccessMap[item.docPath].expiresAt)}
+                              </div>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <a
+                                  href={recordingAccessMap[item.docPath].url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800"
+                                >
+                                  Abrir video
+                                </a>
+                                <button
+                                  type="button"
+                                  onClick={() => void copyRecordingLink(item)}
+                                  className="rounded-lg border border-emerald-300 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
+                                >
+                                  Copiar enlace temporal
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
                           {diagnosticMap[item.docPath] ? (
                             <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-5">
                               <p
@@ -706,7 +964,7 @@ export default function CreatorLiveClassesPage() {
                   />
                   <button
                     type="button"
-                    onClick={() => fetchStorage(true)}
+                    onClick={() => void fetchStorage({ reset: true })}
                     disabled={storageLoading || !currentUser}
                     className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
                   >
@@ -719,12 +977,12 @@ export default function CreatorLiveClassesPage() {
             <div className="grid gap-4 xl:grid-cols-2">
               {filteredStorageItems.map((item) => (
                 <div
-                  key={`${item.objectPath}-${item.urlExpiresAt}`}
+                  key={item.key}
                   className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
                 >
-                  {item.artifactType === "mp4" ? (
+                  {item.kind === "mp4" ? (
                     <video
-                      src={item.signedUrl}
+                      src={item.primaryUrl}
                       controls
                       preload="metadata"
                       className="h-64 w-full rounded-lg bg-black object-contain"
@@ -736,14 +994,15 @@ export default function CreatorLiveClassesPage() {
                           Respaldo HLS
                         </div>
                         <p className="text-sm text-slate-600">
-                          Manifest de respaldo para recuperación técnica.
+                          Respaldo agrupado. Se muestra como una sola grabación aunque contenga
+                          `index.m3u8` y `live.m3u8`.
                         </p>
                       </div>
                     </div>
                   )}
                   <div className="mt-4 space-y-2">
                     <div>
-                      <p className="text-sm font-semibold text-slate-900">{item.fileName}</p>
+                      <p className="text-sm font-semibold text-slate-900">{item.title}</p>
                       <p className="mt-1 break-all text-xs text-slate-500">{item.objectPath}</p>
                     </div>
                     <div className="grid gap-2 text-sm text-slate-600 sm:grid-cols-2">
@@ -751,20 +1010,35 @@ export default function CreatorLiveClassesPage() {
                       <div>Tamaño: {formatBytes(item.sizeBytes)}</div>
                       <div>
                         Tipo:{" "}
-                        {item.artifactType === "mp4"
+                        {item.kind === "mp4"
                           ? item.contentType || "video/mp4"
                           : "application/vnd.apple.mpegurl"}
                       </div>
                       <div>URL vence: {formatDateTime(item.urlExpiresAt)}</div>
+                      {item.kind === "hls_bundle" ? (
+                        <div>Manifests: {item.manifestCount}</div>
+                      ) : null}
                     </div>
-                    <a
-                      href={item.signedUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex text-sm font-semibold text-blue-600 hover:underline"
-                    >
-                      Abrir en nueva pestaña
-                    </a>
+                    <div className="flex flex-wrap gap-3">
+                      <a
+                        href={item.primaryUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex text-sm font-semibold text-blue-600 hover:underline"
+                      >
+                        {item.primaryLabel}
+                      </a>
+                      {item.kind === "hls_bundle" && item.secondaryUrl && item.secondaryLabel ? (
+                        <a
+                          href={item.secondaryUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex text-sm font-semibold text-slate-600 hover:underline"
+                        >
+                          {item.secondaryLabel}
+                        </a>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -780,7 +1054,7 @@ export default function CreatorLiveClassesPage() {
               <div className="flex justify-center">
                 <button
                   type="button"
-                  onClick={() => fetchStorage(false)}
+                  onClick={() => void fetchStorage({ reset: false, cursor: storageNextPageToken })}
                   disabled={storageLoading}
                   className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
                 >

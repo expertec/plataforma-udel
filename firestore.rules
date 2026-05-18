@@ -285,6 +285,14 @@ service cloud.firestore {
       let postPath = /databases/$(database)/documents/courses/$(courseId)/lessons/$(lessonId)/classes/$(classId)/forums/$(postId);
       return exists(postPath) ? get(postPath).data : null;
     }
+    function isOwnUngradedForumPost(postId) {
+      return isSignedIn() &&
+        !forumPostIsGraded() &&
+        (
+          (resource.data.authorId is string && resource.data.authorId == request.auth.uid) ||
+          postId == request.auth.uid
+        );
+    }
     function canDeleteForumReplyAsPostOwner(courseId, lessonId, classId, postId) {
       let postData = forumPostData(courseId, lessonId, classId, postId);
       return isSignedIn() &&
@@ -307,9 +315,11 @@ service cloud.firestore {
     }
     function isMentorOfCourse(courseId) {
       // Verifica si el usuario es mentor del curso consultando el array mentorIds
-      let courseData = get(/databases/$(database)/documents/courses/$(courseId)).data;
-      return isTeacherLike() &&
-        exists(/databases/$(database)/documents/courses/$(courseId)) &&
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      let courseData = isTeacherLike() && exists(coursePath)
+        ? get(coursePath).data
+        : null;
+      return courseData != null &&
         courseData.keys().hasAny(['mentorIds']) &&
         courseData.mentorIds is list &&
         request.auth.uid in courseData.mentorIds;
@@ -454,28 +464,14 @@ service cloud.firestore {
             // Crear: alumno autenticado que se firma como autor, o profesor/admin del curso.
             allow create: if (isSignedIn() && request.resource.data.authorId == request.auth.uid) || isAdmin() || canManageCourse(courseId);
             // Update: profesor/admin del curso, el autor del post, o cualquiera que solo actualice repliesCount.
-            allow update: if isAdmin() ||
-              canManageCourse(courseId) ||
-              (
-                isSignedIn() &&
-                !forumPostIsGraded() &&
-                (
-                  (resource.data.authorId is string && resource.data.authorId == request.auth.uid) ||
-                  postId == request.auth.uid
-                )
-              ) ||
-              canUpdateRepliesCountOnly();
+            allow update: if isOwnUngradedForumPost(postId) ||
+              canUpdateRepliesCountOnly() ||
+              isAdmin() ||
+              canManageCourse(courseId);
             // Delete: profesor/admin del curso o el autor del post.
-            allow delete: if isAdmin() ||
-              canManageCourse(courseId) ||
-              (
-                isSignedIn() &&
-                !forumPostIsGraded() &&
-                (
-                  (resource.data.authorId is string && resource.data.authorId == request.auth.uid) ||
-                  postId == request.auth.uid
-                )
-              );
+            allow delete: if isOwnUngradedForumPost(postId) ||
+              isAdmin() ||
+              canManageCourse(courseId);
 
             // Respuestas a las aportaciones del foro (hilos públicos)
             match /replies/{replyId} {
@@ -483,12 +479,14 @@ service cloud.firestore {
               // Crear: cualquier usuario autenticado que se firma como autor
               allow create: if isSignedIn() && request.resource.data.authorId == request.auth.uid;
               // Update: profesor/admin del curso o el autor de la respuesta
-              allow update: if isAdmin() || canManageCourse(courseId) || (isSignedIn() && resource.data.authorId == request.auth.uid);
+              allow update: if (isSignedIn() && resource.data.authorId == request.auth.uid) ||
+                isAdmin() ||
+                canManageCourse(courseId);
               // Delete: profesor/admin del curso, autor de la respuesta, o dueño del post (si no está evaluado)
-              allow delete: if isAdmin() ||
-                canManageCourse(courseId) ||
-                (isSignedIn() && resource.data.authorId == request.auth.uid) ||
-                canDeleteForumReplyAsPostOwner(courseId, lessonId, classId, postId);
+              allow delete: if (isSignedIn() && resource.data.authorId == request.auth.uid) ||
+                canDeleteForumReplyAsPostOwner(courseId, lessonId, classId, postId) ||
+                isAdmin() ||
+                canManageCourse(courseId);
             }
           }
 

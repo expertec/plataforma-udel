@@ -11,6 +11,8 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const PROCESSING_STALE_AFTER_MS = 45 * 60 * 1000;
+
 function asText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -25,6 +27,12 @@ function decodePathComponent(value: string): string {
   } catch {
     return value;
   }
+}
+
+function toMs(value: string | null | undefined): number {
+  if (!value) return 0;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 type ObjectLocation = {
@@ -268,6 +276,27 @@ function describeActiveEgressStatus(status: EgressStatus | number | undefined): 
   }
 }
 
+function isProcessingStalled(params: {
+  teacherActive: boolean;
+  recordingStatus: string;
+  lastRetryAt: string | null | undefined;
+  lastEndedAt: string | null | undefined;
+  lastStartedAt: string | null | undefined;
+}): boolean {
+  if (params.teacherActive) return false;
+  if (params.recordingStatus !== "recording" && params.recordingStatus !== "processing") {
+    return false;
+  }
+
+  const latestKnownMs = Math.max(
+    toMs(params.lastRetryAt),
+    toMs(params.lastEndedAt),
+    toMs(params.lastStartedAt),
+  );
+  if (!latestKnownMs) return false;
+  return Date.now() - latestKnownMs >= PROCESSING_STALE_AFTER_MS;
+}
+
 export async function GET(
   request: NextRequest,
   context: { params: Promise<{ classId: string }> },
@@ -368,6 +397,13 @@ export async function GET(
       activeEgressItems[0] ??
       null;
     const activeEgressStatus = describeActiveEgressStatus(activeEgress?.status);
+    const stalledProcessing = isProcessingStalled({
+      teacherActive: liveSession.teacherActive,
+      recordingStatus: liveSession.recording.status,
+      lastRetryAt: liveSession.recording.lastRetryAt,
+      lastEndedAt: liveSession.lastEndedAt,
+      lastStartedAt: liveSession.lastStartedAt,
+    });
 
     let recoverable: boolean | null = null;
     let summary = "No hay suficiente información para recuperar esta clase todavía.";
@@ -391,10 +427,22 @@ export async function GET(
       recoverable = null;
       summary =
         "LiveKit todavía reporta un egress activo para esta room. Conviene esperar o refrescar antes de marcarla como perdida.";
+    } else if (
+      activeEgressStatus === "failed" ||
+      activeEgressStatus === "aborted" ||
+      activeEgressStatus === "limit_reached"
+    ) {
+      recoverable = false;
+      summary =
+        "LiveKit ya no está procesando esta grabación: el egress terminó en estado terminal y no se encontró archivo en storage.";
     } else if (liveSession.recording.status === "failed") {
       recoverable = false;
       summary =
         "LiveKit marcó el egress como fallido y no se encontró archivo en storage. Desde la plataforma ya no hay nada que recuperar.";
+    } else if (stalledProcessing) {
+      recoverable = false;
+      summary =
+        "La clase quedó atorada: Firestore sigue marcando la grabación como recording/processing, pero no hay MP4, no hay respaldo HLS y LiveKit ya no reporta un egress activo.";
     } else if (
       liveSession.recording.status === "recording" ||
       liveSession.recording.status === "processing"

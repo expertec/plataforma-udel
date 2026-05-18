@@ -915,12 +915,12 @@ export default function CourseBuilderPage() {
     [courseId],
   );
 
-  const handleCheckLiveRecording = useCallback(
+  const handleOpenLiveRecording = useCallback(
     async (lesson: Lesson, classItem: ClassData) => {
       if (!courseId || classItem.type !== "live") return;
       const user = auth.currentUser;
       if (!user) {
-        toast.error("Inicia sesión para revisar la grabación");
+        toast.error("Inicia sesión para abrir la grabación");
         return;
       }
 
@@ -943,14 +943,19 @@ export default function CourseBuilderPage() {
         const payload = (await response.json().catch(() => null)) as
           | { success?: boolean; data?: { url?: string }; error?: string }
           | null;
-        if (!response.ok || !payload?.success) {
+        if (!response.ok || !payload?.success || !payload.data?.url) {
           throw new Error(payload?.error || "La grabación todavía no está disponible");
         }
-        toast.success("Grabación encontrada y estado actualizado");
+
+        const recordingWindow = window.open(payload.data.url, "_blank", "noopener,noreferrer");
+        if (!recordingWindow) {
+          window.location.assign(payload.data.url);
+        }
+        toast.success("Abriendo grabación");
       } catch (error) {
         console.error(error);
         toast.error(
-          error instanceof Error ? error.message : "No se pudo revisar la grabación",
+          error instanceof Error ? error.message : "No se pudo abrir la grabación",
         );
       } finally {
         setLiveActionLoadingMap((prev) => ({ ...prev, [classItem.id]: false }));
@@ -1238,7 +1243,7 @@ export default function CourseBuilderPage() {
                       onEndLiveClass={handleEndLiveClass}
                       onJoinLiveClass={handleJoinLiveClass}
                       onCopyLiveLink={handleCopyLiveClassLink}
-                      onCheckLiveRecording={handleCheckLiveRecording}
+                      onOpenLiveRecording={handleOpenLiveRecording}
                       liveActionLoadingMap={liveActionLoadingMap}
                       showCreationMetadata={showCreationMetadata}
                     />
@@ -1584,6 +1589,15 @@ export default function CourseBuilderPage() {
             // snapshot actualiza, pero podemos cerrar modales y limpiar
             setEditingClass(null);
           }}
+          onOpenLiveRecording={(classItem) => {
+            if (!editingClass) return;
+            void handleOpenLiveRecording(editingClass.lesson, classItem);
+          }}
+          liveRecordingActionLoading={
+            editingClass?.classItem?.id
+              ? liveActionLoadingMap[editingClass.classItem.id] ?? false
+              : false
+          }
         />
       )}
 

@@ -25,6 +25,34 @@ type FileMetadataLike = {
   contentType?: unknown;
 };
 
+type StorageFileLike = {
+  name: string;
+  metadata?: FileMetadataLike | null;
+  getMetadata: () => Promise<[FileMetadataLike, ...unknown[]]>;
+  getSignedUrl: (options: { action: "read"; expires: number }) => Promise<[string, ...unknown[]]>;
+};
+
+const RAW_PAGE_SIZE = 200;
+const MAX_SCAN_PAGES = 25;
+
+function isRecordingArtifact(objectPath: string): boolean {
+  const normalizedName = objectPath.toLowerCase();
+  return normalizedName.endsWith(".mp4") || normalizedName.endsWith(".m3u8");
+}
+
+function matchesSearch(objectPath: string, query: string): boolean {
+  if (!query) return true;
+  return objectPath.toLowerCase().includes(query);
+}
+
+function toDisplayArtifactKey(objectPath: string): string {
+  const normalizedName = objectPath.toLowerCase();
+  if (normalizedName.endsWith(".m3u8")) {
+    return objectPath.replace(/\/(?:index|live)\.m3u8$/i, "");
+  }
+  return objectPath;
+}
+
 export async function GET(request: NextRequest) {
   try {
     await requireAdminTeacherAccess(request);
@@ -32,19 +60,38 @@ export async function GET(request: NextRequest) {
     const egressConfig = getLiveKitEgressConfig();
     const limit = toPositiveInt(request.nextUrl.searchParams.get("limit"), 12, 24);
     const pageToken = asText(request.nextUrl.searchParams.get("pageToken")) || undefined;
+    const query = asText(request.nextUrl.searchParams.get("query")).toLowerCase();
     const bucket = getAdminApp().storage().bucket(egressConfig.egressBucket);
+    const recordingFilesByPath = new Map<string, StorageFileLike>();
+    const displayArtifactKeys = new Set<string>();
+    let cursor = pageToken;
+    let scans = 0;
 
-    const [files, nextQuery] = await bucket.getFiles({
-      prefix: egressConfig.egressPrefix,
-      autoPaginate: false,
-      maxResults: limit,
-      pageToken,
-    });
+    while (displayArtifactKeys.size < limit && scans < MAX_SCAN_PAGES) {
+      const [files, nextQuery] = await bucket.getFiles({
+        prefix: egressConfig.egressPrefix,
+        autoPaginate: false,
+        maxResults: RAW_PAGE_SIZE,
+        pageToken: cursor,
+      });
 
-    const recordingFiles = files.filter((file) => {
-      const normalizedName = file.name.toLowerCase();
-      return normalizedName.endsWith(".mp4") || normalizedName.endsWith(".m3u8");
-    });
+      files.forEach((file) => {
+        if (!isRecordingArtifact(file.name) || !matchesSearch(file.name, query)) return;
+        recordingFilesByPath.set(file.name, file);
+        displayArtifactKeys.add(toDisplayArtifactKey(file.name));
+      });
+
+      cursor =
+        nextQuery && typeof nextQuery.pageToken === "string" && nextQuery.pageToken
+          ? nextQuery.pageToken
+          : undefined;
+      scans += 1;
+      if (!cursor) break;
+    }
+
+    const recordingFiles = Array.from(recordingFilesByPath.values());
+    const nextPageToken = cursor ?? null;
+
     const items = await Promise.all(
       recordingFiles.map(async (file) => {
         let metadata = (file.metadata ?? null) as FileMetadataLike | null;
@@ -95,10 +142,7 @@ export async function GET(request: NextRequest) {
           prefix: egressConfig.egressPrefix,
           bucketName: egressConfig.egressBucket,
           limit,
-          nextPageToken:
-            nextQuery && typeof nextQuery.pageToken === "string" && nextQuery.pageToken
-              ? nextQuery.pageToken
-              : null,
+          nextPageToken,
           fetchedAt: new Date().toISOString(),
         },
       },

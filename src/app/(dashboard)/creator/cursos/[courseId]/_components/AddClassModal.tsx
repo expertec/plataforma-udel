@@ -103,6 +103,8 @@ type AddClassModalProps = {
   mode?: "create" | "edit";
   classId?: string;
   initialData?: ClassItem;
+  onOpenLiveRecording?: (item: ClassItem) => void;
+  liveRecordingActionLoading?: boolean;
   onUpdated?: (
     classId: string,
     payload: {
@@ -129,6 +131,8 @@ export function AddClassModal({
   mode = "create",
   classId,
   initialData,
+  onOpenLiveRecording,
+  liveRecordingActionLoading = false,
   onUpdated,
 }: AddClassModalProps) {
   const [type, setType] = useState<"video" | "text" | "audio" | "quiz" | "image" | "live">("video");
@@ -353,6 +357,25 @@ export function AddClassModal({
   };
 
   if (!open) return null;
+
+  const modalLiveSession = mode === "edit" ? normalizeLiveSession(initialData?.liveSession) : null;
+  const modalLiveFinalized =
+    Boolean(modalLiveSession?.lastEndedAt) ||
+    modalLiveSession?.status === "ended" ||
+    modalLiveSession?.status === "recording_ready";
+  const modalLiveRecordingReady =
+    modalLiveSession?.status === "recording_ready" ||
+    modalLiveSession?.recording.status === "ready";
+  const canOpenModalLiveRecording =
+    type === "live" &&
+    mode === "edit" &&
+    Boolean(initialData) &&
+    modalLiveFinalized &&
+    modalLiveSession?.recording.auto !== false &&
+    modalLiveSession?.recording.status !== "failed";
+  const modalLiveRecordingButtonLabel = modalLiveRecordingReady
+    ? "Ver grabación"
+    : "Buscar grabación";
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -878,6 +901,32 @@ export function AddClassModal({
                   <span>Iniciar grabación automática al abrir clase</span>
                 </label>
               </div>
+              {canOpenModalLiveRecording ? (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-200 bg-white/80 px-3 py-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">Grabación de la clase</p>
+                    <p className="text-xs text-slate-600">
+                      {modalLiveRecordingReady
+                        ? "La grabación está lista para abrirse."
+                        : "Si el archivo ya terminó de procesarse, este botón lo abrirá."}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={liveRecordingActionLoading}
+                    onClick={() => {
+                      if (initialData) onOpenLiveRecording?.(initialData);
+                    }}
+                    className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {liveRecordingActionLoading
+                      ? modalLiveRecordingReady
+                        ? "Abriendo..."
+                        : "Buscando..."
+                      : modalLiveRecordingButtonLabel}
+                  </button>
+                </div>
+              ) : null}
             </div>
           ) : null}
 

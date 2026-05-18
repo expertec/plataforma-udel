@@ -22,7 +22,7 @@ type ClassItemProps = {
   onEndLiveClass?: (item: ClassData) => void;
   onJoinLiveClass?: (item: ClassData) => void;
   onCopyLiveLink?: (item: ClassData) => void;
-  onCheckLiveRecording?: (item: ClassData) => void;
+  onOpenLiveRecording?: (item: ClassData) => void;
   liveActionLoading?: boolean;
   dragProps?: DragProps;
 };
@@ -69,7 +69,7 @@ export function ClassItem({
   onEndLiveClass,
   onJoinLiveClass,
   onCopyLiveLink,
-  onCheckLiveRecording,
+  onOpenLiveRecording,
   liveActionLoading = false,
   dragProps,
 }: ClassItemProps) {
@@ -86,8 +86,9 @@ export function ClassItem({
   const liveRecordingProcessing =
     liveRecordingStatus === "recording" || liveRecordingStatus === "processing";
   const liveRecordingFailed = liveRecordingStatus === "failed";
-  const canReviewLiveRecording =
-    isLiveClass && liveFinalized && !liveRecordingReady && liveAutoRecording;
+  const canAccessLiveRecording =
+    isLiveClass && liveFinalized && !liveRecordingFailed && liveAutoRecording;
+  const liveRecordingButtonLabel = liveRecordingReady ? "Ver grabación" : "Buscar grabación";
 
   const dragStyles = [
     dragProps?.isDragging ? "opacity-70" : "",
@@ -216,14 +217,18 @@ export function ClassItem({
             Copiar enlace
           </button>
         ) : null}
-        {canReviewLiveRecording ? (
+        {canAccessLiveRecording ? (
           <button
             type="button"
             disabled={liveActionLoading}
-            onClick={() => onCheckLiveRecording?.(item)}
+            onClick={() => onOpenLiveRecording?.(item)}
             className="rounded-md border border-emerald-200 px-2 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-60"
           >
-            {liveActionLoading ? "Revisando..." : "Revisar grabación"}
+            {liveActionLoading
+              ? liveRecordingReady
+                ? "Abriendo..."
+                : "Buscando..."
+              : liveRecordingButtonLabel}
           </button>
         ) : null}
         <button

@@ -6318,6 +6318,319 @@ function ControlIcon({ name }: { name: ControlIconName }) {
   }
 }
 
+type MicrophonePermissionGuideKind =
+  | "prompt"
+  | "blocked"
+  | "busy"
+  | "missingDevice"
+  | "unsupported"
+  | "unknown";
+
+function getBrowserPermissionSurfaceLabel() {
+  if (typeof navigator === "undefined") return "tu navegador";
+  const ua = navigator.userAgent.toLowerCase();
+  if (ua.includes("edg")) return "Edge";
+  if (ua.includes("firefox")) return "Firefox";
+  if (ua.includes("safari") && !ua.includes("chrome")) return "Safari";
+  if (ua.includes("chrome")) return "Chrome";
+  return "tu navegador";
+}
+
+function getMicrophonePermissionGuideKind(error: unknown): MicrophonePermissionGuideKind {
+  const name =
+    typeof error === "object" && error && "name" in error
+      ? String((error as { name?: unknown }).name ?? "")
+      : "";
+
+  switch (name) {
+    case "NotAllowedError":
+    case "PermissionDeniedError":
+    case "SecurityError":
+      return "blocked";
+    case "NotFoundError":
+    case "DevicesNotFoundError":
+    case "OverconstrainedError":
+      return "missingDevice";
+    case "NotReadableError":
+    case "TrackStartError":
+    case "AbortError":
+      return "busy";
+    default:
+      return "unknown";
+  }
+}
+
+function getMicrophonePermissionInlineMessage(kind: MicrophonePermissionGuideKind) {
+  switch (kind) {
+    case "blocked":
+      return "El navegador bloqueó el micrófono. Abre la ayuda y actívalo.";
+    case "missingDevice":
+      return "No encontramos un micrófono disponible en este dispositivo.";
+    case "busy":
+      return "El micrófono está en uso en otra aplicación.";
+    case "unsupported":
+      return "Este navegador no puede grabar audio desde aquí.";
+    case "unknown":
+      return "No se pudo iniciar la grabación. Revisa los permisos.";
+    default:
+      return "";
+  }
+}
+
+function getErrorMessage(error: unknown) {
+  return typeof error === "object" && error && "message" in error
+    ? String((error as { message?: unknown }).message ?? "")
+    : "";
+}
+
+function MicrophonePermissionGuide({
+  open,
+  kind,
+  purpose,
+  onClose,
+  onRetry,
+}: {
+  open: boolean;
+  kind: MicrophonePermissionGuideKind;
+  purpose: string;
+  onClose: () => void;
+  onRetry?: () => void;
+}) {
+  const browserName = useMemo(() => getBrowserPermissionSurfaceLabel(), []);
+
+  const copy = useMemo(() => {
+    const baseSteps = [
+      {
+        title: "Busca el aviso del navegador",
+        description: `Debe aparecer arriba, junto a la barra de direcciones de ${browserName}.`,
+      },
+      {
+        title: "Toca Permitir",
+        description: 'Elige "Permitir mientras visitas este sitio" o "Permitir esta vez".',
+      },
+      {
+        title: "Vuelve a intentar",
+        description: "Regresa a UdelX y vuelve a presionar el botón de grabar.",
+      },
+    ];
+
+    switch (kind) {
+      case "blocked":
+        return {
+          badge: "Acceso bloqueado",
+          title: "Permitir micrófono",
+          description: `Para ${purpose}, cambia el permiso del micrófono a "Permitir" en ${browserName}.`,
+          highlight:
+            "Si antes elegiste “No permitir”, abre el candado o el icono del micrófono y cámbialo manualmente.",
+          steps: [
+            {
+              title: "Abre el candado o el icono del micrófono",
+              description: `Está arriba, junto a la dirección del sitio en ${browserName}.`,
+            },
+            {
+              title: "Cambia el permiso a Permitir",
+              description: 'Selecciona "Permitir mientras visitas este sitio" o una opción similar.',
+            },
+            baseSteps[2],
+          ],
+        };
+      case "busy":
+        return {
+          badge: "Micrófono ocupado",
+          title: "Libera el micrófono",
+          description: `No pudimos ${purpose} porque otra app está usando el micrófono.`,
+          highlight:
+            "Cierra Zoom, Meet, WhatsApp Desktop, grabadoras o cualquier app que esté usando audio y vuelve a intentar.",
+          steps: [
+            {
+              title: "Cierra otras aplicaciones",
+              description: "Libera el micrófono en cualquier app que esté grabando o en llamada.",
+            },
+            {
+              title: "Vuelve a esta ventana",
+              description: "Quédate en UdelX para que el navegador pueda pedir el acceso correctamente.",
+            },
+            baseSteps[2],
+          ],
+        };
+      case "missingDevice":
+        return {
+          badge: "Sin micrófono detectado",
+          title: "Conecta un micrófono",
+          description: `No encontramos un micrófono disponible para ${purpose}.`,
+          highlight:
+            "Si usas audífonos o un micrófono USB/Bluetooth, reconéctalo antes de volver a intentar.",
+          steps: [
+            {
+              title: "Conecta o selecciona tu micrófono",
+              description: "Revisa tus audífonos, micrófono USB o la configuración de sonido del sistema.",
+            },
+            {
+              title: "Confirma que el navegador vea el dispositivo",
+              description: "Vuelve a abrir el permiso del micrófono si el navegador lo solicita.",
+            },
+            baseSteps[2],
+          ],
+        };
+      case "unsupported":
+        return {
+          badge: "Grabación no disponible",
+          title: "Tu navegador no permite grabar aquí",
+          description: `No pudimos abrir el micrófono para ${purpose} desde este navegador.`,
+          highlight:
+            "Puedes cambiar a un navegador actualizado o subir un archivo de audio ya grabado desde tu dispositivo.",
+          steps: [
+            {
+              title: "Prueba con otro navegador",
+              description: "Chrome, Safari o Edge actualizados suelen permitir mejor la grabación.",
+            },
+            {
+              title: "Si prefieres, sube un archivo",
+              description: "Puedes usar el selector de archivo para enviar un audio ya guardado.",
+            },
+            {
+              title: "Vuelve a intentar si cambiaste de navegador",
+              description: "Abre de nuevo UdelX y prueba la grabación otra vez.",
+            },
+          ],
+        };
+      case "unknown":
+        return {
+          badge: "No se pudo activar",
+          title: "Revisa el permiso del micrófono",
+          description: `No pudimos ${purpose}. Lo más común es que el navegador tenga el permiso bloqueado.`,
+          highlight:
+            "Si no aparece ningún aviso, abre el candado o el icono del micrófono junto a la barra de direcciones.",
+          steps: baseSteps,
+        };
+      default:
+        return {
+          badge: "Antes de grabar",
+          title: "Permitir micrófono",
+          description: `Para ${purpose}, acepta el acceso al micrófono cuando ${browserName} lo solicite.`,
+          highlight:
+            "Si no ves el aviso, abre el candado o el icono del micrófono junto a la barra de direcciones.",
+          steps: baseSteps,
+        };
+    }
+  }, [browserName, kind, purpose]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[90] bg-neutral-950/78 backdrop-blur-sm">
+      <div className="mx-auto flex min-h-full w-full max-w-6xl items-start justify-center px-4 py-6 lg:items-center">
+        <div className="grid w-full max-w-5xl gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+          <div className="rounded-[30px] border border-amber-300/40 bg-[#fff6d6] p-4 shadow-[0_28px_70px_rgba(0,0,0,0.4)]">
+            <div className="rounded-[24px] border border-black/10 bg-white/80 p-3 shadow-sm">
+              <div className="mb-3 flex items-center gap-2 text-neutral-700">
+                <svg viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" aria-hidden="true">
+                  <path d="M12 4a3 3 0 013 3v4a3 3 0 11-6 0V7a3 3 0 013-3z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M19 11a7 7 0 01-14 0M12 18v3M8 21h8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <div className="h-2 flex-1 overflow-hidden rounded-full bg-neutral-200">
+                  <div className="h-full w-1/4 rounded-full bg-amber-500" />
+                </div>
+              </div>
+              <div className="rounded-2xl border border-black/10 bg-white px-3 py-2 text-sm text-neutral-800 shadow-sm">
+                Micrófono de tu dispositivo
+              </div>
+            </div>
+            <div className="mt-4 space-y-3">
+              {[
+                "Permitir mientras visitas este sitio",
+                "Permitir esta vez",
+                "No permitir nunca",
+              ].map((label, index) => (
+                <div
+                  key={label}
+                  className={`rounded-full px-4 py-3 text-center text-sm font-semibold shadow-sm ${
+                    index < 2
+                      ? "bg-[#ffe27a] text-neutral-800"
+                      : "bg-[#ffe9a9] text-neutral-700"
+                  }`}
+                >
+                  {label}
+                </div>
+              ))}
+            </div>
+            <p className="mt-4 text-xs leading-5 text-neutral-600">
+              Busca este aviso arriba, junto a la dirección del sitio.
+            </p>
+          </div>
+
+          <div className="relative overflow-hidden rounded-[34px] border border-white/10 bg-[radial-gradient(circle_at_top,_rgba(36,52,71,0.9),_rgba(11,18,26,0.98))] px-6 py-6 shadow-[0_32px_80px_rgba(0,0,0,0.45)] sm:px-8 sm:py-8">
+            <div className="absolute -left-3 top-12 hidden h-14 w-14 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/90 lg:flex">
+              <svg viewBox="0 0 24 24" className="h-6 w-6 fill-none stroke-current" aria-hidden="true">
+                <path d="M8 7L3 12l5 5M4 12h11a6 6 0 016 6" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </div>
+
+            <div className="flex flex-col gap-5">
+              <div className="space-y-3">
+                <span className="inline-flex w-fit rounded-full border border-emerald-400/25 bg-emerald-400/12 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-200">
+                  {copy.badge}
+                </span>
+                <div className="flex items-start gap-4">
+                  <div className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-2xl bg-emerald-500/16 text-emerald-200">
+                    <svg viewBox="0 0 24 24" className="h-7 w-7 fill-none stroke-current" aria-hidden="true">
+                      <path d="M12 4a3 3 0 013 3v4a3 3 0 11-6 0V7a3 3 0 013-3z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M19 11a7 7 0 01-14 0M12 18v3M8 21h8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </div>
+                  <div className="space-y-2">
+                    <h3 className="text-3xl font-semibold tracking-tight text-white">{copy.title}</h3>
+                    <p className="max-w-2xl text-base leading-7 text-white/82">{copy.description}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <p className="text-sm font-semibold text-white">Qué debes hacer</p>
+                <p className="mt-2 text-sm leading-6 text-white/72">{copy.highlight}</p>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-3">
+                {copy.steps.map((step, index) => (
+                  <div
+                    key={step.title}
+                    className="rounded-2xl border border-white/10 bg-white/[0.045] p-4"
+                  >
+                    <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-sm font-semibold text-white">
+                      {index + 1}
+                    </div>
+                    <p className="text-sm font-semibold text-white">{step.title}</p>
+                    <p className="mt-2 text-sm leading-6 text-white/65">{step.description}</p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap gap-3">
+                {onRetry ? (
+                  <button
+                    type="button"
+                    onClick={onRetry}
+                    className="inline-flex items-center justify-center rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-neutral-950 transition hover:bg-emerald-400"
+                  >
+                    Ya lo activé
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="inline-flex items-center justify-center rounded-full border border-white/14 bg-white/6 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/12"
+                >
+                  Entendido
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type AudioPlayerProps = {
   src: string;
   title?: string;
@@ -7445,9 +7758,11 @@ function ForumPanel({
   const audioFormat = requiredFormat === "audio";
   const videoFormat = requiredFormat === "video";
   const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
   const [recording, setRecording] = useState(false);
   const [recordingError, setRecordingError] = useState<string | null>(null);
+  const [microphoneGuideKind, setMicrophoneGuideKind] = useState<MicrophonePermissionGuideKind | null>(null);
 
   useEffect(() => {
     if (mediaFile) {
@@ -7505,6 +7820,16 @@ function ForumPanel({
 
     checkAndLoadPosts();
   }, [open, classMeta?.courseId, classMeta?.lessonId, classMeta?.classDocId, studentId]);
+
+  useEffect(() => {
+    return () => {
+      if (recorderRef.current && recorderRef.current.state !== "inactive") {
+        recorderRef.current.stop();
+      }
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    };
+  }, []);
 
   const postEvaluated = !!(
     studentPost?.status === "graded"
@@ -7600,6 +7925,50 @@ function ForumPanel({
     }
   };
 
+  const handleAudioRecording = async () => {
+    if (recording) {
+      recorderRef.current?.stop();
+      return;
+    }
+
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setRecordingError(getMicrophonePermissionInlineMessage("unsupported"));
+      setMicrophoneGuideKind("unsupported");
+      return;
+    }
+
+    try {
+      setRecordingError(null);
+      setMicrophoneGuideKind(null);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const recorder = new MediaRecorder(stream);
+      recorderRef.current = recorder;
+      chunksRef.current = [];
+      recorder.ondataavailable = (ev) => {
+        if (ev.data.size > 0) chunksRef.current.push(ev.data);
+      };
+      recorder.onstop = () => {
+        const activeStream = streamRef.current ?? stream;
+        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        const file = new File([blob], `grabacion-${Date.now()}.webm`, { type: "audio/webm" });
+        setMediaFile(file);
+        setMediaUrl("");
+        activeStream.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        setRecording(false);
+      };
+      recorder.start();
+      setRecording(true);
+    } catch (err) {
+      console.error("No se pudo iniciar grabación:", err);
+      const nextKind = getMicrophonePermissionGuideKind(err);
+      setRecordingError(getMicrophonePermissionInlineMessage(nextKind));
+      setMicrophoneGuideKind(nextKind);
+      setRecording(false);
+    }
+  };
+
   const handleSubmitPost = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -7674,9 +8043,9 @@ function ForumPanel({
         classMeta.classDocId
       );
       setPosts(allPosts);
-    } catch (err: any) {
+    } catch (err) {
       console.error("Error enviando aporte:", err);
-      if (err?.message === "FORUM_GRADED") {
+      if (getErrorMessage(err) === "FORUM_GRADED") {
         toast.error("No puedes editar tu aporte porque ya fue evaluado.");
       } else {
         toast.error("No se pudo enviar el aporte");
@@ -7730,9 +8099,9 @@ function ForumPanel({
       });
       setView("list");
       onDeleted();
-    } catch (err: any) {
+    } catch (err) {
       console.error("Error eliminando aporte:", err);
-      if (err?.message === "FORUM_GRADED") {
+      if (getErrorMessage(err) === "FORUM_GRADED") {
         toast.error("No puedes eliminar tu aporte porque ya fue evaluado.");
       } else {
         toast.error("No se pudo eliminar el aporte");
@@ -7745,24 +8114,25 @@ function ForumPanel({
   if (!open || !classMeta) return null;
 
   return (
-    <div className="fixed inset-y-0 right-0 z-40 w-full max-w-md bg-neutral-900/95 backdrop-blur-lg text-white shadow-2xl lg:top-0 lg:right-0 flex flex-col overflow-hidden max-h-screen">
-      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-        <div>
-          <p className="text-sm font-semibold">Foro Público</p>
-          <p className="text-xs text-white/60">{classMeta.classTitle ?? classMeta.title}</p>
+    <>
+      <div className="fixed inset-y-0 right-0 z-40 flex max-h-screen w-full max-w-md flex-col overflow-hidden bg-neutral-900/95 text-white shadow-2xl backdrop-blur-lg lg:right-0 lg:top-0">
+        <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+          <div>
+            <p className="text-sm font-semibold">Foro Público</p>
+            <p className="text-xs text-white/60">{classMeta.classTitle ?? classMeta.title}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full bg-white/10 px-3 py-1 text-xs hover:bg-white/20"
+          >
+            Cerrar
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-full bg-white/10 px-3 py-1 text-xs hover:bg-white/20"
-        >
-          Cerrar
-        </button>
-      </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto" data-scrollable="true">
-        {view === "list" ? (
-          <div className="px-4 py-4 space-y-3 pb-4">
+        <div className="flex-1 min-h-0 overflow-y-auto" data-scrollable="true">
+          {view === "list" ? (
+            <div className="space-y-3 px-4 py-4 pb-4">
             {alreadySubmitted ? (
               <div className="rounded-2xl bg-white/5 border border-white/10 p-3 space-y-2">
                 <p className="text-sm text-white/90">
@@ -7936,8 +8306,8 @@ function ForumPanel({
               ))
             )}
           </div>
-        ) : (
-          <form onSubmit={handleSubmitPost} className="space-y-4 px-4 py-4">
+          ) : (
+            <form onSubmit={handleSubmitPost} className="space-y-4 px-4 py-4">
             <div className="rounded-2xl bg-white/5 p-3 text-sm text-white/90 space-y-2">
               <p className="text-xs uppercase tracking-wide text-white/60">Formato requerido</p>
               <p className="text-base font-semibold">
@@ -7970,35 +8340,8 @@ function ForumPanel({
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    onClick={async () => {
-                      setRecordingError(null);
-                      if (recording) {
-                        recorderRef.current?.stop();
-                        return;
-                      }
-                      try {
-                        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                        const recorder = new MediaRecorder(stream);
-                        recorderRef.current = recorder;
-                        chunksRef.current = [];
-                        recorder.ondataavailable = (ev) => {
-                          if (ev.data.size > 0) chunksRef.current.push(ev.data);
-                        };
-                        recorder.onstop = () => {
-                          const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-                          const file = new File([blob], `grabacion-${Date.now()}.webm`, { type: "audio/webm" });
-                          setMediaFile(file);
-                          setMediaUrl("");
-                          stream.getTracks().forEach((t) => t.stop());
-                          setRecording(false);
-                        };
-                        recorder.start();
-                        setRecording(true);
-                      } catch (err: any) {
-                        console.error("No se pudo iniciar grabación:", err);
-                        setRecordingError("No se pudo acceder al micrófono");
-                        setRecording(false);
-                      }
+                    onClick={() => {
+                      void handleAudioRecording();
                     }}
                     disabled={uploading}
                     className={`rounded-full px-3 py-2 text-xs font-semibold ${
@@ -8007,8 +8350,18 @@ function ForumPanel({
                   >
                     {recording ? "Detener grabación" : "Grabar audio"}
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setMicrophoneGuideKind("prompt")}
+                    className="rounded-full border border-amber-300/30 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-100 transition hover:bg-amber-400/20"
+                  >
+                    ¿Cómo activar el micrófono?
+                  </button>
                   {recordingError ? <span className="text-xs text-red-300">{recordingError}</span> : null}
                 </div>
+                <p className="text-[11px] leading-5 text-white/55">
+                  Si no aparece el aviso del navegador, toca la ayuda y sigue los pasos.
+                </p>
                 <div className="space-y-2">
                   <input
                     type="file"
@@ -8069,10 +8422,21 @@ function ForumPanel({
                 {uploading ? "Publicando..." : "Publicar aporte"}
               </button>
             </div>
-          </form>
-        )}
+            </form>
+          )}
+        </div>
       </div>
-    </div>
+      <MicrophonePermissionGuide
+        open={microphoneGuideKind !== null}
+        kind={microphoneGuideKind ?? "prompt"}
+        purpose="grabar tu aporte"
+        onClose={() => setMicrophoneGuideKind(null)}
+        onRetry={() => {
+          setMicrophoneGuideKind(null);
+          void handleAudioRecording();
+        }}
+      />
+    </>
   );
 }
 
@@ -8120,25 +8484,24 @@ function AssignmentPanel({
   onDeleteSubmission,
 }: AssignmentPanelProps) {
   const [dragOver, setDragOver] = useState(false);
-  const [audioPreviewUrl, setAudioPreviewUrl] = useState("");
   const [recording, setRecording] = useState(false);
   const [recordingError, setRecordingError] = useState<string | null>(null);
+  const [microphoneGuideKind, setMicrophoneGuideKind] = useState<MicrophonePermissionGuideKind | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
 
+  const audioPreviewUrl = useMemo(() => (
+    audioFile ? URL.createObjectURL(audioFile) : ""
+  ), [audioFile]);
+
   useEffect(() => {
-    if (!audioFile) {
-      setAudioPreviewUrl("");
-      return undefined;
-    }
-    const url = URL.createObjectURL(audioFile);
-    setAudioPreviewUrl(url);
     return () => {
-      URL.revokeObjectURL(url);
-      setAudioPreviewUrl("");
+      if (audioPreviewUrl) {
+        URL.revokeObjectURL(audioPreviewUrl);
+      }
     };
-  }, [audioFile]);
+  }, [audioPreviewUrl]);
 
   useEffect(() => {
     return () => {
@@ -8154,16 +8517,14 @@ function AssignmentPanel({
       recorderRef.current?.stop();
       return;
     }
-    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      setRecordingError("Tu navegador no permite grabar audio");
-      return;
-    }
-    if (typeof MediaRecorder === "undefined") {
-      setRecordingError("Tu navegador no permite grabar audio");
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setRecordingError(getMicrophonePermissionInlineMessage("unsupported"));
+      setMicrophoneGuideKind("unsupported");
       return;
     }
     try {
       setRecordingError(null);
+      setMicrophoneGuideKind(null);
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       const recorder = new MediaRecorder(stream);
@@ -8175,7 +8536,8 @@ function AssignmentPanel({
         }
       });
       recorder.addEventListener("stop", () => {
-        stream.getTracks().forEach((track) => track.stop());
+        const activeStream = streamRef.current ?? stream;
+        activeStream.getTracks().forEach((track) => track.stop());
         streamRef.current = null;
         const blob = new Blob(chunksRef.current, { type: "audio/webm" });
         const file = new File([blob], `grabacion-${Date.now()}.webm`, { type: "audio/webm" });
@@ -8186,7 +8548,10 @@ function AssignmentPanel({
       setRecording(true);
     } catch (err) {
       console.error("Error grabando audio:", err);
-      setRecordingError("No se pudo iniciar la grabación");
+      const nextKind = getMicrophonePermissionGuideKind(err);
+      setRecordingError(getMicrophonePermissionInlineMessage(nextKind));
+      setMicrophoneGuideKind(nextKind);
+      setRecording(false);
     }
   };
 
@@ -8200,7 +8565,8 @@ function AssignmentPanel({
   const isAudioAssignment = assignmentSubmissionType === "audio";
 
   return (
-    <div className="fixed inset-y-0 right-0 z-40 w-full max-w-md bg-neutral-900/95 backdrop-blur-lg text-white shadow-2xl lg:top-0 lg:right-0 flex flex-col">
+    <>
+      <div className="fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col bg-neutral-900/95 text-white shadow-2xl backdrop-blur-lg lg:right-0 lg:top-0">
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
         <div>
           <p className="text-sm font-semibold">Tarea</p>
@@ -8332,16 +8698,23 @@ function AssignmentPanel({
                 <p className="font-semibold text-white">Enviar un audio</p>
                 <div className="space-y-3 rounded-2xl border border-dashed border-white/20 bg-white/5 p-3">
                   <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleAudioRecording}
-                      disabled={uploading}
-                      className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold ${
+                  <button
+                    type="button"
+                    onClick={handleAudioRecording}
+                    disabled={uploading}
+                    className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold ${
                         recording ? "bg-red-600 text-white" : "bg-white/10 text-white hover:bg-white/20"
                       }`}
                     >
                       <ControlIcon name="audio" />
                       {recording ? "Detener grabación" : "Grabar audio"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMicrophoneGuideKind("prompt")}
+                      className="rounded-full border border-amber-300/30 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-100 transition hover:bg-amber-400/20"
+                    >
+                      ¿Cómo activar el micrófono?
                     </button>
                     <input
                       type="file"
@@ -8352,6 +8725,9 @@ function AssignmentPanel({
                     />
                   </div>
                   {recordingError ? <p className="text-xs text-red-300">{recordingError}</p> : null}
+                  <p className="text-[11px] leading-5 text-white/55">
+                    Si el navegador no muestra el aviso, abre la ayuda y sigue los pasos.
+                  </p>
                   {audioFile ? (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-xs text-white/70">
@@ -8389,7 +8765,18 @@ function AssignmentPanel({
           </div>
         )}
       </div>
-    </div>
+      </div>
+      <MicrophonePermissionGuide
+        open={microphoneGuideKind !== null}
+        kind={microphoneGuideKind ?? "prompt"}
+        purpose="grabar tu tarea"
+        onClose={() => setMicrophoneGuideKind(null)}
+        onRetry={() => {
+          setMicrophoneGuideKind(null);
+          void handleAudioRecording();
+        }}
+      />
+    </>
   );
 }
 
