@@ -39,6 +39,16 @@ type StudyRouteCourse = {
   weeks: StudyRouteWeek[];
 };
 
+type DailyPointsDetail = {
+  submissionKey: string;
+  courseLabel: string;
+  lessonLabel: string;
+  classLabel: string;
+  grade?: number;
+  isGraded: boolean;
+  statusLabel: string;
+};
+
 type DailyPointsRow = {
   dateKey: string;
   dateLabel: string;
@@ -46,6 +56,7 @@ type DailyPointsRow = {
   cumulativePoints: number;
   gradedCount: number;
   submissionsCount: number;
+  details: DailyPointsDetail[];
 };
 
 type DailyPointsCourse = {
@@ -470,7 +481,13 @@ export default function StudentProfilePage() {
 
         const pointsByDay = new Map<
           string,
-          { date: Date; dailyPoints: number; gradedCount: number; submissionsCount: number }
+          {
+            date: Date;
+            dailyPoints: number;
+            gradedCount: number;
+            submissionsCount: number;
+            details: DailyPointsDetail[];
+          }
         >();
         const pointsByCourse = new Map<
           string,
@@ -478,7 +495,13 @@ export default function StudentProfilePage() {
             courseLabel: string;
             pointsByDay: Map<
               string,
-              { date: Date; dailyPoints: number; gradedCount: number; submissionsCount: number }
+              {
+                date: Date;
+                dailyPoints: number;
+                gradedCount: number;
+                submissionsCount: number;
+                details: DailyPointsDetail[];
+              }
             >;
           }
         >();
@@ -493,17 +516,43 @@ export default function StudentProfilePage() {
               dailyPoints: 0,
               gradedCount: 0,
               submissionsCount: 0,
+              details: [],
             });
           }
           const entry = pointsByDay.get(dateKey)!;
           entry.submissionsCount += 1;
-          if (typeof submission.grade === "number" && Number.isFinite(submission.grade)) {
-            entry.dailyPoints += submission.grade;
+          const numericGrade =
+            typeof submission.grade === "number" && Number.isFinite(submission.grade)
+              ? submission.grade
+              : undefined;
+          const isGraded = numericGrade !== undefined;
+          if (numericGrade !== undefined) {
+            entry.dailyPoints += numericGrade;
             entry.gradedCount += 1;
           }
 
           const courseId = (submission.courseId ?? "").trim();
-          const courseLabel = (submission.courseTitle ?? "Materia sin identificar").trim() || "Materia sin identificar";
+          const courseLabel =
+            (submission.courseTitle ?? "Materia sin identificar").trim() || "Materia sin identificar";
+          const lessonLabel =
+            (submission.resolvedLesson ?? "Semana sin identificar").trim() || "Semana sin identificar";
+          const classLabel = (submission.className ?? "Clase").trim() || "Clase";
+          const detail: DailyPointsDetail = {
+            submissionKey: `${submission.groupId}:${submission.id}`,
+            courseLabel,
+            lessonLabel,
+            classLabel,
+            grade: numericGrade,
+            isGraded,
+            statusLabel:
+              submission.status === "graded"
+                ? "Calificado"
+                : submission.status === "late"
+                  ? "Fuera de tiempo"
+                  : "En revisión",
+          };
+          entry.details.push(detail);
+
           const courseKey = `${courseId || "sin-curso"}::${courseLabel}`;
           if (!pointsByCourse.has(courseKey)) {
             pointsByCourse.set(courseKey, {
@@ -518,14 +567,16 @@ export default function StudentProfilePage() {
               dailyPoints: 0,
               gradedCount: 0,
               submissionsCount: 0,
+              details: [],
             });
           }
           const dailyCourseEntry = courseEntry.pointsByDay.get(dateKey)!;
           dailyCourseEntry.submissionsCount += 1;
-          if (typeof submission.grade === "number" && Number.isFinite(submission.grade)) {
-            dailyCourseEntry.dailyPoints += submission.grade;
+          if (numericGrade !== undefined) {
+            dailyCourseEntry.dailyPoints += numericGrade;
             dailyCourseEntry.gradedCount += 1;
           }
+          dailyCourseEntry.details.push(detail);
         });
 
         let cumulative = 0;
@@ -540,6 +591,7 @@ export default function StudentProfilePage() {
               cumulativePoints: cumulative,
               gradedCount: entry.gradedCount,
               submissionsCount: entry.submissionsCount,
+              details: entry.details,
             };
           });
 
@@ -557,6 +609,7 @@ export default function StudentProfilePage() {
                   cumulativePoints: courseCumulative,
                   gradedCount: entry.gradedCount,
                   submissionsCount: entry.submissionsCount,
+                  details: entry.details,
                 };
               });
             return {
@@ -943,7 +996,8 @@ export default function StudentProfilePage() {
                   </span>
                 </div>
                 <p className="mt-1 text-[11px] text-white/60">
-                  Vista: {selectedPointsCourseLabel}. Los puntos del día se suman por clases calificadas.
+                  Vista: {selectedPointsCourseLabel}. Los puntos del día se suman por clases calificadas y se
+                  desglosan por entrega.
                 </p>
                 {dailyPointsByCourse.length > 0 ? (
                   <div className="mt-3 flex items-center gap-2">
@@ -977,6 +1031,7 @@ export default function StudentProfilePage() {
                       <thead className="bg-white/5 text-[11px] uppercase tracking-[0.12em] text-white/60">
                         <tr>
                           <th className="px-3 py-2 font-semibold">Fecha</th>
+                          <th className="px-3 py-2 font-semibold">Corresponde a</th>
                           <th className="px-3 py-2 font-semibold text-right">Puntos del día</th>
                           <th className="px-3 py-2 font-semibold text-right">Acumulado</th>
                           <th className="px-3 py-2 font-semibold text-right">Clases calificadas</th>
@@ -986,6 +1041,32 @@ export default function StudentProfilePage() {
                         {selectedDailyPointsRows.map((row) => (
                           <tr key={row.dateKey} className="bg-neutral-950/30">
                             <td className="px-3 py-2 text-white">{row.dateLabel}</td>
+                            <td className="px-3 py-2">
+                              <div className="space-y-2">
+                                {row.details.map((detail) => (
+                                  <div
+                                    key={detail.submissionKey}
+                                    className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1.5"
+                                  >
+                                    <p className="text-[11px] font-semibold text-white">
+                                      {detail.courseLabel}
+                                    </p>
+                                    <p className="text-[11px] text-white/65">
+                                      {detail.lessonLabel} • {detail.classLabel}
+                                    </p>
+                                    <p
+                                      className={`text-[11px] font-medium ${
+                                        detail.isGraded ? "text-emerald-100" : "text-amber-100"
+                                      }`}
+                                    >
+                                      {detail.isGraded
+                                        ? `${detail.grade?.toFixed(1) ?? "0.0"} pts`
+                                        : detail.statusLabel}
+                                    </p>
+                                  </div>
+                                ))}
+                              </div>
+                            </td>
                             <td className="px-3 py-2 text-right font-semibold text-emerald-100">
                               {row.dailyPoints.toFixed(1)}
                             </td>

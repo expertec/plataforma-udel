@@ -36,6 +36,13 @@ export type PaginatedStudentsResult = {
   totalCount?: number;
 };
 
+export type CoordinatorScopedStudentsResult = {
+  students: StudentUser[];
+  totalCount: number;
+  scopeGroupIds: string[];
+  scopePlantelIds: string[];
+};
+
 const DEFAULT_PAGE_SIZE = 50;
 
 function resolveStudentWhatsApp(data: Record<string, unknown>): string | null {
@@ -72,12 +79,16 @@ export async function getStudentUsersPaginated(
 ): Promise<PaginatedStudentsResult> {
   const usersRef = collection(db, "users");
   const normalizedPlantelId = plantelId?.trim() ?? "";
-  const constraints: QueryConstraint[] = normalizedPlantelId
-    ? [where("plantelIds", "array-contains", normalizedPlantelId)]
-    : [
-        where("role", "==", "student"),
-        orderBy("createdAt", "desc"),
-      ];
+  const constraints: QueryConstraint[] = [where("role", "==", "student")];
+
+  if (normalizedPlantelId) {
+    // Firestore rules for coordinators only allow reading student docs inside
+    // their plantel scope. The query must include the same student constraint,
+    // otherwise Firestore rejects the whole list operation.
+    constraints.push(where("plantelIds", "array-contains", normalizedPlantelId));
+  } else {
+    constraints.push(orderBy("createdAt", "desc"));
+  }
 
   if (lastDoc) {
     constraints.push(startAfter(lastDoc));
@@ -148,9 +159,11 @@ export async function getStudentUsersPaginated(
 export async function getStudentsCount(plantelId?: string): Promise<number> {
   const usersRef = collection(db, "users");
   const normalizedPlantelId = plantelId?.trim() ?? "";
-  const q = normalizedPlantelId
-    ? query(usersRef, where("plantelIds", "array-contains", normalizedPlantelId))
-    : query(usersRef, where("role", "==", "student"));
+  const constraints: QueryConstraint[] = [where("role", "==", "student")];
+  if (normalizedPlantelId) {
+    constraints.push(where("plantelIds", "array-contains", normalizedPlantelId));
+  }
+  const q = query(usersRef, ...constraints);
   const snapshot = await getDocs(q);
   return snapshot.docs.reduce((count, docSnap) => {
     const data = docSnap.data();
@@ -158,6 +171,34 @@ export async function getStudentsCount(plantelId?: string): Promise<number> {
     if (!isStudentStatusActive(data.estado ?? data.status)) return count;
     return count + 1;
   }, 0);
+}
+
+export async function getCoordinatorScopedStudents(): Promise<CoordinatorScopedStudentsResult> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error("No hay sesión activa para consultar alumnos");
+  }
+
+  const token = await currentUser.getIdToken();
+  const response = await fetch("/api/students/scoped", {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    cache: "no-store",
+  });
+
+  const payload = (await response.json().catch(() => ({}))) as {
+    success?: boolean;
+    error?: string;
+    data?: CoordinatorScopedStudentsResult;
+  };
+
+  if (!response.ok || payload.success !== true || !payload.data) {
+    throw new Error(payload.error || "No se pudieron cargar los alumnos del coordinador");
+  }
+
+  return payload.data;
 }
 
 /**

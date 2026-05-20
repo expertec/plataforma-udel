@@ -18,6 +18,7 @@ import { getPrograms } from "@/lib/firebase/programs-service";
 import {
   createStudentAccount,
   archiveStudent,
+  getCoordinatorScopedStudents,
   getStudentUsersPaginated,
   getStudentsCount,
   StudentUser,
@@ -25,7 +26,7 @@ import {
   checkStudentExists,
   updateStudentPlantelAssignment,
 } from "@/lib/firebase/students-service";
-import { getGroupsByPlantel, getGroupStudents, getGroupsForTeacher } from "@/lib/firebase/groups-service";
+import { getGroupStudents, getGroupsForTeacher } from "@/lib/firebase/groups-service";
 import {
   getPlanteles,
   getUserPlantelAssignment,
@@ -259,13 +260,13 @@ export default function AlumnosPage() {
         }
 
         if (isCoordinator) {
-          // Coordinación consulta alumnos desde users/{uid}.plantelIds para reflejar
-          // el padrón completo del plantel, no solo los que ya están inscritos en grupos.
-          const scopedGroups = await getGroupsByPlantel(coordinatorPlantelId);
-          const scopedGroupIds = Array.from(
-            new Set(scopedGroups.map((group) => group.id).filter((groupId) => groupId.trim().length > 0)),
-          );
-          setCoordinatorScopeGroupIds(scopedGroupIds);
+          const scopedResult = await getCoordinatorScopedStudents();
+          setStudents(scopedResult.students);
+          setTotalStudentsCount(scopedResult.totalCount);
+          setCoordinatorScopeGroupIds(scopedResult.scopeGroupIds);
+          lastDocRef.current = null;
+          setHasMoreStudents(false);
+          return;
         }
 
         const result = await getStudentUsersPaginated(
@@ -283,9 +284,7 @@ export default function AlumnosPage() {
           setTotalStudentsCount(count);
         }
 
-        if (isAdmin) {
-          setCoordinatorScopeGroupIds([]);
-        }
+        setCoordinatorScopeGroupIds([]);
         lastDocRef.current = result.lastDoc;
         setHasMoreStudents(result.hasMore);
         return;
@@ -315,11 +314,13 @@ export default function AlumnosPage() {
       setCoordinatorScopeGroupIds([]);
     } catch (err) {
       console.error(err);
-      toast.error(
-        canViewAllStudents
-          ? "No se pudieron cargar los alumnos"
-          : "No se pudieron cargar los alumnos de tus grupos",
-      );
+      const message =
+        err instanceof Error && err.message.trim().length > 0
+          ? err.message
+          : canViewAllStudents
+            ? "No se pudieron cargar los alumnos"
+            : "No se pudieron cargar los alumnos de tus grupos";
+      toast.error(message);
     } finally {
       setLoading(false);
       setLoadingMore(false);

@@ -703,6 +703,42 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    /* evaluaciones de profesor */
+    match /teacherEvaluations/{evaluationId} {
+      allow read: if canReadFeedbackAnalytics() || (
+        isSignedIn() &&
+        resource.data.studentId is string &&
+        resource.data.studentId == request.auth.uid
+      );
+      allow create: if isSignedIn() &&
+        request.resource.data.studentId is string &&
+        request.resource.data.studentId == request.auth.uid &&
+        request.resource.data.teacherId is string &&
+        request.resource.data.teacherId.size() > 0 &&
+        request.resource.data.classDocId is string &&
+        request.resource.data.classDocId.size() > 0 &&
+        request.resource.data.groupId is string &&
+        request.resource.data.groupId.size() > 0 &&
+        request.resource.data.rating is number &&
+        request.resource.data.rating >= 1 &&
+        request.resource.data.rating <= 5;
+      allow update: if isSignedIn() &&
+        resource.data.studentId is string &&
+        resource.data.studentId == request.auth.uid &&
+        request.resource.data.studentId is string &&
+        request.resource.data.studentId == request.auth.uid &&
+        request.resource.data.teacherId is string &&
+        request.resource.data.teacherId.size() > 0 &&
+        request.resource.data.classDocId is string &&
+        request.resource.data.classDocId.size() > 0 &&
+        request.resource.data.groupId is string &&
+        request.resource.data.groupId.size() > 0 &&
+        request.resource.data.rating is number &&
+        request.resource.data.rating >= 1 &&
+        request.resource.data.rating <= 5;
+      allow delete: if false;
+    }
+
     /* encuestas de satisfacción */
     match /satisfactionSurveys/{surveyId} {
       allow read: if canReadFeedbackAnalytics() || (

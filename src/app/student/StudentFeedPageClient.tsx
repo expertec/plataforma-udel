@@ -45,6 +45,11 @@ import {
   upsertClassEvaluation,
 } from "@/lib/firebase/class-evaluations-service";
 import {
+  buildTeacherEvaluationId,
+  getTeacherEvaluationsForStudent,
+  upsertTeacherEvaluation,
+} from "@/lib/firebase/teacher-evaluations-service";
+import {
   getPublishedSatisfactionSurveys,
   getSurveyResponse,
   isStudentEligibleForSurvey,
@@ -74,6 +79,8 @@ type FeedClass = {
   groupId?: string;
   groupName?: string;
   groupIsInPerson?: boolean;
+  teacherId?: string;
+  teacherName?: string;
   classTitle?: string;
   videoUrl?: string;
   audioUrl?: string;
@@ -667,13 +674,17 @@ export default function StudentFeedPageClient() {
   const mobileFiltersRef = useRef<HTMLDivElement | null>(null);
   const [showClosedCourses, setShowClosedCourses] = useState(false);
   const [classFeedbackMap, setClassFeedbackMap] = useState<Record<string, ClassFeedbackState>>({});
+  const [teacherFeedbackMap, setTeacherFeedbackMap] = useState<Record<string, ClassFeedbackState>>({});
   const classFeedbackPromptedRef = useRef<Record<string, boolean>>({});
   const [classFeedbackModal, setClassFeedbackModal] = useState<{ open: boolean; classId: string | null }>({
     open: false,
     classId: null,
   });
+  const [classFeedbackStep, setClassFeedbackStep] = useState<"class" | "teacher">("class");
   const [classFeedbackRating, setClassFeedbackRating] = useState<number>(0);
   const [classFeedbackComment, setClassFeedbackComment] = useState("");
+  const [teacherFeedbackRating, setTeacherFeedbackRating] = useState<number>(0);
+  const [teacherFeedbackComment, setTeacherFeedbackComment] = useState("");
   const [classFeedbackSaving, setClassFeedbackSaving] = useState(false);
   const [studentCreatedAt, setStudentCreatedAt] = useState<Date | null>(null);
   const [pendingSurveys, setPendingSurveys] = useState<SatisfactionSurvey[]>([]);
@@ -865,13 +876,49 @@ export default function StudentFeedPageClient() {
 
   const getBaseClassDocId = useCallback((cls: FeedClass) => (cls.classDocId ?? cls.id).trim(), []);
 
+  const getTeacherFeedbackDocId = useCallback(
+    (cls: FeedClass, studentId: string | null | undefined) => {
+      const normalizedStudentId = studentId?.trim() ?? "";
+      const teacherId = cls.teacherId?.trim() ?? "";
+      const groupId = cls.groupId?.trim() ?? "";
+      const baseClassId = getBaseClassDocId(cls);
+      if (!normalizedStudentId || !teacherId || !groupId || !baseClassId) {
+        return "";
+      }
+      return buildTeacherEvaluationId(baseClassId, groupId, teacherId, normalizedStudentId);
+    },
+    [getBaseClassDocId],
+  );
+
+  const hasPendingFeedbackForClass = useCallback(
+    (cls: FeedClass, studentId: string | null | undefined) => {
+      const baseClassId = getBaseClassDocId(cls);
+      const classSubmitted = baseClassId ? Boolean(classFeedbackMap[baseClassId]) : true;
+      const teacherFeedbackDocId = getTeacherFeedbackDocId(cls, studentId);
+      const teacherSubmitted = teacherFeedbackDocId
+        ? Boolean(teacherFeedbackMap[teacherFeedbackDocId])
+        : true;
+      return !classSubmitted || !teacherSubmitted;
+    },
+    [classFeedbackMap, getBaseClassDocId, getTeacherFeedbackDocId, teacherFeedbackMap],
+  );
+
   const isClassFeedbackSubmitted = useCallback(
     (cls: FeedClass) => {
-      const baseClassId = getBaseClassDocId(cls);
-      return baseClassId ? Boolean(classFeedbackMap[baseClassId]) : false;
+      if (!currentUser?.uid) return false;
+      return !hasPendingFeedbackForClass(cls, currentUser.uid);
     },
-    [classFeedbackMap, getBaseClassDocId],
+    [currentUser?.uid, hasPendingFeedbackForClass],
   );
+
+  const resetClassFeedbackFlow = useCallback(() => {
+    setClassFeedbackModal({ open: false, classId: null });
+    setClassFeedbackStep("class");
+    setClassFeedbackRating(0);
+    setClassFeedbackComment("");
+    setTeacherFeedbackRating(0);
+    setTeacherFeedbackComment("");
+  }, []);
 
   const openClassFeedbackModal = useCallback(
     (classId: string) => {
@@ -880,11 +927,29 @@ export default function StudentFeedPageClient() {
       if (!shouldPromptClassFeedback(cls.type)) return;
       const baseClassId = getBaseClassDocId(cls);
       const previous = baseClassId ? classFeedbackMap[baseClassId] : undefined;
+      const teacherFeedbackDocId = getTeacherFeedbackDocId(cls, currentUser?.uid);
+      const previousTeacher = teacherFeedbackDocId
+        ? teacherFeedbackMap[teacherFeedbackDocId]
+        : undefined;
+      const shouldStartOnTeacherStep =
+        Boolean(previous) &&
+        (cls.teacherId?.trim().length ?? 0) > 0 &&
+        !previousTeacher;
       setClassFeedbackRating(previous?.rating ?? 0);
       setClassFeedbackComment(previous?.comment ?? "");
+      setTeacherFeedbackRating(previousTeacher?.rating ?? 0);
+      setTeacherFeedbackComment(previousTeacher?.comment ?? "");
+      setClassFeedbackStep(shouldStartOnTeacherStep ? "teacher" : "class");
       setClassFeedbackModal({ open: true, classId });
     },
-    [classFeedbackMap, findClassById, getBaseClassDocId],
+    [
+      classFeedbackMap,
+      currentUser?.uid,
+      findClassById,
+      getBaseClassDocId,
+      getTeacherFeedbackDocId,
+      teacherFeedbackMap,
+    ],
   );
 
   const courseClosureKeyFromClass = useCallback(
@@ -946,13 +1011,17 @@ export default function StudentFeedPageClient() {
   useEffect(() => {
     if (previewMode || !currentUser?.uid) {
       setClassFeedbackMap({});
+      setTeacherFeedbackMap({});
       return;
     }
 
     let cancelled = false;
     const loadClassFeedback = async () => {
       try {
-        const byClassDocId = await getClassEvaluationsForStudent(currentUser.uid);
+        const [byClassDocId, byTeacherEvaluationId] = await Promise.all([
+          getClassEvaluationsForStudent(currentUser.uid),
+          getTeacherEvaluationsForStudent(currentUser.uid),
+        ]);
         if (cancelled) return;
         const nextMap = Object.entries(byClassDocId).reduce<Record<string, ClassFeedbackState>>(
           (acc, [classDocId, evaluation]) => {
@@ -966,8 +1035,20 @@ export default function StudentFeedPageClient() {
           {},
         );
         setClassFeedbackMap(nextMap);
+        const nextTeacherMap = Object.entries(byTeacherEvaluationId).reduce<Record<string, ClassFeedbackState>>(
+          (acc, [evaluationId, evaluation]) => {
+            acc[evaluationId] = {
+              rating: evaluation.rating,
+              comment: evaluation.comment ?? "",
+              updatedAt: evaluation.updatedAt ?? null,
+            };
+            return acc;
+          },
+          {},
+        );
+        setTeacherFeedbackMap(nextTeacherMap);
       } catch (err) {
-        console.warn("No se pudieron cargar evaluaciones de clase:", err);
+        console.warn("No se pudieron cargar evaluaciones de clase/profesor:", err);
       }
     };
 
@@ -2571,6 +2652,8 @@ export default function StudentFeedPageClient() {
                         groupId: currentGroupId,
                         groupName: currentGroupName,
                         groupIsInPerson: isGroupInPerson,
+                        teacherId: groupData.teacherId ?? "",
+                        teacherName: groupData.teacherName ?? "",
                         classTitle: c.title ?? "Clase sin título",
                         videoUrl: trimSafeString(c.videoUrl),
                         audioUrl: trimSafeString(c.audioUrl),
@@ -3270,9 +3353,7 @@ export default function StudentFeedPageClient() {
         (seenRef.current[classId] && forumOk);
 
       if (reachedCompletionThisTick && meta && shouldPromptClassFeedback(meta.type)) {
-        const baseClassId = getBaseClassDocId(meta);
-        const alreadySubmitted = baseClassId ? Boolean(classFeedbackMap[baseClassId]) : false;
-        if (!alreadySubmitted && !classFeedbackPromptedRef.current[classId]) {
+        if (hasPendingFeedbackForClass(meta, currentUser?.uid) && !classFeedbackPromptedRef.current[classId]) {
           classFeedbackPromptedRef.current[classId] = true;
           openClassFeedbackModal(classId);
         }
@@ -3295,11 +3376,11 @@ export default function StudentFeedPageClient() {
     },
     [
       saveProgressToFirestore,
+      currentUser?.uid,
       findClassById,
+      hasPendingFeedbackForClass,
       isForumSatisfied,
       previewMode,
-      classFeedbackMap,
-      getBaseClassDocId,
       openClassFeedbackModal,
     ],
   );
@@ -3365,9 +3446,7 @@ export default function StudentFeedPageClient() {
           if (!shouldPromptClassFeedback(cls.type)) {
             return;
           }
-          const baseClassId = getBaseClassDocId(cls);
-          const alreadySubmitted = baseClassId ? Boolean(classFeedbackMap[baseClassId]) : false;
-          if (!alreadySubmitted && !classFeedbackPromptedRef.current[classId]) {
+          if (hasPendingFeedbackForClass(cls, currentUser.uid) && !classFeedbackPromptedRef.current[classId]) {
             classFeedbackPromptedRef.current[classId] = true;
             openClassFeedbackModal(classId);
           }
@@ -3383,8 +3462,7 @@ export default function StudentFeedPageClient() {
       classes,
       previewMode,
       saveSeenForUser,
-      classFeedbackMap,
-      getBaseClassDocId,
+      hasPendingFeedbackForClass,
       openClassFeedbackModal,
     ],
   );
@@ -3411,38 +3489,93 @@ export default function StudentFeedPageClient() {
       toast.error("No se pudo identificar la clase.");
       return;
     }
+    const teacherId = cls.teacherId?.trim() ?? "";
+    const teacherName = cls.teacherName?.trim() ?? "";
+    const teacherRating = Math.round(teacherFeedbackRating);
+    const shouldSaveTeacherFeedback = teacherId.length > 0;
+    const teacherFeedbackDocId = getTeacherFeedbackDocId(cls, currentUser.uid);
+    const teacherAlreadySubmitted = teacherFeedbackDocId
+      ? Boolean(teacherFeedbackMap[teacherFeedbackDocId])
+      : false;
 
     setClassFeedbackSaving(true);
     try {
-      await upsertClassEvaluation({
-        classDocId: baseClassId,
-        courseId: cls.courseId ?? "",
-        lessonId: cls.lessonId ?? "",
-        groupId: cls.groupId ?? "",
-        enrollmentId: cls.enrollmentId ?? enrollmentId ?? "",
-        studentId: currentUser.uid,
-        studentName: studentName || currentUser.displayName || "Estudiante",
-        rating,
-        comment: classFeedbackComment.trim(),
-        courseTitle: cls.courseTitle ?? courseTitleMap[cls.courseId ?? ""] ?? "",
-        lessonTitle: cls.lessonTitle ?? cls.lessonName ?? "",
-        classTitle: cls.title ?? "",
-      });
-      setClassFeedbackMap((prev) => ({
-        ...prev,
-        [baseClassId]: {
-          rating: rating as 1 | 2 | 3 | 4 | 5,
+      if (classFeedbackStep === "class") {
+        await upsertClassEvaluation({
+          classDocId: baseClassId,
+          courseId: cls.courseId ?? "",
+          lessonId: cls.lessonId ?? "",
+          groupId: cls.groupId ?? "",
+          enrollmentId: cls.enrollmentId ?? enrollmentId ?? "",
+          studentId: currentUser.uid,
+          studentName: studentName || currentUser.displayName || "Estudiante",
+          rating,
           comment: classFeedbackComment.trim(),
-          updatedAt: new Date(),
-        },
-      }));
+          courseTitle: cls.courseTitle ?? courseTitleMap[cls.courseId ?? ""] ?? "",
+          lessonTitle: cls.lessonTitle ?? cls.lessonName ?? "",
+          classTitle: cls.title ?? "",
+        });
+        setClassFeedbackMap((prev) => ({
+          ...prev,
+          [baseClassId]: {
+            rating: rating as 1 | 2 | 3 | 4 | 5,
+            comment: classFeedbackComment.trim(),
+            updatedAt: new Date(),
+          },
+        }));
+
+        if (shouldSaveTeacherFeedback && !teacherAlreadySubmitted) {
+          setClassFeedbackStep("teacher");
+          toast.success("Evaluación de la clase guardada. Continúa con la del profesor.");
+          return;
+        }
+
+        classFeedbackPromptedRef.current[cls.id] = true;
+        resetClassFeedbackFlow();
+        toast.success("Gracias por evaluar esta clase.");
+        return;
+      }
+
+      if (shouldSaveTeacherFeedback && (teacherRating < 1 || teacherRating > 5)) {
+        toast.error("Selecciona una calificación de 1 a 5 estrellas para el profesor.");
+        return;
+      }
+
+      if (shouldSaveTeacherFeedback) {
+        await upsertTeacherEvaluation({
+          classDocId: baseClassId,
+          courseId: cls.courseId ?? "",
+          lessonId: cls.lessonId ?? "",
+          groupId: cls.groupId ?? "",
+          groupName: cls.groupName ?? "",
+          enrollmentId: cls.enrollmentId ?? enrollmentId ?? "",
+          teacherId,
+          teacherName,
+          studentId: currentUser.uid,
+          studentName: studentName || currentUser.displayName || "Estudiante",
+          rating: teacherRating,
+          comment: teacherFeedbackComment.trim(),
+          courseTitle: cls.courseTitle ?? courseTitleMap[cls.courseId ?? ""] ?? "",
+          lessonTitle: cls.lessonTitle ?? cls.lessonName ?? "",
+          classTitle: cls.title ?? "",
+        });
+        const resolvedTeacherFeedbackDocId =
+          teacherFeedbackDocId ||
+          buildTeacherEvaluationId(baseClassId, cls.groupId ?? "", teacherId, currentUser.uid);
+        setTeacherFeedbackMap((prev) => ({
+          ...prev,
+          [resolvedTeacherFeedbackDocId]: {
+            rating: teacherRating as 1 | 2 | 3 | 4 | 5,
+            comment: teacherFeedbackComment.trim(),
+            updatedAt: new Date(),
+          },
+        }));
+      }
       classFeedbackPromptedRef.current[cls.id] = true;
-      setClassFeedbackModal({ open: false, classId: null });
-      setClassFeedbackRating(0);
-      setClassFeedbackComment("");
-      toast.success("Gracias por evaluar esta clase.");
+      resetClassFeedbackFlow();
+      toast.success("Gracias por evaluar al profesor.");
     } catch (error) {
-      console.error("No se pudo guardar la evaluación de clase:", error);
+      console.error("No se pudo guardar la evaluación de clase/profesor:", error);
       const code = (error as FirebaseError | undefined)?.code;
       toast.error(`No se pudo guardar la evaluación${code ? ` (${code})` : ""}. Intenta de nuevo.`);
     } finally {
@@ -3452,14 +3585,20 @@ export default function StudentFeedPageClient() {
     classFeedbackComment,
     classFeedbackModal.classId,
     classFeedbackRating,
+    classFeedbackStep,
     courseTitleMap,
     currentUser?.displayName,
     currentUser?.uid,
     enrollmentId,
     findClassById,
     getBaseClassDocId,
+    getTeacherFeedbackDocId,
     previewMode,
+    resetClassFeedbackFlow,
     studentName,
+    teacherFeedbackComment,
+    teacherFeedbackRating,
+    teacherFeedbackMap,
   ]);
 
   const handleSubmitSurvey = useCallback(async () => {
@@ -4602,7 +4741,7 @@ export default function StudentFeedPageClient() {
                           })()}
                           {!previewMode && isClassFeedbackSubmitted(cls) ? (
                             <span className="inline-flex items-center rounded-full bg-emerald-500/20 px-3 py-1 text-[11px] font-semibold text-emerald-200">
-                              Evaluación enviada
+                              Evaluaciones enviadas
                             </span>
                           ) : null}
                           {/* Botón para marcar clase como completada manualmente */}
@@ -4947,7 +5086,7 @@ export default function StudentFeedPageClient() {
           {classFeedbackModal.open && classFeedbackModal.classId && !previewMode ? (
             <div
               className="fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto bg-black/70 px-4 py-6"
-              onClick={() => setClassFeedbackModal({ open: false, classId: null })}
+              onClick={() => resetClassFeedbackFlow()}
             >
               <div
                 className="w-full max-w-md max-h-[calc(100vh-3rem)] overflow-y-auto rounded-2xl bg-neutral-900 p-6 shadow-2xl"
@@ -4955,58 +5094,128 @@ export default function StudentFeedPageClient() {
               >
                 <div className="mb-4">
                   <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-200">
-                    Evaluación de clase
+                    Evaluación académica
                   </p>
                   <h3 className="mt-1 text-lg font-semibold text-white">
                     {findClassById(classFeedbackModal.classId)?.title ?? "Clase"}
                   </h3>
                   <p className="mt-1 text-sm text-neutral-300">
-                    Califica el contenido de 1 a 5 estrellas. Comentario opcional.
+                    {classFeedbackStep === "class"
+                      ? "Primero evalúa la clase. Después te mostraremos la evaluación del profesor."
+                      : "Ahora evalúa al profesor del grupo. El comentario es opcional."}
                   </p>
+                  {(findClassById(classFeedbackModal.classId)?.teacherId ?? "").trim().length > 0 ? (
+                    <p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-cyan-300">
+                      {classFeedbackStep === "class" ? "Paso 1 de 2" : "Paso 2 de 2"}
+                    </p>
+                  ) : null}
                 </div>
 
-                <div className="mb-4 flex items-center justify-center gap-2">
-                  {[1, 2, 3, 4, 5].map((star) => (
-                    <button
-                      key={star}
-                      type="button"
-                      onClick={() => setClassFeedbackRating(star)}
-                      className={`text-3xl transition ${
-                        classFeedbackRating >= star ? "text-amber-400" : "text-neutral-500 hover:text-amber-300"
-                      }`}
-                      aria-label={`${star} estrella${star === 1 ? "" : "s"}`}
-                    >
-                      ★
-                    </button>
-                  ))}
-                </div>
+                {classFeedbackStep === "class" ? (
+                  <div className="rounded-xl border border-white/10 bg-neutral-800/70 p-4">
+                    <p className="text-sm font-semibold text-white">Clase</p>
+                    <p className="mt-1 text-xs text-neutral-400">
+                      Evalúa el contenido, dinámica y claridad de esta sesión.
+                    </p>
+                    <div className="mt-3 flex items-center justify-center gap-2">
+                      {[1, 2, 3, 4, 5].map((star) => (
+                        <button
+                          key={star}
+                          type="button"
+                          onClick={() => setClassFeedbackRating(star)}
+                          className={`text-3xl transition ${
+                            classFeedbackRating >= star ? "text-amber-400" : "text-neutral-500 hover:text-amber-300"
+                          }`}
+                          aria-label={`${star} estrella${star === 1 ? "" : "s"} para la clase`}
+                        >
+                          ★
+                        </button>
+                      ))}
+                    </div>
 
-                <label className="block text-sm text-neutral-200">
-                  Comentario
-                  <textarea
-                    value={classFeedbackComment}
-                    onChange={(event) => setClassFeedbackComment(event.target.value)}
-                    rows={4}
-                    placeholder="¿Qué te gustó o qué podemos mejorar?"
-                    className="mt-1 w-full rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-white placeholder:text-neutral-500 focus:border-cyan-400 focus:outline-none"
-                  />
-                </label>
+                    <label className="mt-3 block text-sm text-neutral-200">
+                      Comentario sobre la clase
+                      <textarea
+                        value={classFeedbackComment}
+                        onChange={(event) => setClassFeedbackComment(event.target.value)}
+                        rows={3}
+                        placeholder="¿Qué te gustó o qué podemos mejorar?"
+                        className="mt-1 w-full rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-white placeholder:text-neutral-500 focus:border-cyan-400 focus:outline-none"
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-4">
+                    <p className="text-sm font-semibold text-white">
+                      Profesor: {findClassById(classFeedbackModal.classId)?.teacherName ?? "Profesor"}
+                    </p>
+                    <p className="mt-1 text-xs text-neutral-300">
+                      Evalúa la explicación, acompañamiento y dominio del docente en esta clase.
+                    </p>
+                    <div className="mt-3 flex items-center justify-center gap-2">
+                      {[1, 2, 3, 4, 5].map((star) => (
+                        <button
+                          key={`teacher-${star}`}
+                          type="button"
+                          onClick={() => setTeacherFeedbackRating(star)}
+                          className={`text-3xl transition ${
+                            teacherFeedbackRating >= star ? "text-cyan-300" : "text-neutral-500 hover:text-cyan-200"
+                          }`}
+                          aria-label={`${star} estrella${star === 1 ? "" : "s"} para el profesor`}
+                        >
+                          ★
+                        </button>
+                      ))}
+                    </div>
+
+                    <label className="mt-3 block text-sm text-neutral-200">
+                      Comentario sobre el profesor
+                      <textarea
+                        value={teacherFeedbackComment}
+                        onChange={(event) => setTeacherFeedbackComment(event.target.value)}
+                        rows={3}
+                        placeholder="¿Qué hizo bien el profesor o qué debería mejorar?"
+                        className="mt-1 w-full rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-white placeholder:text-neutral-500 focus:border-cyan-400 focus:outline-none"
+                      />
+                    </label>
+                  </div>
+                )}
 
                 <div className="mt-5 flex items-center justify-end gap-2">
                   <button
                     type="button"
-                    onClick={() => setClassFeedbackModal({ open: false, classId: null })}
+                    onClick={() => resetClassFeedbackFlow()}
                     className="rounded-lg border border-white/20 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
                   >
                     Después
                   </button>
+                  {classFeedbackStep === "teacher" ? (
+                    <button
+                      type="button"
+                      onClick={() => setClassFeedbackStep("class")}
+                      className="rounded-lg border border-cyan-400/30 px-4 py-2 text-sm font-semibold text-cyan-100 hover:bg-cyan-400/10"
+                    >
+                      Volver a clase
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => void handleSubmitClassFeedback()}
-                    disabled={classFeedbackSaving || classFeedbackRating < 1 || classFeedbackRating > 5}
+                    disabled={
+                      classFeedbackSaving ||
+                      (
+                        classFeedbackStep === "class"
+                          ? classFeedbackRating < 1 || classFeedbackRating > 5
+                          : teacherFeedbackRating < 1 || teacherFeedbackRating > 5
+                      )
+                    }
                     className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {classFeedbackSaving ? "Guardando..." : "Enviar evaluación"}
+                    {classFeedbackSaving
+                      ? "Guardando..."
+                      : classFeedbackStep === "class" && (findClassById(classFeedbackModal.classId)?.teacherId ?? "").trim().length > 0
+                        ? "Continuar con profesor"
+                        : "Enviar evaluación"}
                   </button>
                 </div>
               </div>

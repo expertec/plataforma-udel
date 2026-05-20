@@ -24,6 +24,10 @@ import {
   listClassEvaluations,
   type ClassEvaluation,
 } from "@/lib/firebase/class-evaluations-service";
+import {
+  listTeacherEvaluations,
+  type TeacherEvaluation,
+} from "@/lib/firebase/teacher-evaluations-service";
 import type { FirebaseError } from "firebase/app";
 
 type SurveyFormState = {
@@ -138,6 +142,21 @@ type CourseInsight = {
   severityScore: number;
 };
 
+type TeacherInsight = {
+  teacherKey: string;
+  teacherLabel: string;
+  courseLabels: string[];
+  responses: number;
+  average: number;
+  lowCount: number;
+  highCount: number;
+  commentsCount: number;
+  lowRate: number;
+  commentsRate: number;
+  severityScore: number;
+  lastUpdatedAt: Date | null;
+};
+
 type CommentTopicInsight = {
   id: string;
   label: string;
@@ -243,6 +262,31 @@ const buildSeverityScore = (average: number, lowRate: number, responses: number)
   const normalizedAverage = Math.max(0, Math.min(1, (5 - average) / 4));
   const sampleWeight = Math.min(1, responses / 8);
   return roundTo2((normalizedAverage * 0.65 + lowRate * 0.35) * sampleWeight * 100);
+};
+
+const buildRatingSummary = (
+  entries: Array<{ rating: 1 | 2 | 3 | 4 | 5 }>,
+) => {
+  if (entries.length === 0) {
+    return {
+      total: 0,
+      average: 0,
+      counts: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 } as Record<1 | 2 | 3 | 4 | 5, number>,
+    };
+  }
+
+  const counts: Record<1 | 2 | 3 | 4 | 5, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  let sum = 0;
+  entries.forEach((entry) => {
+    sum += entry.rating;
+    counts[entry.rating] += 1;
+  });
+
+  return {
+    total: entries.length,
+    average: Number((sum / entries.length).toFixed(2)),
+    counts,
+  };
 };
 
 const buildClassInsights = (entries: ClassEvaluation[]): ClassInsight[] => {
@@ -371,7 +415,78 @@ const buildCourseInsights = (entries: ClassEvaluation[]): CourseInsight[] => {
   });
 };
 
-const buildCommentTopicInsights = (entries: ClassEvaluation[]): CommentTopicInsight[] => {
+const buildTeacherInsights = (entries: TeacherEvaluation[]): TeacherInsight[] => {
+  const map = new Map<
+    string,
+    {
+      teacherKey: string;
+      teacherLabel: string;
+      courseLabels: Set<string>;
+      responses: number;
+      ratingSum: number;
+      lowCount: number;
+      highCount: number;
+      commentsCount: number;
+      lastUpdatedAt: Date | null;
+    }
+  >();
+
+  entries.forEach((entry) => {
+    const teacherKey = safeLabel(entry.teacherId, "sin-profesor");
+    const teacherLabel = safeLabel(entry.teacherName, teacherKey);
+    const courseLabel = safeLabel(entry.courseTitle, safeLabel(entry.courseId, "Curso sin ID"));
+    const current = map.get(teacherKey) ?? {
+      teacherKey,
+      teacherLabel,
+      courseLabels: new Set<string>(),
+      responses: 0,
+      ratingSum: 0,
+      lowCount: 0,
+      highCount: 0,
+      commentsCount: 0,
+      lastUpdatedAt: null,
+    };
+
+    current.responses += 1;
+    current.ratingSum += entry.rating;
+    current.courseLabels.add(courseLabel);
+    if (entry.rating <= 2) current.lowCount += 1;
+    if (entry.rating >= 4) current.highCount += 1;
+    if (entry.comment.trim().length > 0) current.commentsCount += 1;
+    if (
+      entry.updatedAt &&
+      (!current.lastUpdatedAt || entry.updatedAt.getTime() > current.lastUpdatedAt.getTime())
+    ) {
+      current.lastUpdatedAt = entry.updatedAt;
+    }
+
+    map.set(teacherKey, current);
+  });
+
+  return Array.from(map.values()).map((item) => {
+    const average = item.responses > 0 ? item.ratingSum / item.responses : 0;
+    const lowRate = item.responses > 0 ? item.lowCount / item.responses : 0;
+    const commentsRate = item.responses > 0 ? item.commentsCount / item.responses : 0;
+    return {
+      teacherKey: item.teacherKey,
+      teacherLabel: item.teacherLabel,
+      courseLabels: Array.from(item.courseLabels).sort((a, b) => a.localeCompare(b, "es")),
+      responses: item.responses,
+      average: roundTo2(average),
+      lowCount: item.lowCount,
+      highCount: item.highCount,
+      commentsCount: item.commentsCount,
+      lowRate,
+      commentsRate,
+      severityScore: buildSeverityScore(average, lowRate, item.responses),
+      lastUpdatedAt: item.lastUpdatedAt,
+    };
+  });
+};
+
+const buildCommentTopicInsights = (
+  entries: Array<{ comment: string }>,
+): CommentTopicInsight[] => {
   if (!entries.length) return [];
 
   const counts = COMMENT_TOPIC_RULES.reduce<Record<string, number>>((acc, topic) => {
@@ -401,7 +516,9 @@ const buildCommentTopicInsights = (entries: ClassEvaluation[]): CommentTopicInsi
     .sort((a, b) => b.count - a.count);
 };
 
-const buildTrendInsight = (entries: ClassEvaluation[]): TrendInsight => {
+const buildTrendInsight = (
+  entries: Array<{ rating: number; updatedAt: Date | null }>,
+): TrendInsight => {
   if (!entries.length) {
     return {
       recentCount: 0,
@@ -428,9 +545,9 @@ const buildTrendInsight = (entries: ClassEvaluation[]): TrendInsight => {
     return time >= previousStartMs && time < recentStartMs;
   });
 
-  const averageOf = (items: ClassEvaluation[]): number | null =>
+  const averageOf = (items: Array<{ rating: number }>): number | null =>
     items.length ? roundTo2(items.reduce((sum, item) => sum + item.rating, 0) / items.length) : null;
-  const lowRateOf = (items: ClassEvaluation[]): number | null =>
+  const lowRateOf = (items: Array<{ rating: number }>): number | null =>
     items.length ? items.filter((item) => item.rating <= 2).length / items.length : null;
 
   const recentAverage = averageOf(recent);
@@ -619,6 +736,12 @@ export default function EncuestasPage() {
   const [evaluationsCourseFilter, setEvaluationsCourseFilter] = useState("");
   const [evaluationsStartDate, setEvaluationsStartDate] = useState("");
   const [evaluationsEndDate, setEvaluationsEndDate] = useState("");
+  const [teacherEvaluations, setTeacherEvaluations] = useState<TeacherEvaluation[]>([]);
+  const [teacherEvaluationsLoading, setTeacherEvaluationsLoading] = useState(true);
+  const [teacherEvaluationsCourseFilter, setTeacherEvaluationsCourseFilter] = useState("");
+  const [teacherEvaluationsTeacherFilter, setTeacherEvaluationsTeacherFilter] = useState("");
+  const [teacherEvaluationsStartDate, setTeacherEvaluationsStartDate] = useState("");
+  const [teacherEvaluationsEndDate, setTeacherEvaluationsEndDate] = useState("");
 
   const canManageSurveys = isAdminTeacherRole(userRole);
 
@@ -640,26 +763,7 @@ export default function EncuestasPage() {
     return next;
   }, [responsesBySurvey]);
 
-  const evaluationSummary = useMemo(() => {
-    if (evaluations.length === 0) {
-      return {
-        total: 0,
-        average: 0,
-        counts: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 } as Record<1 | 2 | 3 | 4 | 5, number>,
-      };
-    }
-    const counts: Record<1 | 2 | 3 | 4 | 5, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
-    let sum = 0;
-    evaluations.forEach((entry) => {
-      sum += entry.rating;
-      counts[entry.rating] += 1;
-    });
-    return {
-      total: evaluations.length,
-      average: Number((sum / evaluations.length).toFixed(2)),
-      counts,
-    };
-  }, [evaluations]);
+  const evaluationSummary = useMemo(() => buildRatingSummary(evaluations), [evaluations]);
 
   const evaluationsWithComment = useMemo(
     () => evaluations.filter((entry) => entry.comment.trim().length > 0),
@@ -726,6 +830,73 @@ export default function EncuestasPage() {
   );
 
   const trendInsight = useMemo(() => buildTrendInsight(evaluations), [evaluations]);
+
+  const teacherEvaluationSummary = useMemo(
+    () => buildRatingSummary(teacherEvaluations),
+    [teacherEvaluations],
+  );
+
+  const teacherEvaluationsWithComment = useMemo(
+    () => teacherEvaluations.filter((entry) => entry.comment.trim().length > 0),
+    [teacherEvaluations],
+  );
+
+  const teacherLowRatingCount = useMemo(
+    () => teacherEvaluationSummary.counts[1] + teacherEvaluationSummary.counts[2],
+    [teacherEvaluationSummary],
+  );
+
+  const teacherLowRatingRate = useMemo(
+    () =>
+      teacherEvaluationSummary.total > 0
+        ? teacherLowRatingCount / teacherEvaluationSummary.total
+        : 0,
+    [teacherEvaluationSummary.total, teacherLowRatingCount],
+  );
+
+  const teacherCommentsRate = useMemo(
+    () =>
+      teacherEvaluationSummary.total > 0
+        ? teacherEvaluationsWithComment.length / teacherEvaluationSummary.total
+        : 0,
+    [teacherEvaluationSummary.total, teacherEvaluationsWithComment.length],
+  );
+
+  const teacherInsights = useMemo(
+    () => buildTeacherInsights(teacherEvaluations),
+    [teacherEvaluations],
+  );
+
+  const worstTeacherInsights = useMemo(
+    () =>
+      [...teacherInsights]
+        .filter((item) => item.responses >= 2)
+        .sort((a, b) => {
+          if (b.severityScore !== a.severityScore) return b.severityScore - a.severityScore;
+          if (a.average !== b.average) return a.average - b.average;
+          return b.responses - a.responses;
+        })
+        .slice(0, 10),
+    [teacherInsights],
+  );
+
+  const atRiskTeacherInsights = useMemo(
+    () =>
+      teacherInsights
+        .filter((item) => item.responses >= REPORT_MIN_SAMPLE && item.average < 3)
+        .sort((a, b) => a.average - b.average),
+    [teacherInsights],
+  );
+
+  const teacherCommentTopicInsights = useMemo(
+    () => buildCommentTopicInsights(teacherEvaluationsWithComment),
+    [teacherEvaluationsWithComment],
+  );
+
+  const teacherTrendInsight = useMemo(
+    () => buildTrendInsight(teacherEvaluations),
+    [teacherEvaluations],
+  );
 
   const surveyStats = useMemo(() => {
     return surveys.reduce(
@@ -821,6 +992,30 @@ export default function EncuestasPage() {
       setEvaluationsLoading(false);
     }
   }, [evaluationsCourseFilter, evaluationsStartDate, evaluationsEndDate]);
+
+  const loadTeacherEvaluationsData = useCallback(async () => {
+    setTeacherEvaluationsLoading(true);
+    try {
+      const data = await listTeacherEvaluations({
+        courseId: teacherEvaluationsCourseFilter.trim() || undefined,
+        teacherQuery: teacherEvaluationsTeacherFilter.trim() || undefined,
+        startDate: toDateFromInput(teacherEvaluationsStartDate),
+        endDate: toDateFromInput(teacherEvaluationsEndDate, true),
+        maxResults: 5000,
+      });
+      setTeacherEvaluations(data);
+    } catch (error) {
+      console.error("No se pudo cargar analítica de profesores:", error);
+      toast.error(`No se pudieron cargar las evaluaciones de profesores${errorCodeSuffix(error)}`);
+    } finally {
+      setTeacherEvaluationsLoading(false);
+    }
+  }, [
+    teacherEvaluationsCourseFilter,
+    teacherEvaluationsEndDate,
+    teacherEvaluationsStartDate,
+    teacherEvaluationsTeacherFilter,
+  ]);
 
   const handleDownloadEvaluationsReportPdf = useCallback(async () => {
     if (!evaluations.length) {
@@ -1829,8 +2024,9 @@ export default function EncuestasPage() {
     void (async () => {
       await loadSurveys();
       await loadClassEvaluationsData();
+      await loadTeacherEvaluationsData();
     })();
-  }, [loadClassEvaluationsData, loadSurveys, roleReady, userRole]);
+  }, [loadClassEvaluationsData, loadSurveys, loadTeacherEvaluationsData, roleReady, userRole]);
 
   useEffect(() => {
     if (!surveys.length) {
@@ -2519,6 +2715,176 @@ export default function EncuestasPage() {
                 <div className="mt-2 space-y-2">
                   {commentTopicInsights.slice(0, 6).map((topic) => (
                     <article key={topic.id} className="rounded-lg border border-slate-200 bg-white p-2.5">
+                      <p className="text-sm font-semibold text-slate-900">{topic.label}</p>
+                      <p className="text-xs text-slate-500">
+                        {topic.count} menciones ({toRatioPercent(topic.rate)})
+                      </p>
+                      <p className="text-xs text-slate-700">{topic.decisionHint}</p>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-lg font-semibold text-slate-900">Analítica de evaluaciones de profesores</h2>
+            <button
+              type="button"
+              onClick={() => void loadTeacherEvaluationsData()}
+              disabled={teacherEvaluationsLoading}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:border-blue-300 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {teacherEvaluationsLoading ? "Cargando..." : "Aplicar filtros"}
+            </button>
+          </div>
+
+          <div className="mt-3 grid gap-3 md:grid-cols-4">
+            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+              Profesor
+              <input
+                value={teacherEvaluationsTeacherFilter}
+                onChange={(event) => setTeacherEvaluationsTeacherFilter(event.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                placeholder="Teacher ID o nombre"
+              />
+            </label>
+            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+              Course ID
+              <input
+                value={teacherEvaluationsCourseFilter}
+                onChange={(event) => setTeacherEvaluationsCourseFilter(event.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                placeholder="Filtrar por courseId"
+              />
+            </label>
+            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+              Desde
+              <input
+                type="date"
+                value={teacherEvaluationsStartDate}
+                onChange={(event) => setTeacherEvaluationsStartDate(event.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </label>
+            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+              Hasta
+              <input
+                type="date"
+                value={teacherEvaluationsEndDate}
+                onChange={(event) => setTeacherEvaluationsEndDate(event.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </label>
+          </div>
+
+          <div className="mt-4 grid gap-4 sm:grid-cols-3">
+            <StatCard title="Total evaluaciones" value={teacherEvaluationSummary.total} />
+            <StatCard title="Promedio" value={teacherEvaluationSummary.average} />
+            <StatCard title="Con comentario" value={teacherEvaluationsWithComment.length} />
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-4">
+            <MetricCard
+              title="Profesores en riesgo"
+              value={String(atRiskTeacherInsights.length)}
+              subtitle="avg < 3.0 y muestra >= 3"
+            />
+            <MetricCard
+              title="Criticas (1-2★)"
+              value={toRatioPercent(teacherLowRatingRate)}
+              subtitle={`${teacherLowRatingCount} evaluaciones`}
+            />
+            <MetricCard
+              title="Cobertura comentario"
+              value={toRatioPercent(teacherCommentsRate)}
+              subtitle={`${teacherEvaluationsWithComment.length} comentarios`}
+            />
+            <MetricCard
+              title="Tendencia 14d"
+              value={
+                teacherTrendInsight.deltaAverage === null
+                  ? "N/D"
+                  : `${teacherTrendInsight.deltaAverage >= 0 ? "+" : ""}${teacherTrendInsight.deltaAverage.toFixed(2)}`
+              }
+              subtitle={
+                teacherTrendInsight.recentAverage === null
+                  ? "Sin histórico suficiente"
+                  : `Reciente ${teacherTrendInsight.recentAverage.toFixed(2)}`
+              }
+            />
+          </div>
+
+          <div className="mt-4 grid gap-2 sm:grid-cols-5">
+            {RATING_STARS.map((star) => (
+              <div key={`teacher-star-${star}`} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-center">
+                <p className="text-xs font-semibold text-slate-500">{star} estrella{star === 1 ? "" : "s"}</p>
+                <p className="text-lg font-semibold text-slate-900">{teacherEvaluationSummary.counts[star]}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-5">
+            <h3 className="text-sm font-semibold text-slate-800">Comentarios recientes sobre profesores</h3>
+            {teacherEvaluationsWithComment.length === 0 ? (
+              <p className="mt-2 text-sm text-slate-600">No hay comentarios en el filtro actual.</p>
+            ) : (
+              <div className="mt-2 max-h-72 space-y-2 overflow-y-auto pr-1">
+                {teacherEvaluationsWithComment.slice(0, 150).map((entry) => (
+                  <article key={entry.id} className="rounded-lg border border-slate-200 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-slate-900">
+                        {entry.teacherName || entry.teacherId} • {entry.rating}★
+                      </p>
+                      <p className="text-xs text-slate-500">{formatDateTime(entry.updatedAt)}</p>
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      {entry.courseTitle || entry.courseId} • {entry.classTitle || entry.classDocId} • {entry.studentName}
+                    </p>
+                    <p className="mt-2 text-sm text-slate-700">{entry.comment}</p>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="mt-6 grid gap-4 lg:grid-cols-2">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <h3 className="text-sm font-semibold text-slate-800">Top profesores en riesgo</h3>
+              {worstTeacherInsights.length === 0 ? (
+                <p className="mt-2 text-sm text-slate-600">Aun no hay muestra suficiente para ranking.</p>
+              ) : (
+                <div className="mt-2 space-y-2">
+                  {worstTeacherInsights.slice(0, 6).map((item, index) => (
+                    <article key={item.teacherKey} className="rounded-lg border border-slate-200 bg-white p-2.5">
+                      <p className="text-sm font-semibold text-slate-900">
+                        {index + 1}. {item.teacherLabel}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {item.responses} evals • promedio {item.average.toFixed(2)}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {item.courseLabels.slice(0, 3).join(" • ") || "Sin curso"}
+                      </p>
+                      <p className="text-xs text-rose-700">
+                        Criticas: {toRatioPercent(item.lowRate)} • Severidad: {item.severityScore.toFixed(1)}/100
+                      </p>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <h3 className="text-sm font-semibold text-slate-800">Temas que más impactan al docente</h3>
+              {teacherCommentTopicInsights.length === 0 ? (
+                <p className="mt-2 text-sm text-slate-600">No hay suficientes comentarios para clasificar temas.</p>
+              ) : (
+                <div className="mt-2 space-y-2">
+                  {teacherCommentTopicInsights.slice(0, 6).map((topic) => (
+                    <article key={`teacher-topic-${topic.id}`} className="rounded-lg border border-slate-200 bg-white p-2.5">
                       <p className="text-sm font-semibold text-slate-900">{topic.label}</p>
                       <p className="text-xs text-slate-500">
                         {topic.count} menciones ({toRatioPercent(topic.rate)})

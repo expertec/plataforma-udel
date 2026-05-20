@@ -123,6 +123,11 @@ type RaisedHandEntry = {
   timestamp: number;
 };
 
+type LiveBrowserInfo = {
+  label: string;
+  isRecommendedChrome: boolean;
+};
+
 const LIVE_SIGNAL_TOPIC = "udx.live.signal";
 const LIVE_REACTION_TTL_MS = 4500;
 const LIVE_REACTIONS = ["👍", "👏", "🎉", "🔥", "❤️", "😂"];
@@ -194,6 +199,89 @@ function formatChatHour(timestamp: number): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function detectLiveBrowser(): LiveBrowserInfo {
+  if (typeof navigator === "undefined") {
+    return { label: "tu navegador", isRecommendedChrome: true };
+  }
+
+  const ua = navigator.userAgent.toLowerCase();
+  const vendor = navigator.vendor.toLowerCase();
+  const userAgentData = (
+    navigator as Navigator & {
+      userAgentData?: {
+        brands?: Array<{ brand: string; version?: string }>;
+      };
+    }
+  ).userAgentData;
+  const brands = Array.isArray(userAgentData?.brands)
+    ? userAgentData.brands.map((brand) => brand.brand.toLowerCase())
+    : [];
+
+  const isEdge = ua.includes("edg/");
+  const isFirefox = ua.includes("firefox");
+  const isOpera = ua.includes("opr/") || ua.includes("opera");
+  const isSafari = ua.includes("safari") && !ua.includes("chrome") && !ua.includes("crios");
+  const isChrome =
+    !isEdge &&
+    !isFirefox &&
+    !isOpera &&
+    (
+      brands.some((brand) => brand.includes("google chrome")) ||
+      (
+        (ua.includes("chrome") || ua.includes("crios")) &&
+        vendor.includes("google")
+      )
+    );
+
+  if (isChrome) {
+    return { label: "Google Chrome", isRecommendedChrome: true };
+  }
+  if (isEdge) {
+    return { label: "Microsoft Edge", isRecommendedChrome: false };
+  }
+  if (isFirefox) {
+    return { label: "Firefox", isRecommendedChrome: false };
+  }
+  if (isSafari) {
+    return { label: "Safari", isRecommendedChrome: false };
+  }
+  if (isOpera) {
+    return { label: "Opera", isRecommendedChrome: false };
+  }
+  return { label: "este navegador", isRecommendedChrome: false };
+}
+
+function LiveChromeRecommendationBanner({
+  browserLabel,
+  onDismiss,
+}: {
+  browserLabel: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="pointer-events-auto flex w-full max-w-3xl items-start justify-between gap-3 rounded-2xl border border-amber-400/30 bg-amber-500/12 px-4 py-3 text-left text-amber-50 shadow-lg backdrop-blur">
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-200">
+          Recomendación de navegador
+        </p>
+        <p className="mt-1 text-sm font-medium">
+          Detectamos {browserLabel}. Para clases en vivo recomendamos usar Google Chrome.
+        </p>
+        <p className="mt-1 text-xs text-amber-100/85">
+          En otros navegadores hemos visto fallas de audio, video o conexión, especialmente en algunos equipos con Edge.
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="shrink-0 rounded-full border border-amber-200/30 px-2.5 py-1 text-[11px] font-semibold text-amber-50 hover:bg-amber-200/10"
+      >
+        Cerrar
+      </button>
+    </div>
+  );
 }
 
 function LiveRoomChatPanel({ visible }: { visible: boolean }) {
@@ -770,8 +858,11 @@ export default function LiveClassRoomPage() {
   const [mutingAll, setMutingAll] = useState(false);
   const [mutingParticipantId, setMutingParticipantId] = useState<string | null>(null);
   const [moderationMessage, setModerationMessage] = useState<string | null>(null);
+  const [chromeWarningDismissed, setChromeWarningDismissed] = useState(false);
   const autoStartAttemptedRef = useRef(false);
   const browserSupported = useMemo(() => isBrowserSupported(), []);
+  const browserInfo = useMemo(() => detectLiveBrowser(), []);
+  const shouldShowChromeRecommendation = browserSupported && !browserInfo.isRecommendedChrome && !chromeWarningDismissed;
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (nextUser) => {
@@ -1216,6 +1307,14 @@ export default function LiveClassRoomPage() {
             ({timezone})
           </p>
         ) : null}
+        {shouldShowChromeRecommendation ? (
+          <LiveChromeRecommendationBanner
+            browserLabel={browserInfo.label}
+            onDismiss={() => {
+              setChromeWarningDismissed(true);
+            }}
+          />
+        ) : null}
         {asRole === "teacher" && waitingReason === "waiting_teacher" ? (
           <button
             type="button"
@@ -1240,11 +1339,23 @@ export default function LiveClassRoomPage() {
 
   return (
     <div className="h-screen w-full bg-slate-950">
-      {livekitError ? (
+      {livekitError || shouldShowChromeRecommendation ? (
         <div className="pointer-events-none fixed left-0 right-0 top-14 z-20 flex justify-center px-3">
-          <p className="pointer-events-auto rounded-full bg-red-600/90 px-3 py-1 text-xs font-semibold text-white">
-            {livekitError}
-          </p>
+          <div className="flex w-full max-w-3xl flex-col items-center gap-2">
+            {livekitError ? (
+              <p className="pointer-events-auto rounded-full bg-red-600/90 px-3 py-1 text-xs font-semibold text-white">
+                {livekitError}
+              </p>
+            ) : null}
+            {shouldShowChromeRecommendation ? (
+              <LiveChromeRecommendationBanner
+                browserLabel={browserInfo.label}
+                onDismiss={() => {
+                  setChromeWarningDismissed(true);
+                }}
+              />
+            ) : null}
+          </div>
         </div>
       ) : null}
       <LiveKitRoom
