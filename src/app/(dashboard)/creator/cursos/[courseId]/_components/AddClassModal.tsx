@@ -22,6 +22,10 @@ import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
 import TextAlign from "@tiptap/extension-text-align";
 import { NodeSelection, Plugin, PluginKey } from "prosemirror-state";
+import {
+  parseDateTimeLocalToIso,
+  toDateTimeLocalInputValue,
+} from "@/lib/utils/date-format";
 
 const classTypes = [
   {
@@ -243,17 +247,22 @@ export function AddClassModal({
           : "text",
       );
       const currentLiveSession = normalizeLiveSession(initialData.liveSession);
+      const currentLiveTimezone = currentLiveSession?.timezone || "America/Monterrey";
       setLiveScheduledStartAt(
         currentLiveSession?.scheduledStartAt
-          ? currentLiveSession.scheduledStartAt.slice(0, 16)
+          ? toDateTimeLocalInputValue(currentLiveSession.scheduledStartAt, {
+              timeZone: currentLiveTimezone,
+            })
           : "",
       );
       setLiveScheduledEndAt(
         currentLiveSession?.scheduledEndAt
-          ? currentLiveSession.scheduledEndAt.slice(0, 16)
+          ? toDateTimeLocalInputValue(currentLiveSession.scheduledEndAt, {
+              timeZone: currentLiveTimezone,
+            })
           : "",
       );
-      setLiveTimezone(currentLiveSession?.timezone || "America/Monterrey");
+      setLiveTimezone(currentLiveTimezone);
       setLiveAutoRecording(currentLiveSession?.recording.auto !== false);
       if (initialData.type === "image" && (initialData.imageUrls?.length ?? 0) > 1) {
         setImageMode("carousel");
@@ -425,23 +434,21 @@ export function AddClassModal({
         : type === "audio" && audioCoverUrl
         ? [audioCoverUrl]
         : [];
-    const toIsoOrNull = (value: string): string | null => {
-      const normalized = value.trim();
-      if (!normalized) return null;
-      const parsed = new Date(normalized);
-      if (Number.isNaN(parsed.getTime())) return null;
-      return parsed.toISOString();
-    };
     const currentLiveSession = normalizeLiveSession(initialData?.liveSession);
+    const normalizedLiveTimezone = liveTimezone.trim() || "America/Monterrey";
     const liveSessionPayload: LiveClassSession | null =
       type === "live"
         ? {
             provider: "livekit",
             roomName: currentLiveSession?.roomName ?? "",
             status: currentLiveSession?.status ?? "scheduled",
-            scheduledStartAt: toIsoOrNull(liveScheduledStartAt),
-            scheduledEndAt: toIsoOrNull(liveScheduledEndAt),
-            timezone: liveTimezone.trim() || "America/Monterrey",
+            scheduledStartAt: parseDateTimeLocalToIso(liveScheduledStartAt, {
+              timeZone: normalizedLiveTimezone,
+            }),
+            scheduledEndAt: parseDateTimeLocalToIso(liveScheduledEndAt, {
+              timeZone: normalizedLiveTimezone,
+            }),
+            timezone: normalizedLiveTimezone,
             teacherActive: currentLiveSession?.teacherActive ?? false,
             recording: {
               auto: liveAutoRecording,

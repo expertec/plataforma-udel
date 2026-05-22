@@ -1554,7 +1554,6 @@ export function SubmissionsModal({
                                         void handleSaveInlineGrade(row);
                                       }
                                     }}
-                                    placeholder="0-100"
                                     disabled={isInlineSaving}
                                     className={`w-24 rounded-lg border px-2 py-1 text-sm ${
                                       inlineGradeInvalid ? "border-red-400" : "border-slate-300"

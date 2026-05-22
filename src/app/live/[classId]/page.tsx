@@ -1303,7 +1303,7 @@ export default function LiveClassRoomPage() {
         {scheduledStartAt ? (
           <p className="text-xs text-slate-300">
             Inicio programado:{" "}
-            {formatEsMxDateTime(scheduledStartAt)}{" "}
+            {formatEsMxDateTime(scheduledStartAt, { timeZone: timezone })}{" "}
             ({timezone})
           </p>
         ) : null}
