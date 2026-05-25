@@ -7,6 +7,7 @@ import { createGroup } from "@/lib/firebase/groups-service";
 import { createPlantel, normalizePlantelName, Plantel } from "@/lib/firebase/planteles-service";
 
 type CourseOption = { id: string; title: string };
+type TeacherOption = { id: string; name: string; email?: string | null };
 
 type Props = {
   open: boolean;
@@ -16,8 +17,10 @@ type Props = {
   defaultPlantelId?: string;
   lockPlantel?: boolean;
   allowCreatePlantel?: boolean;
-  teacherId: string;
-  teacherName: string;
+  teacherOptions: TeacherOption[];
+  defaultTeacherId?: string;
+  lockTeacher?: boolean;
+  loadingTeacherOptions?: boolean;
   onImported: () => void;
   onPlantelCreated?: (plantel: Plantel) => void;
 };
@@ -28,6 +31,7 @@ type ParsedRow = {
   program: string;
   plantelName: string;
   courseIds: string[];
+  teacherRef: string;
 };
 
 type ImportResult = {
@@ -48,8 +52,10 @@ export function BulkCreateGroupsModal({
   defaultPlantelId = "",
   lockPlantel = false,
   allowCreatePlantel = true,
-  teacherId,
-  teacherName,
+  teacherOptions,
+  defaultTeacherId = "",
+  lockTeacher = false,
+  loadingTeacherOptions = false,
   onImported,
   onPlantelCreated,
 }: Props) {
@@ -58,14 +64,29 @@ export function BulkCreateGroupsModal({
   const [fileName, setFileName] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [createdPlanteles, setCreatedPlanteles] = useState<Plantel[]>([]);
+  const [selectedTeacherId, setSelectedTeacherId] = useState(defaultTeacherId);
   const availablePlanteles = useMemo(() => {
     const map = new Map<string, Plantel>();
     planteles.forEach((plantel) => map.set(plantel.id, plantel));
     createdPlanteles.forEach((plantel) => map.set(plantel.id, plantel));
     return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, "es"));
   }, [createdPlanteles, planteles]);
+  const selectedTeacher = useMemo(
+    () => teacherOptions.find((teacher) => teacher.id === selectedTeacherId) ?? null,
+    [selectedTeacherId, teacherOptions],
+  );
 
   if (!open) return null;
+
+  const handleClose = () => {
+    setParsedRows([]);
+    setImportResults([]);
+    setFileName(null);
+    setImporting(false);
+    setCreatedPlanteles([]);
+    setSelectedTeacherId(defaultTeacherId);
+    onClose();
+  };
 
   const parseFile = async (file: File) => {
     setParsedRows([]);
@@ -88,6 +109,17 @@ export function BulkCreateGroupsModal({
             normalize(row.Programa || row.program || row["Programa"] || "Licenciatura") || "Licenciatura";
           const plantelName = normalize(row.Plantel || row.plantel || row.Campus || row.campus);
           const courseStr = normalize(row.Cursos || row.courses || row["Cursos"]);
+          const teacherRef = normalize(
+            row["Profesor (ID o email)"] ||
+              row["Profesor ID"] ||
+              row["Profesor Email"] ||
+              row.Profesor ||
+              row.profesor ||
+              row.Teacher ||
+              row["Teacher ID"] ||
+              row["Teacher Email"] ||
+              row.teacher,
+          );
           const courseIds = courseStr
             .split(/[,;|]/)
             .map((value) => value.trim())
@@ -99,6 +131,7 @@ export function BulkCreateGroupsModal({
             program,
             plantelName,
             courseIds,
+            teacherRef,
           };
         })
         .filter(Boolean) as ParsedRow[];
@@ -116,9 +149,9 @@ export function BulkCreateGroupsModal({
 
   const handleDownloadTemplate = () => {
     const rows = [
-      ["Nombre del grupo", "Programa", "Plantel", "Cursos (IDs separados por coma)"],
-      ["Grupo A", "Licenciatura", "UDEL Online", "courseId1,courseId2"],
-      ["Grupo B", "Maestría", "UDEL Los Cabos", "courseId3"],
+      ["Nombre del grupo", "Programa", "Plantel", "Cursos (IDs separados por coma)", "Profesor (ID o email)"],
+      ["Grupo A", "Licenciatura", "UDEL Online", "courseId1,courseId2", "profesor@udel.edu.mx"],
+      ["Grupo B", "Maestría", "UDEL Los Cabos", "courseId3", ""],
     ];
     const sheet = XLSX.utils.aoa_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
@@ -155,9 +188,49 @@ export function BulkCreateGroupsModal({
     return created;
   };
 
+  const resolveTeacherForRow = (row: ParsedRow): TeacherOption => {
+    const teacherRef = normalize(row.teacherRef);
+    const defaultTeacher =
+      teacherOptions.find((teacher) => teacher.id === selectedTeacherId) ??
+      teacherOptions.find((teacher) => teacher.id === defaultTeacherId) ??
+      null;
+
+    if (!teacherRef) {
+      if (defaultTeacher) return defaultTeacher;
+      throw new Error("Selecciona profesor principal o agrega la columna Profesor (ID o email)");
+    }
+
+    const normalizedRef = teacherRef.toLowerCase();
+    const matchesById = teacherOptions.find((teacher) => teacher.id === teacherRef);
+    if (matchesById) return matchesById;
+
+    const matchesByEmail = teacherOptions.find(
+      (teacher) => (teacher.email ?? "").trim().toLowerCase() === normalizedRef,
+    );
+    if (matchesByEmail) return matchesByEmail;
+
+    const matchesByName = teacherOptions.filter(
+      (teacher) => teacher.name.trim().toLowerCase() === normalizedRef,
+    );
+    if (matchesByName.length === 1) return matchesByName[0];
+    if (matchesByName.length > 1) {
+      throw new Error(`Hay más de un profesor llamado "${teacherRef}". Usa ID o email.`);
+    }
+
+    if (lockTeacher && defaultTeacher) {
+      throw new Error("No puedes asignar un profesor distinto al usuario actual.");
+    }
+
+    throw new Error(`No se encontró al profesor "${teacherRef}".`);
+  };
+
   const handleImport = async () => {
     if (!parsedRows.length) {
       toast.error("Carga un archivo para importar");
+      return;
+    }
+    if (!lockTeacher && teacherOptions.length === 0) {
+      toast.error("No se pudo cargar el catálogo de profesores.");
       return;
     }
     setImporting(true);
@@ -165,6 +238,7 @@ export function BulkCreateGroupsModal({
     for (const row of parsedRows) {
       try {
         const plantel = await resolvePlantelForRow(row);
+        const teacher = resolveTeacherForRow(row);
         const coursesPayload = row.courseIds
           .map((cid) => {
             const found = courses.find((c) => c.id === cid);
@@ -178,8 +252,8 @@ export function BulkCreateGroupsModal({
           plantelName: plantel.name,
           courses: coursesPayload,
           courseIds: coursesPayload.map((c) => c.courseId),
-          teacherId,
-          teacherName,
+          teacherId: teacher.id,
+          teacherName: teacher.name,
           maxStudents: 0,
         });
         results.push({ row: row.row, groupName: row.groupName, status: "ok" });
@@ -215,13 +289,15 @@ export function BulkCreateGroupsModal({
       <div className="w-full max-w-2xl max-h-[calc(100vh-3rem)] overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-slate-900">Crear grupos desde Excel</h2>
-          <button type="button" onClick={onClose} className="text-sm text-slate-500 hover:text-slate-800">
+          <button type="button" onClick={handleClose} className="text-sm text-slate-500 hover:text-slate-800">
             ✕
           </button>
         </div>
         <div className="mt-4 space-y-4">
           <div>
-            <p className="text-sm text-slate-700">Sube un archivo .xlsx con columnas Nombre del grupo, Programa, Plantel y Cursos (IDs separados por coma)</p>
+            <p className="text-sm text-slate-700">
+              Sube un archivo .xlsx con columnas Nombre del grupo, Programa, Plantel, Cursos y, opcionalmente, Profesor (ID o email).
+            </p>
             <label className="mt-2 inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50">
               <input type="file" accept=".xlsx,.xls" onChange={handleFileChange} className="hidden" />
               {fileName ? "Cambiar archivo" : "Seleccionar archivo"}
@@ -237,6 +313,29 @@ export function BulkCreateGroupsModal({
               <p className="mt-1 text-xs text-slate-500">Archivo seleccionado: {fileName}</p>
             ) : null}
           </div>
+          <div>
+            <label className="text-sm font-medium text-slate-800">Profesor principal por defecto</label>
+            <select
+              value={selectedTeacherId}
+              onChange={(event) => setSelectedTeacherId(event.target.value)}
+              disabled={lockTeacher || loadingTeacherOptions}
+              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+            >
+              <option value="">
+                {loadingTeacherOptions ? "Cargando profesores..." : "Seleccionar profesor por defecto"}
+              </option>
+              {teacherOptions.map((teacher) => (
+                <option key={teacher.id} value={teacher.id}>
+                  {teacher.name}
+                  {teacher.email ? ` · ${teacher.email}` : ""}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-slate-500">
+              Si una fila no trae profesor, se usará este valor.
+              {selectedTeacher ? ` Actual: ${selectedTeacher.name}.` : ""}
+            </p>
+          </div>
           {parsedRows.length ? (
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
               <p className="text-xs font-semibold text-slate-600">Filas preparadas</p>
@@ -245,7 +344,7 @@ export function BulkCreateGroupsModal({
                   <div key={row.row} className="flex items-center justify-between">
                     <span>{row.groupName}</span>
                     <span className="text-xs text-slate-500">
-                      {row.plantelName || "Plantel por defecto"} · Fila {row.row}
+                      {row.plantelName || "Plantel por defecto"} · {row.teacherRef || "Profesor por defecto"} · Fila {row.row}
                     </span>
                   </div>
                 ))}
@@ -276,14 +375,19 @@ export function BulkCreateGroupsModal({
         <div className="mt-4 flex justify-end gap-2">
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
           >
             Cancelar
           </button>
           <button
             type="button"
-            disabled={importing || !parsedRows.length}
+            disabled={
+              importing ||
+              !parsedRows.length ||
+              loadingTeacherOptions ||
+              (!selectedTeacherId && parsedRows.some((row) => !normalize(row.teacherRef)))
+            }
             onClick={handleImport}
             className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
           >

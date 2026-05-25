@@ -14,6 +14,7 @@ export const dynamic = "force-dynamic";
 type ArchiveStudentRequest = {
   studentId?: string;
   email?: string;
+  phone?: string;
   reason?: string;
 };
 
@@ -27,15 +28,17 @@ export async function POST(request: NextRequest) {
     const body = (await request.json().catch(() => ({}))) as ArchiveStudentRequest;
     const studentId = asTrimmedString(body.studentId);
     const email = asTrimmedString(body.email).toLowerCase();
+    const phone = asTrimmedString(body.phone);
 
-    if (!studentId && !email) {
+    if (!studentId && !email && !phone) {
       return NextResponse.json(
-        { success: false, error: "studentId o email son requeridos" },
+        { success: false, error: "studentId, email o phone son requeridos" },
         { status: 400 },
       );
     }
 
     const result = await archiveStudentAccount({
+      phone: phone || undefined,
       uid: studentId || undefined,
       email: email || undefined,
       archivedBy: adminContext.uid,

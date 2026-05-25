@@ -269,3 +269,23 @@ export async function listTeacherEvaluations(
     })
     .sort((a, b) => getSortTime(b.updatedAt) - getSortTime(a.updatedAt));
 }
+
+export async function listTeacherEvaluationsByTeacherId(
+  teacherId: string,
+  maxResults = DEFAULT_MAX_RESULTS,
+): Promise<TeacherEvaluation[]> {
+  const normalizedTeacherId = teacherId.trim();
+  if (!normalizedTeacherId) return [];
+
+  const snap = await getDocs(
+    query(
+      collection(db, "teacherEvaluations"),
+      where("teacherId", "==", normalizedTeacherId),
+      limit(maxResults),
+    ),
+  );
+
+  return snap.docs
+    .map((docSnap) => mapTeacherEvaluation(docSnap.id, docSnap.data()))
+    .sort((a, b) => getSortTime(b.updatedAt) - getSortTime(a.updatedAt));
+}

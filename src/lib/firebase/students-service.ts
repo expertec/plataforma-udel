@@ -16,6 +16,7 @@ import { db } from "@/lib/firebase/firestore";
 import { auth } from "./client";
 import { createAccountWithRole, updateUserPassword } from "./user-management";
 import { isStudentStatusActive } from "@/lib/students/status";
+import { buildPhoneLookupValues } from "@/lib/utils/phone";
 
 export type StudentUser = {
   id: string;
@@ -360,6 +361,7 @@ export async function ensureStudentAccount(params: {
       name: trimmedName,
       role: "student",
       phone: params.phone ?? null,
+      lookupPhones: buildPhoneLookupValues([params.phone]),
       status: "active",
       provider: "password",
       updatedAt: serverTimestamp(),

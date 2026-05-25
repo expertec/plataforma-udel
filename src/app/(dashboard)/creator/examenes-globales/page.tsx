@@ -1,0 +1,981 @@
+"use client";
+
+import Link from "next/link";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import toast from "react-hot-toast";
+import { onAuthStateChanged } from "firebase/auth";
+import { auth } from "@/lib/firebase/client";
+import { Course, getCourses } from "@/lib/firebase/courses-service";
+import {
+  createGlobalExamAssignment,
+  createGlobalExamTemplate,
+  fetchGlobalExamAssignments,
+  fetchGlobalExamTemplates,
+  resolveGlobalExamCandidateEnrollments,
+  updateGlobalExamAssignment,
+  updateGlobalExamTemplate,
+} from "@/lib/global-exams/client";
+import {
+  GLOBAL_EXAM_MAX_QUESTIONS,
+  GLOBAL_EXAM_MIN_QUESTIONS,
+  getGlobalExamReasonLabel,
+  getGlobalExamStatusLabel,
+  getGlobalExamTemplateStatusLabel,
+  type GlobalExamAssignmentReason,
+  type GlobalExamAssignmentRecord,
+  type GlobalExamQuestion,
+  type GlobalExamQuestionOption,
+  type GlobalExamTemplateRecord,
+} from "@/lib/global-exams/types";
+import {
+  getCoordinatorScopedStudents,
+  getStudentUsersPaginated,
+  type StudentUser,
+} from "@/lib/firebase/students-service";
+import {
+  isAdminTeacherRole,
+  isCampusCoordinatorRole,
+  resolveUserRole,
+  type UserRole,
+} from "@/lib/firebase/roles";
+import { RoleGate } from "@/components/auth/RoleGate";
+
+type CandidateEnrollment = {
+  enrollmentId: string;
+  groupId: string;
+  groupName: string;
+  courseId: string;
+  courseName: string;
+  plantelId: string;
+  plantelName: string;
+};
+
+type QuestionFormState = {
+  id: string;
+  prompt: string;
+  options: GlobalExamQuestionOption[];
+  correctOptionId: string;
+};
+
+const BASE_OPTION_IDS = ["a", "b", "c", "d"];
+
+function createBlankQuestion(index: number): QuestionFormState {
+  const options = BASE_OPTION_IDS.map((optionId) => ({
+    id: optionId,
+    text: "",
+  }));
+  return {
+    id: `question_${index + 1}`,
+    prompt: "",
+    options,
+    correctOptionId: options[0].id,
+  };
+}
+
+function createInitialQuestions(): QuestionFormState[] {
+  return Array.from({ length: GLOBAL_EXAM_MIN_QUESTIONS }, (_, index) => createBlankQuestion(index));
+}
+
+function cloneTemplateQuestions(questions: GlobalExamQuestion[]): QuestionFormState[] {
+  return questions.map((question, index) => ({
+    id: question.id || `question_${index + 1}`,
+    prompt: question.prompt,
+    options: question.options.map((option) => ({
+      id: option.id,
+      text: option.text,
+    })),
+    correctOptionId: question.correctOptionId,
+  }));
+}
+
+function getStudentLabel(student: StudentUser): string {
+  return `${student.name} | ${student.email || "sin correo"}${student.program ? ` | ${student.program}` : ""}`;
+}
+
+export default function GlobalExamsPage() {
+  const [userRole, setUserRole] = useState<UserRole | null>(null);
+  const [loadingContext, setLoadingContext] = useState(true);
+  const [loadingData, setLoadingData] = useState(true);
+  const [activeTab, setActiveTab] = useState<"templates" | "assignments">("templates");
+  const [templates, setTemplates] = useState<GlobalExamTemplateRecord[]>([]);
+  const [assignments, setAssignments] = useState<GlobalExamAssignmentRecord[]>([]);
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [students, setStudents] = useState<StudentUser[]>([]);
+  const [studentSearch, setStudentSearch] = useState("");
+
+  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
+  const [templateTitle, setTemplateTitle] = useState("");
+  const [templateDescription, setTemplateDescription] = useState("");
+  const [templateCourseId, setTemplateCourseId] = useState("");
+  const [templateStatus, setTemplateStatus] = useState<"draft" | "published">("draft");
+  const [templateQuestions, setTemplateQuestions] = useState<QuestionFormState[]>(createInitialQuestions);
+  const [savingTemplate, setSavingTemplate] = useState(false);
+
+  const [assignmentTemplateId, setAssignmentTemplateId] = useState("");
+  const [assignmentStudentId, setAssignmentStudentId] = useState("");
+  const [assignmentGroupId, setAssignmentGroupId] = useState("");
+  const [assignmentReason, setAssignmentReason] = useState<GlobalExamAssignmentReason>("failed_course");
+  const [assignmentEnableNow, setAssignmentEnableNow] = useState(false);
+  const [candidateEnrollments, setCandidateEnrollments] = useState<CandidateEnrollment[]>([]);
+  const [resolvingEnrollments, setResolvingEnrollments] = useState(false);
+  const [savingAssignment, setSavingAssignment] = useState(false);
+
+  const isAdmin = isAdminTeacherRole(userRole);
+  const isCoordinator = isCampusCoordinatorRole(userRole);
+
+  const filteredStudents = useMemo(() => {
+    const query = studentSearch.trim().toLowerCase();
+    if (!query) return students;
+    return students.filter((student) => {
+      const haystack = [student.name, student.email, student.program].join(" ").toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [studentSearch, students]);
+
+  const selectedTemplate = useMemo(
+    () => templates.find((template) => template.id === assignmentTemplateId) ?? null,
+    [assignmentTemplateId, templates],
+  );
+
+  const canCreateTemplates = isAdmin;
+
+  const resetTemplateForm = () => {
+    setEditingTemplateId(null);
+    setTemplateTitle("");
+    setTemplateDescription("");
+    setTemplateCourseId("");
+    setTemplateStatus("draft");
+    setTemplateQuestions(createInitialQuestions());
+  };
+
+  const loadAllData = async (role: UserRole | null) => {
+    setLoadingData(true);
+    try {
+      const roleIsAdmin = isAdminTeacherRole(role);
+      const roleIsCoordinator = isCampusCoordinatorRole(role);
+      const templatePromise = fetchGlobalExamTemplates();
+      const assignmentPromise = fetchGlobalExamAssignments();
+      const studentPromise = roleIsCoordinator
+        ? getCoordinatorScopedStudents().then((result) => result.students)
+        : getStudentUsersPaginated(500).then((result) => result.students);
+      const coursePromise = roleIsAdmin ? getCourses(undefined, 500) : Promise.resolve<Course[]>([]);
+
+      const [loadedTemplates, loadedAssignments, loadedStudents, loadedCourses] = await Promise.all([
+        templatePromise,
+        assignmentPromise,
+        studentPromise,
+        coursePromise,
+      ]);
+      setTemplates(loadedTemplates);
+      setAssignments(loadedAssignments);
+      setStudents(loadedStudents);
+      setCourses(loadedCourses);
+    } catch (error) {
+      console.error(error);
+      toast.error(
+        error instanceof Error ? error.message : "No se pudo cargar la configuracion del examen global",
+      );
+    } finally {
+      setLoadingData(false);
+    }
+  };
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        setUserRole(null);
+        setLoadingContext(false);
+        return;
+      }
+
+      setLoadingContext(true);
+      try {
+        const role = await resolveUserRole(user);
+        setUserRole(role);
+        if (!role) {
+          setTemplates([]);
+          setAssignments([]);
+          setStudents([]);
+          setCourses([]);
+          return;
+        }
+        await loadAllData(role);
+      } catch (error) {
+        console.error(error);
+        setUserRole(null);
+        toast.error("No se pudo validar tu rol para administrar examenes globales");
+      } finally {
+        setLoadingContext(false);
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    if (!assignmentTemplateId || !assignmentStudentId) {
+      setCandidateEnrollments([]);
+      setAssignmentGroupId("");
+      return;
+    }
+
+    let active = true;
+    const resolveCandidates = async () => {
+      setResolvingEnrollments(true);
+      try {
+        const enrollments = await resolveGlobalExamCandidateEnrollments(
+          assignmentStudentId,
+          assignmentTemplateId,
+        );
+        if (!active) return;
+        setCandidateEnrollments(enrollments);
+        setAssignmentGroupId((current) => {
+          if (current && enrollments.some((enrollment) => enrollment.groupId === current)) {
+            return current;
+          }
+          return enrollments[0]?.groupId ?? "";
+        });
+      } catch (error) {
+        console.error(error);
+        if (!active) return;
+        setCandidateEnrollments([]);
+        setAssignmentGroupId("");
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "No se pudieron resolver los grupos disponibles para el alumno",
+        );
+      } finally {
+        if (active) setResolvingEnrollments(false);
+      }
+    };
+
+    void resolveCandidates();
+    return () => {
+      active = false;
+    };
+  }, [assignmentStudentId, assignmentTemplateId]);
+
+  const handleQuestionChange = (
+    questionId: string,
+    updater: (current: QuestionFormState) => QuestionFormState,
+  ) => {
+    setTemplateQuestions((prev) =>
+      prev.map((question) => (question.id === questionId ? updater(question) : question)),
+    );
+  };
+
+  const handleAddQuestion = () => {
+    setTemplateQuestions((prev) => {
+      if (prev.length >= GLOBAL_EXAM_MAX_QUESTIONS) return prev;
+      return [...prev, createBlankQuestion(prev.length)];
+    });
+  };
+
+  const handleRemoveQuestion = (questionId: string) => {
+    setTemplateQuestions((prev) => {
+      if (prev.length <= GLOBAL_EXAM_MIN_QUESTIONS) return prev;
+      return prev.filter((question) => question.id !== questionId);
+    });
+  };
+
+  const handleSubmitTemplate = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!templateCourseId) {
+      toast.error("Selecciona la materia del examen");
+      return;
+    }
+
+    const selectedCourse = courses.find((course) => course.id === templateCourseId);
+    if (!selectedCourse) {
+      toast.error("No se encontro la materia seleccionada");
+      return;
+    }
+
+    const payloadQuestions: GlobalExamQuestion[] = templateQuestions.map((question, index) => ({
+      id: question.id || `question_${index + 1}`,
+      prompt: question.prompt,
+      options: question.options,
+      correctOptionId: question.correctOptionId,
+    }));
+
+    setSavingTemplate(true);
+    try {
+      const saved = editingTemplateId
+        ? await updateGlobalExamTemplate(editingTemplateId, {
+            title: templateTitle,
+            description: templateDescription,
+            status: templateStatus,
+            questions: payloadQuestions,
+          })
+        : await createGlobalExamTemplate({
+            title: templateTitle,
+            description: templateDescription,
+            courseId: selectedCourse.id,
+            courseName: selectedCourse.title,
+            status: templateStatus,
+            questions: payloadQuestions,
+          });
+
+      setTemplates((prev) => {
+        const next = prev.filter((template) => template.id !== saved.id);
+        return [saved, ...next].sort((left, right) =>
+          (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""),
+        );
+      });
+      toast.success(editingTemplateId ? "Plantilla actualizada" : "Plantilla creada");
+      resetTemplateForm();
+      setActiveTab("templates");
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "No se pudo guardar la plantilla");
+    } finally {
+      setSavingTemplate(false);
+    }
+  };
+
+  const handleEditTemplate = (template: GlobalExamTemplateRecord) => {
+    setEditingTemplateId(template.id);
+    setTemplateTitle(template.title);
+    setTemplateDescription(template.description);
+    setTemplateCourseId(template.courseId);
+    setTemplateStatus(template.status);
+    setTemplateQuestions(cloneTemplateQuestions(template.questions));
+    setActiveTab("templates");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const handleToggleTemplateStatus = async (template: GlobalExamTemplateRecord) => {
+    try {
+      const nextStatus = template.status === "published" ? "draft" : "published";
+      const updated = await updateGlobalExamTemplate(template.id, { status: nextStatus });
+      setTemplates((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      toast.success(
+        nextStatus === "published" ? "Plantilla publicada" : "Plantilla regresada a borrador",
+      );
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "No se pudo actualizar la plantilla");
+    }
+  };
+
+  const handleSubmitAssignment = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!assignmentTemplateId || !assignmentStudentId || !assignmentGroupId) {
+      toast.error("Selecciona plantilla, alumno y grupo");
+      return;
+    }
+
+    setSavingAssignment(true);
+    try {
+      const created = await createGlobalExamAssignment({
+        templateId: assignmentTemplateId,
+        studentId: assignmentStudentId,
+        groupId: assignmentGroupId,
+        reason: assignmentReason,
+        enabled: assignmentEnableNow,
+      });
+      setAssignments((prev) => [created, ...prev]);
+      setAssignmentStudentId("");
+      setAssignmentTemplateId("");
+      setAssignmentGroupId("");
+      setAssignmentReason("failed_course");
+      setAssignmentEnableNow(false);
+      setCandidateEnrollments([]);
+      toast.success("Asignacion creada");
+      setActiveTab("assignments");
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "No se pudo crear la asignacion");
+    } finally {
+      setSavingAssignment(false);
+    }
+  };
+
+  const handleToggleAssignment = async (assignment: GlobalExamAssignmentRecord, enabled: boolean) => {
+    try {
+      const updated = await updateGlobalExamAssignment(assignment.id, { enabled });
+      setAssignments((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      toast.success(enabled ? "Examen habilitado" : "Examen deshabilitado");
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "No se pudo actualizar la asignacion");
+    }
+  };
+
+  if (loadingContext) {
+    return (
+      <RoleGate allowedRole={["coordinadorPlantel", "adminTeacher", "superAdminTeacher"]}>
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">
+          Cargando examen global...
+        </div>
+      </RoleGate>
+    );
+  }
+
+  return (
+    <RoleGate allowedRole={["coordinadorPlantel", "adminTeacher", "superAdminTeacher"]}>
+      <div className="space-y-6 text-slate-900">
+        <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div className="space-y-2">
+            <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Regularizacion</p>
+            <h1 className="text-3xl font-semibold">Examen global</h1>
+            <p className="max-w-3xl text-sm text-slate-600">
+              Administra plantillas de regularizacion, habilita examenes solo a alumnos
+              puntuales y sincroniza automaticamente la nota final con kardex.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Link
+              href="/creator/alumnos"
+              className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-800 shadow-sm transition hover:border-blue-500 hover:text-blue-700"
+            >
+              Ver alumnos
+            </Link>
+            <Link
+              href="/creator"
+              className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-800 shadow-sm transition hover:border-blue-500 hover:text-blue-700"
+            >
+              Volver al dashboard
+            </Link>
+          </div>
+        </header>
+
+        <section className="grid gap-4 xl:grid-cols-4">
+          <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Plantillas</p>
+            <p className="mt-2 text-3xl font-semibold">{templates.length}</p>
+            <p className="mt-1 text-sm text-slate-600">
+              {templates.filter((template) => template.status === "published").length} publicadas
+            </p>
+          </article>
+          <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Asignaciones</p>
+            <p className="mt-2 text-3xl font-semibold">{assignments.length}</p>
+            <p className="mt-1 text-sm text-slate-600">
+              {assignments.filter((assignment) => assignment.status === "enabled").length} habilitadas
+            </p>
+          </article>
+          <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Aprobados</p>
+            <p className="mt-2 text-3xl font-semibold">
+              {assignments.filter((assignment) => assignment.status === "passed").length}
+            </p>
+            <p className="mt-1 text-sm text-slate-600">Con nota final sincronizada al cierre</p>
+          </article>
+          <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Cobertura</p>
+            <p className="mt-2 text-3xl font-semibold">{students.length}</p>
+            <p className="mt-1 text-sm text-slate-600">
+              alumnos accesibles para {isCoordinator ? "tu plantel" : "la operacion"}
+            </p>
+          </article>
+        </section>
+
+        <section className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setActiveTab("templates")}
+            className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+              activeTab === "templates"
+                ? "bg-slate-900 text-white"
+                : "border border-slate-200 bg-white text-slate-700 hover:border-slate-300"
+            }`}
+          >
+            Plantillas
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("assignments")}
+            className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+              activeTab === "assignments"
+                ? "bg-slate-900 text-white"
+                : "border border-slate-200 bg-white text-slate-700 hover:border-slate-300"
+            }`}
+          >
+            Asignaciones
+          </button>
+        </section>
+
+        {loadingData ? (
+          <section className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">
+            Cargando configuracion del examen global...
+          </section>
+        ) : null}
+
+        {!loadingData && activeTab === "templates" ? (
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(340px,0.95fr)]">
+            <section className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Configuracion</p>
+                  <h2 className="text-xl font-semibold text-slate-900">
+                    {editingTemplateId ? "Editar plantilla" : "Nueva plantilla"}
+                  </h2>
+                </div>
+                {editingTemplateId ? (
+                  <button
+                    type="button"
+                    onClick={resetTemplateForm}
+                    className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:border-slate-300"
+                  >
+                    Cancelar edicion
+                  </button>
+                ) : null}
+              </div>
+
+              {canCreateTemplates ? (
+                <form className="space-y-5" onSubmit={handleSubmitTemplate}>
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <label className="space-y-2 text-sm">
+                      <span className="font-medium text-slate-700">Titulo del examen</span>
+                      <input
+                        value={templateTitle}
+                        onChange={(event) => setTemplateTitle(event.target.value)}
+                        placeholder="Examen global de regularizacion"
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
+                        required
+                      />
+                    </label>
+                    <label className="space-y-2 text-sm">
+                      <span className="font-medium text-slate-700">Materia</span>
+                      <select
+                        value={templateCourseId}
+                        onChange={(event) => setTemplateCourseId(event.target.value)}
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
+                        required
+                        disabled={Boolean(editingTemplateId)}
+                      >
+                        <option value="">Selecciona una materia</option>
+                        {courses.map((course) => (
+                          <option key={course.id} value={course.id}>
+                            {course.title}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-sm lg:col-span-2">
+                      <span className="font-medium text-slate-700">Descripcion u observaciones</span>
+                      <textarea
+                        value={templateDescription}
+                        onChange={(event) => setTemplateDescription(event.target.value)}
+                        rows={3}
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
+                        placeholder="Instrucciones internas para coordinacion o contexto del examen."
+                      />
+                    </label>
+                    <label className="space-y-2 text-sm lg:max-w-xs">
+                      <span className="font-medium text-slate-700">Estado</span>
+                      <select
+                        value={templateStatus}
+                        onChange={(event) => setTemplateStatus(event.target.value as "draft" | "published")}
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
+                      >
+                        <option value="draft">Borrador</option>
+                        <option value="published">Publicado</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Reactivos</p>
+                        <h3 className="text-lg font-semibold text-slate-900">
+                          {templateQuestions.length} preguntas configuradas
+                        </h3>
+                        <p className="text-sm text-slate-600">
+                          Debe mantenerse entre {GLOBAL_EXAM_MIN_QUESTIONS} y {GLOBAL_EXAM_MAX_QUESTIONS} preguntas.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleAddQuestion}
+                        disabled={templateQuestions.length >= GLOBAL_EXAM_MAX_QUESTIONS}
+                        className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        + Agregar pregunta
+                      </button>
+                    </div>
+
+                    <div className="mt-4 space-y-4">
+                      {templateQuestions.map((question, questionIndex) => (
+                        <article
+                          key={question.id}
+                          className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+                        >
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                              <p className="text-xs uppercase tracking-[0.15em] text-slate-500">
+                                Pregunta {questionIndex + 1}
+                              </p>
+                              <p className="text-sm text-slate-600">
+                                Marca una sola respuesta correcta.
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveQuestion(question.id)}
+                              disabled={templateQuestions.length <= GLOBAL_EXAM_MIN_QUESTIONS}
+                              className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              Eliminar
+                            </button>
+                          </div>
+
+                          <label className="mt-4 block space-y-2 text-sm">
+                            <span className="font-medium text-slate-700">Enunciado</span>
+                            <textarea
+                              value={question.prompt}
+                              onChange={(event) =>
+                                handleQuestionChange(question.id, (current) => ({
+                                  ...current,
+                                  prompt: event.target.value,
+                                }))
+                              }
+                              rows={2}
+                              className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
+                              required
+                            />
+                          </label>
+
+                          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                            {question.options.map((option) => (
+                              <label
+                                key={`${question.id}-${option.id}`}
+                                className={`rounded-2xl border px-3 py-3 text-sm transition ${
+                                  question.correctOptionId === option.id
+                                    ? "border-emerald-300 bg-emerald-50"
+                                    : "border-slate-200 bg-slate-50"
+                                }`}
+                              >
+                                <div className="flex items-start gap-3">
+                                  <input
+                                    type="radio"
+                                    name={`correct-${question.id}`}
+                                    checked={question.correctOptionId === option.id}
+                                    onChange={() =>
+                                      handleQuestionChange(question.id, (current) => ({
+                                        ...current,
+                                        correctOptionId: option.id,
+                                      }))
+                                    }
+                                    className="mt-1 h-4 w-4 accent-emerald-600"
+                                  />
+                                  <div className="min-w-0 flex-1 space-y-2">
+                                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                                      Opcion {option.id.toUpperCase()}
+                                    </p>
+                                    <input
+                                      value={option.text}
+                                      onChange={(event) =>
+                                        handleQuestionChange(question.id, (current) => ({
+                                          ...current,
+                                          options: current.options.map((candidate) =>
+                                            candidate.id === option.id
+                                              ? { ...candidate, text: event.target.value }
+                                              : candidate,
+                                          ),
+                                        }))
+                                      }
+                                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
+                                      required
+                                    />
+                                  </div>
+                                </div>
+                              </label>
+                            ))}
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={savingTemplate}
+                    className="inline-flex items-center justify-center rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {savingTemplate
+                      ? "Guardando..."
+                      : editingTemplateId
+                        ? "Actualizar plantilla"
+                        : "Crear plantilla"}
+                  </button>
+                </form>
+              ) : (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                  Como coordinacion puedes consultar plantillas publicadas, pero la creacion y edicion
+                  quedan reservadas a adminTeacher y superAdminTeacher.
+                </div>
+              )}
+            </section>
+
+            <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div>
+                <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Catalogo</p>
+                <h2 className="text-xl font-semibold text-slate-900">Plantillas registradas</h2>
+              </div>
+
+              {templates.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
+                  Aun no existen plantillas de examen global.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {templates.map((template) => (
+                    <article
+                      key={template.id}
+                      className="rounded-2xl border border-slate-200 bg-slate-50 p-4"
+                    >
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="text-lg font-semibold text-slate-900">{template.title}</h3>
+                            <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">
+                              {getGlobalExamTemplateStatusLabel(template.status)}
+                            </span>
+                          </div>
+                          <p className="text-sm text-slate-600">{template.courseName}</p>
+                          <p className="text-xs text-slate-500">
+                            {template.questionCount} preguntas | Pase con {template.passScore}
+                          </p>
+                        </div>
+                        {canCreateTemplates ? (
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleEditTemplate(template)}
+                              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700"
+                            >
+                              Editar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleToggleTemplateStatus(template)}
+                              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700"
+                            >
+                              {template.status === "published" ? "Pasar a borrador" : "Publicar"}
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                      {template.description ? (
+                        <p className="mt-3 text-sm text-slate-600">{template.description}</p>
+                      ) : null}
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+        ) : null}
+
+        {!loadingData && activeTab === "assignments" ? (
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
+            <section className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div>
+                <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Alumno puntual</p>
+                <h2 className="text-xl font-semibold text-slate-900">Nueva asignacion</h2>
+                <p className="text-sm text-slate-600">
+                  El examen solo quedara disponible para el alumno y grupo elegidos.
+                </p>
+              </div>
+
+              <form className="space-y-4" onSubmit={handleSubmitAssignment}>
+                <label className="space-y-2 text-sm">
+                  <span className="font-medium text-slate-700">Plantilla publicada</span>
+                  <select
+                    value={assignmentTemplateId}
+                    onChange={(event) => setAssignmentTemplateId(event.target.value)}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
+                    required
+                  >
+                    <option value="">Selecciona una plantilla</option>
+                    {templates
+                      .filter((template) => template.status === "published")
+                      .map((template) => (
+                        <option key={template.id} value={template.id}>
+                          {template.title} | {template.courseName}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+
+                <label className="space-y-2 text-sm">
+                  <span className="font-medium text-slate-700">Buscar alumno</span>
+                  <input
+                    value={studentSearch}
+                    onChange={(event) => setStudentSearch(event.target.value)}
+                    placeholder="Nombre, correo o programa"
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
+                  />
+                </label>
+
+                <label className="space-y-2 text-sm">
+                  <span className="font-medium text-slate-700">Alumno</span>
+                  <select
+                    value={assignmentStudentId}
+                    onChange={(event) => setAssignmentStudentId(event.target.value)}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
+                    required
+                  >
+                    <option value="">Selecciona un alumno</option>
+                    {filteredStudents.map((student) => (
+                      <option key={student.id} value={student.id}>
+                        {getStudentLabel(student)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <label className="space-y-2 text-sm">
+                    <span className="font-medium text-slate-700">Motivo</span>
+                    <select
+                      value={assignmentReason}
+                      onChange={(event) => setAssignmentReason(event.target.value as GlobalExamAssignmentReason)}
+                      className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
+                    >
+                      <option value="failed_course">Alumno reprobado</option>
+                      <option value="late_joiner">Alumno que se incorporo tarde</option>
+                    </select>
+                  </label>
+
+                  <label className="space-y-2 text-sm">
+                    <span className="font-medium text-slate-700">Grupo para regularizacion</span>
+                    <select
+                      value={assignmentGroupId}
+                      onChange={(event) => setAssignmentGroupId(event.target.value)}
+                      className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
+                      required
+                      disabled={resolvingEnrollments || candidateEnrollments.length === 0}
+                    >
+                      <option value="">
+                        {resolvingEnrollments ? "Resolviendo grupos..." : "Selecciona un grupo"}
+                      </option>
+                      {candidateEnrollments.map((enrollment) => (
+                        <option key={enrollment.groupId} value={enrollment.groupId}>
+                          {enrollment.groupName}
+                          {enrollment.plantelName ? ` | ${enrollment.plantelName}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
+                {selectedTemplate ? (
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                    <p className="font-semibold text-slate-900">{selectedTemplate.title}</p>
+                    <p className="mt-1">
+                      {selectedTemplate.courseName} | {selectedTemplate.questionCount} preguntas | pase con{" "}
+                      {selectedTemplate.passScore}
+                    </p>
+                  </div>
+                ) : null}
+
+                <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={assignmentEnableNow}
+                    onChange={(event) => setAssignmentEnableNow(event.target.checked)}
+                    className="mt-1 h-4 w-4 accent-emerald-600"
+                  />
+                  <span>
+                    Marcar pago verificado y habilitar inmediatamente.
+                    <span className="block text-xs text-slate-500">
+                      Si lo dejas apagado, la asignacion quedara en borrador para activarla despues.
+                    </span>
+                  </span>
+                </label>
+
+                <button
+                  type="submit"
+                  disabled={savingAssignment}
+                  className="inline-flex items-center justify-center rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingAssignment ? "Guardando..." : "Crear asignacion"}
+                </button>
+              </form>
+            </section>
+
+            <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div>
+                <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Operacion</p>
+                <h2 className="text-xl font-semibold text-slate-900">Asignaciones existentes</h2>
+              </div>
+
+              {assignments.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
+                  Aun no existen asignaciones para examen global.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {assignments.map((assignment) => {
+                    const canToggle =
+                      assignment.status === "draft" ||
+                      assignment.status === "enabled" ||
+                      assignment.status === "disabled";
+
+                    return (
+                      <article
+                        key={assignment.id}
+                        className="rounded-2xl border border-slate-200 bg-slate-50 p-4"
+                      >
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h3 className="text-lg font-semibold text-slate-900">
+                                {assignment.studentName}
+                              </h3>
+                              <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">
+                                {getGlobalExamStatusLabel(assignment.status)}
+                              </span>
+                            </div>
+                            <p className="text-sm text-slate-600">
+                              {assignment.courseName} | {assignment.groupName}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              {getGlobalExamReasonLabel(assignment.reason)} | Intentos:{" "}
+                              {assignment.attemptsUsed}/{assignment.attemptsAllowed}
+                            </p>
+                            {assignment.latestScore !== null ? (
+                              <p className="text-xs font-medium text-slate-600">
+                                Ultima nota: {assignment.latestScore} | Mejor nota:{" "}
+                                {assignment.bestScore ?? assignment.latestScore}
+                              </p>
+                            ) : null}
+                          </div>
+                          {canToggle ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void handleToggleAssignment(assignment, !assignment.enabled)
+                              }
+                              className={`rounded-lg px-3 py-2 text-sm font-medium ${
+                                assignment.enabled
+                                  ? "border border-rose-200 bg-white text-rose-700"
+                                  : "border border-emerald-200 bg-white text-emerald-700"
+                              }`}
+                            >
+                              {assignment.enabled ? "Deshabilitar" : "Habilitar"}
+                            </button>
+                          ) : null}
+                        </div>
+                        <div className="mt-3 grid gap-2 text-xs text-slate-500 sm:grid-cols-2">
+                          <span>Plantel: {assignment.plantelName || assignment.plantelId || "Sin plantel"}</span>
+                          <span>Alumno: {assignment.studentEmail || assignment.studentId}</span>
+                          <span>Plantilla: {assignment.templateTitle}</span>
+                          <span>Pago verificado: {assignment.paymentVerifiedAt ? "Si" : "No"}</span>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </div>
+        ) : null}
+      </div>
+    </RoleGate>
+  );
+}

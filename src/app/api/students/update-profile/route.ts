@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
 import { getAdminFirestore } from "@/lib/firebase/admin";
+import { buildPhoneLookupValues } from "@/lib/utils/phone";
 
 type UpdateProfileRequest = {
   studentId: string;
@@ -81,6 +82,7 @@ export async function POST(request: NextRequest) {
 
       if (newPhone !== undefined) {
         firestoreUpdateData.phone = newPhone.trim();
+        firestoreUpdateData.lookupPhones = buildPhoneLookupValues([newPhone]);
       }
 
       if (newProgram !== undefined) {

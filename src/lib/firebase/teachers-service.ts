@@ -3,6 +3,10 @@ import { db } from "@/lib/firebase/firestore";
 import { createAccountWithRole } from "./user-management";
 import { getAllGroups, Group } from "./groups-service";
 import { getPlantelAssignmentsFromData } from "./planteles-service";
+import {
+  normalizeTeacherProfessionalProfile,
+  type TeacherProfessionalProfile,
+} from "@/lib/teachers/profile";
 
 export type TeacherUser = {
   id: string;
@@ -14,6 +18,7 @@ export type TeacherUser = {
   plantelNames?: string[];
   plantelId?: string | null;
   plantelName?: string | null;
+  teacherProfile: TeacherProfessionalProfile;
 };
 
 export type TeacherWorkloadReportRow = {
@@ -271,6 +276,7 @@ const getOrCreateAccumulator = (params: {
       email: "",
       role: "teacher",
       phone: null,
+      teacherProfile: normalizeTeacherProfessionalProfile(null),
     },
   );
   accumulators.set(normalizedId, next);
@@ -357,6 +363,7 @@ export async function getTeacherUsers(max = 100): Promise<TeacherUser[]> {
       plantelNames: plantelAssignments.map((assignment) => assignment.plantelName),
       plantelId: primaryPlantel?.plantelId ?? null,
       plantelName: primaryPlantel?.plantelName ?? null,
+      teacherProfile: normalizeTeacherProfessionalProfile(d.teacherProfile),
     };
   });
 }

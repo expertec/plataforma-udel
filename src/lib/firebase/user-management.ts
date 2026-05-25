@@ -11,6 +11,7 @@ import {
 import { doc, serverTimestamp, setDoc, getDoc } from "firebase/firestore";
 import { db } from "./firestore";
 import { UserRole } from "./roles";
+import { buildPhoneLookupValues } from "@/lib/utils/phone";
 
 type CreateAccountInput = {
   email: string;
@@ -62,6 +63,7 @@ export async function createAccountWithRole(input: CreateAccountInput): Promise<
       status: "active",
       provider: "password",
       phone: phone ?? null,
+      lookupPhones: buildPhoneLookupValues([phone]),
     };
     if (role === "student") {
       baseData.program = program ?? "";
@@ -98,6 +100,7 @@ export async function createAccountWithRole(input: CreateAccountInput): Promise<
         status: "active",
         provider: "password",
         phone: phone ?? null,
+        lookupPhones: buildPhoneLookupValues([phone]),
       };
       if (role === "student") {
         updateData.program = program ?? "";

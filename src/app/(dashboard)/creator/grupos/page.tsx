@@ -16,6 +16,7 @@ import {
   getGroupsWhereAssistant,
 } from "@/lib/firebase/groups-service";
 import { getPlanteles, getUserPlantelAssignments, Plantel, PlantelAssignment } from "@/lib/firebase/planteles-service";
+import { getTeacherUsers, TeacherUser } from "@/lib/firebase/teachers-service";
 import toast from "react-hot-toast";
 import { RoleGate } from "@/components/auth/RoleGate";
 import {
@@ -24,6 +25,7 @@ import {
   resolveUserRole,
   UserRole,
 } from "@/lib/firebase/roles";
+import { normalizeTeacherProfessionalProfile } from "@/lib/teachers/profile";
 
 export default function GroupsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
@@ -41,6 +43,8 @@ export default function GroupsPage() {
   const [search, setSearch] = useState("");
   const [plantelFilter, setPlantelFilter] = useState("all");
   const [modeFilter, setModeFilter] = useState<"all" | "presencial" | "enLinea">("all");
+  const [teacherOptions, setTeacherOptions] = useState<TeacherUser[]>([]);
+  const [loadingTeacherOptions, setLoadingTeacherOptions] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -252,6 +256,50 @@ export default function GroupsPage() {
       status: "active",
     }));
   }, [isAdminTeacher, plantelAssignments, planteles]);
+  const teacherSelectOptions = useMemo<TeacherUser[]>(() => {
+    if (isAdminTeacher) return teacherOptions;
+    if (!currentUser?.uid) return [];
+    return [
+      {
+        id: currentUser.uid,
+        name: currentUser.displayName ?? "Profesor",
+        email: currentUser.email ?? "",
+        role: "teacher",
+        teacherProfile: normalizeTeacherProfessionalProfile(null),
+      },
+    ];
+  }, [currentUser?.displayName, currentUser?.email, currentUser?.uid, isAdminTeacher, teacherOptions]);
+
+  useEffect(() => {
+    if (!isAdminTeacher) {
+      setTeacherOptions([]);
+      setLoadingTeacherOptions(false);
+      return;
+    }
+    let cancelled = false;
+    const loadTeachers = async () => {
+      setLoadingTeacherOptions(true);
+      try {
+        const teachers = await getTeacherUsers(300);
+        if (cancelled) return;
+        setTeacherOptions(
+          [...teachers].sort((a, b) => a.name.localeCompare(b.name, "es")),
+        );
+      } catch (err) {
+        console.error(err);
+        if (!cancelled) {
+          setTeacherOptions([]);
+          toast.error("No se pudo cargar el catálogo de profesores.");
+        }
+      } finally {
+        if (!cancelled) setLoadingTeacherOptions(false);
+      }
+    };
+    void loadTeachers();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdminTeacher]);
 
   return (
     <RoleGate allowedRole={["teacher", "adminTeacher", "superAdminTeacher", "coordinadorPlantel"]}>
@@ -451,8 +499,10 @@ export default function GroupsPage() {
           defaultPlantelId={primaryPlantelAssignment?.plantelId ?? ""}
           lockPlantel={isCampusCoordinator && availablePlanteles.length <= 1}
           allowCreatePlantel={isAdminTeacher}
-          teacherId={currentUser?.uid ?? ""}
-          teacherName={currentUser?.displayName ?? "Profesor"}
+          teacherOptions={teacherSelectOptions}
+          defaultTeacherId={isAdminTeacher ? "" : currentUser?.uid ?? ""}
+          lockTeacher={!isAdminTeacher}
+          loadingTeacherOptions={loadingTeacherOptions}
           onCreated={handleCreated}
           onPlantelCreated={(plantel) =>
             setPlanteles((prev) =>
@@ -470,8 +520,10 @@ export default function GroupsPage() {
           defaultPlantelId={primaryPlantelAssignment?.plantelId ?? ""}
           lockPlantel={isCampusCoordinator && availablePlanteles.length <= 1}
           allowCreatePlantel={isAdminTeacher}
-          teacherId={currentUser?.uid ?? ""}
-          teacherName={currentUser?.displayName ?? "Profesor"}
+          teacherOptions={teacherSelectOptions}
+          defaultTeacherId={isAdminTeacher ? "" : currentUser?.uid ?? ""}
+          lockTeacher={!isAdminTeacher}
+          loadingTeacherOptions={loadingTeacherOptions}
           onImported={() => {
             loadGroupsData();
           }}

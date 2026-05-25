@@ -1,75 +1,68 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth } from "@/lib/firebase/admin";
+import {
+  requireAdminTeacherAccess,
+  toAdminTeacherRouteErrorResponse,
+} from "@/lib/server/require-admin-teacher-access";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 type UpdatePasswordRequest = {
-  teacherId: string;
-  currentEmail: string;
-  newPassword: string;
+  teacherId?: string;
+  currentEmail?: string;
+  newPassword?: string;
 };
+
+function normalizeText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeEmail(value: unknown): string {
+  return normalizeText(value).toLowerCase();
+}
 
 export async function POST(request: NextRequest) {
   try {
-    const body: UpdatePasswordRequest = await request.json();
+    await requireAdminTeacherAccess(request);
+    const body = (await request.json().catch(() => ({}))) as UpdatePasswordRequest;
 
-    const { teacherId, currentEmail, newPassword } = body;
+    const teacherId = normalizeText(body.teacherId);
+    const currentEmail = normalizeEmail(body.currentEmail);
+    const newPassword = normalizeText(body.newPassword);
 
-    if (!teacherId || !currentEmail || !newPassword) {
+    if (!teacherId || !newPassword) {
       return NextResponse.json(
-        { error: "teacherId, currentEmail y newPassword son requeridos" },
-        { status: 400 }
+        { success: false, error: "teacherId y newPassword son requeridos" },
+        { status: 400 },
       );
     }
 
     if (newPassword.length < 6) {
       return NextResponse.json(
-        { error: "La contraseña debe tener al menos 6 caracteres" },
-        { status: 400 }
+        { success: false, error: "La contraseña debe tener al menos 6 caracteres" },
+        { status: 400 },
       );
     }
 
     const auth = getAdminAuth();
-
-    try {
-      // Buscar usuario por email
-      const userRecord = await auth.getUserByEmail(currentEmail.trim().toLowerCase());
-
-      // Verificar que el UID coincida con el teacherId
-      if (userRecord.uid !== teacherId) {
-        return NextResponse.json(
-          { error: "El ID del profesor no coincide con el email proporcionado" },
-          { status: 400 }
-        );
-      }
-
-      // Actualizar contraseña en Firebase Auth
-      await auth.updateUser(userRecord.uid, {
-        password: newPassword,
-      });
-
-      return NextResponse.json({
-        success: true,
-        message: "Contraseña actualizada correctamente",
-      });
-    } catch (err: any) {
-      console.error("Error al actualizar contraseña:", err);
-
-      if (err.code === "auth/user-not-found") {
-        return NextResponse.json(
-          { error: "No se encontró el usuario con ese email" },
-          { status: 404 }
-        );
-      }
-
+    const userRecord = await auth.getUser(teacherId);
+    if (currentEmail && normalizeEmail(userRecord.email) !== currentEmail) {
       return NextResponse.json(
-        { error: err.message || "Error al actualizar contraseña" },
-        { status: 500 }
+        { success: false, error: "El email actual no coincide con el usuario indicado" },
+        { status: 400 },
       );
     }
-  } catch (error: any) {
-    console.error("Error en update-password:", error);
-    return NextResponse.json(
-      { error: error.message || "Error interno del servidor" },
-      { status: 500 }
-    );
+
+    await auth.updateUser(teacherId, {
+      password: newPassword,
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: "Contraseña actualizada correctamente",
+    });
+  } catch (error) {
+    return toAdminTeacherRouteErrorResponse(error, "Error en teachers/update-password");
   }
 }

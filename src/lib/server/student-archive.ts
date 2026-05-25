@@ -4,10 +4,15 @@ import {
   ARCHIVED_STUDENT_STATUS,
   isStudentStatusActive,
 } from "@/lib/students/status";
+import {
+  extractPhoneLookupValues,
+  normalizePhoneToLocal10,
+} from "@/lib/utils/phone";
 
 type StudentArchiveParams = {
   uid?: string;
   email?: string;
+  phone?: string;
   archivedBy: string;
   source: "admin-panel" | "finance-webhook";
   reason?: string | null;
@@ -44,17 +49,130 @@ function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function isPotentialStudentRole(role: string): boolean {
+  return !role || role === "student";
+}
+
+async function resolveStudentUidByPhone(params: {
+  phone: string;
+  uid?: string;
+  email?: string;
+}): Promise<string> {
+  const firestore = getAdminFirestore();
+  const normalizedPhone = normalizePhoneToLocal10(params.phone);
+  if (normalizedPhone.length !== 10) {
+    throw new StudentArchiveError(400, "El teléfono del alumno es inválido");
+  }
+
+  const collectMatches = async (): Promise<Array<{ uid: string; data: Record<string, unknown> }>> => {
+    const indexedSnap = await firestore
+      .collection("users")
+      .where("lookupPhones", "array-contains", normalizedPhone)
+      .limit(5)
+      .get();
+    const indexedMatches = indexedSnap.docs
+      .map((docSnap) => ({
+        uid: docSnap.id,
+        data: docSnap.data() as Record<string, unknown>,
+      }))
+      .filter(({ data }) => extractPhoneLookupValues(data).includes(normalizedPhone));
+    if (indexedMatches.length > 0) {
+      return indexedMatches;
+    }
+
+    const studentSnap = await firestore.collection("users").where("role", "==", "student").get();
+    const studentMatches = studentSnap.docs
+      .map((docSnap) => ({
+        uid: docSnap.id,
+        data: docSnap.data() as Record<string, unknown>,
+      }))
+      .filter(({ data }) => extractPhoneLookupValues(data).includes(normalizedPhone));
+    if (studentMatches.length > 0) {
+      return studentMatches;
+    }
+
+    const allUsersSnap = await firestore.collection("users").get();
+    return allUsersSnap.docs
+      .map((docSnap) => ({
+        uid: docSnap.id,
+        data: docSnap.data() as Record<string, unknown>,
+      }))
+      .filter(({ data }) => extractPhoneLookupValues(data).includes(normalizedPhone));
+  };
+
+  let matches = (await collectMatches()).filter(({ data }) =>
+    isPotentialStudentRole(asTrimmedString(data.role)),
+  );
+
+  const normalizedUid = asTrimmedString(params.uid);
+  if (normalizedUid) {
+    matches = matches.filter((match) => match.uid === normalizedUid);
+  }
+
+  const normalizedEmail = asTrimmedString(params.email).toLowerCase();
+  if (normalizedEmail) {
+    const emailMatches = matches.filter(
+      ({ data }) => asTrimmedString(data.email).toLowerCase() === normalizedEmail,
+    );
+    if (emailMatches.length > 0) {
+      matches = emailMatches;
+    }
+  }
+
+  if (matches.length === 0) {
+    if (normalizedUid) {
+      throw new StudentArchiveError(404, "El teléfono no coincide con el UID proporcionado");
+    }
+    if (normalizedEmail) {
+      throw new StudentArchiveError(404, "El teléfono no coincide con el email proporcionado");
+    }
+    throw new StudentArchiveError(404, "No existe un alumno con ese teléfono");
+  }
+
+  if (matches.length > 1) {
+    throw new StudentArchiveError(
+      409,
+      "Más de un alumno coincide con ese teléfono; envía también studentId o email",
+    );
+  }
+
+  return matches[0].uid;
+}
+
 async function resolveStudentIdentity(params: {
   uid?: string;
   email?: string;
+  phone?: string;
 }): Promise<ResolvedStudentIdentity> {
   const auth = getAdminAuth();
   const firestore = getAdminFirestore();
   const normalizedUid = asTrimmedString(params.uid);
   const normalizedEmail = asTrimmedString(params.email).toLowerCase();
+  const normalizedPhone = asTrimmedString(params.phone);
 
   let userRecord: UserRecord;
-  if (normalizedUid) {
+  if (normalizedPhone) {
+    const resolvedUid = await resolveStudentUidByPhone({
+      phone: normalizedPhone,
+      uid: normalizedUid || undefined,
+      email: normalizedEmail || undefined,
+    });
+    try {
+      userRecord = await auth.getUser(resolvedUid);
+    } catch (error: unknown) {
+      const code = (error as { code?: string })?.code ?? "";
+      if (code === "auth/user-not-found") {
+        throw new StudentArchiveError(404, "No existe un alumno con ese teléfono");
+      }
+      throw error;
+    }
+    if (normalizedUid && userRecord.uid !== normalizedUid) {
+      throw new StudentArchiveError(400, "El teléfono no coincide con el UID proporcionado");
+    }
+    if (normalizedEmail && userRecord.email?.trim().toLowerCase() !== normalizedEmail) {
+      throw new StudentArchiveError(400, "El teléfono no coincide con el email proporcionado");
+    }
+  } else if (normalizedUid) {
     try {
       userRecord = await auth.getUser(normalizedUid);
     } catch (error: unknown) {
@@ -78,16 +196,24 @@ async function resolveStudentIdentity(params: {
       throw error;
     }
   } else {
-    throw new StudentArchiveError(400, "uid o email son requeridos para archivar al alumno");
+    throw new StudentArchiveError(400, "uid, email o teléfono son requeridos para archivar al alumno");
   }
 
   const userSnap = await firestore.collection("users").doc(userRecord.uid).get();
+  const userData = (userSnap.data() ?? {}) as Record<string, unknown>;
   const roleFromDoc = asTrimmedString(userSnap.data()?.role) || null;
   const roleFromClaims =
     typeof userRecord.customClaims?.role === "string" && userRecord.customClaims.role.trim()
       ? userRecord.customClaims.role.trim()
       : null;
   const resolvedRole = roleFromDoc ?? roleFromClaims;
+
+  if (normalizedPhone) {
+    const matchedPhones = extractPhoneLookupValues(userData);
+    if (!matchedPhones.includes(normalizePhoneToLocal10(normalizedPhone))) {
+      throw new StudentArchiveError(400, "El teléfono no coincide con el alumno encontrado");
+    }
+  }
 
   if (resolvedRole && resolvedRole !== "student") {
     throw new StudentArchiveError(409, `El usuario ${userRecord.uid} no tiene rol alumno`);

@@ -15,6 +15,15 @@ import {
   TeacherWorkloadReportRow,
 } from "@/lib/firebase/teachers-service";
 import { createPlantel, getPlanteles, Plantel } from "@/lib/firebase/planteles-service";
+import {
+  listTeacherEvaluationsByTeacherId,
+  type TeacherEvaluation,
+} from "@/lib/firebase/teacher-evaluations-service";
+import {
+  buildTeacherCvSnapshot,
+  normalizeTeacherProfessionalProfile,
+  normalizeTeacherProfileTextList,
+} from "@/lib/teachers/profile";
 
 type EditableTeacherRole = "teacher" | "adminTeacher" | "coordinadorPlantel";
 
@@ -88,6 +97,15 @@ const toCourseDetailsText = (
     .map((course) => `${course.courseName} (${toInteger(course.groupsCount)} grupo${course.groupsCount === 1 ? "" : "s"})`)
     .join(" | ");
 };
+
+const toPercent = (value: number): string => `${(value * 100).toFixed(1)}%`;
+
+const formatDateTime = (value: Date | null | undefined): string => {
+  if (!value || Number.isNaN(value.getTime())) return "Sin fecha";
+  return value.toLocaleString("es-MX");
+};
+
+const toMultilineValue = (items: string[]): string => items.join("\n");
 
 function getTeacherPlantelIds(teacher: TeacherUser): string[] {
   if (Array.isArray(teacher.plantelIds) && teacher.plantelIds.length > 0) {
@@ -172,6 +190,17 @@ export default function ProfesoresPage() {
     perCourseOtros: 0,
     perCourseSinPrograma: 0,
   });
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
+  const [selectedProfileTeacher, setSelectedProfileTeacher] = useState<TeacherUser | null>(null);
+  const [profileEvaluations, setProfileEvaluations] = useState<TeacherEvaluation[]>([]);
+  const [profileEvaluationsLoading, setProfileEvaluationsLoading] = useState(false);
+  const [profileDetailsError, setProfileDetailsError] = useState<string | null>(null);
+  const [savingTeacherProfile, setSavingTeacherProfile] = useState(false);
+  const [profileHeadline, setProfileHeadline] = useState("");
+  const [profileBio, setProfileBio] = useState("");
+  const [profileStrengths, setProfileStrengths] = useState("");
+  const [profileExpertiseTopics, setProfileExpertiseTopics] = useState("");
+  const [profileCertifications, setProfileCertifications] = useState("");
 
   const fetchWithToken = useCallback(
     async (url: string, init?: RequestInit): Promise<Response> => {
@@ -434,7 +463,7 @@ export default function ProfesoresPage() {
       }
 
       if (emailChanged || nameChanged || phoneChanged) {
-        const profileResponse = await fetch("/api/teachers/update-profile", {
+        const profileResponse = await fetchWithToken("/api/teachers/update-profile", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -492,45 +521,162 @@ export default function ProfesoresPage() {
     }
   };
 
-  const handleChangePassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedTeacher) return;
+  const handleChangePassword = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!selectedTeacher) return;
 
-    if (newPassword.length < 6) {
-      toast.error("La contraseña debe tener al menos 6 caracteres");
-      return;
-    }
-
-    setChangingPassword(true);
-    try {
-      const response = await fetch("/api/teachers/update-password", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          teacherId: selectedTeacher.id,
-          currentEmail: selectedTeacher.email,
-          newPassword: newPassword,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Error al cambiar contraseña");
+      if (newPassword.length < 6) {
+        toast.error("La contraseña debe tener al menos 6 caracteres");
+        return;
       }
 
-      toast.success("Contraseña actualizada correctamente");
-      setChangePasswordModalOpen(false);
-      setNewPassword("ascensoUDEL");
-    } catch (err: unknown) {
-      console.error(err);
-      const message =
-        err instanceof Error ? err.message : "No se pudo cambiar la contraseña";
-      toast.error(message);
-    } finally {
-      setChangingPassword(false);
-    }
-  };
+      setChangingPassword(true);
+      try {
+        const response = await fetchWithToken("/api/teachers/update-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            teacherId: selectedTeacher.id,
+            currentEmail: selectedTeacher.email,
+            newPassword,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || "Error al cambiar contraseña");
+        }
+
+        toast.success("Contraseña actualizada correctamente");
+        setChangePasswordModalOpen(false);
+        setNewPassword("ascensoUDEL");
+      } catch (err: unknown) {
+        console.error(err);
+        const message =
+          err instanceof Error ? err.message : "No se pudo cambiar la contraseña";
+        toast.error(message);
+      } finally {
+        setChangingPassword(false);
+      }
+    },
+    [fetchWithToken, newPassword, selectedTeacher],
+  );
+
+  const handleCloseProfileModal = useCallback(() => {
+    setProfileModalOpen(false);
+    setSelectedProfileTeacher(null);
+    setProfileEvaluations([]);
+    setProfileEvaluationsLoading(false);
+    setProfileDetailsError(null);
+    setSavingTeacherProfile(false);
+    setProfileHeadline("");
+    setProfileBio("");
+    setProfileStrengths("");
+    setProfileExpertiseTopics("");
+    setProfileCertifications("");
+  }, []);
+
+  const handleOpenProfileModal = useCallback(
+    async (teacher: TeacherUser) => {
+      const normalizedProfile = normalizeTeacherProfessionalProfile(teacher.teacherProfile);
+      setSelectedProfileTeacher(teacher);
+      setProfileHeadline(normalizedProfile.headline);
+      setProfileBio(normalizedProfile.bio);
+      setProfileStrengths(toMultilineValue(normalizedProfile.strengths));
+      setProfileExpertiseTopics(toMultilineValue(normalizedProfile.expertiseTopics));
+      setProfileCertifications(toMultilineValue(normalizedProfile.certifications));
+      setProfileDetailsError(null);
+      setProfileEvaluations([]);
+      setProfileModalOpen(true);
+      setProfileEvaluationsLoading(true);
+
+      if (reportRows.length === 0 && !reportLoading) {
+        void loadTeacherWorkloadReport();
+      }
+
+      try {
+        const evaluations = await listTeacherEvaluationsByTeacherId(teacher.id, 300);
+        setProfileEvaluations(evaluations);
+      } catch (err) {
+        console.error(err);
+        setProfileDetailsError("No se pudieron cargar las evaluaciones del docente.");
+        toast.error("No se pudieron cargar las evaluaciones del docente.");
+      } finally {
+        setProfileEvaluationsLoading(false);
+      }
+    },
+    [loadTeacherWorkloadReport, reportLoading, reportRows.length],
+  );
+
+  const handleSaveTeacherProfile = useCallback(
+    async (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!selectedProfileTeacher) return;
+
+      const teacherProfile = {
+        headline: profileHeadline.trim(),
+        bio: profileBio.trim(),
+        strengths: normalizeTeacherProfileTextList(profileStrengths),
+        expertiseTopics: normalizeTeacherProfileTextList(profileExpertiseTopics),
+        certifications: normalizeTeacherProfileTextList(profileCertifications),
+      };
+
+      setSavingTeacherProfile(true);
+      try {
+        const response = await fetchWithToken("/api/teachers/update-profile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            teacherId: selectedProfileTeacher.id,
+            currentEmail: selectedProfileTeacher.email,
+            teacherProfile,
+          }),
+        });
+        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        if (!response.ok) {
+          throw new Error(data.error || "No se pudo guardar el perfil docente");
+        }
+
+        setTeachers((prev) =>
+          prev.map((teacher) =>
+            teacher.id === selectedProfileTeacher.id
+              ? {
+                  ...teacher,
+                  teacherProfile,
+                }
+              : teacher,
+          ),
+        );
+        setSelectedProfileTeacher((prev) =>
+          prev
+            ? {
+                ...prev,
+                teacherProfile,
+              }
+            : prev,
+        );
+        toast.success("Perfil docente actualizado");
+      } catch (err) {
+        console.error(err);
+        toast.error(
+          err instanceof Error ? err.message : "No se pudo guardar el perfil docente",
+        );
+      } finally {
+        setSavingTeacherProfile(false);
+      }
+    },
+    [
+      fetchWithToken,
+      profileBio,
+      profileCertifications,
+      profileExpertiseTopics,
+      profileHeadline,
+      profileStrengths,
+      selectedProfileTeacher,
+    ],
+  );
 
   const reportRowsWithSalary = useMemo(() => {
     const normalizedSearch = reportSearch.trim().toLowerCase();
@@ -674,6 +820,53 @@ export default function ProfesoresPage() {
       );
     });
   }, [teachers, teacherSearchQuery]);
+
+  const currentProfileTeacher = useMemo(() => {
+    if (!selectedProfileTeacher) return null;
+    return (
+      teachers.find((teacher) => teacher.id === selectedProfileTeacher.id) ??
+      selectedProfileTeacher
+    );
+  }, [selectedProfileTeacher, teachers]);
+
+  const currentProfileWorkload = useMemo(() => {
+    if (!currentProfileTeacher) return null;
+    return reportRows.find((row) => row.teacherId === currentProfileTeacher.id) ?? null;
+  }, [currentProfileTeacher, reportRows]);
+
+  const draftTeacherProfile = useMemo(
+    () =>
+      normalizeTeacherProfessionalProfile({
+        headline: profileHeadline,
+        bio: profileBio,
+        strengths: normalizeTeacherProfileTextList(profileStrengths),
+        expertiseTopics: normalizeTeacherProfileTextList(profileExpertiseTopics),
+        certifications: normalizeTeacherProfileTextList(profileCertifications),
+      }),
+    [
+      profileBio,
+      profileCertifications,
+      profileExpertiseTopics,
+      profileHeadline,
+      profileStrengths,
+    ],
+  );
+
+  const currentTeacherCv = useMemo(
+    () =>
+      buildTeacherCvSnapshot({
+        profile: draftTeacherProfile,
+        workload: currentProfileWorkload,
+        evaluations: profileEvaluations,
+      }),
+    [currentProfileWorkload, draftTeacherProfile, profileEvaluations],
+  );
+
+  const profileComments = useMemo(
+    () =>
+      profileEvaluations.filter((evaluation) => evaluation.comment.trim().length > 0).slice(0, 6),
+    [profileEvaluations],
+  );
 
   const teacherTabs: { key: "gestion" | "altas" | "reporte"; label: string }[] = [
     { key: "gestion", label: "Listado y acciones" },
@@ -1094,7 +1287,7 @@ export default function ProfesoresPage() {
               </div>
             ) : (
               <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-                <div className="grid grid-cols-[1.3fr_2fr_1fr_0.95fr_0.8fr_1.5fr] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
+                <div className="grid grid-cols-[1.35fr_2fr_1fr_0.95fr_0.8fr_1.95fr] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
                   <span>Nombre</span>
                   <span>Email</span>
                   <span>Teléfono</span>
@@ -1106,9 +1299,16 @@ export default function ProfesoresPage() {
                   {filteredTeachers.map((teacher) => (
                     <div
                       key={teacher.id}
-                      className="grid grid-cols-[1.3fr_2fr_1fr_0.95fr_0.8fr_1.5fr] gap-3 px-4 py-2 text-sm text-slate-800"
+                      className="grid grid-cols-[1.35fr_2fr_1fr_0.95fr_0.8fr_1.95fr] gap-3 px-4 py-2 text-sm text-slate-800"
                     >
-                      <span>{teacher.name}</span>
+                      <span>
+                        <span className="font-medium">{teacher.name}</span>
+                        {teacher.teacherProfile.headline ? (
+                          <span className="mt-0.5 block text-xs text-slate-500">
+                            {teacher.teacherProfile.headline}
+                          </span>
+                        ) : null}
+                      </span>
                       <span className="text-slate-600 break-words">{teacher.email}</span>
                       <span className="text-slate-600">{teacher.phone || "—"}</span>
                       <span className="font-medium text-blue-700">
@@ -1120,7 +1320,16 @@ export default function ProfesoresPage() {
                         ) : null}
                       </span>
                       <span className="font-medium text-green-600">Activo</span>
-                      <span className="flex justify-end gap-2">
+                      <span className="flex flex-wrap justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void handleOpenProfileModal(teacher);
+                          }}
+                          className="rounded-lg border border-emerald-200 px-3 py-1 text-xs font-semibold text-emerald-700 hover:border-emerald-400"
+                        >
+                          Perfil CV
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleOpenEditProfile(teacher)}
@@ -1151,6 +1360,480 @@ export default function ProfesoresPage() {
             )}
           </div>
         </>
+      ) : null}
+
+      {profileModalOpen && currentProfileTeacher ? (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 px-4 py-6">
+          <div className="w-full max-w-6xl rounded-2xl bg-white p-5 shadow-2xl">
+            <div className="flex flex-col gap-3 border-b border-slate-200 pb-4 md:flex-row md:items-start md:justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Perfil docente</p>
+                <h2 className="text-2xl font-semibold text-slate-900">
+                  {currentProfileTeacher.name}
+                </h2>
+                <p className="text-sm text-slate-600">
+                  {currentProfileTeacher.email || "Sin correo"} ·{" "}
+                  {getTeacherRoleLabel(currentProfileTeacher.role)}
+                </p>
+                {currentProfileTeacher.phone ? (
+                  <p className="text-sm text-slate-500">
+                    Teléfono: {currentProfileTeacher.phone}
+                  </p>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseProfileModal}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+              >
+                Cerrar
+              </button>
+            </div>
+
+            {profileDetailsError ? (
+              <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                {profileDetailsError}
+              </div>
+            ) : null}
+
+            <div className="mt-5 grid gap-5 xl:grid-cols-[1.3fr_0.95fr]">
+              <div className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs uppercase tracking-wide text-slate-500">
+                      Calificación promedio
+                    </p>
+                    <p className="mt-1 text-2xl font-semibold text-slate-900">
+                      {currentTeacherCv.evaluationSummary.total > 0
+                        ? currentTeacherCv.evaluationSummary.average.toFixed(2)
+                        : "N/D"}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs uppercase tracking-wide text-slate-500">
+                      Evaluaciones
+                    </p>
+                    <p className="mt-1 text-2xl font-semibold text-slate-900">
+                      {toInteger(currentTeacherCv.evaluationSummary.total)}
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {toPercent(currentTeacherCv.evaluationSummary.positiveRate)} positivas
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs uppercase tracking-wide text-slate-500">
+                      Materias reales
+                    </p>
+                    <p className="mt-1 text-2xl font-semibold text-slate-900">
+                      {toInteger(currentProfileWorkload?.uniqueCourses ?? 0)}
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {toInteger(currentProfileWorkload?.activeGroups ?? 0)} grupos activos
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs uppercase tracking-wide text-slate-500">
+                      Alumnos activos
+                    </p>
+                    <p className="mt-1 text-2xl font-semibold text-slate-900">
+                      {toInteger(currentProfileWorkload?.activeStudents ?? 0)}
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {currentTeacherCv.evaluationSummary.lastUpdatedAt
+                        ? `Ultima eval.: ${formatDateTime(currentTeacherCv.evaluationSummary.lastUpdatedAt)}`
+                        : "Sin evaluaciones registradas"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-lg font-semibold text-slate-900">
+                        Resumen profesional
+                      </h3>
+                      <p className="text-sm text-slate-600">
+                        Curriculum interno del mentor o profesor.
+                      </p>
+                    </div>
+                    {reportRows.length === 0 && reportLoading ? (
+                      <span className="text-xs text-slate-500">Cargando carga docente...</span>
+                    ) : null}
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Título profesional
+                      </p>
+                      <p className="mt-1 text-sm text-slate-800">
+                        {currentTeacherCv.profile.headline || "Sin titular profesional definido."}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Semblanza
+                      </p>
+                      <p className="mt-1 whitespace-pre-line text-sm leading-6 text-slate-700">
+                        {currentTeacherCv.profile.bio || "Aún no se captura una semblanza curricular."}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <h3 className="text-base font-semibold text-slate-900">
+                      Fortalezas del docente
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-600">
+                      Mezcla de fortalezas declaradas y detectadas en evaluaciones positivas.
+                    </p>
+                    <div className="mt-4 space-y-4">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Declaradas
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {currentTeacherCv.profile.strengths.length > 0 ? (
+                            currentTeacherCv.profile.strengths.map((item) => (
+                              <span
+                                key={item}
+                                className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700"
+                              >
+                                {item}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-sm text-slate-500">
+                              Sin fortalezas declaradas.
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Detectadas por alumnos
+                        </p>
+                        <div className="mt-2 space-y-2">
+                          {profileEvaluationsLoading ? (
+                            <p className="text-sm text-slate-500">
+                              Analizando evaluaciones...
+                            </p>
+                          ) : currentTeacherCv.strengthsFromFeedback.length > 0 ? (
+                            currentTeacherCv.strengthsFromFeedback.map((item) => (
+                              <div
+                                key={item.id}
+                                className="flex items-center justify-between rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2"
+                              >
+                                <span className="text-sm font-medium text-emerald-800">
+                                  {item.label}
+                                </span>
+                                <span className="text-xs text-emerald-700">
+                                  {item.count} menciones · {toPercent(item.rate)}
+                                </span>
+                              </div>
+                            ))
+                          ) : (
+                            <p className="text-sm text-slate-500">
+                              Todavía no hay suficientes comentarios positivos para detectar patrones.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <h3 className="text-base font-semibold text-slate-900">
+                      Temas que domina
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-600">
+                      Lo declarado por el equipo y lo que realmente imparte.
+                    </p>
+                    <div className="mt-4 space-y-4">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Declarados
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {currentTeacherCv.profile.expertiseTopics.length > 0 ? (
+                            currentTeacherCv.profile.expertiseTopics.map((item) => (
+                              <span
+                                key={item}
+                                className="rounded-full bg-violet-50 px-3 py-1 text-xs font-medium text-violet-700"
+                              >
+                                {item}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-sm text-slate-500">
+                              Sin temas declarados.
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Materias impartidas
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {currentTeacherCv.taughtCourseNames.length > 0 ? (
+                            currentTeacherCv.taughtCourseNames.map((item) => (
+                              <span
+                                key={item}
+                                className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700"
+                              >
+                                {item}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-sm text-slate-500">
+                              Aún no hay materias asociadas al docente.
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Programas
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {currentTeacherCv.dominantPrograms.length > 0 ? (
+                            currentTeacherCv.dominantPrograms.map((item) => (
+                              <span
+                                key={item}
+                                className="rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700"
+                              >
+                                {item}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-sm text-slate-500">
+                              Sin programas identificados.
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <h3 className="text-base font-semibold text-slate-900">
+                      Materias mejor evaluadas
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-600">
+                      Ranking por promedio de evaluación del alumnado.
+                    </p>
+                    <div className="mt-4 space-y-2">
+                      {profileEvaluationsLoading ? (
+                        <p className="text-sm text-slate-500">Cargando indicadores...</p>
+                      ) : currentTeacherCv.topRatedCourses.length > 0 ? (
+                        currentTeacherCv.topRatedCourses.map((course) => (
+                          <div
+                            key={course.courseLabel}
+                            className="rounded-lg border border-slate-200 px-3 py-2"
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-sm font-medium text-slate-800">
+                                {course.courseLabel}
+                              </span>
+                              <span className="text-sm font-semibold text-slate-900">
+                                {course.average.toFixed(2)}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-xs text-slate-500">
+                              {toInteger(course.responses)} evaluaciones · {toPercent(course.lowRate)} críticas
+                            </p>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-sm text-slate-500">
+                          No hay evaluaciones suficientes para rankear materias.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <h3 className="text-base font-semibold text-slate-900">
+                      Oportunidades de mejora
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-600">
+                      Detectadas a partir de comentarios con evaluación baja.
+                    </p>
+                    <div className="mt-4 space-y-2">
+                      {profileEvaluationsLoading ? (
+                        <p className="text-sm text-slate-500">Analizando comentarios...</p>
+                      ) : currentTeacherCv.improvementAreas.length > 0 ? (
+                        currentTeacherCv.improvementAreas.map((item) => (
+                          <div
+                            key={item.id}
+                            className="flex items-center justify-between rounded-lg border border-rose-100 bg-rose-50 px-3 py-2"
+                          >
+                            <span className="text-sm font-medium text-rose-800">
+                              {item.label}
+                            </span>
+                            <span className="text-xs text-rose-700">
+                              {item.count} menciones · {toPercent(item.rate)}
+                            </span>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-sm text-slate-500">
+                          No se detectan focos rojos en comentarios críticos.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <h3 className="text-base font-semibold text-slate-900">
+                    Comentarios recientes del alumnado
+                  </h3>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Muestra rápida para entender el tono actual del docente.
+                  </p>
+                  <div className="mt-4 space-y-3">
+                    {profileEvaluationsLoading ? (
+                      <p className="text-sm text-slate-500">Cargando comentarios...</p>
+                    ) : profileComments.length > 0 ? (
+                      profileComments.map((evaluation) => (
+                        <div
+                          key={evaluation.id}
+                          className="rounded-xl border border-slate-200 bg-slate-50 p-3"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <p className="text-sm font-medium text-slate-900">
+                                {evaluation.courseTitle || evaluation.classTitle || "Clase"}
+                              </p>
+                              <p className="text-xs text-slate-500">
+                                {evaluation.studentName || "Estudiante"} ·{" "}
+                                {formatDateTime(evaluation.updatedAt)}
+                              </p>
+                            </div>
+                            <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm">
+                              {evaluation.rating}/5
+                            </span>
+                          </div>
+                          <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">
+                            {evaluation.comment}
+                          </p>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-slate-500">
+                        Este docente aún no tiene comentarios registrados.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <form
+                onSubmit={handleSaveTeacherProfile}
+                className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4"
+              >
+                <div>
+                  <h3 className="text-lg font-semibold text-slate-900">
+                    Editar CV interno
+                  </h3>
+                  <p className="text-sm text-slate-600">
+                    Estos datos enriquecen el perfil del mentor o profesor y quedan guardados en su ficha.
+                  </p>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">
+                    Título profesional
+                  </label>
+                  <input
+                    type="text"
+                    value={profileHeadline}
+                    onChange={(event) => setProfileHeadline(event.target.value)}
+                    placeholder="Ej. Mentor en IA educativa y diseño instruccional"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">Semblanza</label>
+                  <textarea
+                    value={profileBio}
+                    onChange={(event) => setProfileBio(event.target.value)}
+                    rows={6}
+                    placeholder="Resumen profesional, experiencia y enfoque de enseñanza."
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">
+                    Fortalezas
+                  </label>
+                  <textarea
+                    value={profileStrengths}
+                    onChange={(event) => setProfileStrengths(event.target.value)}
+                    rows={4}
+                    placeholder={"Una fortaleza por linea\nEj. Explicacion clara\nSeguimiento cercano"}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">
+                    Temas que domina
+                  </label>
+                  <textarea
+                    value={profileExpertiseTopics}
+                    onChange={(event) => setProfileExpertiseTopics(event.target.value)}
+                    rows={4}
+                    placeholder={"Un tema por linea\nEj. Prompt engineering\nPlaneacion didactica"}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">
+                    Certificaciones o logros
+                  </label>
+                  <textarea
+                    value={profileCertifications}
+                    onChange={(event) => setProfileCertifications(event.target.value)}
+                    rows={4}
+                    placeholder={"Una certificacion o logro por linea\nEj. Google Educator Nivel 2"}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
+                  Consejo: usa fortalezas y temas concretos. Eso hará más útil el perfil para asignación de grupos y análisis de calidad docente.
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={handleCloseProfileModal}
+                    disabled={savingTeacherProfile}
+                    className="flex-1 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    Cerrar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingTeacherProfile}
+                    className="flex-1 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    {savingTeacherProfile ? "Guardando..." : "Guardar CV"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {/* Modal para editar perfil */}

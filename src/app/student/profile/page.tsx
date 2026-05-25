@@ -749,6 +749,12 @@ export default function StudentProfilePage() {
                   <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-white/80">
                     {user ? "Sesión activa" : "Inicia sesión"}
                   </span>
+                  <Link
+                    href="/student/examenes-globales"
+                    className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20"
+                  >
+                    Examenes globales
+                  </Link>
                   <button
                     type="button"
                     onClick={() => setEditingProfile((prev) => !prev)}

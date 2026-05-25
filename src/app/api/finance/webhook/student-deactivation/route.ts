@@ -25,6 +25,7 @@ type AnyRecord = Record<string, unknown>;
 type NormalizedArchivePayload = {
   eventType?: string;
   eventId?: string;
+  phone?: string;
   email?: string;
   studentId?: string;
   reason?: string;
@@ -81,6 +82,19 @@ function normalizePayload(body: AnyRecord): NormalizedArchivePayload {
   };
 
   const eventType = pickText(merged, ["event", "eventType", "type"])?.toLowerCase();
+  const phone = pickText(merged, [
+    "phone",
+    "telefono",
+    "tel",
+    "mobile",
+    "celular",
+    "whatsapp",
+    "WhatsApp",
+    "whatsApp",
+    "wa",
+    "whatsappPhone",
+    "whatsappNumber",
+  ]);
   const email = pickText(merged, ["email", "correo", "mail"])?.toLowerCase();
   const studentId = pickText(merged, ["studentId", "alumnoId", "uid", "userId", "id"]);
   const reason =
@@ -91,6 +105,7 @@ function normalizePayload(body: AnyRecord): NormalizedArchivePayload {
   return {
     eventType,
     eventId,
+    phone,
     email,
     studentId,
     reason,
@@ -159,15 +174,19 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (!payload.studentId && !payload.email) {
+  if (!payload.phone && !payload.studentId && !payload.email) {
     return NextResponse.json(
-      { success: false, error: "studentId/alumnoId o email/correo es requerido para dar de baja" },
+      {
+        success: false,
+        error: "phone/telefono, studentId/alumnoId o email/correo es requerido para dar de baja",
+      },
       { status: 400 },
     );
   }
 
   try {
     const result = await archiveStudentAccount({
+      phone: payload.phone,
       uid: payload.studentId,
       email: payload.email,
       archivedBy: "finance-webhook",

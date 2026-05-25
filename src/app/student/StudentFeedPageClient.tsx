@@ -62,6 +62,7 @@ import { isStudentStatusBlocked } from "@/lib/students/status";
 import { v4 as uuidv4 } from "uuid";
 import sanitizeHtml from "sanitize-html";
 import { normalizeLiveSession, type LiveClassSession } from "@/lib/live-classes/types";
+import { resolveTeacherAssignmentForCourse } from "@/lib/groups/teacher-assignment";
 import {
   loadStudentPreviewSnapshot,
   type StudentPreviewFeedItem,
@@ -99,15 +100,15 @@ type FeedClass = {
   liveSession?: LiveClassSession | null;
 };
 
-const sortLiveClassesWithinCourse = (items: FeedClass[]) => {
+const sortLiveClassesFirstWithinLesson = (items: FeedClass[]) => {
   const buckets = new Map<string, { live: FeedClass[]; rest: FeedClass[] }>();
-  const courseOrder: string[] = [];
+  const lessonOrder: string[] = [];
 
   items.forEach((item) => {
-    const key = `${item.groupId ?? ""}::${item.courseId ?? "__no_course__"}`;
+    const key = `${item.groupId ?? ""}::${item.courseId ?? "__no_course__"}::${item.lessonId ?? "__no_lesson__"}`;
     if (!buckets.has(key)) {
       buckets.set(key, { live: [], rest: [] });
-      courseOrder.push(key);
+      lessonOrder.push(key);
     }
     const bucket = buckets.get(key)!;
     if (item.type === "live") {
@@ -118,7 +119,7 @@ const sortLiveClassesWithinCourse = (items: FeedClass[]) => {
   });
 
   const ordered: FeedClass[] = [];
-  courseOrder.forEach((key) => {
+  lessonOrder.forEach((key) => {
     const bucket = buckets.get(key);
     if (!bucket) return;
     ordered.push(...bucket.live, ...bucket.rest);
@@ -1212,13 +1213,13 @@ export default function StudentFeedPageClient() {
       }
       return true;
     });
-    if (previewMode) return sortLiveClassesWithinCourse(platformVisible);
+    if (previewMode) return sortLiveClassesFirstWithinLesson(platformVisible);
     const filtered = platformVisible.filter((cls) => {
       const courseClosed = isCourseClosedForClass(cls);
       if (courseClosed) return showClosedCourses;
       return true;
     });
-    return sortLiveClassesWithinCourse(filtered);
+    return sortLiveClassesFirstWithinLesson(filtered);
   }, [classes, isCourseClosedForClass, previewMode, showClosedCourses]);
   const visibleClassSignature = useMemo(
     () => visibleClasses.map((cls) => cls.id).join("|"),
@@ -2618,6 +2619,10 @@ export default function StudentFeedPageClient() {
                   // Saltar cursos archivados
                   continue;
                 }
+                const assignedTeacher = resolveTeacherAssignmentForCourse({
+                  groupData: groupData as Record<string, unknown>,
+                  courseId: courseEntry.courseId,
+                });
 
                 // 4) Lecciones y clases por curso
                 const lessonsSnap = await getDocs(
@@ -2652,8 +2657,8 @@ export default function StudentFeedPageClient() {
                         groupId: currentGroupId,
                         groupName: currentGroupName,
                         groupIsInPerson: isGroupInPerson,
-                        teacherId: groupData.teacherId ?? "",
-                        teacherName: groupData.teacherName ?? "",
+                        teacherId: assignedTeacher.teacherId,
+                        teacherName: assignedTeacher.teacherName,
                         classTitle: c.title ?? "Clase sin título",
                         videoUrl: trimSafeString(c.videoUrl),
                         audioUrl: trimSafeString(c.audioUrl),
@@ -3076,35 +3081,9 @@ export default function StudentFeedPageClient() {
 
   const getDirectionalIndex = useCallback(
     (currentIdx: number, direction: 1 | -1) => {
-      const current = visibleClasses[currentIdx];
-      if (!current) return currentIdx + direction;
-
-      // Si estamos en clase en vivo, primero buscar la siguiente/anterior clase del mismo curso.
-      if (current.type === "live" && current.courseId?.trim()) {
-        const currentCourseId = current.courseId.trim();
-        if (direction > 0) {
-          for (let i = currentIdx + 1; i < visibleClasses.length; i += 1) {
-            const candidate = visibleClasses[i];
-            if (candidate.courseId?.trim() === currentCourseId) {
-              return i;
-            }
-          }
-        } else {
-          for (let i = currentIdx - 1; i >= 0; i -= 1) {
-            const candidate = visibleClasses[i];
-            if (candidate.courseId?.trim() === currentCourseId) {
-              return i;
-            }
-          }
-        }
-
-        // Si no hay más clases de este curso en esa dirección, no brincar a otro curso.
-        return currentIdx;
-      }
-
       return currentIdx + direction;
     },
-    [visibleClasses],
+    [],
   );
 
   const isClassComplete = useCallback(
@@ -3219,13 +3198,13 @@ export default function StudentFeedPageClient() {
 
   const handleTextReachEnd = useCallback(
     (idx: number) => {
-      const nextIdx = idx + 1;
+      const nextIdx = getDirectionalIndex(idx, 1);
       if (nextIdx >= visibleClasses.length) return;
       const prevSameCourse = getPrevSameCourse(nextIdx);
       if (prevSameCourse && !isClassComplete(prevSameCourse)) return;
       scrollToIndex(nextIdx, true);
     },
-    [visibleClasses.length, getPrevSameCourse, isClassComplete],
+    [getDirectionalIndex, visibleClasses.length, getPrevSameCourse, isClassComplete],
   );
 
   // Ref para acceder al estado actual del quiz desde el handler de wheel
@@ -4490,13 +4469,22 @@ export default function StudentFeedPageClient() {
             <ControlIcon name="user" />
           </button>
         ) : (
-          <Link
-            href="/student/profile"
-            className={`pointer-events-auto fixed right-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white shadow-lg backdrop-blur transition hover:bg-white/20 ${floatingButtonsTopClass}`}
-            aria-label="Perfil de alumno"
-          >
-            <ControlIcon name="user" />
-          </Link>
+          <div className={`pointer-events-auto fixed right-3 z-40 flex items-center gap-2 ${floatingButtonsTopClass}`}>
+            <Link
+              href="/student/examenes-globales"
+              className="inline-flex items-center rounded-full border border-emerald-400/30 bg-emerald-500/15 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-emerald-100 shadow-lg backdrop-blur transition hover:bg-emerald-500/25"
+              aria-label="Examenes globales"
+            >
+              Examen
+            </Link>
+            <Link
+              href="/student/profile"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white shadow-lg backdrop-blur transition hover:bg-white/20"
+              aria-label="Perfil de alumno"
+            >
+              <ControlIcon name="user" />
+            </Link>
+          </div>
         )}
         {/* Header overlay móvil */}
         <div className={`pointer-events-none absolute inset-x-0 z-30 flex items-center justify-center text-xs text-white/80 lg:hidden ${mobileCourseBadgeTopClass}`}>

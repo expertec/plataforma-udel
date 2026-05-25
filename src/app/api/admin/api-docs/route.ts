@@ -137,18 +137,19 @@ Programa de estudio:
 {
   "event": "student.deactivated",
   "student": {
-    "email": "alumno@dominio.com"
+    "phone": "6671234567"
   }
 }
 \`\`\`
 
-También puedes enviar un identificador explícito:
+También puedes enviar identificadores adicionales para validación cruzada:
 
 \`\`\`json
 {
   "event": "alumno.baja",
   "eventId": "pv-2026-baja-0007",
   "student": {
+    "phone": "6671234567",
     "studentId": "uid_o_id_externo",
     "email": "alumno@dominio.com"
   },
@@ -156,7 +157,15 @@ También puedes enviar un identificador explícito:
 }
 \`\`\`
 
-La baja acepta \`studentId\`, \`alumnoId\`, \`uid\`, \`userId\` o \`email/correo\`.
+La baja usa \`phone/telefono\` como identificador principal. También acepta \`studentId\`, \`alumnoId\`, \`uid\`, \`userId\` o \`email/correo\` para compatibilidad o validación adicional.
+
+Normalización de teléfono para baja:
+
+- La plataforma elimina espacios, paréntesis, guiones y signo \`+\`
+- Si el valor trae prefijos como \`52\`, \`521\`, \`51\` o similares, se conservan únicamente los **últimos 10 dígitos**
+- Todos estos ejemplos se interpretan igual: \`6671234567\`, \`526671234567\`, \`5216671234567\`, \`+52 1 667 123 4567\`
+- Si después de normalizar no quedan 10 dígitos válidos, la API responde \`400\`
+- Si más de un alumno coincide con el mismo teléfono, la API responde \`409\` y debes enviar también \`studentId\` o \`email\`
 
 ## 7) Respuestas esperadas
 

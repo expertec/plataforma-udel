@@ -254,6 +254,27 @@ const mapCourseMentorsByAccess = (
   return next;
 };
 
+const toAssistantTeachers = (
+  value: unknown,
+): Array<{ id: string; name: string; email?: string }> => {
+  if (!Array.isArray(value)) return [];
+  return value.reduce<Array<{ id: string; name: string; email?: string }>>((acc, teacher) => {
+    if (!teacher || typeof teacher !== "object") return acc;
+    const item = teacher as { id?: unknown; name?: unknown; email?: unknown };
+    const teacherId = typeof item.id === "string" ? item.id : "";
+    if (!teacherId) return acc;
+    const normalized: { id: string; name: string; email?: string } = {
+      id: teacherId,
+      name: typeof item.name === "string" ? item.name : "",
+    };
+    if (typeof item.email === "string" && item.email.trim().length > 0) {
+      normalized.email = item.email;
+    }
+    acc.push(normalized);
+    return acc;
+  }, []);
+};
+
 const toGroup = (id: string, data: DocumentData): Group => {
   const courses = toGroupCourses(data);
   const courseIds = toGroupCourseIds(data, courses);
@@ -272,26 +293,7 @@ const toGroup = (id: string, data: DocumentData): Group => {
     teacherId: typeof data.teacherId === "string" ? data.teacherId : "",
     teacherName: typeof data.teacherName === "string" ? data.teacherName : "",
     assistantTeacherIds: toUniqueStringArray(data.assistantTeacherIds),
-    assistantTeachers: Array.isArray(data.assistantTeachers)
-      ? data.assistantTeachers.reduce<Array<{ id: string; name: string; email?: string }>>(
-          (acc, teacher) => {
-            if (!teacher || typeof teacher !== "object") return acc;
-            const item = teacher as { id?: unknown; name?: unknown; email?: unknown };
-            const teacherId = typeof item.id === "string" ? item.id : "";
-            if (!teacherId) return acc;
-            const normalized: { id: string; name: string; email?: string } = {
-              id: teacherId,
-              name: typeof item.name === "string" ? item.name : "",
-            };
-            if (typeof item.email === "string" && item.email.trim().length > 0) {
-              normalized.email = item.email;
-            }
-            acc.push(normalized);
-            return acc;
-          },
-          [],
-        )
-      : [],
+    assistantTeachers: toAssistantTeachers(data.assistantTeachers),
     mentorCourseAccess: normalizeMentorCourseAccess(data.mentorCourseAccess, courseIds),
     semester: typeof data.semester === "string" ? data.semester : "",
     startDate: toDateFromUnknown(data.startDate),
@@ -393,6 +395,71 @@ export async function updateGroupInPersonMode(params: {
     isInPerson: Boolean(isInPerson),
     updatedAt: serverTimestamp(),
   });
+}
+
+export async function updateGroupTeacher(params: {
+  groupId: string;
+  teacherId: string;
+  teacherName: string;
+}): Promise<void> {
+  const groupId = params.groupId.trim();
+  const teacherId = params.teacherId.trim();
+  const teacherName = params.teacherName.trim();
+
+  if (!groupId || !teacherId || !teacherName) {
+    throw new Error("Grupo y profesor son requeridos");
+  }
+
+  const groupRef = doc(db, "groups", groupId);
+  const groupSnap = await getDoc(groupRef);
+  if (!groupSnap.exists()) {
+    throw new Error("Grupo no encontrado");
+  }
+
+  const groupData = groupSnap.data();
+  const courseIds = toGroupCourseIds(groupData);
+  const nextAssistantTeachers = toAssistantTeachers(groupData.assistantTeachers).filter(
+    (teacher) => teacher.id !== teacherId,
+  );
+  const nextAssistantIds = toUniqueStringArray(groupData.assistantTeacherIds).filter(
+    (mentorId) => mentorId !== teacherId,
+  );
+  const existingAccess = normalizeMentorCourseAccess(groupData.mentorCourseAccess, courseIds);
+  const nextMentorCourseAccess = buildMentorCourseAccess({
+    mentorIds: nextAssistantIds,
+    existingAccess,
+    validCourseIds: courseIds,
+  });
+  const enrollmentsSnap = await getDocs(
+    query(collection(db, "studentEnrollments"), where("groupId", "==", groupId)),
+  );
+
+  const batch = writeBatch(db);
+  batch.update(groupRef, {
+    teacherId,
+    teacherName,
+    assistantTeacherIds: nextAssistantIds,
+    assistantTeachers: nextAssistantTeachers,
+    mentorCourseAccess: nextMentorCourseAccess,
+    updatedAt: serverTimestamp(),
+  });
+  enrollmentsSnap.docs.forEach((enrollmentDoc) => {
+    batch.update(enrollmentDoc.ref, {
+      teacherName,
+      updatedAt: serverTimestamp(),
+    });
+  });
+  await batch.commit();
+
+  if (courseIds.length > 0) {
+    const { syncCourseMentorsByCourse } = await import("./courses-service");
+    const courseMentors = mapCourseMentorsByAccess(
+      courseIds,
+      nextAssistantIds,
+      nextMentorCourseAccess,
+    );
+    await syncCourseMentorsByCourse(courseMentors);
+  }
 }
 
 export async function updateGroupPlantel(params: {

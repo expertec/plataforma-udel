@@ -16,6 +16,7 @@ import {
   updateGroupCoordinator,
   updateGroupInPersonMode,
   updateGroupPlantel,
+  updateGroupTeacher,
 } from "@/lib/firebase/groups-service";
 import { getPlanteles, getUserPlantelAssignments, Plantel, PlantelAssignment } from "@/lib/firebase/planteles-service";
 import { Course, getCourses } from "@/lib/firebase/courses-service";
@@ -37,6 +38,7 @@ import {
   UserRole,
 } from "@/lib/firebase/roles";
 import type { DocumentSnapshot } from "firebase/firestore";
+import { normalizeTeacherProfessionalProfile } from "@/lib/teachers/profile";
 
 export default function GroupDetailPage() {
   const params = useParams<{ groupId: string }>();
@@ -49,6 +51,7 @@ export default function GroupDetailPage() {
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [assignTeachersOpen, setAssignTeachersOpen] = useState(false);
   const [teacherOptions, setTeacherOptions] = useState<TeacherUser[]>([]);
+  const [principalTeacherOptions, setPrincipalTeacherOptions] = useState<TeacherUser[]>([]);
   const [teacherSearch, setTeacherSearch] = useState("");
   const [selectedTeachers, setSelectedTeachers] = useState<Set<string>>(new Set());
   const [savingTeachers, setSavingTeachers] = useState(false);
@@ -62,6 +65,9 @@ export default function GroupDetailPage() {
   const [selectedCoordinatorId, setSelectedCoordinatorId] = useState("");
   const [savingCoordinator, setSavingCoordinator] = useState(false);
   const [loadingCoordinatorOptions, setLoadingCoordinatorOptions] = useState(false);
+  const [selectedPrincipalTeacherId, setSelectedPrincipalTeacherId] = useState("");
+  const [savingPrincipalTeacher, setSavingPrincipalTeacher] = useState(false);
+  const [loadingPrincipalTeacherOptions, setLoadingPrincipalTeacherOptions] = useState(false);
   const [removingAssistantId, setRemovingAssistantId] = useState<string | null>(null);
   const [savingMentorAccessIds, setSavingMentorAccessIds] = useState<Set<string>>(new Set());
   const [unlinkingCourseId, setUnlinkingCourseId] = useState<string | null>(null);
@@ -185,6 +191,7 @@ export default function GroupDetailPage() {
     setInPersonMode(group.isInPerson === true);
     setSelectedPlantelId(group.plantelId ?? "");
     setSelectedCoordinatorId(group.coordinatorId ?? "");
+    setSelectedPrincipalTeacherId(group.teacherId ?? "");
   }, [group]);
 
   useEffect(() => {
@@ -211,6 +218,37 @@ export default function GroupDetailPage() {
       cancelled = true;
     };
   }, [group, userRole]);
+
+  useEffect(() => {
+    if (!isAdminTeacherRole(userRole)) {
+      setPrincipalTeacherOptions([]);
+      setLoadingPrincipalTeacherOptions(false);
+      return;
+    }
+    let cancelled = false;
+    const loadPrincipalTeacherOptions = async () => {
+      setLoadingPrincipalTeacherOptions(true);
+      try {
+        const teachers = await getTeacherUsers(300);
+        if (cancelled) return;
+        setPrincipalTeacherOptions(
+          [...teachers].sort((a, b) => a.name.localeCompare(b.name, "es")),
+        );
+      } catch (err) {
+        console.error(err);
+        if (!cancelled) {
+          setPrincipalTeacherOptions([]);
+          toast.error("No se pudo cargar el catálogo de profesores.");
+        }
+      } finally {
+        if (!cancelled) setLoadingPrincipalTeacherOptions(false);
+      }
+    };
+    void loadPrincipalTeacherOptions();
+    return () => {
+      cancelled = true;
+    };
+  }, [userRole]);
 
   useEffect(() => {
     if (!isAdminTeacherRole(userRole)) return;
@@ -273,6 +311,7 @@ export default function GroupDetailPage() {
       currentUserId &&
       (currentUserId === group.teacherId || isAdminTeacherRole(userRole)),
   );
+  const canManagePrincipalTeacher = isAdminTeacherRole(userRole);
   const canManageCampusGradeConfig = isAdminTeacherRole(userRole);
   const canManageInPersonMode = canManageMentors;
   const canManageGroupPlantel = isAdminTeacherRole(userRole);
@@ -348,6 +387,23 @@ export default function GroupDetailPage() {
   const inPersonModeChanged = Boolean(
     group && inPersonMode !== (group.isInPerson === true),
   );
+  const principalTeacherOptionsWithCurrent = useMemo(() => {
+    if (!group) return principalTeacherOptions;
+    if (principalTeacherOptions.some((teacher) => teacher.id === group.teacherId)) {
+      return principalTeacherOptions;
+    }
+    if (!group.teacherId) return principalTeacherOptions;
+    return [
+      {
+        id: group.teacherId,
+        name: group.teacherName || "Profesor",
+        email: "",
+        role: "teacher",
+        teacherProfile: normalizeTeacherProfessionalProfile(null),
+      },
+      ...principalTeacherOptions,
+    ];
+  }, [group, principalTeacherOptions]);
 
   useEffect(() => {
     if (loading) return;
@@ -406,7 +462,9 @@ export default function GroupDetailPage() {
     if (!group) return;
     setSavingTeachers(true);
     try {
-      const selected = teacherOptions.filter((t) => selectedTeachers.has(t.id));
+      const selected = teacherOptions.filter(
+        (t) => selectedTeachers.has(t.id) && t.id !== group.teacherId,
+      );
       await setAssistantTeachers(group.id, selected.map((t) => ({ id: t.id, name: t.name, email: t.email })));
       const updatedGroup = await getGroup(group.id);
       if (updatedGroup) setGroup(updatedGroup);
@@ -699,6 +757,37 @@ export default function GroupDetailPage() {
       toast.error("No se pudo actualizar el coordinador del grupo.");
     } finally {
       setSavingCoordinator(false);
+    }
+  };
+
+  const handleSavePrincipalTeacher = async () => {
+    if (!group) return;
+    if (!canManagePrincipalTeacher) {
+      toast.error("No tienes permisos para cambiar el profesor principal.");
+      return;
+    }
+    const selectedTeacher = principalTeacherOptionsWithCurrent.find(
+      (teacher) => teacher.id === selectedPrincipalTeacherId,
+    );
+    if (!selectedTeacher) {
+      toast.error("Selecciona un profesor principal.");
+      return;
+    }
+    setSavingPrincipalTeacher(true);
+    try {
+      await updateGroupTeacher({
+        groupId: group.id,
+        teacherId: selectedTeacher.id,
+        teacherName: selectedTeacher.name,
+      });
+      const updatedGroup = await getGroup(group.id);
+      if (updatedGroup) setGroup(updatedGroup);
+      toast.success("Profesor principal actualizado.");
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo actualizar el profesor principal.");
+    } finally {
+      setSavingPrincipalTeacher(false);
     }
   };
 
@@ -1101,6 +1190,49 @@ export default function GroupDetailPage() {
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
                   <p className="text-sm font-semibold text-slate-800">Profesor principal</p>
                   <p className="text-sm text-slate-700">{group.teacherName || "Sin asignar"}</p>
+                  {canManagePrincipalTeacher ? (
+                    <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+                      <label className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                        Cambiar profesor principal
+                      </label>
+                      <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center">
+                        <select
+                          value={selectedPrincipalTeacherId}
+                          onChange={(event) => setSelectedPrincipalTeacherId(event.target.value)}
+                          disabled={loadingPrincipalTeacherOptions}
+                          className="min-w-72 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+                        >
+                          <option value="">
+                            {loadingPrincipalTeacherOptions
+                              ? "Cargando profesores..."
+                              : "Seleccionar profesor"}
+                          </option>
+                          {principalTeacherOptionsWithCurrent.map((teacher) => (
+                            <option key={teacher.id} value={teacher.id}>
+                              {teacher.name}
+                              {teacher.email ? ` · ${teacher.email}` : ""}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={handleSavePrincipalTeacher}
+                          disabled={
+                            savingPrincipalTeacher ||
+                            !selectedPrincipalTeacherId ||
+                            selectedPrincipalTeacherId === (group.teacherId ?? "")
+                          }
+                          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {savingPrincipalTeacher ? "Guardando..." : "Guardar profesor"}
+                        </button>
+                      </div>
+                      <p className="mt-2 text-xs text-slate-500">
+                        Las evaluaciones del profesor usan esta asignación como base. Si el nuevo profesor estaba
+                        como mentor, se removerá de mentores para evitar duplicados.
+                      </p>
+                    </div>
+                  ) : null}
                   <p className="mt-3 text-sm font-semibold text-slate-800">Mentores</p>
                   <p className="text-xs text-slate-500">
                     {canManageMentors
@@ -1301,7 +1433,9 @@ export default function GroupDetailPage() {
               {(() => {
                 const term = teacherSearch.toLowerCase();
                 const filtered = teacherOptions.filter(
-                  (t) => t.name.toLowerCase().includes(term) || t.email.toLowerCase().includes(term),
+                  (t) =>
+                    t.id !== group?.teacherId &&
+                    (t.name.toLowerCase().includes(term) || t.email.toLowerCase().includes(term)),
                 );
                 return (
                   <div className="max-h-64 overflow-auto rounded-lg border border-slate-200">

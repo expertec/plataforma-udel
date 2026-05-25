@@ -6,6 +6,7 @@ import { createGroup, Group } from "@/lib/firebase/groups-service";
 import { createPlantel, Plantel } from "@/lib/firebase/planteles-service";
 
 type CourseOption = { id: string; title: string };
+type TeacherOption = { id: string; name: string; email?: string | null };
 
 type Props = {
   open: boolean;
@@ -15,8 +16,10 @@ type Props = {
   defaultPlantelId?: string;
   lockPlantel?: boolean;
   allowCreatePlantel?: boolean;
-  teacherId: string;
-  teacherName: string;
+  teacherOptions: TeacherOption[];
+  defaultTeacherId?: string;
+  lockTeacher?: boolean;
+  loadingTeacherOptions?: boolean;
   onCreated: (group: Group) => void;
   onPlantelCreated?: (plantel: Plantel) => void;
 };
@@ -29,13 +32,16 @@ export function CreateGroupModal({
   defaultPlantelId = "",
   lockPlantel = false,
   allowCreatePlantel = true,
-  teacherId,
-  teacherName,
+  teacherOptions,
+  defaultTeacherId = "",
+  lockTeacher = false,
+  loadingTeacherOptions = false,
   onCreated,
   onPlantelCreated,
 }: Props) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedPlantelId, setSelectedPlantelId] = useState(defaultPlantelId);
+  const [selectedTeacherId, setSelectedTeacherId] = useState(defaultTeacherId);
   const [localPlanteles, setLocalPlanteles] = useState<Plantel[]>(planteles);
   const [groupName, setGroupName] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
@@ -58,12 +64,17 @@ export function CreateGroupModal({
     () => localPlanteles.find((plantel) => plantel.id === selectedPlantelId) ?? null,
     [localPlanteles, selectedPlantelId],
   );
+  const selectedTeacher = useMemo(
+    () => teacherOptions.find((teacher) => teacher.id === selectedTeacherId) ?? null,
+    [selectedTeacherId, teacherOptions],
+  );
 
   useEffect(() => {
     if (!open) return;
     setLocalPlanteles(planteles);
     setSelectedPlantelId(defaultPlantelId);
-  }, [defaultPlantelId, open, planteles]);
+    setSelectedTeacherId(defaultTeacherId);
+  }, [defaultPlantelId, defaultTeacherId, open, planteles]);
 
   if (!open) return null;
 
@@ -102,6 +113,10 @@ export function CreateGroupModal({
       toast.error("Selecciona un plantel");
       return;
     }
+    if (!selectedTeacher) {
+      toast.error("Selecciona al profesor principal del grupo");
+      return;
+    }
     const uniqueIds = Array.from(new Set(selectedIds.filter(Boolean)));
     const coursesPayload = uniqueIds
       .map((id) => {
@@ -118,8 +133,8 @@ export function CreateGroupModal({
         courseName: primaryCourse?.courseName,
         courses: coursesPayload,
         groupName: groupName.trim(),
-        teacherId,
-        teacherName,
+        teacherId: selectedTeacher.id,
+        teacherName: selectedTeacher.name,
         program,
         plantelId: selectedPlantel.id,
         plantelName: selectedPlantel.name,
@@ -132,8 +147,8 @@ export function CreateGroupModal({
         courseName: primaryCourse?.courseName ?? "",
         courses: coursesPayload,
         groupName: groupName.trim(),
-        teacherId,
-        teacherName,
+        teacherId: selectedTeacher.id,
+        teacherName: selectedTeacher.name,
         semester: "",
         startDate: null,
         endDate: null,
@@ -149,6 +164,7 @@ export function CreateGroupModal({
       setGroupName("");
       setSelectedIds([]);
       setSelectedPlantelId(defaultPlantelId);
+      setSelectedTeacherId(defaultTeacherId);
     } catch (err) {
       console.error(err);
       toast.error("No se pudo crear el grupo");
@@ -261,6 +277,30 @@ export function CreateGroupModal({
                 </button>
               </div>
             ) : null}
+          </div>
+
+          <div>
+            <label className="text-sm font-medium text-slate-800">Profesor principal</label>
+            <select
+              value={selectedTeacherId}
+              onChange={(e) => setSelectedTeacherId(e.target.value)}
+              disabled={lockTeacher || loadingTeacherOptions}
+              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+              required
+            >
+              <option value="">
+                {loadingTeacherOptions ? "Cargando profesores..." : "Seleccionar profesor"}
+              </option>
+              {teacherOptions.map((teacher) => (
+                <option key={teacher.id} value={teacher.id}>
+                  {teacher.name}
+                  {teacher.email ? ` · ${teacher.email}` : ""}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-slate-500">
+              Las evaluaciones del profesor tomarán esta asignación como base.
+            </p>
           </div>
 
           <div>

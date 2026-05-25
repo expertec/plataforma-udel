@@ -6,6 +6,7 @@ import {
   FINANCE_WEBHOOK_SCOPE,
   verifyIntegrationApiKey,
 } from "@/lib/security/integration-api-keys";
+import { buildPhoneLookupValues } from "@/lib/utils/phone";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -619,6 +620,7 @@ export async function POST(request: NextRequest) {
       provider: "password",
       mustChangePassword: true,
       phone: payload.phone ?? null,
+      lookupPhones: buildPhoneLookupValues([payload.phone]),
       program: resolvedProgram,
       source: "finance-webhook",
       updatedAt: now,
