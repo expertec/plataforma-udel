@@ -11,6 +11,7 @@ import { isAdminTeacherRole, resolveUserRole, UserRole } from "@/lib/firebase/ro
 import { EditCourseModal } from "./_components/EditCourseModal";
 import { CreateCourseModal } from "./_components/CreateCourseModal";
 import { BulkUploadCoursesModal } from "./_components/BulkUploadCoursesModal";
+import { BulkUploadWordCoursesModal } from "./_components/BulkUploadWordCoursesModal";
 
 const formatCreationDate = (value?: Date): string => {
   if (!value || Number.isNaN(value.getTime())) return "Sin fecha registrada";
@@ -30,6 +31,7 @@ export default function CoursesPage() {
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [editingCourse, setEditingCourse] = useState<Course | null>(null);
   const [bulkModalOpen, setBulkModalOpen] = useState(false);
+  const [bulkWordModalOpen, setBulkWordModalOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -160,6 +162,12 @@ export default function CoursesPage() {
             className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 shadow-sm transition hover:border-blue-500 hover:text-blue-600"
           >
             📥 Cargar desde Excel
+          </button>
+          <button
+            onClick={() => setBulkWordModalOpen(true)}
+            className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 shadow-sm transition hover:border-blue-500 hover:text-blue-600"
+          >
+            📄 Cargar desde Word
           </button>
         </div>
       </header>
@@ -361,6 +369,17 @@ export default function CoursesPage() {
       <BulkUploadCoursesModal
         open={bulkModalOpen}
         onClose={() => setBulkModalOpen(false)}
+        teacherId={currentUser?.uid}
+        teacherName={currentUser?.displayName ?? ""}
+        onImported={async () => {
+          if (currentUser?.uid) {
+            await loadCourses(currentUser.uid, userRole);
+          }
+        }}
+      />
+      <BulkUploadWordCoursesModal
+        open={bulkWordModalOpen}
+        onClose={() => setBulkWordModalOpen(false)}
         teacherId={currentUser?.uid}
         teacherName={currentUser?.displayName ?? ""}
         onImported={async () => {

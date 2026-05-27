@@ -11,6 +11,7 @@ import {
   linkCourseToGroup,
   removeStudentFromGroup,
   setAssistantTeachers,
+  setMentorEvaluationEnabled,
   setMentorCourseAccess,
   updateGroupCampusGradeSettings,
   updateGroupCoordinator,
@@ -70,6 +71,7 @@ export default function GroupDetailPage() {
   const [loadingPrincipalTeacherOptions, setLoadingPrincipalTeacherOptions] = useState(false);
   const [removingAssistantId, setRemovingAssistantId] = useState<string | null>(null);
   const [savingMentorAccessIds, setSavingMentorAccessIds] = useState<Set<string>>(new Set());
+  const [savingMentorEvaluationIds, setSavingMentorEvaluationIds] = useState<Set<string>>(new Set());
   const [unlinkingCourseId, setUnlinkingCourseId] = useState<string | null>(null);
   const [assignCourseOpen, setAssignCourseOpen] = useState(false);
   const [courseOptions, setCourseOptions] = useState<Course[]>([]);
@@ -429,6 +431,14 @@ export default function GroupDetailPage() {
     return courseIdsForGroup.filter((courseId) => allowedSet.has(courseId));
   };
 
+  const isMentorEvaluationEnabledForGroup = (mentorId: string): boolean => {
+    if (!group) return false;
+    const evaluationMap = group.mentorEvaluationEnabled;
+    if (!evaluationMap || typeof evaluationMap !== "object") return true;
+    if (!Object.prototype.hasOwnProperty.call(evaluationMap, mentorId)) return true;
+    return evaluationMap[mentorId] !== false;
+  };
+
   const handleRemoveStudent = async (student: GroupStudent) => {
     if (!group) return;
     const confirmed = window.confirm(`¿Eliminar a ${student.studentName} del grupo?`);
@@ -530,6 +540,39 @@ export default function GroupDetailPage() {
       toast.error("No se pudo actualizar el acceso por materia.");
     } finally {
       setSavingMentorAccessIds((prev) => {
+        const next = new Set(prev);
+        next.delete(mentorId);
+        return next;
+      });
+    }
+  };
+
+  const handleToggleMentorEvaluation = async (mentorId: string) => {
+    if (!group) return;
+    if (!canManageMentors) {
+      toast.error("No tienes permisos para editar la evaluación de mentores.");
+      return;
+    }
+
+    const nextEnabled = !isMentorEvaluationEnabledForGroup(mentorId);
+    setSavingMentorEvaluationIds((prev) => new Set(prev).add(mentorId));
+    try {
+      await setMentorEvaluationEnabled(group.id, mentorId, nextEnabled);
+      setGroup((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          mentorEvaluationEnabled: {
+            ...(prev.mentorEvaluationEnabled ?? {}),
+            [mentorId]: nextEnabled,
+          },
+        };
+      });
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo actualizar la evaluación de este mentor.");
+    } finally {
+      setSavingMentorEvaluationIds((prev) => {
         const next = new Set(prev);
         next.delete(mentorId);
         return next;
@@ -1236,7 +1279,7 @@ export default function GroupDetailPage() {
                   <p className="mt-3 text-sm font-semibold text-slate-800">Mentores</p>
                   <p className="text-xs text-slate-500">
                     {canManageMentors
-                      ? "Activa o desactiva por mentor qué materias puede revisar y calificar."
+                      ? "Activa o desactiva por mentor qué materias puede revisar/calificar y si se le evaluará."
                       : "Solo lectura. El profesor principal define las materias de cada mentor."}
                   </p>
                   {group.assistantTeachers && group.assistantTeachers.length > 0 ? (
@@ -1244,12 +1287,31 @@ export default function GroupDetailPage() {
                       {group.assistantTeachers.map((t) => {
                         const mentorAllowedCourseIds = new Set(getMentorAllowedCourseIds(t.id));
                         const isSavingMentorAccess = savingMentorAccessIds.has(t.id);
+                        const isSavingMentorEvaluation = savingMentorEvaluationIds.has(t.id);
+                        const mentorEvaluationEnabled = isMentorEvaluationEnabledForGroup(t.id);
                         return (
                           <li key={t.id} className="rounded-lg border border-slate-200 bg-white p-3">
                             <div className="flex items-start justify-between gap-3">
                               <div>
                                 <p>{t.name}</p>
                                 <p className="text-xs text-slate-500">{t.email}</p>
+                                <label className="mt-2 inline-flex items-center gap-2 text-xs text-slate-600">
+                                  <input
+                                    type="checkbox"
+                                    className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                    checked={mentorEvaluationEnabled}
+                                    disabled={!canManageMentors || isSavingMentorEvaluation}
+                                    onChange={() => handleToggleMentorEvaluation(t.id)}
+                                  />
+                                  <span>
+                                    Evaluar a este mentor
+                                  </span>
+                                </label>
+                                {isSavingMentorEvaluation ? (
+                                  <p className="mt-1 text-[11px] text-blue-600">
+                                    Guardando configuración de evaluación...
+                                  </p>
+                                ) : null}
                               </div>
                               {canManageMentors ? (
                                 <button

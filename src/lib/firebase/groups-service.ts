@@ -41,6 +41,7 @@ export type Group = {
   assistantTeacherIds?: string[];
   assistantTeachers?: Array<{ id: string; name: string; email?: string }>;
   mentorCourseAccess?: Record<string, string[]>;
+  mentorEvaluationEnabled?: Record<string, boolean>;
   semester: string;
   startDate?: Date | null;
   endDate?: Date | null;
@@ -79,6 +80,7 @@ type CreateGroupData = {
 };
 
 type MentorCourseAccessMap = Record<string, string[]>;
+type MentorEvaluationEnabledMap = Record<string, boolean>;
 
 const toUniqueStringArray = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
@@ -219,6 +221,37 @@ const normalizeMentorCourseAccess = (
   return next;
 };
 
+const normalizeMentorEvaluationEnabled = (
+  value: unknown,
+  mentorIds: string[],
+): MentorEvaluationEnabledMap => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const validMentorIds = new Set(mentorIds);
+  const next: MentorEvaluationEnabledMap = {};
+  Object.entries(value as Record<string, unknown>).forEach(([mentorId, rawEnabled]) => {
+    if (!mentorId || !validMentorIds.has(mentorId)) return;
+    next[mentorId] = rawEnabled !== false;
+  });
+  return next;
+};
+
+const buildMentorEvaluationEnabled = (params: {
+  mentorIds: string[];
+  existingSelection: MentorEvaluationEnabledMap;
+}): MentorEvaluationEnabledMap => {
+  const { mentorIds, existingSelection } = params;
+  const next: MentorEvaluationEnabledMap = {};
+  mentorIds.forEach((mentorId) => {
+    if (!mentorId) return;
+    if (Object.prototype.hasOwnProperty.call(existingSelection, mentorId)) {
+      next[mentorId] = existingSelection[mentorId] !== false;
+      return;
+    }
+    next[mentorId] = true;
+  });
+  return next;
+};
+
 const buildMentorCourseAccess = (params: {
   mentorIds: string[];
   existingAccess: MentorCourseAccessMap;
@@ -278,6 +311,7 @@ const toAssistantTeachers = (
 const toGroup = (id: string, data: DocumentData): Group => {
   const courses = toGroupCourses(data);
   const courseIds = toGroupCourseIds(data, courses);
+  const assistantTeacherIds = toUniqueStringArray(data.assistantTeacherIds);
   return {
     id,
     courseId: typeof data.courseId === "string" ? data.courseId : "",
@@ -292,9 +326,13 @@ const toGroup = (id: string, data: DocumentData): Group => {
     groupName: typeof data.groupName === "string" ? data.groupName : "",
     teacherId: typeof data.teacherId === "string" ? data.teacherId : "",
     teacherName: typeof data.teacherName === "string" ? data.teacherName : "",
-    assistantTeacherIds: toUniqueStringArray(data.assistantTeacherIds),
+    assistantTeacherIds,
     assistantTeachers: toAssistantTeachers(data.assistantTeachers),
     mentorCourseAccess: normalizeMentorCourseAccess(data.mentorCourseAccess, courseIds),
+    mentorEvaluationEnabled: normalizeMentorEvaluationEnabled(
+      data.mentorEvaluationEnabled,
+      assistantTeacherIds,
+    ),
     semester: typeof data.semester === "string" ? data.semester : "",
     startDate: toDateFromUnknown(data.startDate),
     endDate: toDateFromUnknown(data.endDate),
@@ -344,6 +382,7 @@ export async function createGroup(data: CreateGroupData): Promise<string> {
     assistantTeacherIds: [],
     assistantTeachers: [],
     mentorCourseAccess: {},
+    mentorEvaluationEnabled: {},
     semester: data.semester ?? "",
     startDate: data.startDate ? Timestamp.fromDate(data.startDate) : null,
     endDate: data.endDate ? Timestamp.fromDate(data.endDate) : null,
@@ -425,10 +464,18 @@ export async function updateGroupTeacher(params: {
     (mentorId) => mentorId !== teacherId,
   );
   const existingAccess = normalizeMentorCourseAccess(groupData.mentorCourseAccess, courseIds);
+  const existingMentorEvaluationEnabled = normalizeMentorEvaluationEnabled(
+    groupData.mentorEvaluationEnabled,
+    toUniqueStringArray(groupData.assistantTeacherIds),
+  );
   const nextMentorCourseAccess = buildMentorCourseAccess({
     mentorIds: nextAssistantIds,
     existingAccess,
     validCourseIds: courseIds,
+  });
+  const nextMentorEvaluationEnabled = buildMentorEvaluationEnabled({
+    mentorIds: nextAssistantIds,
+    existingSelection: existingMentorEvaluationEnabled,
   });
   const enrollmentsSnap = await getDocs(
     query(collection(db, "studentEnrollments"), where("groupId", "==", groupId)),
@@ -441,6 +488,7 @@ export async function updateGroupTeacher(params: {
     assistantTeacherIds: nextAssistantIds,
     assistantTeachers: nextAssistantTeachers,
     mentorCourseAccess: nextMentorCourseAccess,
+    mentorEvaluationEnabled: nextMentorEvaluationEnabled,
     updatedAt: serverTimestamp(),
   });
   enrollmentsSnap.docs.forEach((enrollmentDoc) => {
@@ -1120,10 +1168,18 @@ export async function setAssistantTeachers(groupId: string, teachers: Array<{ id
   const courseIds = toGroupCourseIds(groupData);
   const mentorIds = toUniqueStringArray(teachers.map((t) => t.id));
   const existingAccess = normalizeMentorCourseAccess(groupData.mentorCourseAccess, courseIds);
+  const existingMentorEvaluationEnabled = normalizeMentorEvaluationEnabled(
+    groupData.mentorEvaluationEnabled,
+    toUniqueStringArray(groupData.assistantTeacherIds),
+  );
   const mentorCourseAccess = buildMentorCourseAccess({
     mentorIds,
     existingAccess,
     validCourseIds: courseIds,
+  });
+  const mentorEvaluationEnabled = buildMentorEvaluationEnabled({
+    mentorIds,
+    existingSelection: existingMentorEvaluationEnabled,
   });
 
   // Actualizar el grupo con los nuevos mentores
@@ -1131,6 +1187,7 @@ export async function setAssistantTeachers(groupId: string, teachers: Array<{ id
     assistantTeacherIds: mentorIds,
     assistantTeachers: teachers,
     mentorCourseAccess,
+    mentorEvaluationEnabled,
     updatedAt: serverTimestamp(),
   });
 
@@ -1187,6 +1244,39 @@ export async function setMentorCourseAccess(
     const courseMentors = mapCourseMentorsByAccess(courseIds, mentorIds, nextAccess);
     await syncCourseMentorsByCourse(courseMentors);
   }
+}
+
+export async function setMentorEvaluationEnabled(
+  groupId: string,
+  mentorId: string,
+  enabled: boolean,
+): Promise<void> {
+  if (!groupId || !mentorId) return;
+
+  const ref = doc(db, "groups", groupId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error("Grupo no encontrado");
+
+  const data = snap.data();
+  const mentorIds = toUniqueStringArray(data.assistantTeacherIds);
+  if (!mentorIds.includes(mentorId)) {
+    throw new Error("El mentor no está asignado al grupo");
+  }
+
+  const existingMentorEvaluationEnabled = normalizeMentorEvaluationEnabled(
+    data.mentorEvaluationEnabled,
+    mentorIds,
+  );
+  const nextMentorEvaluationEnabled = buildMentorEvaluationEnabled({
+    mentorIds,
+    existingSelection: existingMentorEvaluationEnabled,
+  });
+  nextMentorEvaluationEnabled[mentorId] = enabled === true;
+
+  await updateDoc(ref, {
+    mentorEvaluationEnabled: nextMentorEvaluationEnabled,
+    updatedAt: serverTimestamp(),
+  });
 }
 
 /**

@@ -55,6 +55,31 @@ function getAssistantTeacherNameMap(groupData: Record<string, unknown>): Map<str
   return map;
 }
 
+function getMentorEvaluationEnabledMap(params: {
+  groupData: Record<string, unknown>;
+  mentorIds: string[];
+}): Record<string, boolean> | null {
+  const raw = params.groupData.mentorEvaluationEnabled;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const validMentorIds = new Set(params.mentorIds);
+  const normalized: Record<string, boolean> = {};
+  Object.entries(raw as Record<string, unknown>).forEach(([mentorId, rawEnabled]) => {
+    if (!validMentorIds.has(mentorId)) return;
+    normalized[mentorId] = rawEnabled !== false;
+  });
+  return normalized;
+}
+
+function isMentorEnabledForEvaluation(params: {
+  mentorId: string;
+  mentorEvaluationEnabledMap: Record<string, boolean> | null;
+}): boolean {
+  const { mentorId, mentorEvaluationEnabledMap } = params;
+  if (!mentorEvaluationEnabledMap) return true;
+  if (!Object.prototype.hasOwnProperty.call(mentorEvaluationEnabledMap, mentorId)) return true;
+  return mentorEvaluationEnabledMap[mentorId] !== false;
+}
+
 function getMentorIdsAssignedToCourse(params: {
   groupData: Record<string, unknown>;
   courseId: string;
@@ -64,6 +89,10 @@ function getMentorIdsAssignedToCourse(params: {
 
   const mentorIds = toUniqueStringArray(params.groupData.assistantTeacherIds);
   if (mentorIds.length === 0) return [];
+  const mentorEvaluationEnabledMap = getMentorEvaluationEnabledMap({
+    groupData: params.groupData,
+    mentorIds,
+  });
 
   const groupCourseIds = getGroupCourseIds(params.groupData);
   const validGroupCourseIds = new Set(groupCourseIds);
@@ -72,11 +101,21 @@ function getMentorIdsAssignedToCourse(params: {
     rawAccess && typeof rawAccess === "object" && !Array.isArray(rawAccess)
       ? (rawAccess as Record<string, unknown>)
       : null;
+  const hasExplicitMentorAccessMap = accessMap !== null;
 
   return mentorIds.filter((mentorId) => {
-    if (!accessMap || !Object.prototype.hasOwnProperty.call(accessMap, mentorId)) {
+    if (
+      !isMentorEnabledForEvaluation({
+        mentorId,
+        mentorEvaluationEnabledMap,
+      })
+    ) {
+      return false;
+    }
+    if (!hasExplicitMentorAccessMap) {
       return validGroupCourseIds.has(courseId);
     }
+    if (!Object.prototype.hasOwnProperty.call(accessMap, mentorId)) return false;
     return toUniqueStringArray(accessMap[mentorId]).includes(courseId);
   });
 }
@@ -94,7 +133,7 @@ export function resolveTeacherAssignmentForCourse(params: {
       groupData: params.groupData,
       courseId,
     });
-    if (mentorIds.length === 1) {
+    if (mentorIds.length > 0) {
       const mentorId = mentorIds[0];
       const mentorName = getAssistantTeacherNameMap(params.groupData).get(mentorId) ?? "";
       return {
