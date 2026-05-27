@@ -69,6 +69,12 @@ const previewTypeLabel: Record<WordImportedClass["type"], string> = {
 const stripFileExtension = (fileName: string): string =>
   fileName.replace(/\.[^/.]+$/, "").trim() || "Lección";
 
+const inferCourseTitleFromFileName = (fileName: string): string =>
+  stripFileExtension(fileName)
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
 const totalClassesCount = (lessons: ParsedLessonFromFile[]): number =>
   lessons.reduce((acc, lesson) => acc + lesson.classes.length, 0);
 
@@ -330,6 +336,11 @@ export function BulkUploadWordCoursesModal({
     if (docxFiles.length === 0) {
       setParseError("Selecciona al menos un archivo .docx");
       return;
+    }
+
+    const inferredCourseTitle = inferCourseTitleFromFileName(docxFiles[0]?.name ?? "");
+    if (inferredCourseTitle) {
+      setCourseTitle(inferredCourseTitle);
     }
 
     setParsing(true);
