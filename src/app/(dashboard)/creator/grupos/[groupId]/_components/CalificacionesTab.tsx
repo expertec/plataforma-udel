@@ -19,7 +19,12 @@ import toast from "react-hot-toast";
 import { jsPDF } from "jspdf";
 import { db } from "@/lib/firebase/firestore";
 import { auth } from "@/lib/firebase/client";
-import { Submission, getAllSubmissions } from "@/lib/firebase/submissions-service";
+import {
+  Submission,
+  getAllSubmissions,
+  hasNumericSubmissionGrade,
+  shouldPreferIncomingSubmission,
+} from "@/lib/firebase/submissions-service";
 import { getForumPosts } from "@/lib/firebase/forum-service";
 import { UserRole, isAdminTeacherRole, isCampusCoordinatorRole } from "@/lib/firebase/roles";
 
@@ -832,25 +837,21 @@ export function CalificacionesTab({
           latestByClass.set(classId, submission);
           return;
         }
-        const currentTs = current.submittedAt?.getTime() ?? current.gradedAt?.getTime() ?? 0;
-        const incomingTs = submission.submittedAt?.getTime() ?? submission.gradedAt?.getTime() ?? 0;
-        if (incomingTs >= currentTs) {
+        if (shouldPreferIncomingSubmission(current, submission)) {
           latestByClass.set(classId, submission);
         }
       });
 
       const latestSubmissions = Array.from(latestByClass.values());
       const gradedSubmissions = latestSubmissions.filter(
-        (sub) => sub.status === "graded" || typeof sub.grade === "number",
+        (sub) => sub.status === "graded" || hasNumericSubmissionGrade(sub),
       );
       const normalizeTaskGrade = (task: Task, submission?: Submission): number | null => {
         if (!submission) {
           return null;
         }
         const rawGrade =
-          typeof submission.grade === "number" && Number.isFinite(submission.grade)
-            ? submission.grade
-            : null;
+          hasNumericSubmissionGrade(submission) ? submission.grade : null;
         if (task.classType !== "quiz") {
           return rawGrade === null ? null : Math.round(rawGrade * 10) / 10;
         }

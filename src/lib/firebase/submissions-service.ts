@@ -52,6 +52,43 @@ export type Submission = {
   gradedByName?: string;
 };
 
+export function hasNumericSubmissionGrade(
+  submission: Pick<Submission, "grade">,
+): submission is Pick<Submission, "grade"> & { grade: number } {
+  return typeof submission.grade === "number" && Number.isFinite(submission.grade);
+}
+
+export function getSubmissionSortTimestamp(
+  submission: Pick<Submission, "submittedAt" | "gradedAt">,
+): number {
+  return submission.submittedAt?.getTime() ?? submission.gradedAt?.getTime() ?? 0;
+}
+
+/**
+ * Decide si la entrega `incoming` debe reemplazar a `current` para una misma
+ * actividad/alumno. Se prioriza la entrega más reciente; en empate de fecha,
+ * se prefiere la que tenga calificación numérica/estado evaluado.
+ */
+export function shouldPreferIncomingSubmission(current: Submission, incoming: Submission): boolean {
+  const currentTs = getSubmissionSortTimestamp(current);
+  const incomingTs = getSubmissionSortTimestamp(incoming);
+  if (incomingTs !== currentTs) return incomingTs > currentTs;
+
+  const currentHasNumericGrade = hasNumericSubmissionGrade(current);
+  const incomingHasNumericGrade = hasNumericSubmissionGrade(incoming);
+  if (incomingHasNumericGrade !== currentHasNumericGrade) return incomingHasNumericGrade;
+
+  const currentMarkedGraded = current.status === "graded" || Boolean(current.gradedAt);
+  const incomingMarkedGraded = incoming.status === "graded" || Boolean(incoming.gradedAt);
+  if (incomingMarkedGraded !== currentMarkedGraded) return incomingMarkedGraded;
+
+  const currentGradedAt = current.gradedAt?.getTime() ?? 0;
+  const incomingGradedAt = incoming.gradedAt?.getTime() ?? 0;
+  if (incomingGradedAt !== currentGradedAt) return incomingGradedAt > currentGradedAt;
+
+  return incoming.id > current.id;
+}
+
 type CreateSubmissionInput = {
   classId: string;
   classDocId?: string;
@@ -221,7 +258,7 @@ type SubmissionData = {
   audioUrl?: string;
   content?: string;
   status?: SubmissionStatus | string;
-  grade?: number;
+  grade?: unknown;
   answers?: SubmissionAnswer[];
   feedback?: string;
   gradedAt?: { toDate?: () => Date };
@@ -229,7 +266,17 @@ type SubmissionData = {
   gradedByName?: string;
 };
 
+function normalizeSubmissionGrade(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value.trim().replace(",", "."));
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
 function toSubmission(id: string, data: SubmissionData): Submission {
+  const normalizedGrade = normalizeSubmissionGrade(data.grade);
   const status = ["pending", "graded", "late"].includes((data.status as string) ?? "")
     ? (data.status as SubmissionStatus)
     : "pending";
@@ -250,7 +297,7 @@ function toSubmission(id: string, data: SubmissionData): Submission {
     audioUrl: data.audioUrl ?? "",
     content: data.content ?? "",
     status,
-    grade: data.grade ?? undefined,
+    grade: normalizedGrade,
     answers: Array.isArray(data.answers) ? (data.answers as SubmissionAnswer[]) : undefined,
     feedback: data.feedback ?? "",
     gradedAt: data.gradedAt?.toDate?.() ?? null,

@@ -10,8 +10,9 @@ import {
   getSubmissionsByClass,
   Submission,
   deleteSubmission,
+  gradeSubmission,
+  shouldPreferIncomingSubmission,
 } from "@/lib/firebase/submissions-service";
-import { gradeSubmission } from "@/lib/firebase/submissions-service";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { GradeModal } from "./GradeModal";
 import toast from "react-hot-toast";
@@ -744,6 +745,19 @@ type Row = {
   submission?: Submission;
 };
 
+const selectBestSubmissionByStudent = (submissions: Submission[]): Map<string, Submission> => {
+  const bestByStudent = new Map<string, Submission>();
+  submissions.forEach((submission) => {
+    const studentId = (submission.studentId ?? "").trim();
+    if (!studentId) return;
+    const current = bestByStudent.get(studentId);
+    if (!current || shouldPreferIncomingSubmission(current, submission)) {
+      bestByStudent.set(studentId, submission);
+    }
+  });
+  return bestByStudent;
+};
+
 export function SubmissionsModal({
   groupId,
   classId,
@@ -832,9 +846,10 @@ export function SubmissionsModal({
             (s) => !courseId || !s.courseId || s.courseId === courseId,
           );
         }
+        const bestByStudent = selectBestSubmissionByStudent(submissions);
         const rows: Row[] = students.map((s) => ({
           student: s,
-          submission: submissions.find((sub) => sub.studentId === s.id),
+          submission: bestByStudent.get(s.id),
         }));
         setRows(rows);
         setInlineGrades({});
@@ -957,10 +972,11 @@ export function SubmissionsModal({
           gradedByName: post.gradedByName ?? undefined,
         };
       });
+      const bestByStudent = selectBestSubmissionByStudent(forumSubmissions);
       setRows((prev) =>
         prev.map((r) => ({
           ...r,
-          submission: forumSubmissions.find((s) => s.studentId === r.student.id),
+          submission: bestByStudent.get(r.student.id),
         })),
       );
       return;
@@ -969,10 +985,11 @@ export function SubmissionsModal({
     const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
       (s) => !courseId || !s.courseId || s.courseId === courseId,
     );
+    const bestByStudent = selectBestSubmissionByStudent(submissions);
     setRows((prev) =>
       prev.map((r) => ({
         ...r,
-        submission: submissions.find((s) => s.studentId === r.student.id),
+        submission: bestByStudent.get(r.student.id),
       })),
     );
   };

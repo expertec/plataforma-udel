@@ -36,6 +36,13 @@ type ImportResult = {
   message: string;
 };
 
+type ImportProgress = {
+  totalSteps: number;
+  completedSteps: number;
+  phase: string;
+  detail: string;
+};
+
 type MammothResult = {
   value: string;
   messages: Array<{ type: string; message: string }>;
@@ -95,6 +102,30 @@ const totalForumCount = (lessons: ParsedLessonFromFile[]): number =>
     (acc, lesson) => acc + lesson.classes.filter((classItem) => classItem.forumEnabled).length,
     0,
   );
+
+const totalVimeoClassCount = (lessons: ParsedLessonFromFile[]): number =>
+  lessons.reduce(
+    (acc, lesson) =>
+      acc +
+      lesson.classes.filter(
+        (classItem) =>
+          classItem.type === "video" &&
+          typeof classItem.videoUrl === "string" &&
+          isVimeoUrl(classItem.videoUrl),
+      ).length,
+    0,
+  );
+
+const buildImportPlan = (
+  lessons: ParsedLessonFromFile[],
+  mirrorVideos: boolean,
+): { totalSteps: number } => {
+  const lessonsCount = lessons.length;
+  const classesCount = totalClassesCount(lessons);
+  const vimeoMirrorSteps = mirrorVideos ? totalVimeoClassCount(lessons) : 0;
+  const totalSteps = Math.max(1, 1 + lessonsCount + classesCount + vimeoMirrorSteps);
+  return { totalSteps };
+};
 
 const previewLessonKey = (lesson: ParsedLessonFromFile, index: number): string =>
   `${lesson.sourceFileName}:${index}:${lesson.title}`;
@@ -276,6 +307,7 @@ export function BulkUploadWordCoursesModal({
   const [parsedLessons, setParsedLessons] = useState<ParsedLessonFromFile[]>([]);
   const [expandedPreviewLessons, setExpandedPreviewLessons] = useState<Set<string>>(new Set());
   const [results, setResults] = useState<ImportResult[]>([]);
+  const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -289,6 +321,12 @@ export function BulkUploadWordCoursesModal({
     }),
     [parsedLessons],
   );
+
+  const importProgressPercent = useMemo(() => {
+    if (!importProgress) return 0;
+    const ratio = importProgress.completedSteps / Math.max(1, importProgress.totalSteps);
+    return Math.max(0, Math.min(100, Math.round(ratio * 100)));
+  }, [importProgress]);
 
   useEffect(() => {
     if (!open) return;
@@ -326,6 +364,7 @@ export function BulkUploadWordCoursesModal({
     setParsedLessons([]);
     setExpandedPreviewLessons(new Set());
     setResults([]);
+    setImportProgress(null);
     if (inputRef.current) inputRef.current.value = "";
   };
 
@@ -350,6 +389,7 @@ export function BulkUploadWordCoursesModal({
     setExpandedPreviewLessons(new Set());
     setSelectedFiles(docxFiles);
     setResults([]);
+    setImportProgress(null);
 
     try {
       const nextLessons: ParsedLessonFromFile[] = [];
@@ -459,8 +499,33 @@ export function BulkUploadWordCoursesModal({
     setResults([]);
     const outcome: ImportResult[] = [];
     let vimeoFallbackCount = 0;
+    const importPlan = buildImportPlan(parsedLessons, mirrorVimeoToFirebase);
+
+    setImportProgress({
+      totalSteps: importPlan.totalSteps,
+      completedSteps: 0,
+      phase: "Preparando importación",
+      detail: "Creando curso...",
+    });
+
+    const setProgressStatus = (phase: string, detail: string) => {
+      setImportProgress((current) => (current ? { ...current, phase, detail } : current));
+    };
+
+    const advanceProgress = (phase: string, detail: string, steps = 1) => {
+      setImportProgress((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          completedSteps: Math.min(current.totalSteps, current.completedSteps + Math.max(1, steps)),
+          phase,
+          detail,
+        };
+      });
+    };
 
     try {
+      setProgressStatus("Creando curso", "Guardando información base del curso...");
       const courseId = await createCourse({
         title: courseTitle.trim(),
         description: courseDescription.trim(),
@@ -469,12 +534,17 @@ export function BulkUploadWordCoursesModal({
         teacherId,
         teacherName: teacherName ?? auth.currentUser?.displayName ?? "",
       });
+      advanceProgress("Curso creado", courseTitle.trim() || "Curso");
 
       for (let lessonIndex = 0; lessonIndex < parsedLessons.length; lessonIndex += 1) {
         const lesson = parsedLessons[lessonIndex];
         const lessonOrder = lessonIndex + 1;
 
         try {
+          setProgressStatus(
+            "Creando lección",
+            `Lección ${lessonIndex + 1}/${parsedLessons.length}: ${lesson.title}`,
+          );
           const lessonId = await createLesson({
             courseId,
             title: lesson.title,
@@ -482,6 +552,7 @@ export function BulkUploadWordCoursesModal({
             lessonNumber: lessonOrder,
             order: lessonOrder,
           });
+          advanceProgress("Lección creada", lesson.title);
 
           outcome.push({
             lessonTitle: lesson.title,
@@ -501,6 +572,7 @@ export function BulkUploadWordCoursesModal({
                 classItem.videoUrl &&
                 isVimeoUrl(classItem.videoUrl)
               ) {
+                setProgressStatus("Procesando video", `Copiando video de Vimeo: ${classItem.title}`);
                 try {
                   const mirroredUrl = await mirrorVimeoVideoInFirebase({
                     courseId,
@@ -514,8 +586,10 @@ export function BulkUploadWordCoursesModal({
                     videoUrl: mirroredUrl,
                   };
                   classMessageSuffix = " (video guardado en Firebase)";
+                  advanceProgress("Video copiado", classItem.title);
                 } catch (mirrorError) {
                   if (!allowVimeoFallback) {
+                    advanceProgress("Error en copia de video", classItem.title);
                     throw mirrorError;
                   }
                   vimeoFallbackCount += 1;
@@ -525,14 +599,23 @@ export function BulkUploadWordCoursesModal({
                       : "No se pudo copiar video a Firebase";
                   console.warn(`No se pudo copiar video a Firebase, se mantiene Vimeo: ${reason}`);
                   classMessageSuffix = " (fallback: se mantuvo Vimeo)";
+                  advanceProgress("Video con fallback Vimeo", classItem.title);
                 }
               }
 
+              setProgressStatus(
+                "Creando clase",
+                `Lección ${lessonIndex + 1}: ${classItem.title}`,
+              );
               const classId = await createClass(
                 classToPayload(courseId, lessonId, classToCreate, classIndex + 1),
               );
 
               if (classToCreate.type === "quiz" && (classToCreate.quizQuestions?.length ?? 0) > 0) {
+                setProgressStatus(
+                  "Creando preguntas de quiz",
+                  `${classToCreate.title} (${classToCreate.quizQuestions?.length ?? 0} preguntas)`,
+                );
                 await createImportedQuizQuestions({
                   courseId,
                   lessonId,
@@ -540,6 +623,7 @@ export function BulkUploadWordCoursesModal({
                   questions: classToCreate.quizQuestions ?? [],
                 });
               }
+              advanceProgress("Clase creada", `${lesson.title} / ${classItem.title}`);
 
               outcome.push({
                 lessonTitle: lesson.title,
@@ -549,6 +633,7 @@ export function BulkUploadWordCoursesModal({
               });
             } catch (classError) {
               console.error(classError);
+              advanceProgress("Error en clase", `${lesson.title} / ${classItem.title}`);
               outcome.push({
                 lessonTitle: lesson.title,
                 classTitle: classItem.title,
@@ -559,6 +644,20 @@ export function BulkUploadWordCoursesModal({
           }
         } catch (lessonError) {
           console.error(lessonError);
+          const skippedClasses = lesson.classes.length;
+          const skippedVideoMirrorSteps = mirrorVimeoToFirebase
+            ? lesson.classes.filter(
+                (classItem) =>
+                  classItem.type === "video" &&
+                  typeof classItem.videoUrl === "string" &&
+                  isVimeoUrl(classItem.videoUrl),
+              ).length
+            : 0;
+          advanceProgress(
+            "Lección omitida",
+            `${lesson.title}: se omitieron ${skippedClasses} clase(s)`,
+            1 + skippedClasses + skippedVideoMirrorSteps,
+          );
           outcome.push({
             lessonTitle: lesson.title,
             status: "error",
@@ -570,6 +669,19 @@ export function BulkUploadWordCoursesModal({
       setResults(outcome);
       const okCount = outcome.filter((item) => item.status === "ok").length;
       const failCount = outcome.length - okCount;
+      setImportProgress((current) =>
+        current
+          ? {
+              ...current,
+              completedSteps: current.totalSteps,
+              phase: failCount > 0 ? "Importación finalizada con errores" : "Importación completada",
+              detail:
+                failCount > 0
+                  ? `${failCount} elemento(s) con error. Revisa resultados abajo.`
+                  : "Curso creado correctamente.",
+            }
+          : current,
+      );
 
       if (okCount > 0) {
         toast.success("Curso importado desde Word");
@@ -591,6 +703,15 @@ export function BulkUploadWordCoursesModal({
       }
     } catch (error) {
       console.error(error);
+      setImportProgress((current) =>
+        current
+          ? {
+              ...current,
+              phase: "Importación detenida",
+              detail: "Ocurrió un error general al crear el curso.",
+            }
+          : current,
+      );
       toast.error("No se pudo crear el curso desde Word.");
     } finally {
       setImporting(false);
@@ -608,6 +729,12 @@ export function BulkUploadWordCoursesModal({
       return next;
     });
   };
+
+  const importButtonLabel = parsing
+    ? "Analizando Word..."
+    : importing
+      ? `Creando curso (${importProgressPercent}%)`
+      : "Crear curso desde Word";
 
   if (!open) return null;
 
@@ -639,7 +766,7 @@ export function BulkUploadWordCoursesModal({
           </button>
         </div>
 
-        <div className="mt-6 grid gap-6 lg:grid-cols-[1.25fr_1fr]">
+        <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(300px,340px)]">
           <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
             <div className="grid gap-4 md:grid-cols-2">
               <div className="md:col-span-2">
@@ -877,6 +1004,25 @@ export function BulkUploadWordCoursesModal({
               </p>
             </div>
 
+            {importProgress ? (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-semibold">{importProgress.phase}</p>
+                  <span className="text-xs font-semibold">{importProgressPercent}%</span>
+                </div>
+                <p className="mt-1 text-xs text-blue-800">{importProgress.detail}</p>
+                <div className="mt-2 h-2 overflow-hidden rounded-full bg-blue-100">
+                  <div
+                    className="h-full rounded-full bg-blue-600 transition-all"
+                    style={{ width: `${importProgressPercent}%` }}
+                  />
+                </div>
+                <p className="mt-1 text-[11px] text-blue-700">
+                  {importProgress.completedSteps} de {importProgress.totalSteps} paso(s)
+                </p>
+              </div>
+            ) : null}
+
             {results.length > 0 ? (
               <div className="space-y-2">
                 <p className="text-sm font-semibold text-slate-900">Resultados</p>
@@ -901,12 +1047,12 @@ export function BulkUploadWordCoursesModal({
               </div>
             ) : null}
 
-            <div className="flex flex-wrap items-center justify-end gap-3 pt-2">
+            <div className="flex flex-col gap-2 pt-2">
               <button
                 type="button"
                 onClick={reset}
                 disabled={parsing || importing}
-                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                className="w-full shrink-0 rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Limpiar
               </button>
@@ -914,13 +1060,9 @@ export function BulkUploadWordCoursesModal({
                 type="button"
                 onClick={handleImport}
                 disabled={parsing || importing || parsedLessons.length === 0}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
+                className="w-full shrink-0 whitespace-nowrap rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
               >
-                {parsing
-                  ? "Analizando Word..."
-                  : importing
-                    ? "Creando curso..."
-                    : "Crear curso desde Word"}
+                {importButtonLabel}
               </button>
             </div>
           </div>
