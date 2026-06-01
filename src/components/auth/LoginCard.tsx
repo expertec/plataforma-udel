@@ -57,7 +57,13 @@ export function LoginCard({
       }
 
       const destination =
-        redirectTo && redirectTo.startsWith("/") ? redirectTo : role === "student" ? "/feed" : "/creator";
+        redirectTo && redirectTo.startsWith("/")
+          ? redirectTo
+          : role === "student"
+            ? "/feed"
+            : role === "director"
+              ? "/creator/convenios"
+              : "/creator";
       toast.success("Inicio de sesión correcto");
       router.replace(destination);
     } catch (error: unknown) {

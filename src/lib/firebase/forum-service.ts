@@ -123,6 +123,7 @@ export type ForumPost = {
   authorName: string;
   format: "text" | "audio" | "video";
   mediaUrl?: string | null;
+  mediaMimeType?: string | null;
   createdAt: Date;
   repliesCount?: number;
   status?: "pending" | "graded";
@@ -177,6 +178,7 @@ export async function getForumPosts(
       authorName: normalizeText(data.authorName, "Usuario"),
       format: normalizeFormat(data.format),
       mediaUrl: normalizeOptionalString(data.mediaUrl),
+      mediaMimeType: normalizeOptionalString(data.mediaMimeType),
       createdAt: normalizeDate(data.createdAt),
       repliesCount: normalizeNumber(data.repliesCount, 0),
       status: data.status ?? undefined,
@@ -221,6 +223,7 @@ export async function getStudentForumPost(
     authorName: normalizeText(data.authorName, "Usuario"),
     format: normalizeFormat(data.format),
     mediaUrl: normalizeOptionalString(data.mediaUrl),
+    mediaMimeType: normalizeOptionalString(data.mediaMimeType),
     createdAt: normalizeDate(data.createdAt),
     repliesCount: normalizeNumber(data.repliesCount, 0),
     status: data.status ?? undefined,
@@ -244,8 +247,9 @@ export async function createOrUpdateForumPost(params: {
   authorName: string;
   format: "text" | "audio" | "video";
   mediaUrl?: string | null;
+  mediaMimeType?: string | null;
 }): Promise<void> {
-  const { courseId, lessonId, classId, studentId, text, authorName, format, mediaUrl } = params;
+  const { courseId, lessonId, classId, studentId, text, authorName, format, mediaUrl, mediaMimeType } = params;
 
   const postRef = doc(
     db,
@@ -279,6 +283,7 @@ export async function createOrUpdateForumPost(params: {
     authorName: authorName,
     format: format,
     mediaUrl: mediaUrl ?? null,
+    mediaMimeType: mediaMimeType ?? null,
     createdAt: serverTimestamp(),
     repliesCount: existingRepliesCount,
   }, { merge: true });

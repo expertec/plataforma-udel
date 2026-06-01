@@ -10,11 +10,14 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type ManageableRole = "teacher" | "adminTeacher" | "coordinadorPlantel";
+type ManageableRole = "teacher" | "adminTeacher" | "coordinadorPlantel" | "director";
+type AdditionalRole = "director";
 
 type UpdateTeacherRoleRequest = {
   teacherId?: string;
   newRole?: ManageableRole;
+  extraRoles?: AdditionalRole[] | null;
+  directorEnabled?: boolean | null;
   plantelIds?: string[] | null;
   plantelNames?: string[] | null;
   plantelId?: string | null;
@@ -25,12 +28,29 @@ const MANAGEABLE_ROLES: ManageableRole[] = [
   "teacher",
   "adminTeacher",
   "coordinadorPlantel",
+  "director",
 ];
 
 function isManageableRole(value: unknown): value is ManageableRole {
   return (
     typeof value === "string" &&
     MANAGEABLE_ROLES.includes(value as ManageableRole)
+  );
+}
+
+const MANAGEABLE_EXTRA_ROLES: AdditionalRole[] = ["director"];
+
+function asAdditionalRoleArray(value: unknown): AdditionalRole[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(
+          (item): item is AdditionalRole =>
+            MANAGEABLE_EXTRA_ROLES.includes(item as AdditionalRole),
+        ),
+    ),
   );
 }
 
@@ -41,6 +61,13 @@ function asText(value: unknown): string | null {
 function asTextArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((item) => (typeof item === "string" ? item.trim() : "")).filter(Boolean);
+}
+
+function haveSameStringSet(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  const leftSorted = [...left].sort();
+  const rightSorted = [...right].sort();
+  return leftSorted.every((value, index) => value === rightSorted[index]);
 }
 
 type PlantelAssignmentInput = {
@@ -114,6 +141,22 @@ function getRequestedAssignments(body: UpdateTeacherRoleRequest): PlantelAssignm
   ];
 }
 
+function getExtraRolesFromUserData(data: Record<string, unknown>): AdditionalRole[] {
+  const explicit = asAdditionalRoleArray(data.extraRoles);
+  if (data.directorEnabled === true && !explicit.includes("director")) {
+    return [...explicit, "director"];
+  }
+  return explicit;
+}
+
+function getRequestedExtraRoles(body: UpdateTeacherRoleRequest): AdditionalRole[] {
+  const explicit = asAdditionalRoleArray(body.extraRoles);
+  if (body.directorEnabled === true && !explicit.includes("director")) {
+    return [...explicit, "director"];
+  }
+  return explicit;
+}
+
 function buildAssignmentUpdateData(assignments: PlantelAssignmentInput[]): Record<string, unknown> {
   const nextAssignments = dedupePlantelAssignments(assignments);
   const primaryAssignment = nextAssignments[0] ?? null;
@@ -162,9 +205,11 @@ export async function POST(request: NextRequest) {
     }
 
     const rawRequestedAssignments = getRequestedAssignments(body);
-    if (body.newRole === "coordinadorPlantel" && rawRequestedAssignments.length === 0) {
+    const roleRequiresPlantelScope =
+      body.newRole === "coordinadorPlantel" || body.newRole === "director";
+    if (roleRequiresPlantelScope && rawRequestedAssignments.length === 0) {
       return NextResponse.json(
-        { success: false, error: "Selecciona al menos un plantel para el coordinador" },
+        { success: false, error: "Selecciona al menos un plantel para el rol seleccionado" },
         { status: 400 },
       );
     }
@@ -233,11 +278,19 @@ export async function POST(request: NextRequest) {
     const currentAssignments = getAssignmentsFromUserData(
       (userSnap.data() ?? {}) as Record<string, unknown>,
     );
+    const currentExtraRoles = getExtraRolesFromUserData(
+      (userSnap.data() ?? {}) as Record<string, unknown>,
+    );
+    const requestedExtraRoles =
+      body.newRole === "coordinadorPlantel" ? getRequestedExtraRoles(body) : [];
     const plantelChanged =
-      body.newRole === "coordinadorPlantel" &&
+      roleRequiresPlantelScope &&
       !areAssignmentsEqual(currentAssignments, resolvedRequestedAssignments);
+    const extraRolesChanged =
+      body.newRole === "coordinadorPlantel" &&
+      !haveSameStringSet(currentExtraRoles, requestedExtraRoles);
 
-    if (currentRole === body.newRole && !plantelChanged) {
+    if (currentRole === body.newRole && !plantelChanged && !extraRolesChanged) {
       return NextResponse.json(
         {
           success: true,
@@ -253,7 +306,7 @@ export async function POST(request: NextRequest) {
       updatedAt: new Date(),
       updatedBy: adminContext.uid,
     };
-    if (body.newRole === "coordinadorPlantel") {
+    if (roleRequiresPlantelScope) {
       Object.assign(updateData, buildAssignmentUpdateData(resolvedRequestedAssignments));
     } else {
       updateData.plantelId = admin.firestore.FieldValue.delete();
@@ -261,12 +314,22 @@ export async function POST(request: NextRequest) {
       updateData.plantelIds = admin.firestore.FieldValue.delete();
       updateData.plantelNames = admin.firestore.FieldValue.delete();
     }
+    if (body.newRole === "coordinadorPlantel") {
+      updateData.extraRoles = requestedExtraRoles;
+      updateData.directorEnabled = requestedExtraRoles.includes("director");
+    } else {
+      updateData.extraRoles = admin.firestore.FieldValue.delete();
+      updateData.directorEnabled = admin.firestore.FieldValue.delete();
+    }
 
     await userRef.set(updateData, { merge: true });
 
+    const nextClaimsExtraRoles =
+      body.newRole === "coordinadorPlantel" ? requestedExtraRoles : [];
     await auth.setCustomUserClaims(teacherId, {
       ...(userRecord.customClaims ?? {}),
       role: body.newRole,
+      extraRoles: nextClaimsExtraRoles,
     });
 
     return NextResponse.json(

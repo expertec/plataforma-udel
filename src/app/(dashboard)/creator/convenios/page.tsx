@@ -15,6 +15,12 @@ import {
   getStudentUsersPaginated,
 } from "@/lib/firebase/students-service";
 import { getTodayDateKeyMonterrey } from "@/lib/finance/payment-agreements-utils";
+import {
+  hasUserExtraRole,
+  isCampusCoordinatorRole,
+  isDirectorRole,
+  resolveUserRoleAccessProfile,
+} from "@/lib/firebase/roles";
 import type { User } from "firebase/auth";
 import { onAuthStateChanged } from "firebase/auth";
 import type { DocumentSnapshot } from "firebase/firestore";
@@ -88,8 +94,71 @@ const AGREEMENT_STATUS_STYLES: Record<
   },
 };
 
+type AgreementApiItem = Omit<PaymentAgreement, "createdAt" | "updatedAt" | "cancelledAt"> & {
+  createdAtMs?: number;
+  updatedAtMs?: number;
+  cancelledAtMs?: number;
+};
+
+type ScopedAgreementsResponse = {
+  success?: boolean;
+  error?: string;
+  data?: {
+    agreements?: AgreementApiItem[];
+  };
+};
+
+const toDateFromMillis = (value: unknown): Date | undefined => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  return new Date(value);
+};
+
+const toAgreementFromApi = (item: AgreementApiItem): PaymentAgreement => ({
+  id: item.id,
+  studentId: item.studentId,
+  studentName: item.studentName,
+  studentEmail: item.studentEmail,
+  studentPhone: item.studentPhone,
+  reason: item.reason,
+  startDate: item.startDate,
+  endDate: item.endDate,
+  status: item.status === "cancelled" ? "cancelled" : "active",
+  createdBy: item.createdBy,
+  updatedBy: item.updatedBy,
+  createdAt: toDateFromMillis(item.createdAtMs),
+  updatedAt: toDateFromMillis(item.updatedAtMs),
+  cancelledAt: toDateFromMillis(item.cancelledAtMs),
+});
+
+const getScopedPaymentAgreements = async (
+  user: User,
+  maxResults: number = 300,
+): Promise<PaymentAgreement[]> => {
+  const token = await user.getIdToken();
+  const response = await fetch(`/api/convenios/scoped?limit=${Math.trunc(maxResults)}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    cache: "no-store",
+  });
+
+  const payload = (await response.json().catch(() => ({}))) as ScopedAgreementsResponse;
+  if (!response.ok || payload.success === false) {
+    throw new Error(payload.error ?? "No se pudieron obtener los convenios");
+  }
+
+  const agreements = payload.data?.agreements ?? [];
+  return agreements.map((agreement) => toAgreementFromApi(agreement));
+};
+
 export default function ConveniosPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
+  const [accessResolved, setAccessResolved] = useState(false);
+  const [canReadConvenios, setCanReadConvenios] = useState(false);
+  const [canManageConvenios, setCanManageConvenios] = useState(false);
+  const [scopePlantelIds, setScopePlantelIds] = useState<string[]>([]);
+  const [accessMessage, setAccessMessage] = useState<string | null>(null);
   const [students, setStudents] = useState<StudentUser[]>([]);
   const [agreements, setAgreements] = useState<PaymentAgreement[]>([]);
   const [loading, setLoading] = useState(true);
@@ -116,16 +185,114 @@ export default function ConveniosPage() {
     return () => unsub();
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const resolveAccess = async () => {
+      if (!currentUser) {
+        if (!cancelled) {
+          setCanReadConvenios(false);
+          setCanManageConvenios(false);
+          setScopePlantelIds([]);
+          setAccessMessage("No hay sesión activa.");
+          setAccessResolved(true);
+        }
+        return;
+      }
+
+      try {
+        const accessProfile = await resolveUserRoleAccessProfile(currentUser);
+        if (cancelled) return;
+        const role = accessProfile.role;
+        const isAdmin = role === "adminTeacher";
+        const isDirector = isDirectorRole(role);
+        const isCoordinatorWithDirector =
+          isCampusCoordinatorRole(role) && hasUserExtraRole(accessProfile.extraRoles, "director");
+
+        if (isAdmin) {
+          setCanReadConvenios(true);
+          setCanManageConvenios(true);
+          setScopePlantelIds([]);
+          setAccessMessage(null);
+          setAccessResolved(true);
+          return;
+        }
+
+        if (isDirector || isCoordinatorWithDirector) {
+          const normalizedScope = Array.from(
+            new Set(
+              accessProfile.plantelIds
+                .map((value) => value.trim())
+                .filter((value) => value.length > 0),
+            ),
+          );
+          setCanReadConvenios(true);
+          setCanManageConvenios(false);
+          setScopePlantelIds(normalizedScope);
+          setAccessMessage(
+            normalizedScope.length > 0
+              ? null
+              : "No tienes planteles asignados para consultar convenios.",
+          );
+          setAccessResolved(true);
+          return;
+        }
+
+        setCanReadConvenios(false);
+        setCanManageConvenios(false);
+        setScopePlantelIds([]);
+        setAccessMessage(
+          "Tu rol no tiene acceso a Convenios. Solicita el rol Director o el extra Director en coordinación.",
+        );
+        setAccessResolved(true);
+      } catch (error) {
+        console.error("No se pudo validar acceso a convenios", error);
+        if (cancelled) return;
+        setCanReadConvenios(false);
+        setCanManageConvenios(false);
+        setScopePlantelIds([]);
+        setAccessMessage("No se pudo validar tu acceso a convenios.");
+        setAccessResolved(true);
+      }
+    };
+
+    setAccessResolved(false);
+    void resolveAccess();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
+
   const loadData = async () => {
+    if (!accessResolved) return;
+    if (!canReadConvenios) {
+      setStudents([]);
+      setAgreements([]);
+      setLoading(false);
+      return;
+    }
+    if (!canManageConvenios && scopePlantelIds.length === 0) {
+      setStudents([]);
+      setAgreements([]);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     try {
+      const agreementsPromise = canManageConvenios
+        ? getPaymentAgreements(300)
+        : currentUser
+          ? getScopedPaymentAgreements(currentUser, 300)
+          : Promise.resolve<PaymentAgreement[]>([]);
+
       const [studentsData, agreementsData] = await Promise.all([
-        getStudentUsers(500),
-        getPaymentAgreements(300),
+        canManageConvenios ? getStudentUsers(500) : Promise.resolve<StudentUser[]>([]),
+        agreementsPromise,
       ]);
       setStudents(studentsData);
       setAgreements(agreementsData);
-      if (!selectedStudentId && studentsData.length > 0) {
+      if (canManageConvenios && !selectedStudentId && studentsData.length > 0) {
         setSelectedStudentId(studentsData[0].id);
       }
     } catch (error) {
@@ -137,11 +304,17 @@ export default function ConveniosPage() {
   };
 
   useEffect(() => {
-    loadData();
+    if (!accessResolved) return;
+    void loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [accessResolved, canManageConvenios, canReadConvenios, scopePlantelIds, currentUser]);
 
   useEffect(() => {
+    if (!canManageConvenios) {
+      setSearchStudentResults([]);
+      setSearchingStudents(false);
+      return;
+    }
     if (!createModalOpen) {
       setSearchStudentResults([]);
       setSearchingStudents(false);
@@ -199,7 +372,7 @@ export default function ConveniosPage() {
     return () => {
       clearTimeout(timer);
     };
-  }, [createModalOpen, searchStudent]);
+  }, [canManageConvenios, createModalOpen, searchStudent]);
 
   const filteredStudents = useMemo(() => {
     const term = searchStudent.trim().toLowerCase();
@@ -264,6 +437,10 @@ export default function ConveniosPage() {
   };
 
   const openCreateModal = () => {
+    if (!canManageConvenios) {
+      toast.error("Tu perfil solo puede consultar convenios.");
+      return;
+    }
     if (students.length === 0) {
       toast.error("No hay alumnos disponibles para crear un convenio.");
       return;
@@ -283,6 +460,10 @@ export default function ConveniosPage() {
 
   const handleCreate = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (!canManageConvenios) {
+      toast.error("Tu perfil solo puede consultar convenios.");
+      return;
+    }
     if (!currentUser?.uid) {
       toast.error("No se pudo validar tu sesión.");
       return;
@@ -336,6 +517,10 @@ export default function ConveniosPage() {
   };
 
   const handleCancelAgreement = async (agreement: PaymentAgreement) => {
+    if (!canManageConvenios) {
+      toast.error("Tu perfil no puede cancelar convenios.");
+      return;
+    }
     if (!currentUser?.uid) {
       toast.error("No se pudo validar tu sesión.");
       return;
@@ -361,7 +546,13 @@ export default function ConveniosPage() {
   };
 
   return (
-    <RoleGate allowedRole={["adminTeacher"]}>
+    <RoleGate
+      allowedRole={[
+        "adminTeacher",
+        "director",
+        "coordinadorPlantel",
+      ]}
+    >
       <div className="space-y-6">
         <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-2">
@@ -372,17 +563,38 @@ export default function ConveniosPage() {
               Convenios de pago
             </h1>
             <p className="text-sm text-slate-600">
-              Crea prórrogas por alumno para permitir acceso temporal aunque exista adeudo.
+              {canManageConvenios
+                ? "Crea prórrogas por alumno para permitir acceso temporal aunque exista adeudo."
+                : "Consulta convenios de pago dentro de tu alcance de planteles."}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={openCreateModal}
-            className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"
-          >
-            + Nuevo convenio
-          </button>
+          {canManageConvenios ? (
+            <button
+              type="button"
+              onClick={openCreateModal}
+              className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"
+            >
+              + Nuevo convenio
+            </button>
+          ) : null}
         </header>
+
+        {!accessResolved ? (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+            Validando permisos...
+          </div>
+        ) : null}
+        {accessMessage ? (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+            {accessMessage}
+          </div>
+        ) : null}
+        {!canManageConvenios && canReadConvenios && scopePlantelIds.length > 0 ? (
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800">
+            Modo consulta por plantel. Alcance activo: {scopePlantelIds.length}{" "}
+            {scopePlantelIds.length === 1 ? "plantel" : "planteles"}.
+          </div>
+        ) : null}
 
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -452,7 +664,7 @@ export default function ConveniosPage() {
                         >
                           {statusStyle.label}
                         </span>
-                        {agreement.status !== "cancelled" ? (
+                        {canManageConvenios && agreement.status !== "cancelled" ? (
                           <button
                             type="button"
                             onClick={() => handleCancelAgreement(agreement)}

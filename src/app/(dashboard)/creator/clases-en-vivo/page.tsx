@@ -49,6 +49,9 @@ type LiveClassMonitorItem = {
   createdAt: string | null;
   updatedAt: string | null;
   lastRelevantAt: string | null;
+  recordingGenerated: boolean;
+  transcodeDurationSec: number | null;
+  fileSizeBytes: number | null;
 };
 
 type LiveClassesResponse = {
@@ -620,6 +623,11 @@ export default function CreatorLiveClassesPage() {
   }, [displayStorageItems, storageSearch]);
 
   const totalLiveClasses = monitorItems.length;
+  const totalRecordedItems = filteredMonitorItems.filter((item) => item.recordingGenerated).length;
+  const totalKnownRecordingBytes = filteredMonitorItems.reduce(
+    (sum, item) => sum + (typeof item.fileSizeBytes === "number" && item.fileSizeBytes > 0 ? item.fileSizeBytes : 0),
+    0,
+  );
 
   return (
     <RoleGate allowedRole={["adminTeacher", "superAdminTeacher"]}>
@@ -709,6 +717,79 @@ export default function CreatorLiveClassesPage() {
                   </p>
                 </div>
               ))}
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">Diagnóstico de costos</p>
+                  <p className="text-xs text-slate-500">
+                    Vista rápida por clase para detectar fugas de egress/transcodificación.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs text-slate-600">
+                  <span className="rounded-full bg-slate-100 px-3 py-1">
+                    Grabadas: {totalRecordedItems}/{filteredMonitorItems.length}
+                  </span>
+                  <span className="rounded-full bg-slate-100 px-3 py-1">
+                    Tamaño conocido: {formatBytes(totalKnownRecordingBytes)}
+                  </span>
+                </div>
+              </div>
+              <div className="mt-4 overflow-x-auto">
+                <table className="min-w-full divide-y divide-slate-200 text-sm">
+                  <thead>
+                    <tr className="text-left text-slate-500">
+                      <th className="px-3 py-2 font-medium">Clase</th>
+                      <th className="px-3 py-2 font-medium">Duración</th>
+                      <th className="px-3 py-2 font-medium">Grabada</th>
+                      <th className="px-3 py-2 font-medium">Egress ID</th>
+                      <th className="px-3 py-2 font-medium">Tamaño archivo</th>
+                      <th className="px-3 py-2 font-medium">Transcodificación</th>
+                      <th className="px-3 py-2 font-medium">Estado</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredMonitorItems.map((item) => (
+                      <tr key={`${item.docPath}-cost`} className="text-slate-700">
+                        <td className="px-3 py-2">
+                          <div className="font-medium text-slate-900">{item.title}</div>
+                          <div className="text-xs text-slate-500">
+                            {item.courseTitle} / {item.lessonTitle}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2">{formatDuration(item.durationSec)}</td>
+                        <td className="px-3 py-2">
+                          {item.recordingGenerated ? "Sí" : "No"}
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className="block max-w-[22rem] truncate" title={item.egressId ?? "N/D"}>
+                            {item.egressId || "N/D"}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">{formatBytes(item.fileSizeBytes)}</td>
+                        <td className="px-3 py-2">{formatDuration(item.transcodeDurationSec)}</td>
+                        <td className="px-3 py-2">
+                          <span
+                            className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${
+                              MONITOR_STATUS_CLASS[item.monitorStatus]
+                            }`}
+                          >
+                            {MONITOR_STATUS_LABELS[item.monitorStatus]}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                    {filteredMonitorItems.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="px-3 py-6 text-center text-sm text-slate-500">
+                          No hay clases para mostrar en el diagnóstico.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">

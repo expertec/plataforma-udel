@@ -11,6 +11,12 @@ type RoleGateProps = {
   children: ReactNode;
 };
 
+function resolveRoleHome(role: UserRole): string {
+  if (role === "student") return "/feed";
+  if (role === "director") return "/creator/convenios";
+  return "/creator";
+}
+
 export function RoleGate({ allowedRole, children }: RoleGateProps) {
   const router = useRouter();
   const [roleError, setRoleError] = useState<string | null>(null);
@@ -33,7 +39,7 @@ export function RoleGate({ allowedRole, children }: RoleGateProps) {
         }
 
         if (!allowed.includes(role)) {
-          const destination = role === "student" ? "/feed" : "/creator";
+          const destination = resolveRoleHome(role);
           router.replace(destination);
           return;
         }

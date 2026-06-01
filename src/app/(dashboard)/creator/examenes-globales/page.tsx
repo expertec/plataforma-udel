@@ -18,6 +18,7 @@ import {
 import {
   GLOBAL_EXAM_MAX_QUESTIONS,
   GLOBAL_EXAM_MIN_QUESTIONS,
+  getGlobalExamCourseLabel,
   getGlobalExamReasonLabel,
   getGlobalExamStatusLabel,
   getGlobalExamTemplateStatusLabel,
@@ -107,6 +108,7 @@ export default function GlobalExamsPage() {
   const [templateTitle, setTemplateTitle] = useState("");
   const [templateDescription, setTemplateDescription] = useState("");
   const [templateCourseId, setTemplateCourseId] = useState("");
+  const [templateCourseSearch, setTemplateCourseSearch] = useState("");
   const [templateStatus, setTemplateStatus] = useState<"draft" | "published">("draft");
   const [templateQuestions, setTemplateQuestions] = useState<QuestionFormState[]>(createInitialQuestions);
   const [savingTemplate, setSavingTemplate] = useState(false);
@@ -136,6 +138,17 @@ export default function GlobalExamsPage() {
     () => templates.find((template) => template.id === assignmentTemplateId) ?? null,
     [assignmentTemplateId, templates],
   );
+  const selectedTemplateCourse = useMemo(
+    () => courses.find((course) => course.id === templateCourseId) ?? null,
+    [courses, templateCourseId],
+  );
+  const filteredTemplateCourses = useMemo(() => {
+    const query = templateCourseSearch.trim().toLowerCase();
+    if (!query) return courses.slice(0, 8);
+    return courses
+      .filter((course) => course.title.toLowerCase().includes(query))
+      .slice(0, 8);
+  }, [courses, templateCourseSearch]);
 
   const canCreateTemplates = isAdmin;
 
@@ -144,6 +157,7 @@ export default function GlobalExamsPage() {
     setTemplateTitle("");
     setTemplateDescription("");
     setTemplateCourseId("");
+    setTemplateCourseSearch("");
     setTemplateStatus("draft");
     setTemplateQuestions(createInitialQuestions());
   };
@@ -255,6 +269,22 @@ export default function GlobalExamsPage() {
     };
   }, [assignmentStudentId, assignmentTemplateId]);
 
+  const handleTemplateCourseSearchChange = (value: string) => {
+    setTemplateCourseSearch(value);
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      setTemplateCourseId("");
+      return;
+    }
+    const exactMatch = courses.find((course) => course.title.trim().toLowerCase() === normalized);
+    setTemplateCourseId(exactMatch?.id ?? "");
+  };
+
+  const handleTemplateCourseSelect = (course: Course) => {
+    setTemplateCourseId(course.id);
+    setTemplateCourseSearch(course.title);
+  };
+
   const handleQuestionChange = (
     questionId: string,
     updater: (current: QuestionFormState) => QuestionFormState,
@@ -280,13 +310,13 @@ export default function GlobalExamsPage() {
 
   const handleSubmitTemplate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!templateCourseId) {
-      toast.error("Selecciona la materia del examen");
+    if (templateCourseSearch.trim() && !templateCourseId) {
+      toast.error("Selecciona una materia valida o deja el campo vacio");
       return;
     }
 
     const selectedCourse = courses.find((course) => course.id === templateCourseId);
-    if (!selectedCourse) {
+    if (templateCourseId && !selectedCourse) {
       toast.error("No se encontro la materia seleccionada");
       return;
     }
@@ -304,14 +334,16 @@ export default function GlobalExamsPage() {
         ? await updateGlobalExamTemplate(editingTemplateId, {
             title: templateTitle,
             description: templateDescription,
+            courseId: selectedCourse?.id ?? "",
+            courseName: selectedCourse?.title ?? "",
             status: templateStatus,
             questions: payloadQuestions,
           })
         : await createGlobalExamTemplate({
             title: templateTitle,
             description: templateDescription,
-            courseId: selectedCourse.id,
-            courseName: selectedCourse.title,
+            courseId: selectedCourse?.id ?? "",
+            courseName: selectedCourse?.title ?? "",
             status: templateStatus,
             questions: payloadQuestions,
           });
@@ -338,6 +370,7 @@ export default function GlobalExamsPage() {
     setTemplateTitle(template.title);
     setTemplateDescription(template.description);
     setTemplateCourseId(template.courseId);
+    setTemplateCourseSearch(template.courseName);
     setTemplateStatus(template.status);
     setTemplateQuestions(cloneTemplateQuestions(template.questions));
     setActiveTab("templates");
@@ -537,21 +570,44 @@ export default function GlobalExamsPage() {
                       />
                     </label>
                     <label className="space-y-2 text-sm">
-                      <span className="font-medium text-slate-700">Materia</span>
-                      <select
-                        value={templateCourseId}
-                        onChange={(event) => setTemplateCourseId(event.target.value)}
+                      <span className="font-medium text-slate-700">Materia (opcional)</span>
+                      <input
+                        value={templateCourseSearch}
+                        onChange={(event) => handleTemplateCourseSearchChange(event.target.value)}
+                        placeholder="Busca una materia por nombre"
                         className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
-                        required
-                        disabled={Boolean(editingTemplateId)}
-                      >
-                        <option value="">Selecciona una materia</option>
-                        {courses.map((course) => (
-                          <option key={course.id} value={course.id}>
+                      />
+                      <div className="rounded-xl border border-slate-200 bg-white p-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setTemplateCourseId("");
+                            setTemplateCourseSearch("");
+                          }}
+                          className="w-full rounded-lg px-2 py-1.5 text-left text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+                        >
+                          Sin materia
+                        </button>
+                        {filteredTemplateCourses.map((course) => (
+                          <button
+                            key={course.id}
+                            type="button"
+                            onClick={() => handleTemplateCourseSelect(course)}
+                            className={`w-full rounded-lg px-2 py-1.5 text-left text-xs transition ${
+                              templateCourseId === course.id
+                                ? "bg-blue-50 font-semibold text-blue-700"
+                                : "text-slate-700 hover:bg-slate-50"
+                            }`}
+                          >
                             {course.title}
-                          </option>
+                          </button>
                         ))}
-                      </select>
+                      </div>
+                      <p className="text-xs text-slate-500">
+                        {templateCourseId
+                          ? `Materia seleccionada: ${selectedTemplateCourse?.title ?? templateCourseSearch}`
+                          : "Si lo dejas vacio, el examen no quedara ligado a una materia."}
+                      </p>
                     </label>
                     <label className="space-y-2 text-sm lg:col-span-2">
                       <span className="font-medium text-slate-700">Descripcion u observaciones</span>
@@ -735,7 +791,7 @@ export default function GlobalExamsPage() {
                               {getGlobalExamTemplateStatusLabel(template.status)}
                             </span>
                           </div>
-                          <p className="text-sm text-slate-600">{template.courseName}</p>
+                          <p className="text-sm text-slate-600">{getGlobalExamCourseLabel(template.courseName)}</p>
                           <p className="text-xs text-slate-500">
                             {template.questionCount} preguntas | Pase con {template.passScore}
                           </p>
@@ -795,7 +851,7 @@ export default function GlobalExamsPage() {
                       .filter((template) => template.status === "published")
                       .map((template) => (
                         <option key={template.id} value={template.id}>
-                          {template.title} | {template.courseName}
+                          {template.title} | {getGlobalExamCourseLabel(template.courseName)}
                         </option>
                       ))}
                   </select>
@@ -867,7 +923,8 @@ export default function GlobalExamsPage() {
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
                     <p className="font-semibold text-slate-900">{selectedTemplate.title}</p>
                     <p className="mt-1">
-                      {selectedTemplate.courseName} | {selectedTemplate.questionCount} preguntas | pase con{" "}
+                      {getGlobalExamCourseLabel(selectedTemplate.courseName)} |{" "}
+                      {selectedTemplate.questionCount} preguntas | pase con{" "}
                       {selectedTemplate.passScore}
                     </p>
                   </div>
@@ -932,7 +989,7 @@ export default function GlobalExamsPage() {
                               </span>
                             </div>
                             <p className="text-sm text-slate-600">
-                              {assignment.courseName} | {assignment.groupName}
+                              {getGlobalExamCourseLabel(assignment.courseName)} | {assignment.groupName}
                             </p>
                             <p className="text-xs text-slate-500">
                               {getGlobalExamReasonLabel(assignment.reason)} | Intentos:{" "}

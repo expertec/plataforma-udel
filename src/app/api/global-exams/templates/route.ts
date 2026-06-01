@@ -75,24 +75,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!courseId) {
-      return NextResponse.json(
-        { success: false, error: "La materia del examen es requerida" },
-        { status: 400 },
-      );
-    }
-
     const db = getAdminFirestore();
-    const courseSnap = await db.collection("courses").doc(courseId).get();
-    if (!courseSnap.exists) {
-      return NextResponse.json(
-        { success: false, error: "No se encontro la materia seleccionada" },
-        { status: 404 },
-      );
-    }
+    if (courseId) {
+      const courseSnap = await db.collection("courses").doc(courseId).get();
+      if (!courseSnap.exists) {
+        return NextResponse.json(
+          { success: false, error: "No se encontro la materia seleccionada" },
+          { status: 404 },
+        );
+      }
 
-    if (!courseName) {
-      courseName = asTrimmedString(courseSnap.data()?.title) || "Materia";
+      if (!courseName) {
+        courseName = asTrimmedString(courseSnap.data()?.title) || "Materia";
+      }
+    } else {
+      courseName = "";
     }
 
     const now = new Date();

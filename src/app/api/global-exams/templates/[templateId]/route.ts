@@ -37,6 +37,8 @@ export async function PATCH(
     const body = (await request.json().catch(() => ({}))) as {
       title?: unknown;
       description?: unknown;
+      courseId?: unknown;
+      courseName?: unknown;
       status?: unknown;
       questions?: unknown;
     };
@@ -64,6 +66,31 @@ export async function PATCH(
 
     if (body.status !== undefined) {
       updates.status = normalizeTemplateStatus(body.status);
+    }
+
+    if (body.courseId !== undefined) {
+      const requestedCourseId = asTrimmedString(body.courseId);
+      let requestedCourseName = asTrimmedString(body.courseName);
+
+      if (requestedCourseId) {
+        const courseSnap = await getAdminFirestore().collection("courses").doc(requestedCourseId).get();
+        if (!courseSnap.exists) {
+          return NextResponse.json(
+            { success: false, error: "No se encontro la materia seleccionada" },
+            { status: 404 },
+          );
+        }
+        if (!requestedCourseName) {
+          requestedCourseName = asTrimmedString(courseSnap.data()?.title) || "Materia";
+        }
+      } else {
+        requestedCourseName = "";
+      }
+
+      updates.courseId = requestedCourseId;
+      updates.courseName = requestedCourseName;
+    } else if (body.courseName !== undefined) {
+      updates.courseName = asTrimmedString(body.courseName);
     }
 
     if (body.questions !== undefined) {

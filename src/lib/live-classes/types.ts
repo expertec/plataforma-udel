@@ -1,6 +1,8 @@
 export type LiveSessionStatus = "scheduled" | "live" | "ended" | "recording_ready";
 export type LiveRecordingStatus = "idle" | "recording" | "processing" | "ready" | "failed";
 
+const DEFAULT_RECORDING_MAX_RETRY_COUNT = 1;
+
 export type LiveRecordingData = {
   auto: boolean;
   egressId: string | null;
@@ -112,7 +114,7 @@ export function createDefaultLiveSession(params?: {
     timezone: asTrimmedString(params?.timezone ?? "") || "America/Monterrey",
     teacherActive: false,
     recording: {
-      auto: true,
+      auto: false,
       egressId: null,
       status: "idle",
       storagePath: null,
@@ -123,7 +125,7 @@ export function createDefaultLiveSession(params?: {
       errorMessage: null,
       errorCode: null,
       retryCount: 0,
-      maxRetryCount: 2,
+      maxRetryCount: DEFAULT_RECORDING_MAX_RETRY_COUNT,
       lastRetryAt: null,
     },
     lastStartedAt: null,
@@ -151,7 +153,7 @@ export function normalizeLiveSession(value: unknown): LiveClassSession | null {
     timezone,
     teacherActive: raw.teacherActive === true,
     recording: {
-      auto: recordingRaw.auto !== false,
+      auto: recordingRaw.auto === true,
       egressId: asNullableString(recordingRaw.egressId),
       status: asRecordingStatus(recordingRaw.status),
       storagePath: asNullableString(recordingRaw.storagePath),
@@ -162,7 +164,10 @@ export function normalizeLiveSession(value: unknown): LiveClassSession | null {
       errorMessage: asNullableString(recordingRaw.errorMessage),
       errorCode: asFiniteNumber(recordingRaw.errorCode),
       retryCount: asNonNegativeInteger(recordingRaw.retryCount, 0),
-      maxRetryCount: asNonNegativeInteger(recordingRaw.maxRetryCount, 2) || 2,
+      maxRetryCount: asNonNegativeInteger(
+        recordingRaw.maxRetryCount,
+        DEFAULT_RECORDING_MAX_RETRY_COUNT,
+      ),
       lastRetryAt: asNullableString(recordingRaw.lastRetryAt),
     },
     lastStartedAt: asNullableString(raw.lastStartedAt),
@@ -198,7 +203,8 @@ export function createLiveSessionForClass(params: {
     timezone: normalized?.timezone || base.timezone,
     recording: {
       ...base.recording,
-      auto: normalized?.recording?.auto !== false,
+      // Auto-recording is intentionally disabled project-wide to control LiveKit egress costs.
+      auto: false,
     },
   };
 }
@@ -234,7 +240,8 @@ export function mergeTeacherEditableLiveSession(params: {
     timezone: incoming?.timezone || current.timezone || "America/Monterrey",
     recording: {
       ...current.recording,
-      auto: incoming?.recording?.auto ?? current.recording.auto,
+      // Keep disabled even if legacy payloads still send `recording.auto = true`.
+      auto: false,
     },
   };
 }

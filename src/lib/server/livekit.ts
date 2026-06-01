@@ -1,10 +1,12 @@
 import {
   AccessToken,
   EgressClient,
+  EgressStatus,
   EncodedFileOutput,
   EncodingOptionsPreset,
   GCPUpload,
   RoomServiceClient,
+  TrackSource,
   SegmentedFileOutput,
   SegmentedFileProtocol,
   WebhookReceiver,
@@ -32,15 +34,15 @@ let cachedRoomServiceClient: RoomServiceClient | null = null;
 let cachedEgressClient: EgressClient | null = null;
 let cachedWebhookReceiver: WebhookReceiver | null = null;
 const LIVEKIT_TRACK_SOURCE_MICROPHONE = 2; // TrackSource.MICROPHONE
-const DEFAULT_RECORDING_START_MAX_ATTEMPTS = 2;
-const DEFAULT_RECORDING_MAX_RETRY_COUNT = 2;
+const DEFAULT_RECORDING_START_MAX_ATTEMPTS = 1;
+const DEFAULT_RECORDING_MAX_RETRY_COUNT = 1;
 const RECORDING_START_RETRY_BASE_DELAY_MS = 1500;
 
 export type LiveRecordingOutputPaths = {
   mp4ObjectPath: string;
-  backupManifestPath: string;
-  backupLiveManifestPath: string;
-  backupSegmentPrefix: string;
+  backupManifestPath: string | null;
+  backupLiveManifestPath: string | null;
+  backupSegmentPrefix: string | null;
 };
 
 export type LiveRecordingRuntimeStatus = "recording" | "processing";
@@ -270,6 +272,53 @@ export async function listActiveLiveKitEgress(roomName?: string) {
   return getEgressClient().listEgress();
 }
 
+function isPotentiallyActiveEgressStatus(status: EgressStatus | number | undefined): boolean {
+  return (
+    status === EgressStatus.EGRESS_STARTING ||
+    status === EgressStatus.EGRESS_ACTIVE ||
+    status === EgressStatus.EGRESS_ENDING
+  );
+}
+
+export async function stopActiveLiveKitEgressForRoom(roomName: string): Promise<{
+  requestedStops: number;
+  stopped: number;
+  egressIds: string[];
+}> {
+  const normalizedRoomName = roomName.trim();
+  if (!normalizedRoomName) {
+    return {
+      requestedStops: 0,
+      stopped: 0,
+      egressIds: [],
+    };
+  }
+
+  const egressItems = await listActiveLiveKitEgress(normalizedRoomName);
+  const egressIds = Array.from(
+    new Set(
+      egressItems
+        .filter((item) => isPotentiallyActiveEgressStatus(item.status))
+        .map((item) => (item.egressId ?? "").trim())
+        .filter(Boolean),
+    ),
+  );
+
+  let stopped = 0;
+  for (const egressId of egressIds) {
+    const stopRequested = await stopLiveKitEgress(egressId);
+    if (stopRequested) {
+      stopped += 1;
+    }
+  }
+
+  return {
+    requestedStops: egressIds.length,
+    stopped,
+    egressIds,
+  };
+}
+
 function parseParticipantRoleFromMetadata(rawMetadata: string | null | undefined): string {
   const value = (rawMetadata ?? "").trim();
   if (!value) return "";
@@ -469,6 +518,14 @@ export async function createJoinToken(params: {
     room: params.roomName,
     roomAdmin: params.isTeacher,
     canPublish: true,
+    canPublishSources: params.isTeacher
+      ? [
+          TrackSource.CAMERA,
+          TrackSource.MICROPHONE,
+          TrackSource.SCREEN_SHARE,
+          TrackSource.SCREEN_SHARE_AUDIO,
+        ]
+      : [TrackSource.MICROPHONE],
     canSubscribe: true,
     canPublishData: true,
   });
@@ -481,6 +538,34 @@ function normalizePathSegment(value: string): string {
     .trim()
     .replace(/^\/+|\/+$/g, "")
     .replace(/\/+/g, "/");
+}
+
+function readBooleanEnv(rawValue: string | undefined, defaultValue: boolean): boolean {
+  const normalized = (rawValue ?? "").trim().toLowerCase();
+  if (!normalized) return defaultValue;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return defaultValue;
+}
+
+function isLiveKitRecordingHlsBackupEnabled(): boolean {
+  return readBooleanEnv(process.env.LIVEKIT_RECORDING_ENABLE_HLS, false);
+}
+
+function resolveRoomCompositeLayout(): "grid" | "speaker" {
+  const layout = (process.env.LIVEKIT_RECORDING_LAYOUT ?? "speaker").trim().toLowerCase();
+  return layout === "grid" ? "grid" : "speaker";
+}
+
+function resolveRoomCompositeEncodingPreset(): EncodingOptionsPreset {
+  const rawPreset = (process.env.LIVEKIT_RECORDING_ENCODING_PRESET ?? "h264_720p_15")
+    .trim()
+    .toLowerCase();
+
+  if (rawPreset === "h264_720p_30") {
+    return EncodingOptionsPreset.H264_720P_30;
+  }
+  return EncodingOptionsPreset.H264_720P_15;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -549,24 +634,26 @@ export function buildRecordingOutputPaths(params: {
     typeof params.retryIndex === "number" && params.retryIndex > 0 ? `-retry${params.retryIndex}` : "";
   const baseFileName = `${params.classId}-${params.startedAtMs}${retrySuffix}`;
   const backupBasePath = [basePrefix, `${baseFileName}-hls`].filter(Boolean).join("/");
+  const hlsEnabled = isLiveKitRecordingHlsBackupEnabled();
 
   return {
     mp4ObjectPath: [basePrefix, `${baseFileName}.mp4`].filter(Boolean).join("/"),
-    backupManifestPath: [backupBasePath, "index.m3u8"].join("/"),
-    backupLiveManifestPath: [backupBasePath, "live.m3u8"].join("/"),
-    backupSegmentPrefix: [backupBasePath, "segment"].join("/"),
+    backupManifestPath: hlsEnabled ? [backupBasePath, "index.m3u8"].join("/") : null,
+    backupLiveManifestPath: hlsEnabled ? [backupBasePath, "live.m3u8"].join("/") : null,
+    backupSegmentPrefix: hlsEnabled ? [backupBasePath, "segment"].join("/") : null,
   };
 }
 
 function findMatchingActiveEgressForRoom(params: {
   items: EgressInfo[];
   expectedObjectPath: string;
-  expectedBackupManifestPath: string;
+  expectedBackupManifestPath: string | null;
 }): EgressInfo | null {
   return (
     params.items.find((item) => {
       const filePath = extractRecordingObjectPath(item);
       if (filePath && filePath === params.expectedObjectPath) return true;
+      if (!params.expectedBackupManifestPath) return false;
       const backupPath = extractRecordingBackupManifestPath(item);
       return Boolean(backupPath && backupPath === params.expectedBackupManifestPath);
     }) ??
@@ -598,29 +685,40 @@ export async function startRoomCompositeRecording(params: {
       }),
     },
   });
-  const segmentsOutput = new SegmentedFileOutput({
-    protocol: SegmentedFileProtocol.HLS_PROTOCOL,
-    filenamePrefix: normalizePathSegment(params.outputPaths.backupSegmentPrefix),
-    playlistName: params.outputPaths.backupManifestPath.split("/").pop() ?? "index.m3u8",
-    livePlaylistName:
-      params.outputPaths.backupLiveManifestPath.split("/").pop() ?? "live.m3u8",
-    segmentDuration: 6,
-    output: {
-      case: "gcp",
-      value: new GCPUpload({
-        credentials: egressConfig.egressCredentials,
-        bucket: egressConfig.egressBucket,
-      }),
-    },
-  });
+  const hlsBackupEnabled =
+    isLiveKitRecordingHlsBackupEnabled() &&
+    Boolean(params.outputPaths.backupManifestPath) &&
+    Boolean(params.outputPaths.backupLiveManifestPath) &&
+    Boolean(params.outputPaths.backupSegmentPrefix);
+  const segmentsOutput = hlsBackupEnabled
+    ? new SegmentedFileOutput({
+        protocol: SegmentedFileProtocol.HLS_PROTOCOL,
+        filenamePrefix: normalizePathSegment(params.outputPaths.backupSegmentPrefix ?? ""),
+        playlistName:
+          params.outputPaths.backupManifestPath?.split("/").pop() ?? "index.m3u8",
+        livePlaylistName:
+          params.outputPaths.backupLiveManifestPath?.split("/").pop() ?? "live.m3u8",
+        segmentDuration: 6,
+        output: {
+          case: "gcp",
+          value: new GCPUpload({
+            credentials: egressConfig.egressCredentials,
+            bucket: egressConfig.egressBucket,
+          }),
+        },
+      })
+    : undefined;
 
   const egressClient = getEgressClient();
+  const outputs = segmentsOutput
+    ? { file: output, segments: segmentsOutput }
+    : { file: output };
   return egressClient.startRoomCompositeEgress(
     params.roomName,
-    { file: output, segments: segmentsOutput },
+    outputs,
     {
-      layout: "grid",
-      encodingOptions: EncodingOptionsPreset.H264_1080P_30,
+      layout: resolveRoomCompositeLayout(),
+      encodingOptions: resolveRoomCompositeEncodingPreset(),
     },
   );
 }

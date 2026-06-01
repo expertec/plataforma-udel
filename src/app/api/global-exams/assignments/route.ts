@@ -124,7 +124,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           success: false,
-          error: "El alumno no tiene una inscripcion valida para esa materia dentro de ese grupo",
+          error: template.courseId
+            ? "El alumno no tiene una inscripcion valida para esa materia dentro de ese grupo"
+            : "El alumno no tiene una inscripcion valida dentro de ese grupo",
         },
         { status: 400 },
       );
@@ -136,16 +138,19 @@ export async function POST(request: NextRequest) {
       .get();
     const duplicated = existingAssignmentsSnap.docs.find((docSnap) => {
       const data = docSnap.data();
-      return (
-        asTrimmedString(data.groupId) === targetEnrollment.groupId &&
-        asTrimmedString(data.courseId) === template.courseId
-      );
+      if (asTrimmedString(data.groupId) !== targetEnrollment.groupId) return false;
+      if (template.courseId) {
+        return asTrimmedString(data.courseId) === template.courseId;
+      }
+      return asTrimmedString(data.templateId) === template.id;
     });
     if (duplicated) {
       return NextResponse.json(
         {
           success: false,
-          error: "Ya existe una asignacion de examen global para este alumno en esa materia y grupo",
+          error: template.courseId
+            ? "Ya existe una asignacion de examen global para este alumno en esa materia y grupo"
+            : "Ya existe una asignacion de esta plantilla para este alumno en ese grupo",
         },
         { status: 409 },
       );

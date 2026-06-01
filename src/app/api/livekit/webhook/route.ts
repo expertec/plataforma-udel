@@ -4,12 +4,11 @@ import { getAdminFirestore } from "@/lib/firebase/admin";
 import { resolveLiveClassByRoomName } from "@/lib/live-classes/access";
 import { createLiveSessionForClass } from "@/lib/live-classes/types";
 import {
-  buildRecordingOutputPaths,
-  ensureRoomCompositeRecordingStarted,
   extractRecordingBackupLiveManifestPath,
   extractRecordingBackupManifestPath,
   extractRecordingObjectPath,
   getWebhookReceiver,
+  stopActiveLiveKitEgressForRoom,
 } from "@/lib/server/livekit";
 
 export const runtime = "nodejs";
@@ -112,12 +111,37 @@ export async function POST(request: NextRequest) {
       nextSession.teacherActive = true;
       nextSession.lastStartedAt = now;
     } else if (event.event === "room_finished") {
+      const shouldForceProcessing =
+        nextSession.recording.status === "recording" ||
+        nextSession.recording.status === "processing";
       nextSession.teacherActive = false;
       nextSession.lastEndedAt = now;
+      if (shouldForceProcessing) {
+        nextSession.recording.status = "processing";
+      }
       if (nextSession.recording.status === "ready") {
         nextSession.status = "recording_ready";
       } else if (nextSession.status !== "recording_ready") {
         nextSession.status = "ended";
+      }
+      try {
+        console.info("[livekit:webhook] room_finished: stopping active egress", {
+          classId: liveClass.classId,
+          roomName,
+          currentEgressId: nextSession.recording.egressId,
+        });
+        const stopSummary = await stopActiveLiveKitEgressForRoom(roomName);
+        console.info("[livekit:webhook] room_finished: egress stop summary", {
+          classId: liveClass.classId,
+          roomName,
+          ...stopSummary,
+        });
+      } catch (stopError) {
+        console.error("[livekit:webhook] room_finished: failed to stop egress", {
+          classId: liveClass.classId,
+          roomName,
+          error: stopError,
+        });
       }
     } else if (event.event === "participant_joined") {
       const role = parseRoleFromParticipantMetadata(event.participant?.metadata);
@@ -129,12 +153,37 @@ export async function POST(request: NextRequest) {
     } else if (event.event === "participant_left") {
       const role = parseRoleFromParticipantMetadata(event.participant?.metadata);
       if (role === "teacher") {
+        const shouldForceProcessing =
+          nextSession.recording.status === "recording" ||
+          nextSession.recording.status === "processing";
         nextSession.teacherActive = false;
         nextSession.lastEndedAt = now;
+        if (shouldForceProcessing) {
+          nextSession.recording.status = "processing";
+        }
         if (nextSession.recording.status === "ready") {
           nextSession.status = "recording_ready";
         } else if (nextSession.status !== "recording_ready") {
           nextSession.status = "ended";
+        }
+        try {
+          console.info("[livekit:webhook] participant_left(teacher): stopping active egress", {
+            classId: liveClass.classId,
+            roomName,
+            currentEgressId: nextSession.recording.egressId,
+          });
+          const stopSummary = await stopActiveLiveKitEgressForRoom(roomName);
+          console.info("[livekit:webhook] participant_left(teacher): egress stop summary", {
+            classId: liveClass.classId,
+            roomName,
+            ...stopSummary,
+          });
+        } catch (stopError) {
+          console.error("[livekit:webhook] participant_left(teacher): failed to stop egress", {
+            classId: liveClass.classId,
+            roomName,
+            error: stopError,
+          });
         }
       }
     } else if (event.event === "egress_started" || event.event === "egress_updated") {
@@ -186,65 +235,8 @@ export async function POST(request: NextRequest) {
         nextSession.recording.errorCode = null;
         nextSession.status = sessionStillLive ? "live" : "recording_ready";
       } else {
-        const canRetryRecording =
-          nextSession.recording.auto !== false &&
-          sessionStillLive &&
-          nextSession.recording.retryCount < nextSession.recording.maxRetryCount;
-
-        if (canRetryRecording) {
-          const retryStartedAtIso = asIsoNow();
-          const retryCountBase = nextSession.recording.retryCount + 1;
-          const retryOutputPaths = buildRecordingOutputPaths({
-            courseId: liveClass.courseId,
-            classId: liveClass.classId,
-            startedAtMs: Date.now(),
-            retryIndex: retryCountBase,
-          });
-
-          try {
-            const recordingRestart = await ensureRoomCompositeRecordingStarted({
-              roomName,
-              outputPaths: retryOutputPaths,
-            });
-            nextSession.recording.egressId =
-              recordingRestart.egressInfo.egressId || nextSession.recording.egressId;
-            nextSession.recording.status = recordingRestart.recordingStatus;
-            nextSession.recording.storagePath =
-              extractRecordingObjectPath(recordingRestart.egressInfo) ||
-              recordingRestart.outputPaths.mp4ObjectPath;
-            nextSession.recording.backupManifestPath =
-              extractRecordingBackupManifestPath(recordingRestart.egressInfo) ||
-              recordingRestart.outputPaths.backupManifestPath;
-            nextSession.recording.backupLiveManifestPath =
-              extractRecordingBackupLiveManifestPath(recordingRestart.egressInfo) ||
-              recordingRestart.outputPaths.backupLiveManifestPath;
-            nextSession.recording.playbackReadyAt = null;
-            nextSession.recording.durationSec = null;
-            nextSession.recording.retryCount =
-              nextSession.recording.retryCount + 1 + recordingRestart.retryCountUsed;
-            nextSession.recording.lastRetryAt = retryStartedAtIso;
-            nextSession.recording.errorMessage = null;
-            nextSession.recording.errorCode = null;
-            nextSession.status = "live";
-          } catch (restartError) {
-            const errorWithCode = restartError as { message?: unknown; code?: unknown };
-            nextSession.recording.status = "failed";
-            nextSession.recording.retryCount = retryCountBase;
-            nextSession.recording.lastRetryAt = retryStartedAtIso;
-            nextSession.recording.errorMessage =
-              typeof errorWithCode.message === "string" && errorWithCode.message.trim()
-                ? errorWithCode.message.trim()
-                : "La grabación se cayó y el reinicio automático también falló";
-            nextSession.recording.errorCode =
-              typeof errorWithCode.code === "number" && Number.isFinite(errorWithCode.code)
-                ? errorWithCode.code
-                : null;
-            nextSession.status = sessionStillLive ? "live" : "ended";
-          }
-        } else {
-          nextSession.recording.status = "failed";
-          nextSession.status = sessionStillLive ? "live" : "ended";
-        }
+        nextSession.recording.status = "failed";
+        nextSession.status = sessionStillLive ? "live" : "ended";
       }
     }
 

@@ -12,7 +12,13 @@ export type TeacherUser = {
   id: string;
   name: string;
   email: string;
-  role: "teacher" | "adminTeacher" | "superAdminTeacher" | "coordinadorPlantel";
+  role:
+    | "teacher"
+    | "adminTeacher"
+    | "superAdminTeacher"
+    | "coordinadorPlantel"
+    | "director";
+  extraRoles?: ("director")[];
   phone?: string | null;
   plantelIds?: string[];
   plantelNames?: string[];
@@ -95,6 +101,16 @@ const toUniqueStringArray = (value: unknown): string[] => {
       ),
     ),
   );
+};
+
+const toExtraRoles = (data: Record<string, unknown>): ("director")[] => {
+  const explicit = toUniqueStringArray(data.extraRoles).filter(
+    (role): role is "director" => role === "director",
+  );
+  if (data.directorEnabled === true && !explicit.includes("director")) {
+    return [...explicit, "director"];
+  }
+  return explicit;
 };
 
 const normalizeProgram = (value: unknown): string => {
@@ -339,7 +355,13 @@ export async function getTeacherUsers(max = 100): Promise<TeacherUser[]> {
   const usersRef = collection(db, "users");
   const q = query(
     usersRef,
-    where("role", "in", ["teacher", "adminTeacher", "superAdminTeacher", "coordinadorPlantel"]),
+    where("role", "in", [
+      "teacher",
+      "adminTeacher",
+      "superAdminTeacher",
+      "coordinadorPlantel",
+      "director",
+    ]),
     orderBy("createdAt", "desc"),
     fbLimit(max),
   );
@@ -348,6 +370,7 @@ export async function getTeacherUsers(max = 100): Promise<TeacherUser[]> {
     const d = docSnap.data();
     const plantelAssignments = getPlantelAssignmentsFromData(d as Record<string, unknown>);
     const primaryPlantel = plantelAssignments[0] ?? null;
+    const extraRoles = toExtraRoles(d as Record<string, unknown>);
     return {
       id: docSnap.id,
       name: d.displayName ?? d.name ?? "Profesor",
@@ -355,9 +378,11 @@ export async function getTeacherUsers(max = 100): Promise<TeacherUser[]> {
       role:
         d.role === "adminTeacher" ||
         d.role === "superAdminTeacher" ||
-        d.role === "coordinadorPlantel"
+        d.role === "coordinadorPlantel" ||
+        d.role === "director"
           ? d.role
           : "teacher",
+      extraRoles,
       phone: d.phone ?? null,
       plantelIds: plantelAssignments.map((assignment) => assignment.plantelId),
       plantelNames: plantelAssignments.map((assignment) => assignment.plantelName),
@@ -534,7 +559,12 @@ export async function createTeacherAccount(params: {
   name: string;
   email: string;
   password: string;
-  role?: "teacher" | "adminTeacher" | "superAdminTeacher" | "coordinadorPlantel";
+  role?:
+    | "teacher"
+    | "adminTeacher"
+    | "superAdminTeacher"
+    | "coordinadorPlantel"
+    | "director";
   asAdminTeacher?: boolean;
   phone?: string;
   createdBy?: string | null;

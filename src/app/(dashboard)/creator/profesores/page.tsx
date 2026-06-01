@@ -25,12 +25,17 @@ import {
   normalizeTeacherProfileTextList,
 } from "@/lib/teachers/profile";
 
-type EditableTeacherRole = "teacher" | "adminTeacher" | "coordinadorPlantel";
+type EditableTeacherRole =
+  | "teacher"
+  | "adminTeacher"
+  | "coordinadorPlantel"
+  | "director";
 
 const EDITABLE_TEACHER_ROLES: EditableTeacherRole[] = [
   "teacher",
   "adminTeacher",
   "coordinadorPlantel",
+  "director",
 ];
 
 function isEditableTeacherRole(role: TeacherUser["role"]): role is EditableTeacherRole {
@@ -41,7 +46,12 @@ function getTeacherRoleLabel(role: TeacherUser["role"]): string {
   if (role === "superAdminTeacher") return "SuperAdminTeacher";
   if (role === "adminTeacher") return "AdminTeacher";
   if (role === "coordinadorPlantel") return "Coordinador de plantel";
+  if (role === "director") return "Director de plantel";
   return "Profesor";
+}
+
+function hasDirectorExtraRole(teacher: Pick<TeacherUser, "extraRoles">): boolean {
+  return Array.isArray(teacher.extraRoles) && teacher.extraRoles.includes("director");
 }
 
 const moneyFormatter = new Intl.NumberFormat("es-MX", {
@@ -173,6 +183,7 @@ export default function ProfesoresPage() {
   const [newName, setNewName] = useState("");
   const [newPhone, setNewPhone] = useState("");
   const [newRole, setNewRole] = useState<EditableTeacherRole>("teacher");
+  const [newDirectorExtraRole, setNewDirectorExtraRole] = useState(false);
   const [planteles, setPlanteles] = useState<Plantel[]>([]);
   const [selectedPlantelIds, setSelectedPlantelIds] = useState<string[]>([]);
   const [newPlantelName, setNewPlantelName] = useState("");
@@ -391,6 +402,9 @@ export default function ProfesoresPage() {
     setNewName(teacher.name);
     setNewPhone(teacher.phone || "");
     setNewRole(isEditableTeacherRole(teacher.role) ? teacher.role : "teacher");
+    setNewDirectorExtraRole(
+      teacher.role === "coordinadorPlantel" && hasDirectorExtraRole(teacher),
+    );
     setSelectedPlantelIds(getTeacherPlantelIds(teacher));
     setNewPlantelName("");
     setEditProfileModalOpen(true);
@@ -411,47 +425,64 @@ export default function ProfesoresPage() {
     const phoneChanged = newPhone.trim() !== (selectedTeacher.phone || "");
     const roleChanged =
       isEditableTeacherRole(selectedTeacher.role) && newRole !== selectedTeacher.role;
+    const roleRequiresPlantelScope =
+      newRole === "coordinadorPlantel" || newRole === "director";
     const selectedPlanteles = planteles.filter((plantel) => selectedPlantelIds.includes(plantel.id));
     const plantelChanged =
-      newRole === "coordinadorPlantel" &&
+      roleRequiresPlantelScope &&
       !haveSameIds(
         selectedPlanteles.map((plantel) => plantel.id),
         getTeacherPlantelIds(selectedTeacher),
       );
+    const directorExtraChanged =
+      newRole === "coordinadorPlantel" &&
+      (newDirectorExtraRole !== hasDirectorExtraRole(selectedTeacher));
 
-    if (newRole === "coordinadorPlantel" && selectedPlanteles.length === 0) {
-      toast.error("Selecciona al menos un plantel para el coordinador.");
+    if (roleRequiresPlantelScope && selectedPlanteles.length === 0) {
+      toast.error("Selecciona al menos un plantel para el rol seleccionado.");
       return;
     }
 
-    if (!emailChanged && !nameChanged && !phoneChanged && !roleChanged && !plantelChanged) {
+    if (
+      !emailChanged &&
+      !nameChanged &&
+      !phoneChanged &&
+      !roleChanged &&
+      !plantelChanged &&
+      !directorExtraChanged
+    ) {
       toast("No hay cambios para guardar");
       return;
     }
 
     setUpdatingProfile(true);
     try {
-      if (roleChanged || plantelChanged) {
+      if (roleChanged || plantelChanged || directorExtraChanged) {
         const roleResponse = await fetchWithToken("/api/admin/teachers/update-role", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             teacherId: selectedTeacher.id,
             newRole,
+            extraRoles:
+              newRole === "coordinadorPlantel" && newDirectorExtraRole
+                ? ["director"]
+                : [],
+            directorEnabled: newRole === "coordinadorPlantel" && newDirectorExtraRole,
             plantelIds:
-              newRole === "coordinadorPlantel"
+              roleRequiresPlantelScope
                 ? selectedPlanteles.map((plantel) => plantel.id)
                 : [],
             plantelNames:
-              newRole === "coordinadorPlantel"
+              roleRequiresPlantelScope
                 ? selectedPlanteles.map((plantel) => plantel.name)
                 : [],
             plantelId:
-              newRole === "coordinadorPlantel"
+              roleRequiresPlantelScope
                 ? selectedPlanteles[0]?.id ?? null
                 : null,
             plantelName:
-              newRole === "coordinadorPlantel"
+              roleRequiresPlantelScope
                 ? selectedPlanteles[0]?.name ?? null
                 : null,
           }),
@@ -484,6 +515,7 @@ export default function ProfesoresPage() {
       toast.success("Datos actualizados correctamente");
       setEditProfileModalOpen(false);
       setSelectedTeacher(null);
+      setNewDirectorExtraRole(false);
       await refreshTeachersAndReport();
     } catch (err: unknown) {
       console.error(err);
@@ -1313,9 +1345,14 @@ export default function ProfesoresPage() {
                       <span className="text-slate-600">{teacher.phone || "—"}</span>
                       <span className="font-medium text-blue-700">
                         {getTeacherRoleLabel(teacher.role)}
-                        {teacher.role === "coordinadorPlantel" ? (
+                        {teacher.role === "coordinadorPlantel" || teacher.role === "director" ? (
                           <span className="mt-0.5 block text-[11px] font-normal text-slate-500">
                             {getTeacherPlantelSummary(teacher)}
+                          </span>
+                        ) : null}
+                        {teacher.role === "coordinadorPlantel" && hasDirectorExtraRole(teacher) ? (
+                          <span className="mt-0.5 block text-[11px] font-semibold text-indigo-600">
+                            Extra: Director (Convenios)
                           </span>
                         ) : null}
                       </span>
@@ -1877,13 +1914,20 @@ export default function ProfesoresPage() {
                 <label className="text-sm font-medium text-slate-700">Rol</label>
                 <select
                   value={newRole}
-                  onChange={(e) => setNewRole(e.target.value as EditableTeacherRole)}
+                  onChange={(e) => {
+                    const nextRole = e.target.value as EditableTeacherRole;
+                    setNewRole(nextRole);
+                    if (nextRole !== "coordinadorPlantel") {
+                      setNewDirectorExtraRole(false);
+                    }
+                  }}
                   disabled={!isEditableTeacherRole(selectedTeacher.role)}
                   className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none disabled:bg-slate-100 disabled:text-slate-500"
                 >
                   <option value="teacher">Profesor</option>
                   <option value="adminTeacher">AdminTeacher</option>
                   <option value="coordinadorPlantel">Coordinador de plantel</option>
+                  <option value="director">Director de plantel</option>
                 </select>
                 {!isEditableTeacherRole(selectedTeacher.role) ? (
                   <p className="text-xs text-amber-700">
@@ -1891,7 +1935,7 @@ export default function ProfesoresPage() {
                   </p>
                 ) : null}
               </div>
-              {newRole === "coordinadorPlantel" ? (
+              {newRole === "coordinadorPlantel" || newRole === "director" ? (
                 <div className="space-y-2 rounded-lg border border-blue-100 bg-blue-50 p-3">
                   <div className="space-y-1">
                     <label className="text-sm font-medium text-slate-700">Planteles asignados</label>
@@ -1923,6 +1967,19 @@ export default function ProfesoresPage() {
                       Seleccionados: {selectedPlantelIds.length}
                     </p>
                   </div>
+                  {newRole === "coordinadorPlantel" ? (
+                    <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800">
+                      <input
+                        type="checkbox"
+                        checked={newDirectorExtraRole}
+                        onChange={(event) => setNewDirectorExtraRole(event.target.checked)}
+                        className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span>
+                        Habilitar rol extra <span className="font-semibold">director</span> (acceso a Convenios de sus planteles)
+                      </span>
+                    </label>
+                  ) : null}
                   <div className="flex gap-2">
                     <input
                       type="text"
@@ -1949,6 +2006,7 @@ export default function ProfesoresPage() {
                     setEditProfileModalOpen(false);
                     setSelectedTeacher(null);
                     setSelectedPlantelIds([]);
+                    setNewDirectorExtraRole(false);
                   }}
                   className="flex-1 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                   disabled={updatingProfile}

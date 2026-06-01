@@ -24,6 +24,7 @@ service cloud.firestore {
         roleValue == 'superAdminTeacher' ||
         roleValue == 'teacher' ||
         roleValue == 'student' ||
+        roleValue == 'director' ||
         roleValue == 'coordinadorPlantel' ||
         isLegacyAdminTeacherRole(roleValue);
     }

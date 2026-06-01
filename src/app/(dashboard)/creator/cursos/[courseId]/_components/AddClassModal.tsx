@@ -168,7 +168,6 @@ export function AddClassModal({
   const [liveScheduledStartAt, setLiveScheduledStartAt] = useState("");
   const [liveScheduledEndAt, setLiveScheduledEndAt] = useState("");
   const [liveTimezone, setLiveTimezone] = useState("America/Monterrey");
-  const [liveAutoRecording, setLiveAutoRecording] = useState(true);
   const [quizQuestionPointValueInput, setQuizQuestionPointValueInput] = useState("1");
   const normalizeQuestionPointValue = (value: unknown): number => {
     const parsed =
@@ -263,7 +262,6 @@ export function AddClassModal({
           : "",
       );
       setLiveTimezone(currentLiveTimezone);
-      setLiveAutoRecording(currentLiveSession?.recording.auto !== false);
       if (initialData.type === "image" && (initialData.imageUrls?.length ?? 0) > 1) {
         setImageMode("carousel");
       } else {
@@ -327,7 +325,6 @@ export function AddClassModal({
       setLiveScheduledStartAt("");
       setLiveScheduledEndAt("");
       setLiveTimezone("America/Monterrey");
-      setLiveAutoRecording(true);
     }
   }, [mode, initialData, open, courseId, lessonId, classId]);
 
@@ -380,7 +377,6 @@ export function AddClassModal({
     mode === "edit" &&
     Boolean(initialData) &&
     modalLiveFinalized &&
-    modalLiveSession?.recording.auto !== false &&
     modalLiveSession?.recording.status !== "failed";
   const modalLiveRecordingButtonLabel = modalLiveRecordingReady
     ? "Ver grabación"
@@ -451,7 +447,7 @@ export function AddClassModal({
             timezone: normalizedLiveTimezone,
             teacherActive: currentLiveSession?.teacherActive ?? false,
             recording: {
-              auto: liveAutoRecording,
+              auto: false,
               egressId: currentLiveSession?.recording.egressId ?? null,
               status: currentLiveSession?.recording.status ?? "idle",
               storagePath: currentLiveSession?.recording.storagePath ?? null,
@@ -463,7 +459,7 @@ export function AddClassModal({
               errorMessage: currentLiveSession?.recording.errorMessage ?? null,
               errorCode: currentLiveSession?.recording.errorCode ?? null,
               retryCount: currentLiveSession?.recording.retryCount ?? 0,
-              maxRetryCount: currentLiveSession?.recording.maxRetryCount ?? 2,
+              maxRetryCount: currentLiveSession?.recording.maxRetryCount ?? 1,
               lastRetryAt: currentLiveSession?.recording.lastRetryAt ?? null,
             },
             lastStartedAt: currentLiveSession?.lastStartedAt ?? null,
@@ -680,7 +676,6 @@ export function AddClassModal({
       setLiveScheduledStartAt("");
       setLiveScheduledEndAt("");
       setLiveTimezone("America/Monterrey");
-      setLiveAutoRecording(true);
       onClose();
     } catch (err) {
       console.error(err);
@@ -898,15 +893,12 @@ export function AddClassModal({
                     className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
-                <label className="flex items-end gap-2 text-sm text-slate-800">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                    checked={liveAutoRecording}
-                    onChange={(event) => setLiveAutoRecording(event.target.checked)}
-                  />
-                  <span>Iniciar grabación automática al abrir clase</span>
-                </label>
+                <div className="flex items-end text-sm text-slate-700">
+                  <p>
+                    Grabación automática: <span className="font-semibold">desactivada</span>.
+                    La grabación se controla manualmente desde la sala en vivo.
+                  </p>
+                </div>
               </div>
               {canOpenModalLiveRecording ? (
                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-200 bg-white/80 px-3 py-3">

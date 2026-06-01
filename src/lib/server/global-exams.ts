@@ -250,12 +250,13 @@ export function canAccessGlobalExamAssignment(
 
 export async function resolveStudentCourseEnrollments(
   studentId: string,
-  courseId: string,
+  courseId?: string,
   allowedGroupIds?: Set<string>,
 ): Promise<GlobalExamCandidateEnrollment[]> {
   const normalizedStudentId = studentId.trim();
-  const normalizedCourseId = courseId.trim();
-  if (!normalizedStudentId || !normalizedCourseId) return [];
+  const normalizedCourseId = asTrimmedString(courseId);
+  const filterByCourse = normalizedCourseId.length > 0;
+  if (!normalizedStudentId) return [];
 
   const db = getAdminFirestore();
   const enrollmentSnap = await db
@@ -294,18 +295,25 @@ export async function resolveStudentCourseEnrollments(
       if (!groupData) return null;
 
       const courseIds = getGroupCourseIds(groupData);
-      if (!courseIds.includes(normalizedCourseId)) return null;
+      if (filterByCourse && !courseIds.includes(normalizedCourseId)) return null;
+
+      const enrollmentCourseId = asTrimmedString(enrollmentData.courseId);
+      const resolvedCourseId = filterByCourse
+        ? normalizedCourseId
+        : enrollmentCourseId || courseIds[0] || "";
+      const resolvedCourseName = filterByCourse
+        ? asTrimmedString(groupData.courseName) || asTrimmedString(enrollmentData.courseName) || "Materia"
+        : asTrimmedString(enrollmentData.courseName) ||
+          asTrimmedString(groupData.courseName) ||
+          "Sin materia";
 
       return {
         enrollmentId: docSnap.id,
         groupId,
         groupName:
           asTrimmedString(groupData.groupName) || asTrimmedString(enrollmentData.groupName) || "Grupo",
-        courseId: normalizedCourseId,
-        courseName:
-          asTrimmedString(groupData.courseName) ||
-          asTrimmedString(enrollmentData.courseName) ||
-          "Materia",
+        courseId: resolvedCourseId,
+        courseName: resolvedCourseName,
         plantelId: asTrimmedString(enrollmentData.plantelId) || asTrimmedString(groupData.plantelId),
         plantelName:
           asTrimmedString(enrollmentData.plantelName) || asTrimmedString(groupData.plantelName),

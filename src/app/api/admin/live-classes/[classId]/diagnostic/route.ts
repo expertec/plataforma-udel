@@ -408,10 +408,7 @@ export async function GET(
     let recoverable: boolean | null = null;
     let summary = "No hay suficiente información para recuperar esta clase todavía.";
 
-    if (liveSession.recording.auto === false) {
-      recoverable = false;
-      summary = "La clase se configuró sin grabación automática.";
-    } else if (storageObjectExists && objectLocation) {
+    if (storageObjectExists && objectLocation) {
       recoverable = true;
       summary =
         "Se encontró un archivo en storage. La clase es recuperable desde la plataforma aunque el estado haya quedado inconsistente.";

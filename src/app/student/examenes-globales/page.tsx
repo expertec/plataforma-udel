@@ -13,6 +13,7 @@ import {
   type GlobalExamAttemptPayload,
 } from "@/lib/global-exams/client";
 import {
+  getGlobalExamCourseLabel,
   getGlobalExamReasonLabel,
   getGlobalExamStatusLabel,
   type GlobalExamAssignmentRecord,
@@ -156,7 +157,8 @@ export default function StudentGlobalExamsPage() {
                     {activeExam.template.title}
                   </h2>
                   <p className="text-sm text-slate-600">
-                    {activeExam.template.courseName} | Grupo {activeExam.assignment.groupName}
+                    {getGlobalExamCourseLabel(activeExam.template.courseName)} | Grupo{" "}
+                    {activeExam.assignment.groupName}
                   </p>
                   <p className="text-sm text-slate-600">
                     Pase con {activeExam.template.passScore} | Intento {activeExam.assignment.attemptsUsed + 1} de{" "}
@@ -278,7 +280,7 @@ export default function StudentGlobalExamsPage() {
                           <div className="space-y-1">
                             <div className="flex flex-wrap items-center gap-2">
                               <h3 className="text-lg font-semibold text-slate-900">
-                                {assignment.courseName}
+                                {getGlobalExamCourseLabel(assignment.courseName)}
                               </h3>
                               <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">
                                 {getGlobalExamStatusLabel(assignment.status)}
@@ -325,7 +327,7 @@ export default function StudentGlobalExamsPage() {
                           <div className="space-y-1">
                             <div className="flex flex-wrap items-center gap-2">
                               <h3 className="text-lg font-semibold text-slate-900">
-                                {assignment.courseName}
+                                {getGlobalExamCourseLabel(assignment.courseName)}
                               </h3>
                               <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">
                                 {getGlobalExamStatusLabel(assignment.status)}

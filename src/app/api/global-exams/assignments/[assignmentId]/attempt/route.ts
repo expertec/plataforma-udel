@@ -267,27 +267,29 @@ export async function POST(
       );
     });
 
-    let gradeSynced = false;
-    try {
-      await syncGlobalExamGradeToEnrollments({
-        assignmentId: assignment.id,
-        studentId: assignment.studentId,
-        studentName: assignment.studentName,
-        studentEmail: assignment.studentEmail,
-        groupId: assignment.groupId,
-        groupName: assignment.groupName,
-        courseId: assignment.courseId,
-        courseName: assignment.courseName,
-        plantelId: assignment.plantelId,
-        plantelName: assignment.plantelName,
-        score: result.score,
-        attemptNumber: committedAttemptNumber,
-        attemptId: attemptRef.id,
-        passed: result.passed,
-      });
-      gradeSynced = true;
-    } catch (syncError) {
-      console.error("No se pudo sincronizar el resultado del examen global a kardex", syncError);
+    let gradeSynced = !assignment.courseId;
+    if (assignment.courseId) {
+      try {
+        await syncGlobalExamGradeToEnrollments({
+          assignmentId: assignment.id,
+          studentId: assignment.studentId,
+          studentName: assignment.studentName,
+          studentEmail: assignment.studentEmail,
+          groupId: assignment.groupId,
+          groupName: assignment.groupName,
+          courseId: assignment.courseId,
+          courseName: assignment.courseName,
+          plantelId: assignment.plantelId,
+          plantelName: assignment.plantelName,
+          score: result.score,
+          attemptNumber: committedAttemptNumber,
+          attemptId: attemptRef.id,
+          passed: result.passed,
+        });
+        gradeSynced = true;
+      } catch (syncError) {
+        console.error("No se pudo sincronizar el resultado del examen global a kardex", syncError);
+      }
     }
 
     const nextAssignmentSnap = await assignmentRef.get();

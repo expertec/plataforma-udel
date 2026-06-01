@@ -10,9 +10,11 @@ import { User, onAuthStateChanged, signOut } from "firebase/auth";
 import { Menu, ChevronDown } from "lucide-react";
 import { auth } from "@/lib/firebase/client";
 import {
+  hasUserExtraRole,
   isAdminTeacherRole,
   isCampusCoordinatorRole,
-  resolveUserRole,
+  isDirectorRole,
+  resolveUserRoleAccessProfile,
   UserRole,
 } from "@/lib/firebase/roles";
 import { TeacherDataProvider } from "@/contexts/TeacherDataContext";
@@ -22,6 +24,7 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
+  const [hasDirectorExtraRole, setHasDirectorExtraRole] = useState(false);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
   const pathname = usePathname();
   const router = useRouter();
@@ -32,13 +35,20 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
       setCurrentUser(user);
       if (!user) {
         setUserRole(null);
+        setHasDirectorExtraRole(false);
         return;
       }
       try {
-        const role = await resolveUserRole(user);
-        if (!cancelled) setUserRole(role);
+        const accessProfile = await resolveUserRoleAccessProfile(user);
+        if (!cancelled) {
+          setUserRole(accessProfile.role);
+          setHasDirectorExtraRole(hasUserExtraRole(accessProfile.extraRoles, "director"));
+        }
       } catch {
-        if (!cancelled) setUserRole(null);
+        if (!cancelled) {
+          setUserRole(null);
+          setHasDirectorExtraRole(false);
+        }
       }
     });
     return () => {
@@ -46,6 +56,15 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
       unsub();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isDirectorRole(userRole)) return;
+    const allowedInDirectorMode =
+      pathname.startsWith("/creator/convenios") || pathname.startsWith("/creator/perfil");
+    if (!allowedInDirectorMode) {
+      router.replace("/creator/convenios");
+    }
+  }, [pathname, router, userRole]);
 
   useEffect(() => {
     const syncSidebarStateWithViewport = () => {
@@ -87,6 +106,8 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
         ? "AdminTeacher"
         : isCampusCoordinatorRole(userRole)
           ? "Coordinador de plantel"
+          : userRole === "director"
+            ? "Director de plantel"
           : "Profesor";
 
   const isActive = (href: string) => {
@@ -95,6 +116,15 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
   };
 
   const navItems = useMemo(() => {
+    const canAccessConvenios =
+      userRole === "adminTeacher" ||
+      isDirectorRole(userRole) ||
+      (isCampusCoordinatorRole(userRole) && hasDirectorExtraRole);
+
+    if (isDirectorRole(userRole)) {
+      return [{ href: "/creator/convenios", label: "Convenios" }];
+    }
+
     const items = [
       { href: "/creator", label: "Dashboard" },
       { href: "/creator/cursos", label: "Cursos" },
@@ -119,17 +149,25 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
     if (isAdminTeacherRole(userRole)) {
       items.push({ href: "/creator/programas", label: "Programas" });
     }
-    if (userRole === "adminTeacher") {
+    if (canAccessConvenios) {
       items.push({ href: "/creator/convenios", label: "Convenios" });
     }
     if (userRole === "adminTeacher") {
       items.push({ href: "/creator/api", label: "API" });
     }
     return items;
-  }, [userRole]);
+  }, [hasDirectorExtraRole, userRole]);
 
   return (
-    <RoleGate allowedRole={["teacher", "adminTeacher", "superAdminTeacher", "coordinadorPlantel"]}>
+    <RoleGate
+      allowedRole={[
+        "teacher",
+        "adminTeacher",
+        "superAdminTeacher",
+        "coordinadorPlantel",
+        "director",
+      ]}
+    >
       <TeacherDataProvider>
       <div className="flex min-h-screen w-full bg-slate-100 text-slate-900">
         {/* Sidebar */}

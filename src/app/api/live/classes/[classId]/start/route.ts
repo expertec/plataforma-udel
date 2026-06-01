@@ -8,14 +8,7 @@ import {
 import { mergeTeacherEditableLiveSession } from "@/lib/live-classes/types";
 import { sendWhatsAppTextToStudent } from "@/lib/server/whatsapp-notifier";
 import {
-  buildRecordingOutputPaths,
   ensureLiveKitRoom,
-  ensureRoomCompositeRecordingStarted,
-  extractRecordingBackupLiveManifestPath,
-  extractRecordingBackupManifestPath,
-  extractRecordingObjectPath,
-  type LiveRecordingOutputPaths,
-  resolveDefaultRecordingMaxRetryCount,
 } from "@/lib/server/livekit";
 
 export const runtime = "nodejs";
@@ -318,13 +311,9 @@ export async function POST(
     const db = getAdminFirestore();
     const classRef = access.classContext.classRef;
     const startedAtIso = new Date().toISOString();
-    const startedAtMs = Date.now();
 
     let roomName = "";
-    let shouldStartRecording = false;
     let shouldNotifyStudents = false;
-    let preparedOutputPaths: LiveRecordingOutputPaths | null = null;
-    let preparedSession = access.classContext.liveSession;
 
     await db.runTransaction(async (tx) => {
       const classSnap = await tx.get(classRef);
@@ -351,11 +340,6 @@ export async function POST(
       }
 
       roomName = session.roomName;
-      const recordingAlreadyRunning =
-        Boolean(session.recording.egressId) ||
-        session.recording.status === "recording" ||
-        session.recording.status === "processing";
-
       const wasAlreadyLive = session.status === "live" || session.teacherActive === true;
 
       const nextSession = {
@@ -365,31 +349,7 @@ export async function POST(
         lastStartedAt: startedAtIso,
       };
 
-      if (nextSession.recording.auto && !recordingAlreadyRunning) {
-        preparedOutputPaths = buildRecordingOutputPaths({
-          courseId: access.classContext.courseId,
-          classId: access.classContext.classId,
-          startedAtMs,
-        });
-        shouldStartRecording = true;
-        nextSession.recording = {
-          ...nextSession.recording,
-          status: "processing",
-          storagePath: preparedOutputPaths.mp4ObjectPath,
-          backupManifestPath: preparedOutputPaths.backupManifestPath,
-          backupLiveManifestPath: preparedOutputPaths.backupLiveManifestPath,
-          playbackReadyAt: null,
-          durationSec: null,
-          errorMessage: null,
-          errorCode: null,
-          retryCount: 0,
-          maxRetryCount: nextSession.recording.maxRetryCount || resolveDefaultRecordingMaxRetryCount(),
-          lastRetryAt: null,
-        };
-      }
-
       shouldNotifyStudents = !wasAlreadyLive;
-      preparedSession = nextSession;
       tx.set(
         classRef,
         {
@@ -404,85 +364,6 @@ export async function POST(
     }
 
     await ensureLiveKitRoom(roomName);
-
-    let egressId: string | null = null;
-    if (shouldStartRecording && preparedOutputPaths) {
-      const outputPaths = preparedOutputPaths;
-      try {
-        const recordingStart = await ensureRoomCompositeRecordingStarted({
-          roomName,
-          outputPaths,
-        });
-        egressId = recordingStart.egressInfo.egressId || null;
-        const objectPath =
-          extractRecordingObjectPath(recordingStart.egressInfo) ||
-          recordingStart.outputPaths.mp4ObjectPath ||
-          null;
-        const backupManifestPath =
-          extractRecordingBackupManifestPath(recordingStart.egressInfo) ||
-          recordingStart.outputPaths.backupManifestPath ||
-          null;
-        const backupLiveManifestPath =
-          extractRecordingBackupLiveManifestPath(recordingStart.egressInfo) ||
-          recordingStart.outputPaths.backupLiveManifestPath ||
-          null;
-        const retryCountUsed = recordingStart.retryCountUsed;
-        await classRef.set(
-          {
-            liveSession: {
-              ...preparedSession,
-              recording: {
-                ...(preparedSession?.recording ?? {}),
-                egressId,
-                status: recordingStart.recordingStatus,
-                storagePath: objectPath,
-                backupManifestPath,
-                backupLiveManifestPath,
-                retryCount: retryCountUsed,
-                maxRetryCount:
-                  preparedSession?.recording?.maxRetryCount ||
-                  resolveDefaultRecordingMaxRetryCount(),
-                lastRetryAt: retryCountUsed > 0 ? new Date().toISOString() : null,
-                errorMessage: null,
-                errorCode: null,
-              },
-            },
-          },
-          { merge: true },
-        );
-      } catch (egressError) {
-        console.error("No se pudo iniciar egress LiveKit", egressError);
-        const errorWithCode = egressError as { message?: unknown; code?: unknown };
-        await classRef.set(
-          {
-            liveSession: {
-              ...preparedSession,
-              recording: {
-                ...(preparedSession?.recording ?? {}),
-                status: "failed",
-                egressId: null,
-                storagePath: preparedSession?.recording?.storagePath ?? null,
-                backupManifestPath: preparedSession?.recording?.backupManifestPath ?? null,
-                backupLiveManifestPath:
-                  preparedSession?.recording?.backupLiveManifestPath ?? null,
-                errorMessage:
-                  typeof errorWithCode.message === "string" && errorWithCode.message.trim()
-                    ? errorWithCode.message.trim()
-                    : "No se pudo iniciar egress LiveKit",
-                errorCode:
-                  typeof errorWithCode.code === "number" && Number.isFinite(errorWithCode.code)
-                    ? errorWithCode.code
-                    : null,
-                maxRetryCount:
-                  preparedSession?.recording?.maxRetryCount ||
-                  resolveDefaultRecordingMaxRetryCount(),
-              },
-            },
-          },
-          { merge: true },
-        );
-      }
-    }
 
     let notificationSummary: LiveStartNotificationSummary | null = null;
     if (shouldNotifyStudents) {
@@ -510,8 +391,8 @@ export async function POST(
         data: {
           classId: access.classContext.classId,
           roomName,
-          recordingStarted: shouldStartRecording,
-          egressId,
+          recordingStarted: false,
+          egressId: null,
           notifications: notificationSummary ?? undefined,
         },
       },

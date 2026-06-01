@@ -24,7 +24,8 @@ type TeacherSelfServiceRole =
   | "teacher"
   | "adminTeacher"
   | "superAdminTeacher"
-  | "coordinadorPlantel";
+  | "coordinadorPlantel"
+  | "director";
 
 type TeacherProfileRequester = {
   uid: string;
@@ -44,6 +45,7 @@ function asTeacherSelfServiceRole(value: unknown): TeacherSelfServiceRole | null
   return value === "teacher" ||
     value === "adminTeacher" ||
     value === "superAdminTeacher" ||
+    value === "director" ||
     value === "coordinadorPlantel"
     ? value
     : null;

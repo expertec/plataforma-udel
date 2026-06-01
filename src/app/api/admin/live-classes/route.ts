@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAdminFirestore } from "@/lib/firebase/admin";
+import { getAdminApp, getAdminFirestore } from "@/lib/firebase/admin";
 import { normalizeLiveSession, type LiveClassSession } from "@/lib/live-classes/types";
 import {
   requireAdminTeacherAccess,
@@ -20,11 +20,79 @@ type MonitorStatus =
   | "finalized"
   | "finalized_without_recording";
 
+type StorageObjectLocation = {
+  bucketName: string;
+  objectPath: string;
+};
+
 const PROCESSING_STALE_AFTER_MS = 45 * 60 * 1000;
 const RECENT_RETRY_WINDOW_MS = 20 * 60 * 1000;
 
 function asText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeBucketName(rawValue: string): string {
+  const trimmed = rawValue.trim();
+  if (!trimmed) return "";
+  const withoutScheme = trimmed.replace(/^gs:\/\//i, "");
+  const firstSegment = withoutScheme.split("/").find((segment) => segment.trim().length > 0) ?? "";
+  return firstSegment.trim();
+}
+
+function resolveDefaultBucketName(): string | null {
+  const envBucket = asText(process.env.LIVEKIT_EGRESS_GCS_BUCKET);
+  const firebaseBucket = asText(process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET);
+  const bucket = normalizeBucketName(envBucket || firebaseBucket);
+  return bucket || null;
+}
+
+function normalizeObjectPath(value: string): string {
+  return value.replace(/^\/+/, "").trim();
+}
+
+function extractStorageObjectLocation(
+  rawStoragePath: string | null | undefined,
+  fallbackBucketName: string | null,
+): StorageObjectLocation | null {
+  const value = asText(rawStoragePath);
+  if (!value) return null;
+
+  if (value.startsWith("gs://")) {
+    const withoutScheme = value.slice("gs://".length);
+    const slashIdx = withoutScheme.indexOf("/");
+    if (slashIdx < 0) return null;
+    const bucketName = asText(withoutScheme.slice(0, slashIdx));
+    const objectPath = normalizeObjectPath(withoutScheme.slice(slashIdx + 1));
+    if (!bucketName || !objectPath) return null;
+    return { bucketName, objectPath };
+  }
+
+  if (value.startsWith("http://") || value.startsWith("https://")) {
+    try {
+      const parsed = new URL(value);
+      const queryBucket = asText(parsed.searchParams.get("bucket")) || asText(parsed.searchParams.get("b"));
+      const queryObjectPath = normalizeObjectPath(
+        decodeURIComponent(asText(parsed.searchParams.get("name"))),
+      );
+      if (queryBucket && queryObjectPath) {
+        return {
+          bucketName: queryBucket,
+          objectPath: queryObjectPath,
+        };
+      }
+    } catch {
+      // ignore malformed URL
+    }
+  }
+
+  if (!fallbackBucketName) return null;
+  const objectPath = normalizeObjectPath(value);
+  if (!objectPath) return null;
+  return {
+    bucketName: fallbackBucketName,
+    objectPath,
+  };
 }
 
 function toIsoString(value: unknown): string | null {
@@ -118,6 +186,7 @@ function deriveMonitorStatus(session: LiveClassSession | null): MonitorStatus {
   if (!session) return "scheduled";
   const recordingStatus = session.recording.status;
   const recordingReady = session.status === "recording_ready" || recordingStatus === "ready";
+  const recordingGenerated = Boolean(session.recording.storagePath) || recordingReady;
 
   if (recordingStatus === "failed") return "failed";
   if (recordingReady) return "ready";
@@ -128,7 +197,7 @@ function deriveMonitorStatus(session: LiveClassSession | null): MonitorStatus {
     return "processing";
   }
   if (isSessionLive(session)) return "live";
-  if (isSessionFinalized(session) && session.recording.auto === false) {
+  if (isSessionFinalized(session) && !recordingGenerated && recordingStatus === "idle") {
     return "finalized_without_recording";
   }
   if (isSessionFinalized(session)) return "finalized";
@@ -154,6 +223,16 @@ function toSortMs(value: string | null): number {
   if (!value) return 0;
   const parsed = new Date(value).getTime();
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function resolveTranscodeDurationSec(params: {
+  lastEndedAt: string | null;
+  playbackReadyAt: string | null;
+}): number | null {
+  const endedMs = toSortMs(params.lastEndedAt);
+  const readyMs = toSortMs(params.playbackReadyAt);
+  if (!endedMs || !readyMs || readyMs <= endedMs) return null;
+  return Math.round((readyMs - endedMs) / 1000);
 }
 
 export async function GET(request: NextRequest) {
@@ -231,6 +310,8 @@ export async function GET(request: NextRequest) {
       });
     }
 
+    const defaultBucketName = resolveDefaultBucketName();
+
     const items = parsedClasses
       .map(({ pathData, refPath, title, liveSession, createdAt, updatedAt }) => {
         const courseTitle = courseTitleMap.get(pathData.courseId) || pathData.courseId;
@@ -241,6 +322,14 @@ export async function GET(request: NextRequest) {
           session: liveSession,
           updatedAt,
           createdAt,
+        });
+        const recordingGenerated =
+          Boolean(liveSession?.recording.storagePath) ||
+          liveSession?.recording.status === "ready" ||
+          liveSession?.status === "recording_ready";
+        const transcodeDurationSec = resolveTranscodeDurationSec({
+          lastEndedAt: liveSession?.lastEndedAt ?? null,
+          playbackReadyAt: liveSession?.recording.playbackReadyAt ?? null,
         });
 
         return {
@@ -266,18 +355,65 @@ export async function GET(request: NextRequest) {
           playbackReadyAt: liveSession?.recording.playbackReadyAt ?? null,
           durationSec: liveSession?.recording.durationSec ?? null,
           retryCount: liveSession?.recording.retryCount ?? 0,
-          maxRetryCount: liveSession?.recording.maxRetryCount ?? 2,
+          maxRetryCount: liveSession?.recording.maxRetryCount ?? 1,
           lastRetryAt: liveSession?.recording.lastRetryAt ?? null,
           lastStartedAt: liveSession?.lastStartedAt ?? null,
           lastEndedAt: liveSession?.lastEndedAt ?? null,
           createdAt,
           updatedAt,
           lastRelevantAt,
+          recordingGenerated,
+          transcodeDurationSec,
+          fileSizeBytes: null as number | null,
+          storageObjectLocation: extractStorageObjectLocation(
+            liveSession?.recording.storagePath ?? null,
+            defaultBucketName,
+          ),
         };
       })
       .sort((a, b) => toSortMs(b.lastRelevantAt) - toSortMs(a.lastRelevantAt));
 
-    const counts = items.reduce<Record<MonitorStatus, number>>(
+    const objectLocations = Array.from(
+      new Map(
+        items
+          .map((item) => item.storageObjectLocation)
+          .filter((location): location is StorageObjectLocation => Boolean(location))
+          .map((location) => [`${location.bucketName}::${location.objectPath}`, location]),
+      ).values(),
+    );
+
+    const fileSizeByObjectKey = new Map<string, number | null>();
+    if (objectLocations.length > 0) {
+      await Promise.all(
+        objectLocations.map(async (location) => {
+          const objectKey = `${location.bucketName}::${location.objectPath}`;
+          try {
+            const [metadata] = await getAdminApp()
+              .storage()
+              .bucket(location.bucketName)
+              .file(location.objectPath)
+              .getMetadata();
+            const rawSize = Number(metadata.size);
+            fileSizeByObjectKey.set(objectKey, Number.isFinite(rawSize) ? rawSize : null);
+          } catch {
+            fileSizeByObjectKey.set(objectKey, null);
+          }
+        }),
+      );
+    }
+
+    const enrichedItems = items.map((item) => {
+      const objectKey = item.storageObjectLocation
+        ? `${item.storageObjectLocation.bucketName}::${item.storageObjectLocation.objectPath}`
+        : null;
+      const fileSizeBytes = objectKey ? fileSizeByObjectKey.get(objectKey) ?? null : null;
+      return {
+        ...item,
+        fileSizeBytes,
+      };
+    });
+
+    const counts = enrichedItems.reduce<Record<MonitorStatus, number>>(
       (acc, item) => {
         acc[item.monitorStatus] += 1;
         return acc;
@@ -299,9 +435,14 @@ export async function GET(request: NextRequest) {
       {
         success: true,
         data: {
-          items,
+          items: enrichedItems.map((item) => {
+            const nextItem = { ...item };
+            delete (nextItem as { storageObjectLocation?: StorageObjectLocation | null })
+              .storageObjectLocation;
+            return nextItem;
+          }),
           counts,
-          total: items.length,
+          total: enrichedItems.length,
           fetchedAt: new Date().toISOString(),
         },
       },

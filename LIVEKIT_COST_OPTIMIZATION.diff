@@ -1,0 +1,2085 @@
+diff --git a/src/app/(dashboard)/creator/clases-en-vivo/page.tsx b/src/app/(dashboard)/creator/clases-en-vivo/page.tsx
+index 6827e3e..a640a07 100644
+--- a/src/app/(dashboard)/creator/clases-en-vivo/page.tsx
++++ b/src/app/(dashboard)/creator/clases-en-vivo/page.tsx
+@@ -49,6 +49,9 @@ type LiveClassMonitorItem = {
+   createdAt: string | null;
+   updatedAt: string | null;
+   lastRelevantAt: string | null;
++  recordingGenerated: boolean;
++  transcodeDurationSec: number | null;
++  fileSizeBytes: number | null;
+ };
+ 
+ type LiveClassesResponse = {
+@@ -620,6 +623,11 @@ export default function CreatorLiveClassesPage() {
+   }, [displayStorageItems, storageSearch]);
+ 
+   const totalLiveClasses = monitorItems.length;
++  const totalRecordedItems = filteredMonitorItems.filter((item) => item.recordingGenerated).length;
++  const totalKnownRecordingBytes = filteredMonitorItems.reduce(
++    (sum, item) => sum + (typeof item.fileSizeBytes === "number" && item.fileSizeBytes > 0 ? item.fileSizeBytes : 0),
++    0,
++  );
+ 
+   return (
+     <RoleGate allowedRole={["adminTeacher", "superAdminTeacher"]}>
+@@ -711,6 +719,79 @@ export default function CreatorLiveClassesPage() {
+               ))}
+             </div>
+ 
++            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
++              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
++                <div>
++                  <p className="text-sm font-semibold text-slate-900">Diagnóstico de costos</p>
++                  <p className="text-xs text-slate-500">
++                    Vista rápida por clase para detectar fugas de egress/transcodificación.
++                  </p>
++                </div>
++                <div className="flex flex-wrap gap-2 text-xs text-slate-600">
++                  <span className="rounded-full bg-slate-100 px-3 py-1">
++                    Grabadas: {totalRecordedItems}/{filteredMonitorItems.length}
++                  </span>
++                  <span className="rounded-full bg-slate-100 px-3 py-1">
++                    Tamaño conocido: {formatBytes(totalKnownRecordingBytes)}
++                  </span>
++                </div>
++              </div>
++              <div className="mt-4 overflow-x-auto">
++                <table className="min-w-full divide-y divide-slate-200 text-sm">
++                  <thead>
++                    <tr className="text-left text-slate-500">
++                      <th className="px-3 py-2 font-medium">Clase</th>
++                      <th className="px-3 py-2 font-medium">Duración</th>
++                      <th className="px-3 py-2 font-medium">Grabada</th>
++                      <th className="px-3 py-2 font-medium">Egress ID</th>
++                      <th className="px-3 py-2 font-medium">Tamaño archivo</th>
++                      <th className="px-3 py-2 font-medium">Transcodificación</th>
++                      <th className="px-3 py-2 font-medium">Estado</th>
++                    </tr>
++                  </thead>
++                  <tbody className="divide-y divide-slate-100">
++                    {filteredMonitorItems.map((item) => (
++                      <tr key={`${item.docPath}-cost`} className="text-slate-700">
++                        <td className="px-3 py-2">
++                          <div className="font-medium text-slate-900">{item.title}</div>
++                          <div className="text-xs text-slate-500">
++                            {item.courseTitle} / {item.lessonTitle}
++                          </div>
++                        </td>
++                        <td className="px-3 py-2">{formatDuration(item.durationSec)}</td>
++                        <td className="px-3 py-2">
++                          {item.recordingGenerated ? "Sí" : "No"}
++                        </td>
++                        <td className="px-3 py-2">
++                          <span className="block max-w-[22rem] truncate" title={item.egressId ?? "N/D"}>
++                            {item.egressId || "N/D"}
++                          </span>
++                        </td>
++                        <td className="px-3 py-2">{formatBytes(item.fileSizeBytes)}</td>
++                        <td className="px-3 py-2">{formatDuration(item.transcodeDurationSec)}</td>
++                        <td className="px-3 py-2">
++                          <span
++                            className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${
++                              MONITOR_STATUS_CLASS[item.monitorStatus]
++                            }`}
++                          >
++                            {MONITOR_STATUS_LABELS[item.monitorStatus]}
++                          </span>
++                        </td>
++                      </tr>
++                    ))}
++                    {filteredMonitorItems.length === 0 ? (
++                      <tr>
++                        <td colSpan={7} className="px-3 py-6 text-center text-sm text-slate-500">
++                          No hay clases para mostrar en el diagnóstico.
++                        </td>
++                      </tr>
++                    ) : null}
++                  </tbody>
++                </table>
++              </div>
++            </div>
++
+             <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                 <div className="flex flex-1 flex-col gap-3 sm:flex-row">
+diff --git a/src/app/(dashboard)/creator/cursos/[courseId]/_components/AddClassModal.tsx b/src/app/(dashboard)/creator/cursos/[courseId]/_components/AddClassModal.tsx
+index 9dbac25..09f523b 100644
+--- a/src/app/(dashboard)/creator/cursos/[courseId]/_components/AddClassModal.tsx
++++ b/src/app/(dashboard)/creator/cursos/[courseId]/_components/AddClassModal.tsx
+@@ -168,7 +168,6 @@ export function AddClassModal({
+   const [liveScheduledStartAt, setLiveScheduledStartAt] = useState("");
+   const [liveScheduledEndAt, setLiveScheduledEndAt] = useState("");
+   const [liveTimezone, setLiveTimezone] = useState("America/Monterrey");
+-  const [liveAutoRecording, setLiveAutoRecording] = useState(true);
+   const [quizQuestionPointValueInput, setQuizQuestionPointValueInput] = useState("1");
+   const normalizeQuestionPointValue = (value: unknown): number => {
+     const parsed =
+@@ -263,7 +262,6 @@ export function AddClassModal({
+           : "",
+       );
+       setLiveTimezone(currentLiveTimezone);
+-      setLiveAutoRecording(currentLiveSession?.recording.auto !== false);
+       if (initialData.type === "image" && (initialData.imageUrls?.length ?? 0) > 1) {
+         setImageMode("carousel");
+       } else {
+@@ -327,7 +325,6 @@ export function AddClassModal({
+       setLiveScheduledStartAt("");
+       setLiveScheduledEndAt("");
+       setLiveTimezone("America/Monterrey");
+-      setLiveAutoRecording(true);
+     }
+   }, [mode, initialData, open, courseId, lessonId, classId]);
+ 
+@@ -380,7 +377,6 @@ export function AddClassModal({
+     mode === "edit" &&
+     Boolean(initialData) &&
+     modalLiveFinalized &&
+-    modalLiveSession?.recording.auto !== false &&
+     modalLiveSession?.recording.status !== "failed";
+   const modalLiveRecordingButtonLabel = modalLiveRecordingReady
+     ? "Ver grabación"
+@@ -451,7 +447,7 @@ export function AddClassModal({
+             timezone: normalizedLiveTimezone,
+             teacherActive: currentLiveSession?.teacherActive ?? false,
+             recording: {
+-              auto: liveAutoRecording,
++              auto: false,
+               egressId: currentLiveSession?.recording.egressId ?? null,
+               status: currentLiveSession?.recording.status ?? "idle",
+               storagePath: currentLiveSession?.recording.storagePath ?? null,
+@@ -463,7 +459,7 @@ export function AddClassModal({
+               errorMessage: currentLiveSession?.recording.errorMessage ?? null,
+               errorCode: currentLiveSession?.recording.errorCode ?? null,
+               retryCount: currentLiveSession?.recording.retryCount ?? 0,
+-              maxRetryCount: currentLiveSession?.recording.maxRetryCount ?? 2,
++              maxRetryCount: currentLiveSession?.recording.maxRetryCount ?? 1,
+               lastRetryAt: currentLiveSession?.recording.lastRetryAt ?? null,
+             },
+             lastStartedAt: currentLiveSession?.lastStartedAt ?? null,
+@@ -680,7 +676,6 @@ export function AddClassModal({
+       setLiveScheduledStartAt("");
+       setLiveScheduledEndAt("");
+       setLiveTimezone("America/Monterrey");
+-      setLiveAutoRecording(true);
+       onClose();
+     } catch (err) {
+       console.error(err);
+@@ -898,15 +893,12 @@ export function AddClassModal({
+                     className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                   />
+                 </div>
+-                <label className="flex items-end gap-2 text-sm text-slate-800">
+-                  <input
+-                    type="checkbox"
+-                    className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+-                    checked={liveAutoRecording}
+-                    onChange={(event) => setLiveAutoRecording(event.target.checked)}
+-                  />
+-                  <span>Iniciar grabación automática al abrir clase</span>
+-                </label>
++                <div className="flex items-end text-sm text-slate-700">
++                  <p>
++                    Grabación automática: <span className="font-semibold">desactivada</span>.
++                    La grabación se controla manualmente desde la sala en vivo.
++                  </p>
++                </div>
+               </div>
+               {canOpenModalLiveRecording ? (
+                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-200 bg-white/80 px-3 py-3">
+diff --git a/src/app/api/admin/live-classes/[classId]/diagnostic/route.ts b/src/app/api/admin/live-classes/[classId]/diagnostic/route.ts
+index 5102893..d1beb02 100644
+--- a/src/app/api/admin/live-classes/[classId]/diagnostic/route.ts
++++ b/src/app/api/admin/live-classes/[classId]/diagnostic/route.ts
+@@ -408,10 +408,7 @@ export async function GET(
+     let recoverable: boolean | null = null;
+     let summary = "No hay suficiente información para recuperar esta clase todavía.";
+ 
+-    if (liveSession.recording.auto === false) {
+-      recoverable = false;
+-      summary = "La clase se configuró sin grabación automática.";
+-    } else if (storageObjectExists && objectLocation) {
++    if (storageObjectExists && objectLocation) {
+       recoverable = true;
+       summary =
+         "Se encontró un archivo en storage. La clase es recuperable desde la plataforma aunque el estado haya quedado inconsistente.";
+diff --git a/src/app/api/admin/live-classes/route.ts b/src/app/api/admin/live-classes/route.ts
+index 0810a36..f9047ac 100644
+--- a/src/app/api/admin/live-classes/route.ts
++++ b/src/app/api/admin/live-classes/route.ts
+@@ -1,5 +1,5 @@
+ import { NextRequest, NextResponse } from "next/server";
+-import { getAdminFirestore } from "@/lib/firebase/admin";
++import { getAdminApp, getAdminFirestore } from "@/lib/firebase/admin";
+ import { normalizeLiveSession, type LiveClassSession } from "@/lib/live-classes/types";
+ import {
+   requireAdminTeacherAccess,
+@@ -20,6 +20,11 @@ type MonitorStatus =
+   | "finalized"
+   | "finalized_without_recording";
+ 
++type StorageObjectLocation = {
++  bucketName: string;
++  objectPath: string;
++};
++
+ const PROCESSING_STALE_AFTER_MS = 45 * 60 * 1000;
+ const RECENT_RETRY_WINDOW_MS = 20 * 60 * 1000;
+ 
+@@ -27,6 +32,69 @@ function asText(value: unknown): string {
+   return typeof value === "string" ? value.trim() : "";
+ }
+ 
++function normalizeBucketName(rawValue: string): string {
++  const trimmed = rawValue.trim();
++  if (!trimmed) return "";
++  const withoutScheme = trimmed.replace(/^gs:\/\//i, "");
++  const firstSegment = withoutScheme.split("/").find((segment) => segment.trim().length > 0) ?? "";
++  return firstSegment.trim();
++}
++
++function resolveDefaultBucketName(): string | null {
++  const envBucket = asText(process.env.LIVEKIT_EGRESS_GCS_BUCKET);
++  const firebaseBucket = asText(process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET);
++  const bucket = normalizeBucketName(envBucket || firebaseBucket);
++  return bucket || null;
++}
++
++function normalizeObjectPath(value: string): string {
++  return value.replace(/^\/+/, "").trim();
++}
++
++function extractStorageObjectLocation(
++  rawStoragePath: string | null | undefined,
++  fallbackBucketName: string | null,
++): StorageObjectLocation | null {
++  const value = asText(rawStoragePath);
++  if (!value) return null;
++
++  if (value.startsWith("gs://")) {
++    const withoutScheme = value.slice("gs://".length);
++    const slashIdx = withoutScheme.indexOf("/");
++    if (slashIdx < 0) return null;
++    const bucketName = asText(withoutScheme.slice(0, slashIdx));
++    const objectPath = normalizeObjectPath(withoutScheme.slice(slashIdx + 1));
++    if (!bucketName || !objectPath) return null;
++    return { bucketName, objectPath };
++  }
++
++  if (value.startsWith("http://") || value.startsWith("https://")) {
++    try {
++      const parsed = new URL(value);
++      const queryBucket = asText(parsed.searchParams.get("bucket")) || asText(parsed.searchParams.get("b"));
++      const queryObjectPath = normalizeObjectPath(
++        decodeURIComponent(asText(parsed.searchParams.get("name"))),
++      );
++      if (queryBucket && queryObjectPath) {
++        return {
++          bucketName: queryBucket,
++          objectPath: queryObjectPath,
++        };
++      }
++    } catch {
++      // ignore malformed URL
++    }
++  }
++
++  if (!fallbackBucketName) return null;
++  const objectPath = normalizeObjectPath(value);
++  if (!objectPath) return null;
++  return {
++    bucketName: fallbackBucketName,
++    objectPath,
++  };
++}
++
+ function toIsoString(value: unknown): string | null {
+   if (!value) return null;
+   if (typeof value === "string" && value.trim()) {
+@@ -118,6 +186,7 @@ function deriveMonitorStatus(session: LiveClassSession | null): MonitorStatus {
+   if (!session) return "scheduled";
+   const recordingStatus = session.recording.status;
+   const recordingReady = session.status === "recording_ready" || recordingStatus === "ready";
++  const recordingGenerated = Boolean(session.recording.storagePath) || recordingReady;
+ 
+   if (recordingStatus === "failed") return "failed";
+   if (recordingReady) return "ready";
+@@ -128,7 +197,7 @@ function deriveMonitorStatus(session: LiveClassSession | null): MonitorStatus {
+     return "processing";
+   }
+   if (isSessionLive(session)) return "live";
+-  if (isSessionFinalized(session) && session.recording.auto === false) {
++  if (isSessionFinalized(session) && !recordingGenerated && recordingStatus === "idle") {
+     return "finalized_without_recording";
+   }
+   if (isSessionFinalized(session)) return "finalized";
+@@ -156,6 +225,16 @@ function toSortMs(value: string | null): number {
+   return Number.isFinite(parsed) ? parsed : 0;
+ }
+ 
++function resolveTranscodeDurationSec(params: {
++  lastEndedAt: string | null;
++  playbackReadyAt: string | null;
++}): number | null {
++  const endedMs = toSortMs(params.lastEndedAt);
++  const readyMs = toSortMs(params.playbackReadyAt);
++  if (!endedMs || !readyMs || readyMs <= endedMs) return null;
++  return Math.round((readyMs - endedMs) / 1000);
++}
++
+ export async function GET(request: NextRequest) {
+   try {
+     await requireAdminTeacherAccess(request);
+@@ -231,6 +310,8 @@ export async function GET(request: NextRequest) {
+       });
+     }
+ 
++    const defaultBucketName = resolveDefaultBucketName();
++
+     const items = parsedClasses
+       .map(({ pathData, refPath, title, liveSession, createdAt, updatedAt }) => {
+         const courseTitle = courseTitleMap.get(pathData.courseId) || pathData.courseId;
+@@ -242,6 +323,14 @@ export async function GET(request: NextRequest) {
+           updatedAt,
+           createdAt,
+         });
++        const recordingGenerated =
++          Boolean(liveSession?.recording.storagePath) ||
++          liveSession?.recording.status === "ready" ||
++          liveSession?.status === "recording_ready";
++        const transcodeDurationSec = resolveTranscodeDurationSec({
++          lastEndedAt: liveSession?.lastEndedAt ?? null,
++          playbackReadyAt: liveSession?.recording.playbackReadyAt ?? null,
++        });
+ 
+         return {
+           classId: pathData.classId,
+@@ -266,18 +355,65 @@ export async function GET(request: NextRequest) {
+           playbackReadyAt: liveSession?.recording.playbackReadyAt ?? null,
+           durationSec: liveSession?.recording.durationSec ?? null,
+           retryCount: liveSession?.recording.retryCount ?? 0,
+-          maxRetryCount: liveSession?.recording.maxRetryCount ?? 2,
++          maxRetryCount: liveSession?.recording.maxRetryCount ?? 1,
+           lastRetryAt: liveSession?.recording.lastRetryAt ?? null,
+           lastStartedAt: liveSession?.lastStartedAt ?? null,
+           lastEndedAt: liveSession?.lastEndedAt ?? null,
+           createdAt,
+           updatedAt,
+           lastRelevantAt,
++          recordingGenerated,
++          transcodeDurationSec,
++          fileSizeBytes: null as number | null,
++          storageObjectLocation: extractStorageObjectLocation(
++            liveSession?.recording.storagePath ?? null,
++            defaultBucketName,
++          ),
+         };
+       })
+       .sort((a, b) => toSortMs(b.lastRelevantAt) - toSortMs(a.lastRelevantAt));
+ 
+-    const counts = items.reduce<Record<MonitorStatus, number>>(
++    const objectLocations = Array.from(
++      new Map(
++        items
++          .map((item) => item.storageObjectLocation)
++          .filter((location): location is StorageObjectLocation => Boolean(location))
++          .map((location) => [`${location.bucketName}::${location.objectPath}`, location]),
++      ).values(),
++    );
++
++    const fileSizeByObjectKey = new Map<string, number | null>();
++    if (objectLocations.length > 0) {
++      await Promise.all(
++        objectLocations.map(async (location) => {
++          const objectKey = `${location.bucketName}::${location.objectPath}`;
++          try {
++            const [metadata] = await getAdminApp()
++              .storage()
++              .bucket(location.bucketName)
++              .file(location.objectPath)
++              .getMetadata();
++            const rawSize = Number(metadata.size);
++            fileSizeByObjectKey.set(objectKey, Number.isFinite(rawSize) ? rawSize : null);
++          } catch {
++            fileSizeByObjectKey.set(objectKey, null);
++          }
++        }),
++      );
++    }
++
++    const enrichedItems = items.map((item) => {
++      const objectKey = item.storageObjectLocation
++        ? `${item.storageObjectLocation.bucketName}::${item.storageObjectLocation.objectPath}`
++        : null;
++      const fileSizeBytes = objectKey ? fileSizeByObjectKey.get(objectKey) ?? null : null;
++      return {
++        ...item,
++        fileSizeBytes,
++      };
++    });
++
++    const counts = enrichedItems.reduce<Record<MonitorStatus, number>>(
+       (acc, item) => {
+         acc[item.monitorStatus] += 1;
+         return acc;
+@@ -299,9 +435,14 @@ export async function GET(request: NextRequest) {
+       {
+         success: true,
+         data: {
+-          items,
++          items: enrichedItems.map((item) => {
++            const nextItem = { ...item };
++            delete (nextItem as { storageObjectLocation?: StorageObjectLocation | null })
++              .storageObjectLocation;
++            return nextItem;
++          }),
+           counts,
+-          total: items.length,
++          total: enrichedItems.length,
+           fetchedAt: new Date().toISOString(),
+         },
+       },
+diff --git a/src/app/api/live/classes/[classId]/end/route.ts b/src/app/api/live/classes/[classId]/end/route.ts
+index f82bd8d..bfa065d 100644
+--- a/src/app/api/live/classes/[classId]/end/route.ts
++++ b/src/app/api/live/classes/[classId]/end/route.ts
+@@ -5,7 +5,7 @@ import {
+   toLiveAccessErrorResponse,
+ } from "@/lib/live-classes/access";
+ import { mergeTeacherEditableLiveSession } from "@/lib/live-classes/types";
+-import { stopLiveKitEgress } from "@/lib/server/livekit";
++import { stopActiveLiveKitEgressForRoom, stopLiveKitEgress } from "@/lib/server/livekit";
+ 
+ export const runtime = "nodejs";
+ export const dynamic = "force-dynamic";
+@@ -34,7 +34,9 @@ export async function POST(
+     const classRef = access.classContext.classRef;
+     const endedAtIso = new Date().toISOString();
+     let egressId: string | null = null;
++    let roomName = "";
+     let shouldStopEgress = false;
++    let recordingLikelyProcessing = false;
+ 
+     await db.runTransaction(async (tx) => {
+       const classSnap = await tx.get(classRef);
+@@ -51,11 +53,12 @@ export async function POST(
+       });
+ 
+       egressId = session.recording.egressId;
++      roomName = session.roomName;
+       shouldStopEgress =
+         Boolean(egressId) &&
+         (session.recording.status === "recording" || session.recording.status === "processing");
+ 
+-      const recordingLikelyProcessing =
++      recordingLikelyProcessing =
+         session.recording.status === "recording" || session.recording.status === "processing";
+       const nextSession = {
+         ...session,
+@@ -81,11 +84,38 @@ export async function POST(
+     let egressStopRequested = false;
+     if (shouldStopEgress && egressId) {
+       try {
++        console.info("[livekit:end-class] stopping egress by id", {
++          classId: access.classContext.classId,
++          egressId,
++          roomName,
++        });
+         egressStopRequested = await stopLiveKitEgress(egressId);
++        console.info("[livekit:end-class] stop by id result", {
++          classId: access.classContext.classId,
++          egressId,
++          egressStopRequested,
++        });
+       } catch (error) {
+         console.error("No se pudo detener egress LiveKit", error);
+         warnings.push("No se pudo detener la grabación en este momento.");
+       }
++    } else if (recordingLikelyProcessing && roomName) {
++      try {
++        console.info("[livekit:end-class] stopping orphan egress by room", {
++          classId: access.classContext.classId,
++          roomName,
++        });
++        const stopSummary = await stopActiveLiveKitEgressForRoom(roomName);
++        egressStopRequested = stopSummary.stopped > 0;
++        console.info("[livekit:end-class] stop by room summary", {
++          classId: access.classContext.classId,
++          roomName,
++          ...stopSummary,
++        });
++      } catch (error) {
++        console.error("No se pudieron detener egress activos de la room", error);
++        warnings.push("No se pudo confirmar el cierre de todos los procesos de grabación.");
++      }
+     }
+ 
+     return NextResponse.json(
+diff --git a/src/app/api/live/classes/[classId]/recording/route.ts b/src/app/api/live/classes/[classId]/recording/route.ts
+index 1996dd3..cd25629 100644
+--- a/src/app/api/live/classes/[classId]/recording/route.ts
++++ b/src/app/api/live/classes/[classId]/recording/route.ts
+@@ -1,12 +1,28 @@
+ import { NextRequest, NextResponse } from "next/server";
+-import { getAdminApp } from "@/lib/firebase/admin";
++import { getAdminApp, getAdminFirestore } from "@/lib/firebase/admin";
+ import {
++  LiveAccessError,
+   resolveAuthorizedLiveClassAccess,
+   toLiveAccessErrorResponse,
+-  LiveAccessError,
+ } from "@/lib/live-classes/access";
+-import { createLiveSessionForClass, type LiveClassSession } from "@/lib/live-classes/types";
+-import { getLiveKitEgressConfig } from "@/lib/server/livekit";
++import {
++  createLiveSessionForClass,
++  mergeTeacherEditableLiveSession,
++  normalizeLiveSession,
++  type LiveClassSession,
++} from "@/lib/live-classes/types";
++import {
++  buildRecordingOutputPaths,
++  ensureLiveKitRoom,
++  ensureRoomCompositeRecordingStarted,
++  extractRecordingBackupLiveManifestPath,
++  extractRecordingBackupManifestPath,
++  extractRecordingObjectPath,
++  getLiveKitEgressConfig,
++  resolveDefaultRecordingMaxRetryCount,
++  stopActiveLiveKitEgressForRoom,
++  stopLiveKitEgress,
++} from "@/lib/server/livekit";
+ 
+ export const runtime = "nodejs";
+ export const dynamic = "force-dynamic";
+@@ -32,6 +48,29 @@ type ObjectLocation = {
+   objectPath: string;
+ };
+ 
++type RecordingControlAction = "start" | "stop" | "status";
++
++type RecordingControlBody = {
++  action?: unknown;
++};
++
++type RecordingControlResult = {
++  action: RecordingControlAction;
++  sessionStatus: string;
++  recordingStatus: string;
++  egressId: string | null;
++  storagePath: string | null;
++  playbackReadyAt: string | null;
++  durationSec: number | null;
++  errorMessage: string | null;
++  errorCode: number | null;
++  retryCount: number;
++  maxRetryCount: number;
++  canStart: boolean;
++  canStop: boolean;
++  egressStopRequested?: boolean;
++};
++
+ function extractObjectLocationFromUrl(
+   rawUrl: string,
+   defaultBucketName: string,
+@@ -131,6 +170,56 @@ function isRecordingReady(liveSession: {
+   return liveSession.status === "recording_ready" || liveSession.recording?.status === "ready";
+ }
+ 
++function resolveRecordingControlAction(value: unknown): RecordingControlAction {
++  const normalized = asTrimmedString(value).toLowerCase();
++  if (normalized === "start" || normalized === "stop" || normalized === "status") {
++    return normalized;
++  }
++  return "status";
++}
++
++function mapRecordingStatusLabel(status: string): string {
++  if (status === "recording") return "recording";
++  if (status === "processing") return "processing";
++  if (status === "ready") return "ready";
++  if (status === "failed") return "failed";
++  return "idle";
++}
++
++function buildRecordingControlResult(
++  action: RecordingControlAction,
++  liveSession: LiveClassSession | null,
++): RecordingControlResult {
++  const recording = liveSession?.recording;
++  const recordingStatus = mapRecordingStatusLabel(recording?.status ?? "idle");
++  const canStart =
++    recordingStatus === "idle" || recordingStatus === "failed" || recordingStatus === "ready";
++  const canStop = recordingStatus === "recording" || recordingStatus === "processing";
++  return {
++    action,
++    sessionStatus: liveSession?.status ?? "scheduled",
++    recordingStatus,
++    egressId: recording?.egressId ?? null,
++    storagePath: recording?.storagePath ?? null,
++    playbackReadyAt: recording?.playbackReadyAt ?? null,
++    durationSec: recording?.durationSec ?? null,
++    errorMessage: recording?.errorMessage ?? null,
++    errorCode: recording?.errorCode ?? null,
++    retryCount: recording?.retryCount ?? 0,
++    maxRetryCount: recording?.maxRetryCount ?? resolveDefaultRecordingMaxRetryCount(),
++    canStart,
++    canStop,
++  };
++}
++
++function isLiveSessionFinalized(session: LiveClassSession): boolean {
++  return (
++    Boolean(session.lastEndedAt) ||
++    session.status === "ended" ||
++    session.status === "recording_ready"
++  );
++}
++
+ function buildRecordingPrefixForDate(
+   egressPrefix: string,
+   courseId: string,
+@@ -231,6 +320,268 @@ async function findExistingRecordingObject(params: {
+   return null;
+ }
+ 
++export async function POST(
++  request: NextRequest,
++  context: { params: Promise<{ classId: string }> },
++) {
++  try {
++    const { classId } = await context.params;
++    const courseId = asTrimmedString(request.nextUrl.searchParams.get("courseId"));
++    const lessonId = asTrimmedString(request.nextUrl.searchParams.get("lessonId"));
++    const body = (await request.json().catch(() => ({}))) as RecordingControlBody;
++    const action = resolveRecordingControlAction(body.action);
++
++    const access = await resolveAuthorizedLiveClassAccess({
++      request,
++      classId,
++      courseId: courseId || undefined,
++      lessonId: lessonId || undefined,
++      requireTeacher: true,
++    });
++
++    const classRef = access.classContext.classRef;
++    const db = getAdminFirestore();
++
++    if (action === "status") {
++      const snap = await classRef.get();
++      const classData = (snap.data() ?? {}) as Record<string, unknown>;
++      const session = mergeTeacherEditableLiveSession({
++        courseId: access.classContext.courseId,
++        lessonId: access.classContext.lessonId,
++        classId: access.classContext.classId,
++        current: classData.liveSession,
++      });
++      return NextResponse.json(
++        {
++          success: true,
++          data: buildRecordingControlResult(action, session),
++        },
++        { status: 200 },
++      );
++    }
++
++    const nowIso = new Date().toISOString();
++    let roomName = "";
++    let targetEgressId: string | null = null;
++    let shouldStartRecording = false;
++    let shouldStopRecording = false;
++    let preparedSession: LiveClassSession | null = null;
++    const preparedOutputPaths = buildRecordingOutputPaths({
++      courseId: access.classContext.courseId,
++      classId: access.classContext.classId,
++      startedAtMs: Date.now(),
++    });
++
++    await db.runTransaction(async (tx) => {
++      const classSnap = await tx.get(classRef);
++      if (!classSnap.exists) {
++        throw new LiveAccessError(404, "Clase no encontrada");
++      }
++      const classData = (classSnap.data() ?? {}) as Record<string, unknown>;
++      const session = mergeTeacherEditableLiveSession({
++        courseId: access.classContext.courseId,
++        lessonId: access.classContext.lessonId,
++        classId: access.classContext.classId,
++        current: classData.liveSession,
++      });
++      roomName = session.roomName;
++
++      if (action === "start") {
++        if (isLiveSessionFinalized(session)) {
++          throw new LiveAccessError(409, "La clase ya finalizó y no permite iniciar grabación.");
++        }
++        const sessionIsLive = session.status === "live" || session.teacherActive === true;
++        if (!sessionIsLive) {
++          throw new LiveAccessError(409, "Primero inicia la clase en vivo para grabar.");
++        }
++        const recordingActive =
++          session.recording.status === "recording" || session.recording.status === "processing";
++        if (recordingActive && session.recording.egressId) {
++          preparedSession = session;
++          return;
++        }
++
++        const maxRetryCount =
++          typeof session.recording.maxRetryCount === "number" &&
++          Number.isFinite(session.recording.maxRetryCount)
++            ? Math.max(0, Math.floor(session.recording.maxRetryCount))
++            : resolveDefaultRecordingMaxRetryCount();
++
++        const nextSession: LiveClassSession = {
++          ...session,
++          recording: {
++            ...session.recording,
++            auto: false,
++            egressId: null,
++            status: "processing",
++            storagePath: preparedOutputPaths.mp4ObjectPath,
++            backupManifestPath: preparedOutputPaths.backupManifestPath,
++            backupLiveManifestPath: preparedOutputPaths.backupLiveManifestPath,
++            playbackReadyAt: null,
++            durationSec: null,
++            errorMessage: null,
++            errorCode: null,
++            retryCount: 0,
++            maxRetryCount,
++            lastRetryAt: null,
++          },
++        };
++
++        preparedSession = nextSession;
++        shouldStartRecording = true;
++        tx.set(
++          classRef,
++          {
++            liveSession: nextSession,
++          },
++          { merge: true },
++        );
++        return;
++      }
++
++      const recordingActive =
++        session.recording.status === "recording" || session.recording.status === "processing";
++      if (!recordingActive && !session.recording.egressId) {
++        preparedSession = session;
++        return;
++      }
++
++      targetEgressId = session.recording.egressId;
++      shouldStopRecording = true;
++      const nextSession: LiveClassSession = {
++        ...session,
++        recording: {
++          ...session.recording,
++          status: "processing",
++          lastRetryAt: session.recording.lastRetryAt ?? nowIso,
++        },
++      };
++      preparedSession = nextSession;
++      tx.set(
++        classRef,
++        {
++          liveSession: nextSession,
++        },
++        { merge: true },
++      );
++    });
++
++    if (!roomName) {
++      throw new LiveAccessError(500, "No se pudo resolver la sala para la grabación.");
++    }
++
++    let egressStopRequested = false;
++
++    if (action === "start" && shouldStartRecording && preparedSession) {
++      await ensureLiveKitRoom(roomName);
++      try {
++        const recordingStart = await ensureRoomCompositeRecordingStarted({
++          roomName,
++          outputPaths: preparedOutputPaths,
++        });
++        const egressId = recordingStart.egressInfo.egressId || null;
++        const nextRecording = {
++          ...(preparedSession.recording ?? {}),
++          egressId,
++          status: recordingStart.recordingStatus,
++          storagePath:
++            extractRecordingObjectPath(recordingStart.egressInfo) ||
++            recordingStart.outputPaths.mp4ObjectPath ||
++            null,
++          backupManifestPath:
++            extractRecordingBackupManifestPath(recordingStart.egressInfo) ||
++            recordingStart.outputPaths.backupManifestPath ||
++            null,
++          backupLiveManifestPath:
++            extractRecordingBackupLiveManifestPath(recordingStart.egressInfo) ||
++            recordingStart.outputPaths.backupLiveManifestPath ||
++            null,
++          retryCount: recordingStart.retryCountUsed,
++          lastRetryAt: recordingStart.retryCountUsed > 0 ? nowIso : null,
++          errorMessage: null,
++          errorCode: null,
++        };
++        await classRef.set(
++          {
++            liveSession: {
++              ...preparedSession,
++              recording: nextRecording,
++            },
++          },
++          { merge: true },
++        );
++      } catch (startError) {
++        console.error("[livekit:recording] No se pudo iniciar grabación manual", startError);
++        const errorWithCode = startError as { message?: unknown; code?: unknown };
++        await classRef.set(
++          {
++            liveSession: {
++              ...preparedSession,
++              recording: {
++                ...(preparedSession.recording ?? {}),
++                status: "failed",
++                egressId: null,
++                errorMessage:
++                  typeof errorWithCode.message === "string" && errorWithCode.message.trim()
++                    ? errorWithCode.message.trim()
++                    : "No se pudo iniciar la grabación manual",
++                errorCode:
++                  typeof errorWithCode.code === "number" && Number.isFinite(errorWithCode.code)
++                    ? errorWithCode.code
++                    : null,
++              },
++            },
++          },
++          { merge: true },
++        );
++      }
++    } else if (action === "stop" && shouldStopRecording) {
++      try {
++        if (targetEgressId) {
++          egressStopRequested = await stopLiveKitEgress(targetEgressId);
++        } else {
++          const stopSummary = await stopActiveLiveKitEgressForRoom(roomName);
++          egressStopRequested = stopSummary.stopped > 0;
++        }
++      } catch (stopError) {
++        console.error("[livekit:recording] No se pudo detener grabación manual", stopError);
++      }
++    }
++
++    const latestSnap = await classRef.get();
++    const latestData = (latestSnap.data() ?? {}) as Record<string, unknown>;
++    const latestSession =
++      normalizeLiveSession(latestData.liveSession) ??
++      createLiveSessionForClass({
++        courseId: access.classContext.courseId,
++        lessonId: access.classContext.lessonId,
++        classId: access.classContext.classId,
++      });
++
++    const result = buildRecordingControlResult(action, latestSession);
++    if (action === "stop") {
++      result.egressStopRequested = egressStopRequested;
++    }
++
++    return NextResponse.json(
++      {
++        success: true,
++        data: result,
++      },
++      { status: 200 },
++    );
++  } catch (error: unknown) {
++    const handled = toLiveAccessErrorResponse(error);
++    if (handled.status === 500) {
++      console.error("Error controlando grabación de clase en vivo", error);
++    }
++    return NextResponse.json(
++      { success: false, error: handled.message },
++      { status: handled.status },
++    );
++  }
++}
++
+ export async function GET(
+   request: NextRequest,
+   context: { params: Promise<{ classId: string }> },
+diff --git a/src/app/api/live/classes/[classId]/start/route.ts b/src/app/api/live/classes/[classId]/start/route.ts
+index d28da29..d0ae129 100644
+--- a/src/app/api/live/classes/[classId]/start/route.ts
++++ b/src/app/api/live/classes/[classId]/start/route.ts
+@@ -8,14 +8,7 @@ import {
+ import { mergeTeacherEditableLiveSession } from "@/lib/live-classes/types";
+ import { sendWhatsAppTextToStudent } from "@/lib/server/whatsapp-notifier";
+ import {
+-  buildRecordingOutputPaths,
+   ensureLiveKitRoom,
+-  ensureRoomCompositeRecordingStarted,
+-  extractRecordingBackupLiveManifestPath,
+-  extractRecordingBackupManifestPath,
+-  extractRecordingObjectPath,
+-  type LiveRecordingOutputPaths,
+-  resolveDefaultRecordingMaxRetryCount,
+ } from "@/lib/server/livekit";
+ 
+ export const runtime = "nodejs";
+@@ -318,13 +311,9 @@ export async function POST(
+     const db = getAdminFirestore();
+     const classRef = access.classContext.classRef;
+     const startedAtIso = new Date().toISOString();
+-    const startedAtMs = Date.now();
+ 
+     let roomName = "";
+-    let shouldStartRecording = false;
+     let shouldNotifyStudents = false;
+-    let preparedOutputPaths: LiveRecordingOutputPaths | null = null;
+-    let preparedSession = access.classContext.liveSession;
+ 
+     await db.runTransaction(async (tx) => {
+       const classSnap = await tx.get(classRef);
+@@ -351,11 +340,6 @@ export async function POST(
+       }
+ 
+       roomName = session.roomName;
+-      const recordingAlreadyRunning =
+-        Boolean(session.recording.egressId) ||
+-        session.recording.status === "recording" ||
+-        session.recording.status === "processing";
+-
+       const wasAlreadyLive = session.status === "live" || session.teacherActive === true;
+ 
+       const nextSession = {
+@@ -365,31 +349,7 @@ export async function POST(
+         lastStartedAt: startedAtIso,
+       };
+ 
+-      if (nextSession.recording.auto && !recordingAlreadyRunning) {
+-        preparedOutputPaths = buildRecordingOutputPaths({
+-          courseId: access.classContext.courseId,
+-          classId: access.classContext.classId,
+-          startedAtMs,
+-        });
+-        shouldStartRecording = true;
+-        nextSession.recording = {
+-          ...nextSession.recording,
+-          status: "processing",
+-          storagePath: preparedOutputPaths.mp4ObjectPath,
+-          backupManifestPath: preparedOutputPaths.backupManifestPath,
+-          backupLiveManifestPath: preparedOutputPaths.backupLiveManifestPath,
+-          playbackReadyAt: null,
+-          durationSec: null,
+-          errorMessage: null,
+-          errorCode: null,
+-          retryCount: 0,
+-          maxRetryCount: nextSession.recording.maxRetryCount || resolveDefaultRecordingMaxRetryCount(),
+-          lastRetryAt: null,
+-        };
+-      }
+-
+       shouldNotifyStudents = !wasAlreadyLive;
+-      preparedSession = nextSession;
+       tx.set(
+         classRef,
+         {
+@@ -405,85 +365,6 @@ export async function POST(
+ 
+     await ensureLiveKitRoom(roomName);
+ 
+-    let egressId: string | null = null;
+-    if (shouldStartRecording && preparedOutputPaths) {
+-      const outputPaths = preparedOutputPaths;
+-      try {
+-        const recordingStart = await ensureRoomCompositeRecordingStarted({
+-          roomName,
+-          outputPaths,
+-        });
+-        egressId = recordingStart.egressInfo.egressId || null;
+-        const objectPath =
+-          extractRecordingObjectPath(recordingStart.egressInfo) ||
+-          recordingStart.outputPaths.mp4ObjectPath ||
+-          null;
+-        const backupManifestPath =
+-          extractRecordingBackupManifestPath(recordingStart.egressInfo) ||
+-          recordingStart.outputPaths.backupManifestPath ||
+-          null;
+-        const backupLiveManifestPath =
+-          extractRecordingBackupLiveManifestPath(recordingStart.egressInfo) ||
+-          recordingStart.outputPaths.backupLiveManifestPath ||
+-          null;
+-        const retryCountUsed = recordingStart.retryCountUsed;
+-        await classRef.set(
+-          {
+-            liveSession: {
+-              ...preparedSession,
+-              recording: {
+-                ...(preparedSession?.recording ?? {}),
+-                egressId,
+-                status: recordingStart.recordingStatus,
+-                storagePath: objectPath,
+-                backupManifestPath,
+-                backupLiveManifestPath,
+-                retryCount: retryCountUsed,
+-                maxRetryCount:
+-                  preparedSession?.recording?.maxRetryCount ||
+-                  resolveDefaultRecordingMaxRetryCount(),
+-                lastRetryAt: retryCountUsed > 0 ? new Date().toISOString() : null,
+-                errorMessage: null,
+-                errorCode: null,
+-              },
+-            },
+-          },
+-          { merge: true },
+-        );
+-      } catch (egressError) {
+-        console.error("No se pudo iniciar egress LiveKit", egressError);
+-        const errorWithCode = egressError as { message?: unknown; code?: unknown };
+-        await classRef.set(
+-          {
+-            liveSession: {
+-              ...preparedSession,
+-              recording: {
+-                ...(preparedSession?.recording ?? {}),
+-                status: "failed",
+-                egressId: null,
+-                storagePath: preparedSession?.recording?.storagePath ?? null,
+-                backupManifestPath: preparedSession?.recording?.backupManifestPath ?? null,
+-                backupLiveManifestPath:
+-                  preparedSession?.recording?.backupLiveManifestPath ?? null,
+-                errorMessage:
+-                  typeof errorWithCode.message === "string" && errorWithCode.message.trim()
+-                    ? errorWithCode.message.trim()
+-                    : "No se pudo iniciar egress LiveKit",
+-                errorCode:
+-                  typeof errorWithCode.code === "number" && Number.isFinite(errorWithCode.code)
+-                    ? errorWithCode.code
+-                    : null,
+-                maxRetryCount:
+-                  preparedSession?.recording?.maxRetryCount ||
+-                  resolveDefaultRecordingMaxRetryCount(),
+-              },
+-            },
+-          },
+-          { merge: true },
+-        );
+-      }
+-    }
+-
+     let notificationSummary: LiveStartNotificationSummary | null = null;
+     if (shouldNotifyStudents) {
+       try {
+@@ -510,8 +391,8 @@ export async function POST(
+         data: {
+           classId: access.classContext.classId,
+           roomName,
+-          recordingStarted: shouldStartRecording,
+-          egressId,
++          recordingStarted: false,
++          egressId: null,
+           notifications: notificationSummary ?? undefined,
+         },
+       },
+diff --git a/src/app/api/livekit/webhook/route.ts b/src/app/api/livekit/webhook/route.ts
+index 0066869..59e7ff0 100644
+--- a/src/app/api/livekit/webhook/route.ts
++++ b/src/app/api/livekit/webhook/route.ts
+@@ -4,12 +4,11 @@ import { getAdminFirestore } from "@/lib/firebase/admin";
+ import { resolveLiveClassByRoomName } from "@/lib/live-classes/access";
+ import { createLiveSessionForClass } from "@/lib/live-classes/types";
+ import {
+-  buildRecordingOutputPaths,
+-  ensureRoomCompositeRecordingStarted,
+   extractRecordingBackupLiveManifestPath,
+   extractRecordingBackupManifestPath,
+   extractRecordingObjectPath,
+   getWebhookReceiver,
++  stopActiveLiveKitEgressForRoom,
+ } from "@/lib/server/livekit";
+ 
+ export const runtime = "nodejs";
+@@ -112,13 +111,38 @@ export async function POST(request: NextRequest) {
+       nextSession.teacherActive = true;
+       nextSession.lastStartedAt = now;
+     } else if (event.event === "room_finished") {
++      const shouldForceProcessing =
++        nextSession.recording.status === "recording" ||
++        nextSession.recording.status === "processing";
+       nextSession.teacherActive = false;
+       nextSession.lastEndedAt = now;
++      if (shouldForceProcessing) {
++        nextSession.recording.status = "processing";
++      }
+       if (nextSession.recording.status === "ready") {
+         nextSession.status = "recording_ready";
+       } else if (nextSession.status !== "recording_ready") {
+         nextSession.status = "ended";
+       }
++      try {
++        console.info("[livekit:webhook] room_finished: stopping active egress", {
++          classId: liveClass.classId,
++          roomName,
++          currentEgressId: nextSession.recording.egressId,
++        });
++        const stopSummary = await stopActiveLiveKitEgressForRoom(roomName);
++        console.info("[livekit:webhook] room_finished: egress stop summary", {
++          classId: liveClass.classId,
++          roomName,
++          ...stopSummary,
++        });
++      } catch (stopError) {
++        console.error("[livekit:webhook] room_finished: failed to stop egress", {
++          classId: liveClass.classId,
++          roomName,
++          error: stopError,
++        });
++      }
+     } else if (event.event === "participant_joined") {
+       const role = parseRoleFromParticipantMetadata(event.participant?.metadata);
+       if (role === "teacher") {
+@@ -129,13 +153,38 @@ export async function POST(request: NextRequest) {
+     } else if (event.event === "participant_left") {
+       const role = parseRoleFromParticipantMetadata(event.participant?.metadata);
+       if (role === "teacher") {
++        const shouldForceProcessing =
++          nextSession.recording.status === "recording" ||
++          nextSession.recording.status === "processing";
+         nextSession.teacherActive = false;
+         nextSession.lastEndedAt = now;
++        if (shouldForceProcessing) {
++          nextSession.recording.status = "processing";
++        }
+         if (nextSession.recording.status === "ready") {
+           nextSession.status = "recording_ready";
+         } else if (nextSession.status !== "recording_ready") {
+           nextSession.status = "ended";
+         }
++        try {
++          console.info("[livekit:webhook] participant_left(teacher): stopping active egress", {
++            classId: liveClass.classId,
++            roomName,
++            currentEgressId: nextSession.recording.egressId,
++          });
++          const stopSummary = await stopActiveLiveKitEgressForRoom(roomName);
++          console.info("[livekit:webhook] participant_left(teacher): egress stop summary", {
++            classId: liveClass.classId,
++            roomName,
++            ...stopSummary,
++          });
++        } catch (stopError) {
++          console.error("[livekit:webhook] participant_left(teacher): failed to stop egress", {
++            classId: liveClass.classId,
++            roomName,
++            error: stopError,
++          });
++        }
+       }
+     } else if (event.event === "egress_started" || event.event === "egress_updated") {
+       const egress = event.egressInfo;
+@@ -186,65 +235,8 @@ export async function POST(request: NextRequest) {
+         nextSession.recording.errorCode = null;
+         nextSession.status = sessionStillLive ? "live" : "recording_ready";
+       } else {
+-        const canRetryRecording =
+-          nextSession.recording.auto !== false &&
+-          sessionStillLive &&
+-          nextSession.recording.retryCount < nextSession.recording.maxRetryCount;
+-
+-        if (canRetryRecording) {
+-          const retryStartedAtIso = asIsoNow();
+-          const retryCountBase = nextSession.recording.retryCount + 1;
+-          const retryOutputPaths = buildRecordingOutputPaths({
+-            courseId: liveClass.courseId,
+-            classId: liveClass.classId,
+-            startedAtMs: Date.now(),
+-            retryIndex: retryCountBase,
+-          });
+-
+-          try {
+-            const recordingRestart = await ensureRoomCompositeRecordingStarted({
+-              roomName,
+-              outputPaths: retryOutputPaths,
+-            });
+-            nextSession.recording.egressId =
+-              recordingRestart.egressInfo.egressId || nextSession.recording.egressId;
+-            nextSession.recording.status = recordingRestart.recordingStatus;
+-            nextSession.recording.storagePath =
+-              extractRecordingObjectPath(recordingRestart.egressInfo) ||
+-              recordingRestart.outputPaths.mp4ObjectPath;
+-            nextSession.recording.backupManifestPath =
+-              extractRecordingBackupManifestPath(recordingRestart.egressInfo) ||
+-              recordingRestart.outputPaths.backupManifestPath;
+-            nextSession.recording.backupLiveManifestPath =
+-              extractRecordingBackupLiveManifestPath(recordingRestart.egressInfo) ||
+-              recordingRestart.outputPaths.backupLiveManifestPath;
+-            nextSession.recording.playbackReadyAt = null;
+-            nextSession.recording.durationSec = null;
+-            nextSession.recording.retryCount =
+-              nextSession.recording.retryCount + 1 + recordingRestart.retryCountUsed;
+-            nextSession.recording.lastRetryAt = retryStartedAtIso;
+-            nextSession.recording.errorMessage = null;
+-            nextSession.recording.errorCode = null;
+-            nextSession.status = "live";
+-          } catch (restartError) {
+-            const errorWithCode = restartError as { message?: unknown; code?: unknown };
+-            nextSession.recording.status = "failed";
+-            nextSession.recording.retryCount = retryCountBase;
+-            nextSession.recording.lastRetryAt = retryStartedAtIso;
+-            nextSession.recording.errorMessage =
+-              typeof errorWithCode.message === "string" && errorWithCode.message.trim()
+-                ? errorWithCode.message.trim()
+-                : "La grabación se cayó y el reinicio automático también falló";
+-            nextSession.recording.errorCode =
+-              typeof errorWithCode.code === "number" && Number.isFinite(errorWithCode.code)
+-                ? errorWithCode.code
+-                : null;
+-            nextSession.status = sessionStillLive ? "live" : "ended";
+-          }
+-        } else {
+-          nextSession.recording.status = "failed";
+-          nextSession.status = sessionStillLive ? "live" : "ended";
+-        }
++        nextSession.recording.status = "failed";
++        nextSession.status = sessionStillLive ? "live" : "ended";
+       }
+     }
+ 
+diff --git a/src/app/live/[classId]/page.tsx b/src/app/live/[classId]/page.tsx
+index e43fa87..2599c90 100644
+--- a/src/app/live/[classId]/page.tsx
++++ b/src/app/live/[classId]/page.tsx
+@@ -48,11 +48,42 @@ type LiveTokenResponse = {
+       status?: string;
+       scheduledStartAt?: string | null;
+       timezone?: string;
++      recording?: {
++        status?: string;
++        egressId?: string | null;
++        storagePath?: string | null;
++        playbackReadyAt?: string | null;
++        durationSec?: number | null;
++        errorMessage?: string | null;
++      };
+     } | null;
+   };
+   error?: string;
+ };
+ 
++type LiveRecordingControlStatus = "idle" | "recording" | "processing" | "ready" | "failed";
++
++type LiveRecordingControlResult = {
++  action?: "start" | "stop" | "status";
++  sessionStatus?: string;
++  recordingStatus?: LiveRecordingControlStatus;
++  egressId?: string | null;
++  storagePath?: string | null;
++  playbackReadyAt?: string | null;
++  durationSec?: number | null;
++  errorMessage?: string | null;
++  errorCode?: number | null;
++  canStart?: boolean;
++  canStop?: boolean;
++  egressStopRequested?: boolean;
++};
++
++type LiveRecordingControlResponse = {
++  success?: boolean;
++  data?: LiveRecordingControlResult;
++  error?: string;
++};
++
+ type LiveRoomParticipantSummary = {
+   identity: string;
+   name: string;
+@@ -131,6 +162,20 @@ type LiveBrowserInfo = {
+ const LIVE_SIGNAL_TOPIC = "udx.live.signal";
+ const LIVE_REACTION_TTL_MS = 4500;
+ const LIVE_REACTIONS = ["👍", "👏", "🎉", "🔥", "❤️", "😂"];
++const RECORDING_STATUS_LABEL: Record<LiveRecordingControlStatus, string> = {
++  idle: "No grabando",
++  recording: "Grabando",
++  processing: "Procesando",
++  ready: "Finalizada",
++  failed: "Error",
++};
++
++function asRecordingControlStatus(value: unknown): LiveRecordingControlStatus {
++  if (value === "recording" || value === "processing" || value === "ready" || value === "failed") {
++    return value;
++  }
++  return "idle";
++}
+ 
+ function isLiveSignalPayload(value: unknown): value is LiveSignalPayload {
+   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+@@ -396,7 +441,7 @@ function LiveRoomChatPanel({ visible }: { visible: boolean }) {
+   );
+ }
+ 
+-function LiveRoomConference() {
++function LiveRoomConference({ viewerRole }: { viewerRole: "teacher" | "student" | null }) {
+   const participants = useParticipants();
+   const speakingParticipants = useSpeakingParticipants();
+   const connectionState = useConnectionState();
+@@ -422,6 +467,8 @@ function LiveRoomConference() {
+   const [activeReactions, setActiveReactions] = useState<LiveReactionEvent[]>([]);
+   const processedSignalIdsRef = useRef<string[]>([]);
+   const previousParticipantsCountRef = useRef(0);
++  const canPublishCamera = viewerRole === "teacher";
++  const canShareScreen = viewerRole === "teacher";
+ 
+   const localParticipant = useMemo(
+     () => participants.find((participant) => participant.isLocal),
+@@ -764,24 +811,28 @@ function LiveRoomConference() {
+                     <MediaDeviceMenu kind="audioinput" />
+                   </div>
+                 </div>
+-                <div className="lk-button-group">
+-                  <TrackToggle source={Track.Source.Camera} showIcon={true}>
+-                    Cámara
+-                  </TrackToggle>
+-                  <div className="lk-button-group-menu">
+-                    <MediaDeviceMenu kind="videoinput" />
++                {canPublishCamera ? (
++                  <div className="lk-button-group">
++                    <TrackToggle source={Track.Source.Camera} showIcon={true}>
++                      Cámara
++                    </TrackToggle>
++                    <div className="lk-button-group-menu">
++                      <MediaDeviceMenu kind="videoinput" />
++                    </div>
+                   </div>
+-                </div>
+-                <TrackToggle
+-                  source={Track.Source.ScreenShare}
+-                  captureOptions={{ audio: true, selfBrowserSurface: "include" }}
+-                  showIcon={true}
+-                  onChange={(enabled) => {
+-                    setIsScreenSharing(enabled);
+-                  }}
+-                >
+-                  {isScreenSharing ? "Detener pantalla" : "Compartir pantalla"}
+-                </TrackToggle>
++                ) : null}
++                {canShareScreen ? (
++                  <TrackToggle
++                    source={Track.Source.ScreenShare}
++                    captureOptions={{ audio: true, selfBrowserSurface: "include" }}
++                    showIcon={true}
++                    onChange={(enabled) => {
++                      setIsScreenSharing(enabled);
++                    }}
++                  >
++                    {isScreenSharing ? "Detener pantalla" : "Compartir pantalla"}
++                  </TrackToggle>
++                ) : null}
+                 <button
+                   type="button"
+                   onClick={() => {
+@@ -830,6 +881,11 @@ export default function LiveClassRoomPage() {
+       `/api/live/classes/${encodeURIComponent(classId)}/participants${liveClassQuery ? `?${liveClassQuery}` : ""}`,
+     [classId, liveClassQuery],
+   );
++  const recordingEndpoint = useMemo(
++    () =>
++      `/api/live/classes/${encodeURIComponent(classId)}/recording${liveClassQuery ? `?${liveClassQuery}` : ""}`,
++    [classId, liveClassQuery],
++  );
+   const returnTo = useMemo(() => {
+     const query = searchParams.toString();
+     return `/live/${encodeURIComponent(classId)}${query ? `?${query}` : ""}`;
+@@ -858,11 +914,45 @@ export default function LiveClassRoomPage() {
+   const [mutingAll, setMutingAll] = useState(false);
+   const [mutingParticipantId, setMutingParticipantId] = useState<string | null>(null);
+   const [moderationMessage, setModerationMessage] = useState<string | null>(null);
++  const [recordingStatus, setRecordingStatus] = useState<LiveRecordingControlStatus>("idle");
++  const [recordingEgressId, setRecordingEgressId] = useState<string | null>(null);
++  const [recordingErrorMessage, setRecordingErrorMessage] = useState<string | null>(null);
++  const [recordingActionLoading, setRecordingActionLoading] = useState<"start" | "stop" | null>(
++    null,
++  );
++  const [recordingStatusLoading, setRecordingStatusLoading] = useState(false);
++  const [recordingStatusNotice, setRecordingStatusNotice] = useState<string | null>(null);
+   const [chromeWarningDismissed, setChromeWarningDismissed] = useState(false);
+   const autoStartAttemptedRef = useRef(false);
+   const browserSupported = useMemo(() => isBrowserSupported(), []);
+   const browserInfo = useMemo(() => detectLiveBrowser(), []);
+   const shouldShowChromeRecommendation = browserSupported && !browserInfo.isRecommendedChrome && !chromeWarningDismissed;
++  const liveKitRoomOptions = useMemo(
++    () => ({
++      adaptiveStream: true,
++      dynacast: true,
++      videoCaptureDefaults: {
++        resolution: {
++          width: 640,
++          height: 360,
++          frameRate: 15,
++        },
++        frameRate: 15,
++      },
++      publishDefaults: {
++        simulcast: true,
++        videoEncoding: {
++          maxBitrate: 500_000,
++          maxFramerate: 15,
++        },
++        screenShareEncoding: {
++          maxBitrate: 750_000,
++          maxFramerate: 10,
++        },
++      },
++    }),
++    [],
++  );
+ 
+   useEffect(() => {
+     const unsub = onAuthStateChanged(auth, (nextUser) => {
+@@ -872,6 +962,12 @@ export default function LiveClassRoomPage() {
+     return unsub;
+   }, []);
+ 
++  const applyRecordingControlResult = useCallback((result: LiveRecordingControlResult | null | undefined) => {
++    setRecordingStatus(asRecordingControlStatus(result?.recordingStatus));
++    setRecordingEgressId(result?.egressId ?? null);
++    setRecordingErrorMessage(result?.errorMessage?.trim() || null);
++  }, []);
++
+   const requestToken = useCallback(async () => {
+     if (!classId) return;
+     if (!user) return;
+@@ -903,6 +999,11 @@ export default function LiveClassRoomPage() {
+       setScheduledStartAt(payload.data.liveSession?.scheduledStartAt ?? null);
+       setTimezone(payload.data.liveSession?.timezone ?? "America/Monterrey");
+       setAsRole(payload.data.asRole ?? null);
++      applyRecordingControlResult({
++        recordingStatus: asRecordingControlStatus(payload.data.liveSession?.recording?.status),
++        egressId: payload.data.liveSession?.recording?.egressId ?? null,
++        errorMessage: payload.data.liveSession?.recording?.errorMessage ?? null,
++      });
+ 
+       if (!payload.data.joinAllowed || !payload.data.token || !payload.data.livekitUrl) {
+         setToken(null);
+@@ -925,7 +1026,7 @@ export default function LiveClassRoomPage() {
+       setError(requestError instanceof Error ? requestError.message : "No se pudo abrir la clase");
+       setLoading(false);
+     }
+-  }, [classId, courseId, lessonId, user]);
++  }, [applyRecordingControlResult, classId, courseId, lessonId, user]);
+ 
+   const leaveRoom = useCallback(() => {
+     // Unmounting LiveKitRoom forces a clean disconnect and avoids internal
+@@ -939,6 +1040,7 @@ export default function LiveClassRoomPage() {
+     setParticipants([]);
+     setParticipantsError(null);
+     setModerationMessage(null);
++    setRecordingStatusNotice(null);
+   }, []);
+ 
+   const pollJoinAccess = useCallback(async () => {
+@@ -1063,6 +1165,96 @@ export default function LiveClassRoomPage() {
+     }
+   }, [asRole, classId, courseId, lessonId, user]);
+ 
++  const requestRecordingStatus = useCallback(
++    async (params?: { silent?: boolean }) => {
++      if (!classId || !user || asRole !== "teacher") return null;
++      const silent = params?.silent === true;
++      if (!silent) {
++        setRecordingStatusLoading(true);
++        setRecordingStatusNotice(null);
++      }
++      try {
++        const idToken = await user.getIdToken();
++        const response = await fetch(recordingEndpoint, {
++          method: "POST",
++          headers: {
++            "Content-Type": "application/json",
++            Authorization: `Bearer ${idToken}`,
++          },
++          body: JSON.stringify({ action: "status" }),
++        });
++        const payload = (await response.json().catch(() => null)) as LiveRecordingControlResponse | null;
++        if (!response.ok || !payload?.success || !payload.data) {
++          throw new Error(payload?.error || "No se pudo consultar el estado de grabación");
++        }
++        applyRecordingControlResult(payload.data);
++        return payload.data;
++      } catch (statusError) {
++        if (!silent) {
++          setRecordingStatusNotice(
++            statusError instanceof Error
++              ? statusError.message
++              : "No se pudo consultar el estado de grabación",
++          );
++        }
++        return null;
++      } finally {
++        if (!silent) {
++          setRecordingStatusLoading(false);
++        }
++      }
++    },
++    [applyRecordingControlResult, asRole, classId, recordingEndpoint, user],
++  );
++
++  const controlRecording = useCallback(
++    async (action: "start" | "stop") => {
++      if (!classId || !user || asRole !== "teacher") return;
++
++      setRecordingActionLoading(action);
++      setRecordingStatusNotice(null);
++      try {
++        const idToken = await user.getIdToken();
++        const response = await fetch(recordingEndpoint, {
++          method: "POST",
++          headers: {
++            "Content-Type": "application/json",
++            Authorization: `Bearer ${idToken}`,
++          },
++          body: JSON.stringify({ action }),
++        });
++        const payload = (await response.json().catch(() => null)) as LiveRecordingControlResponse | null;
++        if (!response.ok || !payload?.success || !payload.data) {
++          throw new Error(
++            payload?.error ||
++              (action === "start"
++                ? "No se pudo iniciar la grabación"
++                : "No se pudo detener la grabación"),
++          );
++        }
++        applyRecordingControlResult(payload.data);
++        setRecordingStatusNotice(
++          action === "start"
++            ? "Grabación manual iniciada."
++            : payload.data.egressStopRequested === false
++              ? "No había egress activo para detener."
++              : "Solicitud de cierre de grabación enviada.",
++        );
++      } catch (recordingError) {
++        setRecordingStatusNotice(
++          recordingError instanceof Error
++            ? recordingError.message
++            : action === "start"
++              ? "No se pudo iniciar la grabación"
++              : "No se pudo detener la grabación",
++        );
++      } finally {
++        setRecordingActionLoading(null);
++      }
++    },
++    [applyRecordingControlResult, asRole, classId, recordingEndpoint, user],
++  );
++
+   const fetchParticipants = useCallback(async () => {
+     if (!classId || !user || asRole !== "teacher") return;
+ 
+@@ -1217,6 +1409,17 @@ export default function LiveClassRoomPage() {
+     return () => window.clearInterval(timer);
+   }, [asRole, classId, livekitUrl, pollJoinAccess, token, user]);
+ 
++  useEffect(() => {
++    if (!user || !classId) return;
++    if (!token || !livekitUrl) return;
++    if (asRole !== "teacher") return;
++    void requestRecordingStatus({ silent: true });
++    const timer = window.setInterval(() => {
++      void requestRecordingStatus({ silent: true });
++    }, 8000);
++    return () => window.clearInterval(timer);
++  }, [asRole, classId, livekitUrl, requestRecordingStatus, token, user]);
++
+   useEffect(() => {
+     if (!showModerationPanel || asRole !== "teacher") return;
+     if (!token || !livekitUrl) return;
+@@ -1230,6 +1433,9 @@ export default function LiveClassRoomPage() {
+     setParticipants([]);
+     setParticipantsError(null);
+     setModerationMessage(null);
++    setRecordingActionLoading(null);
++    setRecordingStatusLoading(false);
++    setRecordingStatusNotice(null);
+   }, [asRole]);
+ 
+   useEffect(() => {
+@@ -1240,6 +1446,26 @@ export default function LiveClassRoomPage() {
+     return () => window.clearTimeout(timeout);
+   }, [moderationMessage]);
+ 
++  useEffect(() => {
++    if (!recordingStatusNotice) return;
++    const timeout = window.setTimeout(() => {
++      setRecordingStatusNotice(null);
++    }, 5000);
++    return () => window.clearTimeout(timeout);
++  }, [recordingStatusNotice]);
++
++  const recordingStatusText = RECORDING_STATUS_LABEL[recordingStatus];
++  const canStartRecording =
++    asRole === "teacher" &&
++    (recordingStatus === "idle" || recordingStatus === "failed" || recordingStatus === "ready") &&
++    recordingActionLoading === null &&
++    !recordingStatusLoading;
++  const canStopRecording =
++    asRole === "teacher" &&
++    (recordingStatus === "recording" || recordingStatus === "processing") &&
++    recordingActionLoading === null &&
++    !recordingStatusLoading;
++
+   if (authLoading) {
+     return <div className="flex min-h-screen items-center justify-center bg-slate-950 text-white">Verificando sesión...</div>;
+   }
+@@ -1362,6 +1588,7 @@ export default function LiveClassRoomPage() {
+         token={token}
+         serverUrl={livekitUrl}
+         connect={true}
++        options={liveKitRoomOptions}
+         // Publish media manually from controls to avoid browser/device-specific
+         // join failures when mic/camera permissions are blocked.
+         audio={false}
+@@ -1396,11 +1623,12 @@ export default function LiveClassRoomPage() {
+           setParticipants([]);
+           setParticipantsError(null);
+           setModerationMessage(null);
++          setRecordingStatusNotice(null);
+         }}
+         data-lk-theme="default"
+         className="h-full w-full"
+       >
+-        <LiveRoomConference />
++        <LiveRoomConference viewerRole={asRole} />
+       </LiveKitRoom>
+       <div className="pointer-events-none fixed left-0 right-0 top-0 flex justify-between p-3">
+         <div className="flex items-center gap-2">
+@@ -1412,6 +1640,35 @@ export default function LiveClassRoomPage() {
+           </span>
+         </div>
+         <div className="pointer-events-auto flex items-center gap-2">
++          {asRole === "teacher" ? (
++            <span className="rounded-full bg-black/70 px-3 py-1 text-xs font-semibold text-white">
++              Grabación: {recordingStatusText}
++            </span>
++          ) : null}
++          {asRole === "teacher" ? (
++            <button
++              type="button"
++              disabled={!canStartRecording}
++              onClick={() => {
++                void controlRecording("start");
++              }}
++              className="rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
++            >
++              {recordingActionLoading === "start" ? "Iniciando..." : "Iniciar grabación"}
++            </button>
++          ) : null}
++          {asRole === "teacher" ? (
++            <button
++              type="button"
++              disabled={!canStopRecording}
++              onClick={() => {
++                void controlRecording("stop");
++              }}
++              className="rounded-full bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
++            >
++              {recordingActionLoading === "stop" ? "Deteniendo..." : "Detener grabación"}
++            </button>
++          ) : null}
+           {asRole === "teacher" ? (
+             <button
+               type="button"
+@@ -1442,6 +1699,25 @@ export default function LiveClassRoomPage() {
+           </button>
+         </div>
+       </div>
++      {asRole === "teacher" ? (
++        <div className="pointer-events-none fixed left-3 top-14 z-20 flex flex-col gap-1">
++          {recordingEgressId ? (
++            <span className="pointer-events-auto rounded-full bg-black/70 px-3 py-1 text-[11px] font-semibold text-slate-100">
++              Egress: {recordingEgressId}
++            </span>
++          ) : null}
++          {recordingErrorMessage ? (
++            <span className="pointer-events-auto rounded-full bg-red-600/90 px-3 py-1 text-[11px] font-semibold text-white">
++              Error grabación: {recordingErrorMessage}
++            </span>
++          ) : null}
++          {recordingStatusNotice ? (
++            <span className="pointer-events-auto rounded-full bg-sky-600/90 px-3 py-1 text-[11px] font-semibold text-white">
++              {recordingStatusNotice}
++            </span>
++          ) : null}
++        </div>
++      ) : null}
+       {asRole === "teacher" && showEndSessionConfirm ? (
+         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 px-4">
+           <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 text-white shadow-2xl">
+diff --git a/src/app/student/StudentFeedPageClient.tsx b/src/app/student/StudentFeedPageClient.tsx
+index 1d78494..41652fb 100644
+--- a/src/app/student/StudentFeedPageClient.tsx
++++ b/src/app/student/StudentFeedPageClient.tsx
+@@ -3931,11 +3931,17 @@ export default function StudentFeedPageClient() {
+       const session = normalizeLiveSession(cls.liveSession);
+       const sessionFinalized = isLiveSessionFinalized(session);
+       const recordingStatus = session?.recording.status ?? "idle";
+-      const recordingAuto = session?.recording.auto !== false;
+       const recordingFailed = session?.recording.status === "failed";
+       const recordingReady =
+         session?.status === "recording_ready" || recordingStatus === "ready";
+-      const canOpenRecording = sessionFinalized && !recordingFailed && recordingAuto;
++      const recordingObjectAvailable = Boolean(session?.recording.storagePath);
++      const canOpenRecording =
++        sessionFinalized &&
++        !recordingFailed &&
++        (recordingReady ||
++          recordingObjectAvailable ||
++          recordingStatus === "recording" ||
++          recordingStatus === "processing");
+       const recordingUrl = liveRecordingUrlMap[cls.id];
+       const recordingPlayerId = `${cls.id}__live_recording`;
+       const showPlayButton = !recordingUrl;
+@@ -3945,8 +3951,6 @@ export default function StudentFeedPageClient() {
+       let recordingButtonLabel = "Ver grabación";
+       if (recordingLoadingMap[cls.id]) {
+         recordingButtonLabel = "Verificando...";
+-      } else if (!recordingAuto) {
+-        recordingButtonLabel = "Sin grabación";
+       } else if (recordingFailed) {
+         recordingButtonLabel = "Grabación falló";
+       } else if (!sessionFinalized) {
+@@ -3957,20 +3961,18 @@ export default function StudentFeedPageClient() {
+ 
+       const inlineRecordingNotice =
+         recordingNoticeMap[cls.id]?.trim() ||
+-        (!recordingAuto
+-          ? "Esta clase se cerró sin grabación automática."
+-          : recordingFailed
+-            ? "La grabación falló y no pudo guardarse."
+-            : !sessionFinalized
+-              ? "La grabación aparecerá cuando la clase termine."
+-              : recordingStatus === "recording" || recordingStatus === "processing"
+-                ? "La grabación sigue procesándose. Si el archivo ya terminó de generarse, el botón la recuperará."
+-                : recordingReady
+-                  ? "La grabación está lista para cargarse."
+-                  : "Verifica si la grabación ya terminó de procesarse.");
++        (recordingFailed
++          ? "La grabación falló y no pudo guardarse."
++          : !sessionFinalized
++            ? "La grabación aparecerá cuando la clase termine."
++            : recordingStatus === "recording" || recordingStatus === "processing"
++              ? "La grabación sigue procesándose. Si el archivo ya terminó de generarse, el botón la recuperará."
++              : recordingReady || recordingObjectAvailable
++                ? "La grabación está lista para cargarse."
++                : "Esta clase terminó sin grabación disponible.");
+ 
+       const inlineRecordingNoticeClass =
+-        !recordingAuto || recordingFailed
++        recordingFailed
+           ? "text-amber-200"
+           : recordingNoticeMap[cls.id]?.trim()
+             ? "text-amber-100"
+diff --git a/src/lib/live-classes/types.ts b/src/lib/live-classes/types.ts
+index 1753d40..36ab9a4 100644
+--- a/src/lib/live-classes/types.ts
++++ b/src/lib/live-classes/types.ts
+@@ -1,6 +1,8 @@
+ export type LiveSessionStatus = "scheduled" | "live" | "ended" | "recording_ready";
+ export type LiveRecordingStatus = "idle" | "recording" | "processing" | "ready" | "failed";
+ 
++const DEFAULT_RECORDING_MAX_RETRY_COUNT = 1;
++
+ export type LiveRecordingData = {
+   auto: boolean;
+   egressId: string | null;
+@@ -112,7 +114,7 @@ export function createDefaultLiveSession(params?: {
+     timezone: asTrimmedString(params?.timezone ?? "") || "America/Monterrey",
+     teacherActive: false,
+     recording: {
+-      auto: true,
++      auto: false,
+       egressId: null,
+       status: "idle",
+       storagePath: null,
+@@ -123,7 +125,7 @@ export function createDefaultLiveSession(params?: {
+       errorMessage: null,
+       errorCode: null,
+       retryCount: 0,
+-      maxRetryCount: 2,
++      maxRetryCount: DEFAULT_RECORDING_MAX_RETRY_COUNT,
+       lastRetryAt: null,
+     },
+     lastStartedAt: null,
+@@ -151,7 +153,7 @@ export function normalizeLiveSession(value: unknown): LiveClassSession | null {
+     timezone,
+     teacherActive: raw.teacherActive === true,
+     recording: {
+-      auto: recordingRaw.auto !== false,
++      auto: recordingRaw.auto === true,
+       egressId: asNullableString(recordingRaw.egressId),
+       status: asRecordingStatus(recordingRaw.status),
+       storagePath: asNullableString(recordingRaw.storagePath),
+@@ -162,7 +164,10 @@ export function normalizeLiveSession(value: unknown): LiveClassSession | null {
+       errorMessage: asNullableString(recordingRaw.errorMessage),
+       errorCode: asFiniteNumber(recordingRaw.errorCode),
+       retryCount: asNonNegativeInteger(recordingRaw.retryCount, 0),
+-      maxRetryCount: asNonNegativeInteger(recordingRaw.maxRetryCount, 2) || 2,
++      maxRetryCount: asNonNegativeInteger(
++        recordingRaw.maxRetryCount,
++        DEFAULT_RECORDING_MAX_RETRY_COUNT,
++      ),
+       lastRetryAt: asNullableString(recordingRaw.lastRetryAt),
+     },
+     lastStartedAt: asNullableString(raw.lastStartedAt),
+@@ -198,7 +203,8 @@ export function createLiveSessionForClass(params: {
+     timezone: normalized?.timezone || base.timezone,
+     recording: {
+       ...base.recording,
+-      auto: normalized?.recording?.auto !== false,
++      // Auto-recording is intentionally disabled project-wide to control LiveKit egress costs.
++      auto: false,
+     },
+   };
+ }
+@@ -234,7 +240,8 @@ export function mergeTeacherEditableLiveSession(params: {
+     timezone: incoming?.timezone || current.timezone || "America/Monterrey",
+     recording: {
+       ...current.recording,
+-      auto: incoming?.recording?.auto ?? current.recording.auto,
++      // Keep disabled even if legacy payloads still send `recording.auto = true`.
++      auto: false,
+     },
+   };
+ }
+diff --git a/src/lib/server/livekit.ts b/src/lib/server/livekit.ts
+index 10d3b3e..d75847f 100644
+--- a/src/lib/server/livekit.ts
++++ b/src/lib/server/livekit.ts
+@@ -1,10 +1,12 @@
+ import {
+   AccessToken,
+   EgressClient,
++  EgressStatus,
+   EncodedFileOutput,
+   EncodingOptionsPreset,
+   GCPUpload,
+   RoomServiceClient,
++  TrackSource,
+   SegmentedFileOutput,
+   SegmentedFileProtocol,
+   WebhookReceiver,
+@@ -32,15 +34,15 @@ let cachedRoomServiceClient: RoomServiceClient | null = null;
+ let cachedEgressClient: EgressClient | null = null;
+ let cachedWebhookReceiver: WebhookReceiver | null = null;
+ const LIVEKIT_TRACK_SOURCE_MICROPHONE = 2; // TrackSource.MICROPHONE
+-const DEFAULT_RECORDING_START_MAX_ATTEMPTS = 2;
+-const DEFAULT_RECORDING_MAX_RETRY_COUNT = 2;
++const DEFAULT_RECORDING_START_MAX_ATTEMPTS = 1;
++const DEFAULT_RECORDING_MAX_RETRY_COUNT = 1;
+ const RECORDING_START_RETRY_BASE_DELAY_MS = 1500;
+ 
+ export type LiveRecordingOutputPaths = {
+   mp4ObjectPath: string;
+-  backupManifestPath: string;
+-  backupLiveManifestPath: string;
+-  backupSegmentPrefix: string;
++  backupManifestPath: string | null;
++  backupLiveManifestPath: string | null;
++  backupSegmentPrefix: string | null;
+ };
+ 
+ export type LiveRecordingRuntimeStatus = "recording" | "processing";
+@@ -270,6 +272,53 @@ export async function listActiveLiveKitEgress(roomName?: string) {
+   return getEgressClient().listEgress();
+ }
+ 
++function isPotentiallyActiveEgressStatus(status: EgressStatus | number | undefined): boolean {
++  return (
++    status === EgressStatus.EGRESS_STARTING ||
++    status === EgressStatus.EGRESS_ACTIVE ||
++    status === EgressStatus.EGRESS_ENDING
++  );
++}
++
++export async function stopActiveLiveKitEgressForRoom(roomName: string): Promise<{
++  requestedStops: number;
++  stopped: number;
++  egressIds: string[];
++}> {
++  const normalizedRoomName = roomName.trim();
++  if (!normalizedRoomName) {
++    return {
++      requestedStops: 0,
++      stopped: 0,
++      egressIds: [],
++    };
++  }
++
++  const egressItems = await listActiveLiveKitEgress(normalizedRoomName);
++  const egressIds = Array.from(
++    new Set(
++      egressItems
++        .filter((item) => isPotentiallyActiveEgressStatus(item.status))
++        .map((item) => (item.egressId ?? "").trim())
++        .filter(Boolean),
++    ),
++  );
++
++  let stopped = 0;
++  for (const egressId of egressIds) {
++    const stopRequested = await stopLiveKitEgress(egressId);
++    if (stopRequested) {
++      stopped += 1;
++    }
++  }
++
++  return {
++    requestedStops: egressIds.length,
++    stopped,
++    egressIds,
++  };
++}
++
+ function parseParticipantRoleFromMetadata(rawMetadata: string | null | undefined): string {
+   const value = (rawMetadata ?? "").trim();
+   if (!value) return "";
+@@ -469,6 +518,14 @@ export async function createJoinToken(params: {
+     room: params.roomName,
+     roomAdmin: params.isTeacher,
+     canPublish: true,
++    canPublishSources: params.isTeacher
++      ? [
++          TrackSource.CAMERA,
++          TrackSource.MICROPHONE,
++          TrackSource.SCREEN_SHARE,
++          TrackSource.SCREEN_SHARE_AUDIO,
++        ]
++      : [TrackSource.MICROPHONE],
+     canSubscribe: true,
+     canPublishData: true,
+   });
+@@ -483,6 +540,34 @@ function normalizePathSegment(value: string): string {
+     .replace(/\/+/g, "/");
+ }
+ 
++function readBooleanEnv(rawValue: string | undefined, defaultValue: boolean): boolean {
++  const normalized = (rawValue ?? "").trim().toLowerCase();
++  if (!normalized) return defaultValue;
++  if (["1", "true", "yes", "on"].includes(normalized)) return true;
++  if (["0", "false", "no", "off"].includes(normalized)) return false;
++  return defaultValue;
++}
++
++function isLiveKitRecordingHlsBackupEnabled(): boolean {
++  return readBooleanEnv(process.env.LIVEKIT_RECORDING_ENABLE_HLS, false);
++}
++
++function resolveRoomCompositeLayout(): "grid" | "speaker" {
++  const layout = (process.env.LIVEKIT_RECORDING_LAYOUT ?? "speaker").trim().toLowerCase();
++  return layout === "grid" ? "grid" : "speaker";
++}
++
++function resolveRoomCompositeEncodingPreset(): EncodingOptionsPreset {
++  const rawPreset = (process.env.LIVEKIT_RECORDING_ENCODING_PRESET ?? "h264_720p_15")
++    .trim()
++    .toLowerCase();
++
++  if (rawPreset === "h264_720p_30") {
++    return EncodingOptionsPreset.H264_720P_30;
++  }
++  return EncodingOptionsPreset.H264_720P_15;
++}
++
+ function sleep(ms: number): Promise<void> {
+   return new Promise((resolve) => {
+     setTimeout(resolve, ms);
+@@ -549,24 +634,26 @@ export function buildRecordingOutputPaths(params: {
+     typeof params.retryIndex === "number" && params.retryIndex > 0 ? `-retry${params.retryIndex}` : "";
+   const baseFileName = `${params.classId}-${params.startedAtMs}${retrySuffix}`;
+   const backupBasePath = [basePrefix, `${baseFileName}-hls`].filter(Boolean).join("/");
++  const hlsEnabled = isLiveKitRecordingHlsBackupEnabled();
+ 
+   return {
+     mp4ObjectPath: [basePrefix, `${baseFileName}.mp4`].filter(Boolean).join("/"),
+-    backupManifestPath: [backupBasePath, "index.m3u8"].join("/"),
+-    backupLiveManifestPath: [backupBasePath, "live.m3u8"].join("/"),
+-    backupSegmentPrefix: [backupBasePath, "segment"].join("/"),
++    backupManifestPath: hlsEnabled ? [backupBasePath, "index.m3u8"].join("/") : null,
++    backupLiveManifestPath: hlsEnabled ? [backupBasePath, "live.m3u8"].join("/") : null,
++    backupSegmentPrefix: hlsEnabled ? [backupBasePath, "segment"].join("/") : null,
+   };
+ }
+ 
+ function findMatchingActiveEgressForRoom(params: {
+   items: EgressInfo[];
+   expectedObjectPath: string;
+-  expectedBackupManifestPath: string;
++  expectedBackupManifestPath: string | null;
+ }): EgressInfo | null {
+   return (
+     params.items.find((item) => {
+       const filePath = extractRecordingObjectPath(item);
+       if (filePath && filePath === params.expectedObjectPath) return true;
++      if (!params.expectedBackupManifestPath) return false;
+       const backupPath = extractRecordingBackupManifestPath(item);
+       return Boolean(backupPath && backupPath === params.expectedBackupManifestPath);
+     }) ??
+@@ -598,29 +685,40 @@ export async function startRoomCompositeRecording(params: {
+       }),
+     },
+   });
+-  const segmentsOutput = new SegmentedFileOutput({
+-    protocol: SegmentedFileProtocol.HLS_PROTOCOL,
+-    filenamePrefix: normalizePathSegment(params.outputPaths.backupSegmentPrefix),
+-    playlistName: params.outputPaths.backupManifestPath.split("/").pop() ?? "index.m3u8",
+-    livePlaylistName:
+-      params.outputPaths.backupLiveManifestPath.split("/").pop() ?? "live.m3u8",
+-    segmentDuration: 6,
+-    output: {
+-      case: "gcp",
+-      value: new GCPUpload({
+-        credentials: egressConfig.egressCredentials,
+-        bucket: egressConfig.egressBucket,
+-      }),
+-    },
+-  });
++  const hlsBackupEnabled =
++    isLiveKitRecordingHlsBackupEnabled() &&
++    Boolean(params.outputPaths.backupManifestPath) &&
++    Boolean(params.outputPaths.backupLiveManifestPath) &&
++    Boolean(params.outputPaths.backupSegmentPrefix);
++  const segmentsOutput = hlsBackupEnabled
++    ? new SegmentedFileOutput({
++        protocol: SegmentedFileProtocol.HLS_PROTOCOL,
++        filenamePrefix: normalizePathSegment(params.outputPaths.backupSegmentPrefix ?? ""),
++        playlistName:
++          params.outputPaths.backupManifestPath?.split("/").pop() ?? "index.m3u8",
++        livePlaylistName:
++          params.outputPaths.backupLiveManifestPath?.split("/").pop() ?? "live.m3u8",
++        segmentDuration: 6,
++        output: {
++          case: "gcp",
++          value: new GCPUpload({
++            credentials: egressConfig.egressCredentials,
++            bucket: egressConfig.egressBucket,
++          }),
++        },
++      })
++    : undefined;
+ 
+   const egressClient = getEgressClient();
++  const outputs = segmentsOutput
++    ? { file: output, segments: segmentsOutput }
++    : { file: output };
+   return egressClient.startRoomCompositeEgress(
+     params.roomName,
+-    { file: output, segments: segmentsOutput },
++    outputs,
+     {
+-      layout: "grid",
+-      encodingOptions: EncodingOptionsPreset.H264_1080P_30,
++      layout: resolveRoomCompositeLayout(),
++      encodingOptions: resolveRoomCompositeEncodingPreset(),
+     },
+   );
+ }

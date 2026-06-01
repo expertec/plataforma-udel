@@ -48,8 +48,39 @@ type LiveTokenResponse = {
       status?: string;
       scheduledStartAt?: string | null;
       timezone?: string;
+      recording?: {
+        status?: string;
+        egressId?: string | null;
+        storagePath?: string | null;
+        playbackReadyAt?: string | null;
+        durationSec?: number | null;
+        errorMessage?: string | null;
+      };
     } | null;
   };
+  error?: string;
+};
+
+type LiveRecordingControlStatus = "idle" | "recording" | "processing" | "ready" | "failed";
+
+type LiveRecordingControlResult = {
+  action?: "start" | "stop" | "status";
+  sessionStatus?: string;
+  recordingStatus?: LiveRecordingControlStatus;
+  egressId?: string | null;
+  storagePath?: string | null;
+  playbackReadyAt?: string | null;
+  durationSec?: number | null;
+  errorMessage?: string | null;
+  errorCode?: number | null;
+  canStart?: boolean;
+  canStop?: boolean;
+  egressStopRequested?: boolean;
+};
+
+type LiveRecordingControlResponse = {
+  success?: boolean;
+  data?: LiveRecordingControlResult;
   error?: string;
 };
 
@@ -131,6 +162,20 @@ type LiveBrowserInfo = {
 const LIVE_SIGNAL_TOPIC = "udx.live.signal";
 const LIVE_REACTION_TTL_MS = 4500;
 const LIVE_REACTIONS = ["👍", "👏", "🎉", "🔥", "❤️", "😂"];
+const RECORDING_STATUS_LABEL: Record<LiveRecordingControlStatus, string> = {
+  idle: "No grabando",
+  recording: "Grabando",
+  processing: "Procesando",
+  ready: "Finalizada",
+  failed: "Error",
+};
+
+function asRecordingControlStatus(value: unknown): LiveRecordingControlStatus {
+  if (value === "recording" || value === "processing" || value === "ready" || value === "failed") {
+    return value;
+  }
+  return "idle";
+}
 
 function isLiveSignalPayload(value: unknown): value is LiveSignalPayload {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -396,7 +441,7 @@ function LiveRoomChatPanel({ visible }: { visible: boolean }) {
   );
 }
 
-function LiveRoomConference() {
+function LiveRoomConference({ viewerRole }: { viewerRole: "teacher" | "student" | null }) {
   const participants = useParticipants();
   const speakingParticipants = useSpeakingParticipants();
   const connectionState = useConnectionState();
@@ -422,6 +467,8 @@ function LiveRoomConference() {
   const [activeReactions, setActiveReactions] = useState<LiveReactionEvent[]>([]);
   const processedSignalIdsRef = useRef<string[]>([]);
   const previousParticipantsCountRef = useRef(0);
+  const canPublishCamera = viewerRole === "teacher";
+  const canShareScreen = viewerRole === "teacher";
 
   const localParticipant = useMemo(
     () => participants.find((participant) => participant.isLocal),
@@ -764,24 +811,28 @@ function LiveRoomConference() {
                     <MediaDeviceMenu kind="audioinput" />
                   </div>
                 </div>
-                <div className="lk-button-group">
-                  <TrackToggle source={Track.Source.Camera} showIcon={true}>
-                    Cámara
-                  </TrackToggle>
-                  <div className="lk-button-group-menu">
-                    <MediaDeviceMenu kind="videoinput" />
+                {canPublishCamera ? (
+                  <div className="lk-button-group">
+                    <TrackToggle source={Track.Source.Camera} showIcon={true}>
+                      Cámara
+                    </TrackToggle>
+                    <div className="lk-button-group-menu">
+                      <MediaDeviceMenu kind="videoinput" />
+                    </div>
                   </div>
-                </div>
-                <TrackToggle
-                  source={Track.Source.ScreenShare}
-                  captureOptions={{ audio: true, selfBrowserSurface: "include" }}
-                  showIcon={true}
-                  onChange={(enabled) => {
-                    setIsScreenSharing(enabled);
-                  }}
-                >
-                  {isScreenSharing ? "Detener pantalla" : "Compartir pantalla"}
-                </TrackToggle>
+                ) : null}
+                {canShareScreen ? (
+                  <TrackToggle
+                    source={Track.Source.ScreenShare}
+                    captureOptions={{ audio: true, selfBrowserSurface: "include" }}
+                    showIcon={true}
+                    onChange={(enabled) => {
+                      setIsScreenSharing(enabled);
+                    }}
+                  >
+                    {isScreenSharing ? "Detener pantalla" : "Compartir pantalla"}
+                  </TrackToggle>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => {
@@ -830,6 +881,11 @@ export default function LiveClassRoomPage() {
       `/api/live/classes/${encodeURIComponent(classId)}/participants${liveClassQuery ? `?${liveClassQuery}` : ""}`,
     [classId, liveClassQuery],
   );
+  const recordingEndpoint = useMemo(
+    () =>
+      `/api/live/classes/${encodeURIComponent(classId)}/recording${liveClassQuery ? `?${liveClassQuery}` : ""}`,
+    [classId, liveClassQuery],
+  );
   const returnTo = useMemo(() => {
     const query = searchParams.toString();
     return `/live/${encodeURIComponent(classId)}${query ? `?${query}` : ""}`;
@@ -858,11 +914,45 @@ export default function LiveClassRoomPage() {
   const [mutingAll, setMutingAll] = useState(false);
   const [mutingParticipantId, setMutingParticipantId] = useState<string | null>(null);
   const [moderationMessage, setModerationMessage] = useState<string | null>(null);
+  const [recordingStatus, setRecordingStatus] = useState<LiveRecordingControlStatus>("idle");
+  const [recordingEgressId, setRecordingEgressId] = useState<string | null>(null);
+  const [recordingErrorMessage, setRecordingErrorMessage] = useState<string | null>(null);
+  const [recordingActionLoading, setRecordingActionLoading] = useState<"start" | "stop" | null>(
+    null,
+  );
+  const [recordingStatusLoading, setRecordingStatusLoading] = useState(false);
+  const [recordingStatusNotice, setRecordingStatusNotice] = useState<string | null>(null);
   const [chromeWarningDismissed, setChromeWarningDismissed] = useState(false);
   const autoStartAttemptedRef = useRef(false);
   const browserSupported = useMemo(() => isBrowserSupported(), []);
   const browserInfo = useMemo(() => detectLiveBrowser(), []);
   const shouldShowChromeRecommendation = browserSupported && !browserInfo.isRecommendedChrome && !chromeWarningDismissed;
+  const liveKitRoomOptions = useMemo(
+    () => ({
+      adaptiveStream: true,
+      dynacast: true,
+      videoCaptureDefaults: {
+        resolution: {
+          width: 640,
+          height: 360,
+          frameRate: 15,
+        },
+        frameRate: 15,
+      },
+      publishDefaults: {
+        simulcast: true,
+        videoEncoding: {
+          maxBitrate: 500_000,
+          maxFramerate: 15,
+        },
+        screenShareEncoding: {
+          maxBitrate: 750_000,
+          maxFramerate: 10,
+        },
+      },
+    }),
+    [],
+  );
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (nextUser) => {
@@ -870,6 +960,12 @@ export default function LiveClassRoomPage() {
       setAuthLoading(false);
     });
     return unsub;
+  }, []);
+
+  const applyRecordingControlResult = useCallback((result: LiveRecordingControlResult | null | undefined) => {
+    setRecordingStatus(asRecordingControlStatus(result?.recordingStatus));
+    setRecordingEgressId(result?.egressId ?? null);
+    setRecordingErrorMessage(result?.errorMessage?.trim() || null);
   }, []);
 
   const requestToken = useCallback(async () => {
@@ -903,6 +999,11 @@ export default function LiveClassRoomPage() {
       setScheduledStartAt(payload.data.liveSession?.scheduledStartAt ?? null);
       setTimezone(payload.data.liveSession?.timezone ?? "America/Monterrey");
       setAsRole(payload.data.asRole ?? null);
+      applyRecordingControlResult({
+        recordingStatus: asRecordingControlStatus(payload.data.liveSession?.recording?.status),
+        egressId: payload.data.liveSession?.recording?.egressId ?? null,
+        errorMessage: payload.data.liveSession?.recording?.errorMessage ?? null,
+      });
 
       if (!payload.data.joinAllowed || !payload.data.token || !payload.data.livekitUrl) {
         setToken(null);
@@ -925,7 +1026,7 @@ export default function LiveClassRoomPage() {
       setError(requestError instanceof Error ? requestError.message : "No se pudo abrir la clase");
       setLoading(false);
     }
-  }, [classId, courseId, lessonId, user]);
+  }, [applyRecordingControlResult, classId, courseId, lessonId, user]);
 
   const leaveRoom = useCallback(() => {
     // Unmounting LiveKitRoom forces a clean disconnect and avoids internal
@@ -939,6 +1040,7 @@ export default function LiveClassRoomPage() {
     setParticipants([]);
     setParticipantsError(null);
     setModerationMessage(null);
+    setRecordingStatusNotice(null);
   }, []);
 
   const pollJoinAccess = useCallback(async () => {
@@ -1062,6 +1164,96 @@ export default function LiveClassRoomPage() {
       setEndingSession(false);
     }
   }, [asRole, classId, courseId, lessonId, user]);
+
+  const requestRecordingStatus = useCallback(
+    async (params?: { silent?: boolean }) => {
+      if (!classId || !user || asRole !== "teacher") return null;
+      const silent = params?.silent === true;
+      if (!silent) {
+        setRecordingStatusLoading(true);
+        setRecordingStatusNotice(null);
+      }
+      try {
+        const idToken = await user.getIdToken();
+        const response = await fetch(recordingEndpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({ action: "status" }),
+        });
+        const payload = (await response.json().catch(() => null)) as LiveRecordingControlResponse | null;
+        if (!response.ok || !payload?.success || !payload.data) {
+          throw new Error(payload?.error || "No se pudo consultar el estado de grabación");
+        }
+        applyRecordingControlResult(payload.data);
+        return payload.data;
+      } catch (statusError) {
+        if (!silent) {
+          setRecordingStatusNotice(
+            statusError instanceof Error
+              ? statusError.message
+              : "No se pudo consultar el estado de grabación",
+          );
+        }
+        return null;
+      } finally {
+        if (!silent) {
+          setRecordingStatusLoading(false);
+        }
+      }
+    },
+    [applyRecordingControlResult, asRole, classId, recordingEndpoint, user],
+  );
+
+  const controlRecording = useCallback(
+    async (action: "start" | "stop") => {
+      if (!classId || !user || asRole !== "teacher") return;
+
+      setRecordingActionLoading(action);
+      setRecordingStatusNotice(null);
+      try {
+        const idToken = await user.getIdToken();
+        const response = await fetch(recordingEndpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({ action }),
+        });
+        const payload = (await response.json().catch(() => null)) as LiveRecordingControlResponse | null;
+        if (!response.ok || !payload?.success || !payload.data) {
+          throw new Error(
+            payload?.error ||
+              (action === "start"
+                ? "No se pudo iniciar la grabación"
+                : "No se pudo detener la grabación"),
+          );
+        }
+        applyRecordingControlResult(payload.data);
+        setRecordingStatusNotice(
+          action === "start"
+            ? "Grabación manual iniciada."
+            : payload.data.egressStopRequested === false
+              ? "No había egress activo para detener."
+              : "Solicitud de cierre de grabación enviada.",
+        );
+      } catch (recordingError) {
+        setRecordingStatusNotice(
+          recordingError instanceof Error
+            ? recordingError.message
+            : action === "start"
+              ? "No se pudo iniciar la grabación"
+              : "No se pudo detener la grabación",
+        );
+      } finally {
+        setRecordingActionLoading(null);
+      }
+    },
+    [applyRecordingControlResult, asRole, classId, recordingEndpoint, user],
+  );
 
   const fetchParticipants = useCallback(async () => {
     if (!classId || !user || asRole !== "teacher") return;
@@ -1218,6 +1410,17 @@ export default function LiveClassRoomPage() {
   }, [asRole, classId, livekitUrl, pollJoinAccess, token, user]);
 
   useEffect(() => {
+    if (!user || !classId) return;
+    if (!token || !livekitUrl) return;
+    if (asRole !== "teacher") return;
+    void requestRecordingStatus({ silent: true });
+    const timer = window.setInterval(() => {
+      void requestRecordingStatus({ silent: true });
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [asRole, classId, livekitUrl, requestRecordingStatus, token, user]);
+
+  useEffect(() => {
     if (!showModerationPanel || asRole !== "teacher") return;
     if (!token || !livekitUrl) return;
     void fetchParticipants();
@@ -1230,6 +1433,9 @@ export default function LiveClassRoomPage() {
     setParticipants([]);
     setParticipantsError(null);
     setModerationMessage(null);
+    setRecordingActionLoading(null);
+    setRecordingStatusLoading(false);
+    setRecordingStatusNotice(null);
   }, [asRole]);
 
   useEffect(() => {
@@ -1239,6 +1445,26 @@ export default function LiveClassRoomPage() {
     }, 4000);
     return () => window.clearTimeout(timeout);
   }, [moderationMessage]);
+
+  useEffect(() => {
+    if (!recordingStatusNotice) return;
+    const timeout = window.setTimeout(() => {
+      setRecordingStatusNotice(null);
+    }, 5000);
+    return () => window.clearTimeout(timeout);
+  }, [recordingStatusNotice]);
+
+  const recordingStatusText = RECORDING_STATUS_LABEL[recordingStatus];
+  const canStartRecording =
+    asRole === "teacher" &&
+    (recordingStatus === "idle" || recordingStatus === "failed" || recordingStatus === "ready") &&
+    recordingActionLoading === null &&
+    !recordingStatusLoading;
+  const canStopRecording =
+    asRole === "teacher" &&
+    (recordingStatus === "recording" || recordingStatus === "processing") &&
+    recordingActionLoading === null &&
+    !recordingStatusLoading;
 
   if (authLoading) {
     return <div className="flex min-h-screen items-center justify-center bg-slate-950 text-white">Verificando sesión...</div>;
@@ -1362,6 +1588,7 @@ export default function LiveClassRoomPage() {
         token={token}
         serverUrl={livekitUrl}
         connect={true}
+        options={liveKitRoomOptions}
         // Publish media manually from controls to avoid browser/device-specific
         // join failures when mic/camera permissions are blocked.
         audio={false}
@@ -1396,11 +1623,12 @@ export default function LiveClassRoomPage() {
           setParticipants([]);
           setParticipantsError(null);
           setModerationMessage(null);
+          setRecordingStatusNotice(null);
         }}
         data-lk-theme="default"
         className="h-full w-full"
       >
-        <LiveRoomConference />
+        <LiveRoomConference viewerRole={asRole} />
       </LiveKitRoom>
       <div className="pointer-events-none fixed left-0 right-0 top-0 flex justify-between p-3">
         <div className="flex items-center gap-2">
@@ -1412,6 +1640,35 @@ export default function LiveClassRoomPage() {
           </span>
         </div>
         <div className="pointer-events-auto flex items-center gap-2">
+          {asRole === "teacher" ? (
+            <span className="rounded-full bg-black/70 px-3 py-1 text-xs font-semibold text-white">
+              Grabación: {recordingStatusText}
+            </span>
+          ) : null}
+          {asRole === "teacher" ? (
+            <button
+              type="button"
+              disabled={!canStartRecording}
+              onClick={() => {
+                void controlRecording("start");
+              }}
+              className="rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
+            >
+              {recordingActionLoading === "start" ? "Iniciando..." : "Iniciar grabación"}
+            </button>
+          ) : null}
+          {asRole === "teacher" ? (
+            <button
+              type="button"
+              disabled={!canStopRecording}
+              onClick={() => {
+                void controlRecording("stop");
+              }}
+              className="rounded-full bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
+            >
+              {recordingActionLoading === "stop" ? "Deteniendo..." : "Detener grabación"}
+            </button>
+          ) : null}
           {asRole === "teacher" ? (
             <button
               type="button"
@@ -1442,6 +1699,25 @@ export default function LiveClassRoomPage() {
           </button>
         </div>
       </div>
+      {asRole === "teacher" ? (
+        <div className="pointer-events-none fixed left-3 top-14 z-20 flex flex-col gap-1">
+          {recordingEgressId ? (
+            <span className="pointer-events-auto rounded-full bg-black/70 px-3 py-1 text-[11px] font-semibold text-slate-100">
+              Egress: {recordingEgressId}
+            </span>
+          ) : null}
+          {recordingErrorMessage ? (
+            <span className="pointer-events-auto rounded-full bg-red-600/90 px-3 py-1 text-[11px] font-semibold text-white">
+              Error grabación: {recordingErrorMessage}
+            </span>
+          ) : null}
+          {recordingStatusNotice ? (
+            <span className="pointer-events-auto rounded-full bg-sky-600/90 px-3 py-1 text-[11px] font-semibold text-white">
+              {recordingStatusNotice}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       {asRole === "teacher" && showEndSessionConfirm ? (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 px-4">
           <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 text-white shadow-2xl">

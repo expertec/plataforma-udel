@@ -1,4 +1,4 @@
-export const GLOBAL_EXAM_MIN_QUESTIONS = 20;
+export const GLOBAL_EXAM_MIN_QUESTIONS = 1;
 export const GLOBAL_EXAM_MAX_QUESTIONS = 25;
 export const GLOBAL_EXAM_PASS_SCORE = 70;
 export const GLOBAL_EXAM_MAX_ATTEMPTS = 2;
@@ -139,6 +139,11 @@ export function getGlobalExamStatusLabel(status: GlobalExamAssignmentStatus): st
 
 export function getGlobalExamTemplateStatusLabel(status: GlobalExamTemplateStatus): string {
   return status === "published" ? "Publicado" : "Borrador";
+}
+
+export function getGlobalExamCourseLabel(courseName: string): string {
+  const normalized = courseName.trim();
+  return normalized || "Sin materia";
 }
 
 export function sanitizeGlobalExamQuestionsForStudent(

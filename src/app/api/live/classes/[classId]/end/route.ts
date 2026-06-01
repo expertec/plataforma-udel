@@ -5,7 +5,7 @@ import {
   toLiveAccessErrorResponse,
 } from "@/lib/live-classes/access";
 import { mergeTeacherEditableLiveSession } from "@/lib/live-classes/types";
-import { stopLiveKitEgress } from "@/lib/server/livekit";
+import { stopActiveLiveKitEgressForRoom, stopLiveKitEgress } from "@/lib/server/livekit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,7 +34,9 @@ export async function POST(
     const classRef = access.classContext.classRef;
     const endedAtIso = new Date().toISOString();
     let egressId: string | null = null;
+    let roomName = "";
     let shouldStopEgress = false;
+    let recordingLikelyProcessing = false;
 
     await db.runTransaction(async (tx) => {
       const classSnap = await tx.get(classRef);
@@ -51,11 +53,12 @@ export async function POST(
       });
 
       egressId = session.recording.egressId;
+      roomName = session.roomName;
       shouldStopEgress =
         Boolean(egressId) &&
         (session.recording.status === "recording" || session.recording.status === "processing");
 
-      const recordingLikelyProcessing =
+      recordingLikelyProcessing =
         session.recording.status === "recording" || session.recording.status === "processing";
       const nextSession = {
         ...session,
@@ -81,10 +84,37 @@ export async function POST(
     let egressStopRequested = false;
     if (shouldStopEgress && egressId) {
       try {
+        console.info("[livekit:end-class] stopping egress by id", {
+          classId: access.classContext.classId,
+          egressId,
+          roomName,
+        });
         egressStopRequested = await stopLiveKitEgress(egressId);
+        console.info("[livekit:end-class] stop by id result", {
+          classId: access.classContext.classId,
+          egressId,
+          egressStopRequested,
+        });
       } catch (error) {
         console.error("No se pudo detener egress LiveKit", error);
         warnings.push("No se pudo detener la grabación en este momento.");
+      }
+    } else if (recordingLikelyProcessing && roomName) {
+      try {
+        console.info("[livekit:end-class] stopping orphan egress by room", {
+          classId: access.classContext.classId,
+          roomName,
+        });
+        const stopSummary = await stopActiveLiveKitEgressForRoom(roomName);
+        egressStopRequested = stopSummary.stopped > 0;
+        console.info("[livekit:end-class] stop by room summary", {
+          classId: access.classContext.classId,
+          roomName,
+          ...stopSummary,
+        });
+      } catch (error) {
+        console.error("No se pudieron detener egress activos de la room", error);
+        warnings.push("No se pudo confirmar el cierre de todos los procesos de grabación.");
       }
     }
 

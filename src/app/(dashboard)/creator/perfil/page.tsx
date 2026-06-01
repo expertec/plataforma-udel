@@ -11,6 +11,7 @@ import { getDownloadURL, getStorage, ref, uploadBytes } from "firebase/storage";
 import toast from "react-hot-toast";
 import { v4 as uuidv4 } from "uuid";
 import {
+  isDirectorRole,
   isAdminTeacherRole,
   isCampusCoordinatorRole,
   resolveUserRole,
@@ -98,6 +99,7 @@ export default function PerfilPage() {
   const roleLabel = useMemo(() => {
     if (userRole === "superAdminTeacher") return "SuperAdminTeacher";
     if (userRole === "adminTeacher") return "AdminTeacher";
+    if (isDirectorRole(userRole)) return "Director de plantel";
     if (isCampusCoordinatorRole(userRole)) return "Coordinador de plantel";
     return "Profesor";
   }, [userRole]);

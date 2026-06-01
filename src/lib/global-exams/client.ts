@@ -56,8 +56,8 @@ export async function fetchGlobalExamTemplates(): Promise<GlobalExamTemplateReco
 export async function createGlobalExamTemplate(payload: {
   title: string;
   description: string;
-  courseId: string;
-  courseName: string;
+  courseId?: string;
+  courseName?: string;
   status: "draft" | "published";
   questions: GlobalExamQuestion[];
 }): Promise<GlobalExamTemplateRecord> {
@@ -75,6 +75,8 @@ export async function updateGlobalExamTemplate(
   payload: Partial<{
     title: string;
     description: string;
+    courseId: string;
+    courseName: string;
     status: "draft" | "published";
     questions: GlobalExamQuestion[];
   }>,

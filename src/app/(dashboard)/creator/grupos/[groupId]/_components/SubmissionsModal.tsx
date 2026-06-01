@@ -594,9 +594,29 @@ function ForumThreadModal({
                     {post.mediaUrl && (
                       <div className="mt-3">
                         {post.format === "audio" ? (
-                          <audio controls src={post.mediaUrl} className="w-full max-w-md" />
+                          <div className="space-y-2">
+                            <audio controls src={post.mediaUrl} className="w-full max-w-md" />
+                            <a
+                              href={post.mediaUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex text-xs font-medium text-blue-600 hover:underline"
+                            >
+                              Abrir archivo de audio
+                            </a>
+                          </div>
                         ) : post.format === "video" ? (
-                          <video controls src={post.mediaUrl} className="w-full max-w-lg rounded-lg" />
+                          <div className="space-y-2">
+                            <video controls src={post.mediaUrl} className="w-full max-w-lg rounded-lg" />
+                            <a
+                              href={post.mediaUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex text-xs font-medium text-blue-600 hover:underline"
+                            >
+                              Abrir archivo de video
+                            </a>
+                          </div>
                         ) : (
                           <a
                             href={post.mediaUrl}

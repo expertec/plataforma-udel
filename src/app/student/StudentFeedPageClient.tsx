@@ -67,6 +67,14 @@ import {
   loadStudentPreviewSnapshot,
   type StudentPreviewFeedItem,
 } from "@/lib/student-preview";
+import {
+  isForumAudioTranscodeCandidate,
+  pickPreferredAudioRecordingMimeType,
+  resolvePreferredExtensionForMimeType,
+  transcodeAudioFileToWav,
+  validateForumMediaFile,
+  validateForumMediaUrl,
+} from "@/lib/media/forum-media";
 
 type FeedClass = {
   id: string;
@@ -98,6 +106,50 @@ type FeedClass = {
   forumEnabled?: boolean;
   forumRequiredFormat?: "text" | "audio" | "video" | null;
   liveSession?: LiveClassSession | null;
+  studyOnly?: boolean;
+};
+
+type GlobalExamStudyAssignment = {
+  groupId: string;
+  courseId: string;
+  enabled: boolean;
+  status: string;
+};
+
+type GlobalExamAssignmentsApiResponse = {
+  success?: boolean;
+  data?: GlobalExamStudyAssignment[];
+};
+
+const fetchGlobalExamStudyCourseKeys = async (user: User): Promise<Set<string>> => {
+  try {
+    const token = await user.getIdToken();
+    const response = await fetch("/api/global-exams/assignments", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      cache: "no-store",
+    });
+    if (!response.ok) return new Set<string>();
+    const payload = (await response.json().catch(() => ({}))) as GlobalExamAssignmentsApiResponse;
+    if (payload.success !== true || !Array.isArray(payload.data)) {
+      return new Set<string>();
+    }
+
+    const keys = new Set<string>();
+    payload.data.forEach((assignment) => {
+      const groupId = trimSafeString(assignment.groupId);
+      const courseId = trimSafeString(assignment.courseId);
+      if (!groupId || !courseId) return;
+      if (assignment.status === "disabled") return;
+      if (assignment.enabled !== true && assignment.status === "draft") return;
+      keys.add(`${groupId}::${courseId}`);
+    });
+    return keys;
+  } catch (error) {
+    console.warn("No se pudieron cargar cursos de estudio para examen global:", error);
+    return new Set<string>();
+  }
 };
 
 const sortLiveClassesFirstWithinLesson = (items: FeedClass[]) => {
@@ -1209,6 +1261,7 @@ export default function StudentFeedPageClient() {
     const platformVisible = classes.filter((cls) => {
       if (cls.showInStudentPlatform === false) return false;
       if (cls.groupIsInPerson === true) {
+        if (cls.studyOnly === true) return true;
         return cls.hasAssignment === true;
       }
       return true;
@@ -1216,7 +1269,7 @@ export default function StudentFeedPageClient() {
     if (previewMode) return sortLiveClassesFirstWithinLesson(platformVisible);
     const filtered = platformVisible.filter((cls) => {
       const courseClosed = isCourseClosedForClass(cls);
-      if (courseClosed) return showClosedCourses;
+      if (courseClosed) return cls.studyOnly === true ? true : showClosedCourses;
       return true;
     });
     return sortLiveClassesFirstWithinLesson(filtered);
@@ -2508,6 +2561,7 @@ export default function StudentFeedPageClient() {
         const allEnrollmentIds = activeEnrollmentDocs.map((doc) => doc.id);
         setEnrollmentIds(allEnrollmentIds);
         setLoadingProgress(25);
+        const globalExamStudyCourseKeys = await fetchGlobalExamStudyCourseKeys(currentUser);
 
         // Usar el primer enrollment para setEnrollmentId (compatibilidad con sistema de progreso actual)
         const primaryEnrollmentId = allEnrollmentIds[0];
@@ -2598,6 +2652,8 @@ export default function StudentFeedPageClient() {
             // 3) Iterar sobre cursos del grupo (con manejo de errores por curso)
             for (const courseEntry of coursesArray) {
               try {
+                const studyCourseKey = `${currentGroupId}::${courseEntry.courseId}`;
+                const isStudyOnlyCourse = globalExamStudyCourseKeys.has(studyCourseKey);
                 const courseDoc = await getDoc(doc(db, "courses", courseEntry.courseId));
                 const courseData = courseDoc.exists() ? courseDoc.data() : null;
                 if (!courseData) {
@@ -2641,6 +2697,7 @@ export default function StudentFeedPageClient() {
                     classesSnap.forEach((cls) => {
                       const c = cls.data();
                       const normType = normalizeClassType(c.type);
+                      if (isStudyOnlyCourse && normType === "quiz") return;
                       const imageArray =
                         c.images ??
                         c.imageUrls ??
@@ -2666,8 +2723,8 @@ export default function StudentFeedPageClient() {
                         images: Array.isArray(imageArray)
                           ? imageArray.map((u: unknown) => trimSafeString(u)).filter(Boolean)
                           : [],
-                        hasAssignment: c.hasAssignment ?? false,
-                        assignmentTemplateUrl: c.assignmentTemplateUrl ?? "",
+                        hasAssignment: isStudyOnlyCourse ? false : (c.hasAssignment ?? false),
+                        assignmentTemplateUrl: isStudyOnlyCourse ? "" : (c.assignmentTemplateUrl ?? ""),
                         assignmentSubmissionType: c.assignmentSubmissionType === "audio" ? "audio" : "file",
                         isClassroomActivity: c.isClassroomActivity ?? false,
                         showInStudentPlatform: c.showInStudentPlatform ?? true,
@@ -2675,9 +2732,10 @@ export default function StudentFeedPageClient() {
                         lessonName: lessonTitle,
                         courseTitle,
                         likesCount: c.likesCount ?? 0,
-                        forumEnabled: c.forumEnabled ?? false,
-                        forumRequiredFormat: c.forumRequiredFormat ?? null,
+                        forumEnabled: isStudyOnlyCourse ? false : (c.forumEnabled ?? false),
+                        forumRequiredFormat: isStudyOnlyCourse ? null : (c.forumRequiredFormat ?? null),
                         liveSession: normalizeLiveSession(c.liveSession),
+                        studyOnly: isStudyOnlyCourse,
                       });
                     });
                   } catch (lessonErr) {
@@ -3931,11 +3989,17 @@ export default function StudentFeedPageClient() {
       const session = normalizeLiveSession(cls.liveSession);
       const sessionFinalized = isLiveSessionFinalized(session);
       const recordingStatus = session?.recording.status ?? "idle";
-      const recordingAuto = session?.recording.auto !== false;
       const recordingFailed = session?.recording.status === "failed";
       const recordingReady =
         session?.status === "recording_ready" || recordingStatus === "ready";
-      const canOpenRecording = sessionFinalized && !recordingFailed && recordingAuto;
+      const recordingObjectAvailable = Boolean(session?.recording.storagePath);
+      const canOpenRecording =
+        sessionFinalized &&
+        !recordingFailed &&
+        (recordingReady ||
+          recordingObjectAvailable ||
+          recordingStatus === "recording" ||
+          recordingStatus === "processing");
       const recordingUrl = liveRecordingUrlMap[cls.id];
       const recordingPlayerId = `${cls.id}__live_recording`;
       const showPlayButton = !recordingUrl;
@@ -3945,8 +4009,6 @@ export default function StudentFeedPageClient() {
       let recordingButtonLabel = "Ver grabación";
       if (recordingLoadingMap[cls.id]) {
         recordingButtonLabel = "Verificando...";
-      } else if (!recordingAuto) {
-        recordingButtonLabel = "Sin grabación";
       } else if (recordingFailed) {
         recordingButtonLabel = "Grabación falló";
       } else if (!sessionFinalized) {
@@ -3957,20 +4019,18 @@ export default function StudentFeedPageClient() {
 
       const inlineRecordingNotice =
         recordingNoticeMap[cls.id]?.trim() ||
-        (!recordingAuto
-          ? "Esta clase se cerró sin grabación automática."
-          : recordingFailed
-            ? "La grabación falló y no pudo guardarse."
-            : !sessionFinalized
-              ? "La grabación aparecerá cuando la clase termine."
-              : recordingStatus === "recording" || recordingStatus === "processing"
-                ? "La grabación sigue procesándose. Si el archivo ya terminó de generarse, el botón la recuperará."
-                : recordingReady
-                  ? "La grabación está lista para cargarse."
-                  : "Verifica si la grabación ya terminó de procesarse.");
+        (recordingFailed
+          ? "La grabación falló y no pudo guardarse."
+          : !sessionFinalized
+            ? "La grabación aparecerá cuando la clase termine."
+            : recordingStatus === "recording" || recordingStatus === "processing"
+              ? "La grabación sigue procesándose. Si el archivo ya terminó de generarse, el botón la recuperará."
+              : recordingReady || recordingObjectAvailable
+                ? "La grabación está lista para cargarse."
+                : "Esta clase terminó sin grabación disponible.");
 
       const inlineRecordingNoticeClass =
-        !recordingAuto || recordingFailed
+        recordingFailed
           ? "text-amber-200"
           : recordingNoticeMap[cls.id]?.trim()
             ? "text-amber-100"
@@ -6643,6 +6703,32 @@ function getErrorMessage(error: unknown) {
     : "";
 }
 
+async function normalizeForumAudioFile(file: File): Promise<File> {
+  const validationError = validateForumMediaFile("audio", file);
+  const shouldTranscode = Boolean(validationError) || isForumAudioTranscodeCandidate(file);
+
+  if (shouldTranscode) {
+    try {
+      const normalized = await transcodeAudioFileToWav(file);
+      const normalizedValidationError = validateForumMediaFile("audio", normalized);
+      if (normalizedValidationError) {
+        throw new Error(normalizedValidationError);
+      }
+      return normalized;
+    } catch {
+      throw new Error(
+        "No se pudo convertir el audio a WAV compatible. Sube un MP3, M4A, AAC o WAV.",
+      );
+    }
+  }
+
+  if (validationError) {
+    throw new Error(validationError);
+  }
+
+  return file;
+}
+
 function MicrophonePermissionGuide({
   open,
   kind,
@@ -8014,6 +8100,7 @@ function ForumPanel({
   const [mediaUrl, setMediaUrl] = useState("");
   const [previewUrl, setPreviewUrl] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [normalizingAudio, setNormalizingAudio] = useState(false);
   const [alreadySubmitted, setAlreadySubmitted] = useState(false);
   const audioFormat = requiredFormat === "audio";
   const videoFormat = requiredFormat === "video";
@@ -8185,6 +8272,43 @@ function ForumPanel({
     }
   };
 
+  const handleAudioFileSelection = async (file: File | null) => {
+    if (!file) {
+      setMediaFile(null);
+      return;
+    }
+
+    setNormalizingAudio(true);
+    try {
+      const normalized = await normalizeForumAudioFile(file);
+      setMediaFile(normalized);
+      setMediaUrl("");
+      if (normalized !== file) {
+        toast.success("Audio normalizado a WAV para mejorar compatibilidad.");
+      }
+    } catch (error) {
+      const message = getErrorMessage(error) || "No se pudo procesar el audio seleccionado.";
+      toast.error(message);
+      setMediaFile(null);
+    } finally {
+      setNormalizingAudio(false);
+    }
+  };
+
+  const handleVideoFileSelection = (file: File | null) => {
+    if (!file) {
+      setMediaFile(null);
+      return;
+    }
+    const validationError = validateForumMediaFile("video", file);
+    if (validationError) {
+      toast.error(validationError);
+      setMediaFile(null);
+      return;
+    }
+    setMediaFile(file);
+  };
+
   const handleAudioRecording = async () => {
     if (recording) {
       recorderRef.current?.stop();
@@ -8202,7 +8326,10 @@ function ForumPanel({
       setMicrophoneGuideKind(null);
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-      const recorder = new MediaRecorder(stream);
+      const preferredMimeType = pickPreferredAudioRecordingMimeType();
+      const recorder = preferredMimeType
+        ? new MediaRecorder(stream, { mimeType: preferredMimeType })
+        : new MediaRecorder(stream);
       recorderRef.current = recorder;
       chunksRef.current = [];
       recorder.ondataavailable = (ev) => {
@@ -8210,13 +8337,18 @@ function ForumPanel({
       };
       recorder.onstop = () => {
         const activeStream = streamRef.current ?? stream;
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-        const file = new File([blob], `grabacion-${Date.now()}.webm`, { type: "audio/webm" });
-        setMediaFile(file);
-        setMediaUrl("");
+        const recorderMimeType = recorder.mimeType || preferredMimeType || "audio/webm";
+        const extension = resolvePreferredExtensionForMimeType(recorderMimeType, "webm");
+        const blob = new Blob(chunksRef.current, { type: recorderMimeType });
+        const rawFile = new File([blob], `grabacion-${Date.now()}.${extension}`, {
+          type: recorderMimeType,
+        });
+
         activeStream.getTracks().forEach((track) => track.stop());
         streamRef.current = null;
         setRecording(false);
+
+        void handleAudioFileSelection(rawFile);
       };
       recorder.start();
       setRecording(true);
@@ -8244,6 +8376,10 @@ function ForumPanel({
       toast.error("Escribe tu aporte para continuar");
       return;
     }
+    if (normalizingAudio) {
+      toast.error("Estamos procesando tu audio. Espera unos segundos e inténtalo de nuevo.");
+      return;
+    }
     if (videoFormat && !mediaFile) {
       toast.error("Sube un archivo de video");
       return;
@@ -8252,18 +8388,41 @@ function ForumPanel({
       toast.error("Sube un archivo o pega un enlace");
       return;
     }
+    if (mediaFile && audioFormat) {
+      const validationError = validateForumMediaFile("audio", mediaFile);
+      if (validationError) {
+        toast.error(validationError);
+        return;
+      }
+    }
+    if (mediaFile && videoFormat) {
+      const validationError = validateForumMediaFile("video", mediaFile);
+      if (validationError) {
+        toast.error(validationError);
+        return;
+      }
+    }
+    if (!mediaFile && audioFormat && mediaUrl.trim()) {
+      const urlValidationError = validateForumMediaUrl("audio", mediaUrl);
+      if (urlValidationError) {
+        toast.error(urlValidationError);
+        return;
+      }
+    }
 
     setUploading(true);
     try {
       let storedUrl = mediaUrl.trim();
       if (mediaFile) {
         const storage = getStorage();
-        const ext = mediaFile.name.split(".").pop() || (requiredFormat === "audio" ? "aac" : "mp4");
+        const fallbackExt = requiredFormat === "audio" ? "wav" : "mp4";
+        const ext = resolvePreferredExtensionForMimeType(mediaFile.type, fallbackExt);
+        const contentType = mediaFile.type || (requiredFormat === "audio" ? "audio/wav" : "video/mp4");
         const storageRef = ref(
           storage,
           `forum-posts/${studentId}/${classMeta.classDocId}/${uuidv4()}.${ext}`,
         );
-        await uploadBytes(storageRef, mediaFile, { contentType: mediaFile.type || undefined });
+        await uploadBytes(storageRef, mediaFile, { contentType });
         storedUrl = await getDownloadURL(storageRef);
       }
 
@@ -8276,6 +8435,7 @@ function ForumPanel({
         authorName: studentName || "Estudiante",
         format: requiredFormat,
         mediaUrl: storedUrl || null,
+        mediaMimeType: mediaFile?.type || null,
       });
 
       toast.success("Aporte publicado");
@@ -8289,6 +8449,7 @@ function ForumPanel({
         authorName: studentName || "Estudiante",
         format: requiredFormat,
         mediaUrl: storedUrl || null,
+        mediaMimeType: mediaFile?.type || null,
         createdAt: new Date(),
         repliesCount: 0,
         status: "pending",
@@ -8494,11 +8655,31 @@ function ForumPanel({
                   )}
 
                   {post.mediaUrl && post.format === "audio" && (
-                    <audio controls src={post.mediaUrl} className="w-full" />
+                    <div className="space-y-2">
+                      <audio controls src={post.mediaUrl} className="w-full" />
+                      <a
+                        href={post.mediaUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex text-xs font-medium text-blue-300 hover:underline"
+                      >
+                        Abrir archivo de audio
+                      </a>
+                    </div>
                   )}
 
                   {post.mediaUrl && post.format === "video" && (
-                    <video controls src={post.mediaUrl} className="w-full rounded-lg" />
+                    <div className="space-y-2">
+                      <video controls src={post.mediaUrl} className="w-full rounded-lg" />
+                      <a
+                        href={post.mediaUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex text-xs font-medium text-blue-300 hover:underline"
+                      >
+                        Abrir archivo de video
+                      </a>
+                    </div>
                   )}
 
                   <div className="flex items-center gap-3 pt-2 border-t border-white/10">
@@ -8603,7 +8784,7 @@ function ForumPanel({
                     onClick={() => {
                       void handleAudioRecording();
                     }}
-                    disabled={uploading}
+                    disabled={uploading || normalizingAudio}
                     className={`rounded-full px-3 py-2 text-xs font-semibold ${
                       recording ? "bg-red-600 text-white" : "bg-white/10 text-white hover:bg-white/20"
                     }`}
@@ -8622,23 +8803,31 @@ function ForumPanel({
                 <p className="text-[11px] leading-5 text-white/55">
                   Si no aparece el aviso del navegador, toca la ayuda y sigue los pasos.
                 </p>
+                <p className="text-[11px] leading-5 text-white/55">
+                  Los enlaces deben ser directos al archivo (MP3/M4A/AAC/WAV), no páginas de YouTube o Vimeo.
+                </p>
                 <div className="space-y-2">
                   <input
                     type="file"
                     accept="audio/*,.wav,.wave,.mp3,.m4a,.aac,.ogg,.oga,.flac,.opus,.weba,.mpeg"
-                    onChange={(e) => setMediaFile(e.target.files?.[0] ?? null)}
-                    disabled={uploading}
+                    onChange={(e) => {
+                      void handleAudioFileSelection(e.target.files?.[0] ?? null);
+                    }}
+                    disabled={uploading || normalizingAudio}
                     className="w-full text-sm text-white"
                   />
                   <input
                     value={mediaUrl}
                     onChange={(e) => setMediaUrl(e.target.value)}
                     disabled={uploading}
-                    placeholder="https://... (opcional)"
+                    placeholder="https://.../archivo.mp3 (opcional)"
                     className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none"
                   />
                   {mediaFile ? (
                     <p className="text-xs text-white/70">Archivo seleccionado: {mediaFile.name}</p>
+                  ) : null}
+                  {normalizingAudio ? (
+                    <p className="text-xs text-amber-200">Procesando audio para compatibilidad...</p>
                   ) : null}
                   {previewUrl ? (
                     <div className="rounded-lg border border-white/10 bg-white/5 p-2">
@@ -8651,10 +8840,11 @@ function ForumPanel({
             ) : videoFormat ? (
               <div className="space-y-2 rounded-2xl bg-white/5 p-3">
                 <label className="text-sm font-semibold text-white">Sube tu video</label>
+                <p className="text-xs text-white/60">Formato permitido: MP4 (H.264/AAC).</p>
                 <input
                   type="file"
-                  accept="video/*"
-                  onChange={(e) => setMediaFile(e.target.files?.[0] ?? null)}
+                  accept="video/mp4,video/x-m4v,.mp4,.m4v"
+                  onChange={(e) => handleVideoFileSelection(e.target.files?.[0] ?? null)}
                   disabled={uploading}
                   className="w-full text-sm text-white"
                 />
@@ -8674,12 +8864,14 @@ function ForumPanel({
               </button>
               <button
                 type="submit"
-                disabled={uploading}
+                disabled={uploading || normalizingAudio}
                 className={`inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold text-white ${
-                  uploading ? "bg-green-600/60 cursor-not-allowed" : "bg-green-600 hover:bg-green-500"
+                  uploading || normalizingAudio
+                    ? "bg-green-600/60 cursor-not-allowed"
+                    : "bg-green-600 hover:bg-green-500"
                 }`}
               >
-                {uploading ? "Publicando..." : "Publicar aporte"}
+                {uploading ? "Publicando..." : normalizingAudio ? "Procesando audio..." : "Publicar aporte"}
               </button>
             </div>
             </form>
