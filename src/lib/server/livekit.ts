@@ -562,10 +562,10 @@ function resolveRoomCompositeEncodingPreset(): EncodingOptionsPreset {
     .trim()
     .toLowerCase();
 
-  if (rawPreset === "h264_720p_30") {
+  if (rawPreset === "h264_720p_30" || rawPreset === "h264_720p_15") {
     return EncodingOptionsPreset.H264_720P_30;
   }
-  return EncodingOptionsPreset.H264_720P_15;
+  return EncodingOptionsPreset.H264_720P_30;
 }
 
 function sleep(ms: number): Promise<void> {

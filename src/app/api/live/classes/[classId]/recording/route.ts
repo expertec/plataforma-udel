@@ -472,7 +472,8 @@ export async function POST(
 
     let egressStopRequested = false;
 
-    if (action === "start" && shouldStartRecording && preparedSession) {
+    if (action === "start" && shouldStartRecording) {
+      const startSession = preparedSession as unknown as LiveClassSession;
       await ensureLiveKitRoom(roomName);
       try {
         const recordingStart = await ensureRoomCompositeRecordingStarted({
@@ -481,7 +482,7 @@ export async function POST(
         });
         const egressId = recordingStart.egressInfo.egressId || null;
         const nextRecording = {
-          ...(preparedSession.recording ?? {}),
+          ...(startSession.recording ?? {}),
           egressId,
           status: recordingStart.recordingStatus,
           storagePath:
@@ -504,7 +505,7 @@ export async function POST(
         await classRef.set(
           {
             liveSession: {
-              ...preparedSession,
+              ...startSession,
               recording: nextRecording,
             },
           },
@@ -516,9 +517,9 @@ export async function POST(
         await classRef.set(
           {
             liveSession: {
-              ...preparedSession,
+              ...startSession,
               recording: {
-                ...(preparedSession.recording ?? {}),
+                ...(startSession.recording ?? {}),
                 status: "failed",
                 egressId: null,
                 errorMessage:
