@@ -256,7 +256,7 @@ async function canUserManageCourse(params: {
   const mentorIds = asUniqueStringArray(courseData.mentorIds);
   const teacherId = asTrimmedString(courseData.teacherId);
 
-  if (role === "adminTeacher" || role === "superAdminTeacher" || role === "director") {
+  if (role === "adminTeacher" || role === "superAdminTeacher") {
     return { allowed: true, mentorIds, shouldBackfillMentor: false };
   }
 
