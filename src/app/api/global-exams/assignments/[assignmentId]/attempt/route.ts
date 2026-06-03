@@ -36,6 +36,7 @@ async function loadAssignmentContext(
   const access = await requireGlobalExamAccess(request, [
     "student",
     "coordinadorPlantel",
+    "director",
     "adminTeacher",
     "superAdminTeacher",
   ]);
@@ -54,7 +55,7 @@ async function loadAssignmentContext(
 
   const assignment = toGlobalExamAssignmentRecord(assignmentRef.id, assignmentSnap.data() ?? {});
   const coordinatorScopeGroupIds =
-    access.role === "coordinadorPlantel"
+    access.role === "coordinadorPlantel" || access.role === "director"
       ? new Set(await getCoordinatorScopeGroupIds(access.uid, access.plantelIds))
       : new Set<string>();
 

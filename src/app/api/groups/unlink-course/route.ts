@@ -17,7 +17,8 @@ type TeacherRole =
   | "teacher"
   | "adminTeacher"
   | "superAdminTeacher"
-  | "coordinadorPlantel";
+  | "coordinadorPlantel"
+  | "director";
 
 type RequesterContext = {
   uid: string;
@@ -52,7 +53,8 @@ function asTeacherRole(value: unknown): TeacherRole | null {
     value === "teacher" ||
     value === "adminTeacher" ||
     value === "superAdminTeacher" ||
-    value === "coordinadorPlantel"
+    value === "coordinadorPlantel" ||
+    value === "director"
   ) {
     return value;
   }

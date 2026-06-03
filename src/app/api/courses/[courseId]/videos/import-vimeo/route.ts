@@ -11,7 +11,8 @@ type TeacherRole =
   | "teacher"
   | "adminTeacher"
   | "superAdminTeacher"
-  | "coordinadorPlantel";
+  | "coordinadorPlantel"
+  | "director";
 
 type VimeoVideoResponse = {
   name?: unknown;
@@ -71,7 +72,8 @@ function asTeacherRole(value: unknown): TeacherRole | null {
     value === "teacher" ||
     value === "adminTeacher" ||
     value === "superAdminTeacher" ||
-    value === "coordinadorPlantel"
+    value === "coordinadorPlantel" ||
+    value === "director"
   ) {
     return value;
   }
@@ -349,7 +351,12 @@ async function assertCourseAccess(params: {
     throw new RouteAccessError(404, "Curso no encontrado");
   }
 
-  if (role === "adminTeacher" || role === "superAdminTeacher" || role === "coordinadorPlantel") {
+  if (
+    role === "adminTeacher" ||
+    role === "superAdminTeacher" ||
+    role === "coordinadorPlantel" ||
+    role === "director"
+  ) {
     return;
   }
 

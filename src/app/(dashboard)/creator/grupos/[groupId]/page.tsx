@@ -169,7 +169,7 @@ export default function GroupDetailPage() {
       try {
         const role = await resolveUserRole(u);
         setUserRole(role);
-        if (role === "coordinadorPlantel") {
+        if (isCampusCoordinatorRole(role)) {
           setPlantelAssignments(await getUserPlantelAssignments(u.uid));
         } else {
           setPlantelAssignments([]);
@@ -207,7 +207,9 @@ export default function GroupDetailPage() {
       try {
         const teachers = await getTeacherUsers(300);
         if (cancelled) return;
-        setCoordinatorOptions(teachers.filter((teacher) => teacher.role === "coordinadorPlantel"));
+        setCoordinatorOptions(
+          teachers.filter((teacher) => teacher.role === "coordinadorPlantel" || teacher.role === "director"),
+        );
       } catch (err) {
         console.error(err);
         toast.error("No se pudieron cargar los coordinadores");

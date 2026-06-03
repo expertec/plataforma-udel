@@ -9,7 +9,8 @@ type TeacherRole =
   | "teacher"
   | "adminTeacher"
   | "superAdminTeacher"
-  | "coordinadorPlantel";
+  | "coordinadorPlantel"
+  | "director";
 
 type CourseClassType = "video" | "text" | "audio" | "quiz" | "image" | "live";
 type ForumRequiredFormat = "text" | "audio" | "video" | null;
@@ -56,7 +57,8 @@ function asTeacherRole(value: unknown): TeacherRole | null {
     value === "teacher" ||
     value === "adminTeacher" ||
     value === "superAdminTeacher" ||
-    value === "coordinadorPlantel"
+    value === "coordinadorPlantel" ||
+    value === "director"
   ) {
     return value;
   }
@@ -254,7 +256,7 @@ async function canUserManageCourse(params: {
   const mentorIds = asUniqueStringArray(courseData.mentorIds);
   const teacherId = asTrimmedString(courseData.teacherId);
 
-  if (role === "adminTeacher" || role === "superAdminTeacher") {
+  if (role === "adminTeacher" || role === "superAdminTeacher" || role === "director") {
     return { allowed: true, mentorIds, shouldBackfillMentor: false };
   }
 
@@ -262,7 +264,7 @@ async function canUserManageCourse(params: {
     return { allowed: true, mentorIds, shouldBackfillMentor: false };
   }
 
-  if (role === "coordinadorPlantel") {
+  if (role === "coordinadorPlantel" || role === "director") {
     const hasCampusAccess = await canCampusCoordinatorManageCourse({
       courseId,
       plantelIds: coordinatorPlantelIds,

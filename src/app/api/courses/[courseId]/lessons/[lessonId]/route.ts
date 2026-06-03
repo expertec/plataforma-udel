@@ -183,7 +183,7 @@ async function canUserManageCourse(params: {
     return { allowed: true, mentorIds, shouldBackfillMentor: false };
   }
 
-  if (role === "coordinadorPlantel") {
+  if (role === "coordinadorPlantel" || role === "director") {
     const hasCampusAccess = await canCampusCoordinatorManageCourse({
       courseId,
       plantelIds: coordinatorPlantelIds,

@@ -104,55 +104,60 @@ export async function POST(request: NextRequest) {
       ...currentSession,
       roomName,
     };
+    const sessionWasLive = isSessionLive(currentSession);
 
     const now = asIsoNow();
     if (event.event === "room_started") {
-      nextSession.status = "live";
-      nextSession.teacherActive = true;
-      nextSession.lastStartedAt = now;
+      if (sessionWasLive) {
+        nextSession.status = "live";
+        nextSession.teacherActive = true;
+        nextSession.lastStartedAt = now;
+      }
     } else if (event.event === "room_finished") {
-      const shouldForceProcessing =
-        nextSession.recording.status === "recording" ||
-        nextSession.recording.status === "processing";
-      nextSession.teacherActive = false;
-      nextSession.lastEndedAt = now;
-      if (shouldForceProcessing) {
-        nextSession.recording.status = "processing";
-      }
-      if (nextSession.recording.status === "ready") {
-        nextSession.status = "recording_ready";
-      } else if (nextSession.status !== "recording_ready") {
-        nextSession.status = "ended";
-      }
-      try {
-        console.info("[livekit:webhook] room_finished: stopping active egress", {
-          classId: liveClass.classId,
-          roomName,
-          currentEgressId: nextSession.recording.egressId,
-        });
-        const stopSummary = await stopActiveLiveKitEgressForRoom(roomName);
-        console.info("[livekit:webhook] room_finished: egress stop summary", {
-          classId: liveClass.classId,
-          roomName,
-          ...stopSummary,
-        });
-      } catch (stopError) {
-        console.error("[livekit:webhook] room_finished: failed to stop egress", {
-          classId: liveClass.classId,
-          roomName,
-          error: stopError,
-        });
+      if (sessionWasLive) {
+        const shouldForceProcessing =
+          nextSession.recording.status === "recording" ||
+          nextSession.recording.status === "processing";
+        nextSession.teacherActive = false;
+        nextSession.lastEndedAt = now;
+        if (shouldForceProcessing) {
+          nextSession.recording.status = "processing";
+        }
+        if (nextSession.recording.status === "ready") {
+          nextSession.status = "recording_ready";
+        } else if (nextSession.status !== "recording_ready") {
+          nextSession.status = "ended";
+        }
+        try {
+          console.info("[livekit:webhook] room_finished: stopping active egress", {
+            classId: liveClass.classId,
+            roomName,
+            currentEgressId: nextSession.recording.egressId,
+          });
+          const stopSummary = await stopActiveLiveKitEgressForRoom(roomName);
+          console.info("[livekit:webhook] room_finished: egress stop summary", {
+            classId: liveClass.classId,
+            roomName,
+            ...stopSummary,
+          });
+        } catch (stopError) {
+          console.error("[livekit:webhook] room_finished: failed to stop egress", {
+            classId: liveClass.classId,
+            roomName,
+            error: stopError,
+          });
+        }
       }
     } else if (event.event === "participant_joined") {
       const role = parseRoleFromParticipantMetadata(event.participant?.metadata);
-      if (role === "teacher") {
+      if (role === "teacher" && sessionWasLive) {
         nextSession.teacherActive = true;
         nextSession.status = "live";
         nextSession.lastStartedAt = now;
       }
     } else if (event.event === "participant_left") {
       const role = parseRoleFromParticipantMetadata(event.participant?.metadata);
-      if (role === "teacher") {
+      if (role === "teacher" && sessionWasLive) {
         const shouldForceProcessing =
           nextSession.recording.status === "recording" ||
           nextSession.recording.status === "processing";

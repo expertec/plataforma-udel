@@ -58,15 +58,6 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (!isDirectorRole(userRole)) return;
-    const allowedInDirectorMode =
-      pathname.startsWith("/creator/convenios") || pathname.startsWith("/creator/perfil");
-    if (!allowedInDirectorMode) {
-      router.replace("/creator/convenios");
-    }
-  }, [pathname, router, userRole]);
-
-  useEffect(() => {
     const syncSidebarStateWithViewport = () => {
       if (window.innerWidth >= 1024) {
         setOpen(true);
@@ -120,10 +111,6 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
       userRole === "adminTeacher" ||
       isDirectorRole(userRole) ||
       (isCampusCoordinatorRole(userRole) && hasDirectorExtraRole);
-
-    if (isDirectorRole(userRole)) {
-      return [{ href: "/creator/convenios", label: "Convenios" }];
-    }
 
     const items = [
       { href: "/creator", label: "Dashboard" },

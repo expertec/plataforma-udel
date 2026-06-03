@@ -186,7 +186,7 @@ export function ClassItem({
             onClick={() => onStartLiveClass?.(item)}
             className="rounded-md bg-green-600 px-2 py-1 text-xs font-semibold text-white hover:bg-green-500 disabled:opacity-60"
           >
-            {liveActionLoading ? "Iniciando..." : "Iniciar clase"}
+            {liveActionLoading ? "Abriendo..." : "Sala de prueba"}
           </button>
         ) : null}
         {isLiveClass && !liveFinalized && liveStatus === "live" ? (

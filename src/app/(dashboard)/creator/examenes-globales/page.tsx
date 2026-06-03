@@ -437,7 +437,7 @@ export default function GlobalExamsPage() {
 
   if (loadingContext) {
     return (
-      <RoleGate allowedRole={["coordinadorPlantel", "adminTeacher", "superAdminTeacher"]}>
+      <RoleGate allowedRole={["coordinadorPlantel", "director", "adminTeacher", "superAdminTeacher"]}>
         <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">
           Cargando examen global...
         </div>
@@ -446,7 +446,7 @@ export default function GlobalExamsPage() {
   }
 
   return (
-    <RoleGate allowedRole={["coordinadorPlantel", "adminTeacher", "superAdminTeacher"]}>
+    <RoleGate allowedRole={["coordinadorPlantel", "director", "adminTeacher", "superAdminTeacher"]}>
       <div className="space-y-6 text-slate-900">
         <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div className="space-y-2">

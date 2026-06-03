@@ -13,7 +13,6 @@ import {
   createJoinToken,
   ensureLiveKitRoom,
   getLiveKitConfig,
-  isTeacherConnectedInRoom,
 } from "@/lib/server/livekit";
 
 export const runtime = "nodejs";
@@ -67,7 +66,7 @@ export async function POST(request: NextRequest) {
         classId: access.classContext.classId,
       });
 
-    let session = {
+    const session = {
       ...(normalizedCurrentSession ?? fallbackSession),
       roomName,
     };
@@ -77,23 +76,8 @@ export async function POST(request: NextRequest) {
       Boolean(session.lastEndedAt) ||
       session.status === "ended" ||
       session.status === "recording_ready";
-    let isSessionLive = session.status === "live" || session.teacherActive;
-    // Only use room participant probing as a recovery path for stale "scheduled" state.
-    // Once a session is ended/recording_ready we should never re-open it from room state.
-    if (!isTeacher && !isSessionLive && !isSessionFinalized && session.status === "scheduled") {
-      const teacherConnected = await isTeacherConnectedInRoom(session.roomName);
-      if (teacherConnected) {
-        const nowIso = new Date().toISOString();
-        session = {
-          ...session,
-          status: "live",
-          teacherActive: true,
-          lastStartedAt: session.lastStartedAt || nowIso,
-        };
-        isSessionLive = true;
-      }
-    }
-    const joinAllowed = !isSessionFinalized && isSessionLive;
+    const isSessionLive = session.status === "live" || session.teacherActive;
+    const joinAllowed = !isSessionFinalized && (isTeacher || isSessionLive);
 
     if (!joinAllowed) {
       if (!currentSession || currentSession.roomName !== session.roomName) {
@@ -121,6 +105,7 @@ export async function POST(request: NextRequest) {
                 : "waiting_teacher",
             asRole: access.accessRole,
             liveSession: session,
+            roomMode: null,
           },
         },
         { status: 200 },
@@ -168,6 +153,7 @@ export async function POST(request: NextRequest) {
           joinAllowed: true,
           asRole: access.accessRole,
           liveSession: session,
+          roomMode: isTeacher && !isSessionLive ? "preview" : "live",
         },
       },
       { status: 200 },

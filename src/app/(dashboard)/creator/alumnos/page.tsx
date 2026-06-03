@@ -204,7 +204,7 @@ export default function AlumnosPage() {
       try {
         const role = await resolveUserRole(user);
         setUserRole(role);
-        if (role === "coordinadorPlantel") {
+        if (isCampusCoordinatorRole(role)) {
           setPlantelAssignment(await getUserPlantelAssignment(user.uid));
         } else {
           setPlantelAssignment(null);

@@ -31,6 +31,7 @@ export async function GET(request: NextRequest) {
   try {
     const access = await requireGlobalExamAccess(request, [
       "coordinadorPlantel",
+      "director",
       "adminTeacher",
       "superAdminTeacher",
     ]);

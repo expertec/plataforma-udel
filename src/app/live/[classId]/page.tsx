@@ -441,7 +441,13 @@ function LiveRoomChatPanel({ visible }: { visible: boolean }) {
   );
 }
 
-function LiveRoomConference({ viewerRole }: { viewerRole: "teacher" | "student" | null }) {
+function LiveRoomConference({
+  viewerRole,
+  isSessionLive,
+}: {
+  viewerRole: "teacher" | "student" | null;
+  isSessionLive: boolean;
+}) {
   const participants = useParticipants();
   const speakingParticipants = useSpeakingParticipants();
   const connectionState = useConnectionState();
@@ -720,6 +726,18 @@ function LiveRoomConference({ viewerRole }: { viewerRole: "teacher" | "student" 
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
+      {viewerRole === "teacher" && !isSessionLive ? (
+        <div className="pointer-events-none absolute left-1/2 top-3 z-20 flex w-full max-w-[42rem] -translate-x-1/2 justify-center px-3">
+          <div className="pointer-events-auto rounded-2xl border border-emerald-400/30 bg-emerald-500/15 px-4 py-3 text-center text-emerald-50 shadow-lg backdrop-blur">
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-200">
+              Sala de preparación
+            </p>
+            <p className="mt-1 text-sm">
+              Prueba cámara, micrófono y pantalla antes de iniciar. Los alumnos todavía no pueden entrar.
+            </p>
+          </div>
+        </div>
+      ) : null}
       {raisedHandsList.length > 0 ? (
         <div className="pointer-events-none absolute left-3 top-3 z-20 flex max-w-[70vw] flex-wrap gap-2">
           {raisedHandsList.map((entry) => (
@@ -903,6 +921,7 @@ export default function LiveClassRoomPage() {
   const [scheduledStartAt, setScheduledStartAt] = useState<string | null>(null);
   const [timezone, setTimezone] = useState<string>("America/Monterrey");
   const [asRole, setAsRole] = useState<"teacher" | "student" | null>(null);
+  const [liveSessionStatus, setLiveSessionStatus] = useState<string | null>(null);
   const [livekitError, setLivekitError] = useState<string | null>(null);
   const [startingSession, setStartingSession] = useState(false);
   const [endingSession, setEndingSession] = useState(false);
@@ -923,7 +942,6 @@ export default function LiveClassRoomPage() {
   const [recordingStatusLoading, setRecordingStatusLoading] = useState(false);
   const [recordingStatusNotice, setRecordingStatusNotice] = useState<string | null>(null);
   const [chromeWarningDismissed, setChromeWarningDismissed] = useState(false);
-  const autoStartAttemptedRef = useRef(false);
   const browserSupported = useMemo(() => isBrowserSupported(), []);
   const browserInfo = useMemo(() => detectLiveBrowser(), []);
   const shouldShowChromeRecommendation = browserSupported && !browserInfo.isRecommendedChrome && !chromeWarningDismissed;
@@ -999,6 +1017,7 @@ export default function LiveClassRoomPage() {
       setScheduledStartAt(payload.data.liveSession?.scheduledStartAt ?? null);
       setTimezone(payload.data.liveSession?.timezone ?? "America/Monterrey");
       setAsRole(payload.data.asRole ?? null);
+      setLiveSessionStatus(payload.data.liveSession?.status ?? null);
       applyRecordingControlResult({
         recordingStatus: asRecordingControlStatus(payload.data.liveSession?.recording?.status),
         egressId: payload.data.liveSession?.recording?.egressId ?? null,
@@ -1034,6 +1053,7 @@ export default function LiveClassRoomPage() {
     setToken(null);
     setLivekitUrl(null);
     setWaitingReason("left_room");
+    setLiveSessionStatus(null);
     setLoading(false);
     setShowEndSessionConfirm(false);
     setShowModerationPanel(false);
@@ -1066,6 +1086,7 @@ export default function LiveClassRoomPage() {
       }
 
       setAsRole(payload.data.asRole ?? null);
+      setLiveSessionStatus(payload.data.liveSession?.status ?? null);
       if (!payload.data.joinAllowed) {
         setWaitingReason(payload.data.waitingReason || "session_ended");
         setToken(null);
@@ -1104,8 +1125,9 @@ export default function LiveClassRoomPage() {
       if (!response.ok || !payload?.success) {
         throw new Error(payload?.error || "No se pudo iniciar la sesión");
       }
-
-      await requestToken();
+      setLiveSessionStatus("live");
+      setWaitingReason(null);
+      setLoading(false);
     } catch (startError) {
       console.error("No se pudo iniciar la sesión", startError);
       setError(startError instanceof Error ? startError.message : "No se pudo iniciar la sesión");
@@ -1113,7 +1135,7 @@ export default function LiveClassRoomPage() {
     } finally {
       setStartingSession(false);
     }
-  }, [asRole, classId, courseId, lessonId, requestToken, user]);
+  }, [asRole, classId, courseId, lessonId, user]);
 
   const requestEndSessionConfirmation = useCallback(() => {
     if (asRole !== "teacher" || endingSession) return;
@@ -1152,6 +1174,7 @@ export default function LiveClassRoomPage() {
       setWaitingReason("session_ended");
       setToken(null);
       setLivekitUrl(null);
+      setLiveSessionStatus("ended");
       setLoading(false);
       setShowModerationPanel(false);
       setParticipants([]);
@@ -1168,6 +1191,7 @@ export default function LiveClassRoomPage() {
   const requestRecordingStatus = useCallback(
     async (params?: { silent?: boolean }) => {
       if (!classId || !user || asRole !== "teacher") return null;
+      if (liveSessionStatus !== "live") return null;
       const silent = params?.silent === true;
       if (!silent) {
         setRecordingStatusLoading(true);
@@ -1204,12 +1228,13 @@ export default function LiveClassRoomPage() {
         }
       }
     },
-    [applyRecordingControlResult, asRole, classId, recordingEndpoint, user],
+    [applyRecordingControlResult, asRole, classId, liveSessionStatus, recordingEndpoint, user],
   );
 
   const controlRecording = useCallback(
     async (action: "start" | "stop") => {
       if (!classId || !user || asRole !== "teacher") return;
+      if (liveSessionStatus !== "live") return;
 
       setRecordingActionLoading(action);
       setRecordingStatusNotice(null);
@@ -1252,11 +1277,12 @@ export default function LiveClassRoomPage() {
         setRecordingActionLoading(null);
       }
     },
-    [applyRecordingControlResult, asRole, classId, recordingEndpoint, user],
+    [applyRecordingControlResult, asRole, classId, liveSessionStatus, recordingEndpoint, user],
   );
 
   const fetchParticipants = useCallback(async () => {
     if (!classId || !user || asRole !== "teacher") return;
+    if (liveSessionStatus !== "live") return;
 
     setParticipantsLoading(true);
     setParticipantsError(null);
@@ -1287,12 +1313,15 @@ export default function LiveClassRoomPage() {
     } finally {
       setParticipantsLoading(false);
     }
-  }, [asRole, classId, participantsEndpoint, user]);
+  }, [asRole, classId, liveSessionStatus, participantsEndpoint, user]);
 
   const submitParticipantsAction = useCallback(
     async (actionPayload: Record<string, unknown>) => {
       if (!classId || !user || asRole !== "teacher") {
         throw new Error("No tienes permisos para moderar audio");
+      }
+      if (liveSessionStatus !== "live") {
+        throw new Error("La clase todavía no ha iniciado.");
       }
 
       const idToken = await user.getIdToken();
@@ -1312,7 +1341,7 @@ export default function LiveClassRoomPage() {
       }
       return payload.data?.result;
     },
-    [asRole, classId, participantsEndpoint, user],
+    [asRole, classId, liveSessionStatus, participantsEndpoint, user],
   );
 
   const muteParticipant = useCallback(
@@ -1392,15 +1421,6 @@ export default function LiveClassRoomPage() {
 
   useEffect(() => {
     if (!user || !classId) return;
-    if (token || waitingReason !== "waiting_teacher" || asRole !== "teacher") return;
-    if (startingSession) return;
-    if (autoStartAttemptedRef.current) return;
-    autoStartAttemptedRef.current = true;
-    startSession();
-  }, [asRole, classId, startSession, startingSession, token, user, waitingReason]);
-
-  useEffect(() => {
-    if (!user || !classId) return;
     if (!token || !livekitUrl) return;
     if (asRole !== "student") return;
     const timer = window.setInterval(() => {
@@ -1412,19 +1432,20 @@ export default function LiveClassRoomPage() {
   useEffect(() => {
     if (!user || !classId) return;
     if (!token || !livekitUrl) return;
-    if (asRole !== "teacher") return;
+    if (asRole !== "teacher" || liveSessionStatus !== "live") return;
     void requestRecordingStatus({ silent: true });
     const timer = window.setInterval(() => {
       void requestRecordingStatus({ silent: true });
     }, 8000);
     return () => window.clearInterval(timer);
-  }, [asRole, classId, livekitUrl, requestRecordingStatus, token, user]);
+  }, [asRole, classId, liveSessionStatus, livekitUrl, requestRecordingStatus, token, user]);
 
   useEffect(() => {
     if (!showModerationPanel || asRole !== "teacher") return;
+    if (liveSessionStatus !== "live") return;
     if (!token || !livekitUrl) return;
     void fetchParticipants();
-  }, [asRole, fetchParticipants, livekitUrl, showModerationPanel, token]);
+  }, [asRole, fetchParticipants, liveSessionStatus, livekitUrl, showModerationPanel, token]);
 
   useEffect(() => {
     if (asRole === "teacher") return;
@@ -1437,6 +1458,17 @@ export default function LiveClassRoomPage() {
     setRecordingStatusLoading(false);
     setRecordingStatusNotice(null);
   }, [asRole]);
+
+  useEffect(() => {
+    if (liveSessionStatus === "live") return;
+    setShowModerationPanel(false);
+    setParticipants([]);
+    setParticipantsError(null);
+    setModerationMessage(null);
+    setRecordingActionLoading(null);
+    setRecordingStatusLoading(false);
+    setRecordingStatusNotice(null);
+  }, [liveSessionStatus]);
 
   useEffect(() => {
     if (!moderationMessage) return;
@@ -1455,13 +1487,17 @@ export default function LiveClassRoomPage() {
   }, [recordingStatusNotice]);
 
   const recordingStatusText = RECORDING_STATUS_LABEL[recordingStatus];
+  const isSessionLive = liveSessionStatus === "live";
+  const canManageClass = asRole === "teacher" && isSessionLive;
   const canStartRecording =
     asRole === "teacher" &&
+    isSessionLive &&
     (recordingStatus === "idle" || recordingStatus === "failed" || recordingStatus === "ready") &&
     recordingActionLoading === null &&
     !recordingStatusLoading;
   const canStopRecording =
     asRole === "teacher" &&
+    isSessionLive &&
     (recordingStatus === "recording" || recordingStatus === "processing") &&
     recordingActionLoading === null &&
     !recordingStatusLoading;
@@ -1614,6 +1650,7 @@ export default function LiveClassRoomPage() {
         onDisconnected={() => {
           setToken(null);
           setLivekitUrl(null);
+          setLiveSessionStatus(null);
           setWaitingReason((currentReason) =>
             currentReason === "session_ended" ? "session_ended" : "left_room",
           );
@@ -1628,24 +1665,39 @@ export default function LiveClassRoomPage() {
         data-lk-theme="default"
         className="h-full w-full"
       >
-        <LiveRoomConference viewerRole={asRole} />
+        <LiveRoomConference viewerRole={asRole} isSessionLive={isSessionLive} />
       </LiveKitRoom>
       <div className="pointer-events-none fixed left-0 right-0 top-0 flex justify-between p-3">
         <div className="flex items-center gap-2">
           <span className="pointer-events-auto rounded-full bg-black/70 px-3 py-1 text-xs font-semibold text-white">
             {classTitle}
           </span>
-          <span className="pointer-events-auto rounded-full bg-black/70 px-3 py-1 text-xs font-semibold text-white">
-            Sala: {roomName}
+          <span
+            className="pointer-events-auto rounded-full bg-black/70 px-3 py-1 text-xs font-semibold text-white"
+            title={roomName ?? undefined}
+          >
+            {asRole === "teacher" && !isSessionLive ? "Sala de preparación" : "Sala en vivo"}
           </span>
         </div>
         <div className="pointer-events-auto flex items-center gap-2">
-          {asRole === "teacher" ? (
+          {canManageClass ? (
             <span className="rounded-full bg-black/70 px-3 py-1 text-xs font-semibold text-white">
               Grabación: {recordingStatusText}
             </span>
           ) : null}
-          {asRole === "teacher" ? (
+          {asRole === "teacher" && !isSessionLive ? (
+            <button
+              type="button"
+              disabled={startingSession}
+              onClick={() => {
+                void startSession();
+              }}
+              className="rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
+            >
+              {startingSession ? "Iniciando..." : "Iniciar clase en vivo"}
+            </button>
+          ) : null}
+          {canManageClass ? (
             <button
               type="button"
               disabled={!canStartRecording}
@@ -1657,7 +1709,7 @@ export default function LiveClassRoomPage() {
               {recordingActionLoading === "start" ? "Iniciando..." : "Iniciar grabación"}
             </button>
           ) : null}
-          {asRole === "teacher" ? (
+          {canManageClass ? (
             <button
               type="button"
               disabled={!canStopRecording}
@@ -1669,7 +1721,7 @@ export default function LiveClassRoomPage() {
               {recordingActionLoading === "stop" ? "Deteniendo..." : "Detener grabación"}
             </button>
           ) : null}
-          {asRole === "teacher" ? (
+          {canManageClass ? (
             <button
               type="button"
               onClick={() => {
@@ -1680,7 +1732,7 @@ export default function LiveClassRoomPage() {
               {showModerationPanel ? "Cerrar moderación" : "Moderar audio"}
             </button>
           ) : null}
-          {asRole === "teacher" ? (
+          {canManageClass ? (
             <button
               type="button"
               disabled={endingSession}
@@ -1699,7 +1751,7 @@ export default function LiveClassRoomPage() {
           </button>
         </div>
       </div>
-      {asRole === "teacher" ? (
+      {canManageClass ? (
         <div className="pointer-events-none fixed left-3 top-14 z-20 flex flex-col gap-1">
           {recordingEgressId ? (
             <span className="pointer-events-auto rounded-full bg-black/70 px-3 py-1 text-[11px] font-semibold text-slate-100">
@@ -1718,7 +1770,7 @@ export default function LiveClassRoomPage() {
           ) : null}
         </div>
       ) : null}
-      {asRole === "teacher" && showEndSessionConfirm ? (
+      {canManageClass && showEndSessionConfirm ? (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 px-4">
           <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 text-white shadow-2xl">
             <h2 className="text-lg font-semibold">Confirmar fin de sesión</h2>
@@ -1749,7 +1801,7 @@ export default function LiveClassRoomPage() {
           </div>
         </div>
       ) : null}
-      {asRole === "teacher" && showModerationPanel ? (
+      {canManageClass && showModerationPanel ? (
         <div className="pointer-events-none fixed right-3 top-16 z-30 flex w-[22rem] max-w-[calc(100vw-1.5rem)] justify-end">
           <div className="pointer-events-auto max-h-[72vh] w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-900/95 shadow-2xl backdrop-blur">
             <div className="flex items-center justify-between border-b border-slate-700 px-3 py-2">

@@ -14,6 +14,7 @@ export async function GET(request: NextRequest) {
   try {
     const access = await requireGlobalExamAccess(request, [
       "coordinadorPlantel",
+      "director",
       "adminTeacher",
       "superAdminTeacher",
     ]);
@@ -38,7 +39,7 @@ export async function GET(request: NextRequest) {
 
     const template = toGlobalExamTemplateRecord(templateSnap.id, templateSnap.data() ?? {});
     const allowedGroupIds =
-      access.role === "coordinadorPlantel"
+      access.role === "coordinadorPlantel" || access.role === "director"
         ? new Set(await getCoordinatorScopeGroupIds(access.uid, access.plantelIds))
         : undefined;
     const enrollments = await resolveStudentCourseEnrollments(studentId, template.courseId, allowedGroupIds);

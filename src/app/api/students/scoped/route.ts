@@ -5,7 +5,7 @@ import { isStudentStatusActive } from "@/lib/students/status";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type AllowedRole = "coordinadorPlantel" | "adminTeacher" | "superAdminTeacher";
+type AllowedRole = "coordinadorPlantel" | "director" | "adminTeacher" | "superAdminTeacher";
 
 type RouteContext = {
   uid: string;
@@ -58,6 +58,7 @@ function asUniqueStringArray(value: unknown): string[] {
 function asAllowedRole(value: unknown): AllowedRole | null {
   if (
     value === "coordinadorPlantel" ||
+    value === "director" ||
     value === "adminTeacher" ||
     value === "superAdminTeacher"
   ) {
@@ -140,7 +141,7 @@ async function resolveRouteContext(request: NextRequest): Promise<RouteContext> 
   const userData = (userSnap.data() ?? {}) as Record<string, unknown>;
   const role = asAllowedRole(userData.role) ?? asAllowedRole(decodedToken.role);
 
-  if (role !== "coordinadorPlantel") {
+  if (role !== "coordinadorPlantel" && role !== "director") {
     throw new RouteAccessError(403, "Missing or insufficient permissions.");
   }
 

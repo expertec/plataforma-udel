@@ -30,13 +30,14 @@ export async function GET(request: NextRequest) {
     const access = await requireGlobalExamAccess(request, [
       "student",
       "coordinadorPlantel",
+      "director",
       "adminTeacher",
       "superAdminTeacher",
     ]);
 
     const assignments = await getGlobalExamAssignments();
     const coordinatorScopeGroupIds =
-      access.role === "coordinadorPlantel"
+      access.role === "coordinadorPlantel" || access.role === "director"
         ? new Set(await getCoordinatorScopeGroupIds(access.uid, access.plantelIds))
         : new Set<string>();
 
@@ -57,6 +58,7 @@ export async function POST(request: NextRequest) {
   try {
     const access = await requireGlobalExamAccess(request, [
       "coordinadorPlantel",
+      "director",
       "adminTeacher",
       "superAdminTeacher",
     ]);
@@ -110,7 +112,7 @@ export async function POST(request: NextRequest) {
     }
 
     const coordinatorScopeGroupIds =
-      access.role === "coordinadorPlantel"
+      access.role === "coordinadorPlantel" || access.role === "director"
         ? new Set(await getCoordinatorScopeGroupIds(access.uid, access.plantelIds))
         : undefined;
 

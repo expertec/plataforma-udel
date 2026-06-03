@@ -61,9 +61,7 @@ export function LoginCard({
           ? redirectTo
           : role === "student"
             ? "/feed"
-            : role === "director"
-              ? "/creator/convenios"
-              : "/creator";
+            : "/creator";
       toast.success("Inicio de sesión correcto");
       router.replace(destination);
     } catch (error: unknown) {

@@ -13,7 +13,6 @@ type RoleGateProps = {
 
 function resolveRoleHome(role: UserRole): string {
   if (role === "student") return "/feed";
-  if (role === "director") return "/creator/convenios";
   return "/creator";
 }
 

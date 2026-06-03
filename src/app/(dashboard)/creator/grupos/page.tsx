@@ -55,7 +55,7 @@ export default function GroupsPage() {
         try {
           const role = await resolveUserRole(u);
           if (!cancelled) setUserRole(role);
-          if (role === "coordinadorPlantel") {
+          if (isCampusCoordinatorRole(role)) {
             const assignments = await getUserPlantelAssignments(u.uid);
             if (!cancelled) setPlantelAssignments(assignments);
           } else if (!cancelled) {
@@ -302,7 +302,7 @@ export default function GroupsPage() {
   }, [isAdminTeacher]);
 
   return (
-    <RoleGate allowedRole={["teacher", "adminTeacher", "superAdminTeacher", "coordinadorPlantel"]}>
+    <RoleGate allowedRole={["teacher", "adminTeacher", "superAdminTeacher", "coordinadorPlantel", "director"]}>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>

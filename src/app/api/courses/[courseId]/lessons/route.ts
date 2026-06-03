@@ -9,7 +9,8 @@ type TeacherRole =
   | "teacher"
   | "adminTeacher"
   | "superAdminTeacher"
-  | "coordinadorPlantel";
+  | "coordinadorPlantel"
+  | "director";
 
 type CreateLessonRequest = {
   title?: unknown;
@@ -40,7 +41,8 @@ function asTeacherRole(value: unknown): TeacherRole | null {
     value === "teacher" ||
     value === "adminTeacher" ||
     value === "superAdminTeacher" ||
-    value === "coordinadorPlantel"
+    value === "coordinadorPlantel" ||
+    value === "director"
   ) {
     return value;
   }

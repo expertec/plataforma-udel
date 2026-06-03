@@ -20,6 +20,7 @@ export async function PATCH(
   try {
     const access = await requireGlobalExamAccess(request, [
       "coordinadorPlantel",
+      "director",
       "adminTeacher",
       "superAdminTeacher",
     ]);
@@ -53,7 +54,7 @@ export async function PATCH(
 
     const assignment = toGlobalExamAssignmentRecord(normalizedAssignmentId, assignmentSnap.data() ?? {});
     const coordinatorScopeGroupIds =
-      access.role === "coordinadorPlantel"
+      access.role === "coordinadorPlantel" || access.role === "director"
         ? new Set(await getCoordinatorScopeGroupIds(access.uid, access.plantelIds))
         : new Set<string>();
 

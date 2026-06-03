@@ -4,6 +4,7 @@ import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 export type GlobalExamAccessRole =
   | "student"
   | "coordinadorPlantel"
+  | "director"
   | "adminTeacher"
   | "superAdminTeacher";
 
@@ -48,6 +49,7 @@ function asUniqueStringArray(value: unknown): string[] {
 function asGlobalExamRole(value: unknown): GlobalExamAccessRole | null {
   return value === "student" ||
     value === "coordinadorPlantel" ||
+    value === "director" ||
     value === "adminTeacher" ||
     value === "superAdminTeacher"
     ? value
@@ -66,7 +68,7 @@ export function isGlobalExamAdminRole(role: GlobalExamAccessRole): boolean {
 }
 
 export function isGlobalExamCoordinatorRole(role: GlobalExamAccessRole): boolean {
-  return role === "coordinadorPlantel";
+  return role === "coordinadorPlantel" || role === "director";
 }
 
 export function isGlobalExamStudentRole(role: GlobalExamAccessRole): boolean {

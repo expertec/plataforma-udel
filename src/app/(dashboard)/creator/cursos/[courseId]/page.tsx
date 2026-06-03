@@ -218,7 +218,7 @@ export default function CourseBuilderPage() {
       try {
         const role = await resolveUserRole(u);
         if (!cancelled) setUserRole(role);
-        if (role === "coordinadorPlantel") {
+        if (isCampusCoordinatorRole(role)) {
           const assignments = await getUserPlantelAssignments(u.uid);
           if (!cancelled) {
             setPlantelAssignments(assignments);
@@ -951,7 +951,7 @@ export default function CourseBuilderPage() {
       if (!courseId || classItem.type !== "live") return;
       const user = auth.currentUser;
       if (!user) {
-        toast.error("Inicia sesión para iniciar la clase en vivo");
+        toast.error("Inicia sesión para abrir la sala de prueba");
         return;
       }
 
@@ -961,36 +961,16 @@ export default function CourseBuilderPage() {
       if (lesson.id.trim()) searchParams.set("lessonId", lesson.id.trim());
       const query = searchParams.toString();
       const liveUrl = `/live/${encodeURIComponent(classItem.id)}${query ? `?${query}` : ""}`;
-      const liveWindow = window.open("about:blank", "_blank");
-      if (liveWindow) {
-        liveWindow.opener = null;
-      }
-
       setLiveActionLoadingMap((prev) => ({ ...prev, [classItem.id]: true }));
       try {
-        const token = await user.getIdToken();
-        const response = await fetch(`/api/live/classes/${encodeURIComponent(classItem.id)}/start${query ? `?${query}` : ""}`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
-        const payload = (await response.json().catch(() => null)) as
-          | { success?: boolean; error?: string }
-          | null;
-        if (!response.ok || !payload?.success) {
-          throw new Error(payload?.error || "No se pudo iniciar la clase en vivo");
+        const liveWindow = window.open(liveUrl, "_blank", "noopener,noreferrer");
+        if (!liveWindow) {
+          window.location.assign(liveUrl);
         }
-        toast.success("Clase en vivo iniciada");
-        if (liveWindow) {
-          liveWindow.location.href = liveUrl;
-        } else {
-          window.open(liveUrl, "_blank", "noopener,noreferrer");
-        }
+        toast.success("Sala de prueba abierta");
       } catch (error) {
-        liveWindow?.close();
         console.error(error);
-        toast.error(error instanceof Error ? error.message : "No se pudo iniciar la clase en vivo");
+        toast.error(error instanceof Error ? error.message : "No se pudo abrir la sala de prueba");
       } finally {
         setLiveActionLoadingMap((prev) => ({ ...prev, [classItem.id]: false }));
       }

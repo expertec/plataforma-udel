@@ -85,7 +85,7 @@ export function isAdminTeacherRole(role: UserRole | null | undefined): boolean {
 }
 
 export function isCampusCoordinatorRole(role: UserRole | null | undefined): boolean {
-  return role === "coordinadorPlantel";
+  return role === "coordinadorPlantel" || role === "director";
 }
 
 export function isDirectorRole(role: UserRole | null | undefined): boolean {
