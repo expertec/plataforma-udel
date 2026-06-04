@@ -58,6 +58,7 @@ export default function GroupDetailPage() {
   const [savingTeachers, setSavingTeachers] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
+  const [accessResolved, setAccessResolved] = useState(false);
   const [plantelAssignments, setPlantelAssignments] = useState<PlantelAssignment[]>([]);
   const [planteles, setPlanteles] = useState<Plantel[]>([]);
   const [selectedPlantelId, setSelectedPlantelId] = useState("");
@@ -164,8 +165,10 @@ export default function GroupDetailPage() {
       if (!u) {
         setUserRole(null);
         setPlantelAssignments([]);
+        setAccessResolved(true);
         return;
       }
+      setAccessResolved(false);
       try {
         const role = await resolveUserRole(u);
         setUserRole(role);
@@ -177,6 +180,8 @@ export default function GroupDetailPage() {
       } catch {
         setUserRole(null);
         setPlantelAssignments([]);
+      } finally {
+        setAccessResolved(true);
       }
     });
     return () => unsub();
@@ -380,6 +385,7 @@ export default function GroupDetailPage() {
         isCoordinatorForGroup ||
         isCurrentUserAssistant),
   );
+  const isPageLoading = loading || !accessResolved;
   const campusGradeConfigChanged = Boolean(
     group &&
       (campusGradeConfig.enableCampusTasksGrade !== (group.enableCampusTasksGrade === true) ||
@@ -410,12 +416,12 @@ export default function GroupDetailPage() {
   }, [group, principalTeacherOptions]);
 
   useEffect(() => {
-    if (loading) return;
+    if (isPageLoading) return;
     if (!group || !currentUserId) return;
     if (canAccessGroupContent) return;
     toast("Tu acceso a este grupo fue retirado.");
     router.replace("/creator/grupos");
-  }, [canAccessGroupContent, currentUserId, group, loading, router]);
+  }, [canAccessGroupContent, currentUserId, group, isPageLoading, router]);
 
   const getMentorAllowedCourseIds = (mentorId: string): string[] => {
     if (!group) return [];
@@ -845,7 +851,7 @@ export default function GroupDetailPage() {
         <span className="text-xs text-slate-500">ID: {params?.groupId}</span>
       </div>
 
-      {loading ? (
+      {isPageLoading ? (
         <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-600 shadow-sm">
           Cargando grupo...
         </div>
