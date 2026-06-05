@@ -101,13 +101,6 @@ export default function GroupDetailPage() {
       try {
         const g = await getGroup(params.groupId);
         setGroup(g);
-        if (g) {
-          setLoadingStudents(true);
-          getGroupStudents(params.groupId)
-            .then(setGroupStudents)
-            .catch(() => toast.error("No se pudieron cargar los alumnos del grupo"))
-            .finally(() => setLoadingStudents(false));
-        }
       } catch (err) {
         console.error(err);
         toast.error("No se pudo cargar el grupo");
@@ -117,6 +110,36 @@ export default function GroupDetailPage() {
     };
     load();
   }, [params?.groupId]);
+
+  useEffect(() => {
+    if (!group?.id || !currentUser?.uid || !accessResolved) return;
+    let cancelled = false;
+
+    const loadStudents = async () => {
+      setLoadingStudents(true);
+      try {
+        const students = await getGroupStudents(group.id);
+        if (!cancelled) {
+          setGroupStudents(students);
+        }
+      } catch (err) {
+        console.error(err);
+        if (!cancelled) {
+          toast.error("No se pudieron cargar los alumnos del grupo");
+          setGroupStudents([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingStudents(false);
+        }
+      }
+    };
+
+    void loadStudents();
+    return () => {
+      cancelled = true;
+    };
+  }, [accessResolved, currentUser?.uid, group?.id]);
 
   useEffect(() => {
     if (!assignTeachersOpen) return;

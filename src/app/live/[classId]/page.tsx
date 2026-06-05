@@ -21,18 +21,31 @@ import {
   useLocalParticipantPermissions,
   useMaybeLayoutContext,
   useParticipants,
+  usePreviewTracks,
   useSpeakingParticipants,
+  type LocalUserChoices,
   type TrackReference,
   type WidgetState,
   useTracks,
 } from "@livekit/components-react";
 import { onAuthStateChanged, type User } from "firebase/auth";
-import { ConnectionState, isBrowserSupported, MediaDeviceFailure, Track } from "livekit-client";
+import {
+  ConnectionState,
+  isBrowserSupported,
+  type LocalAudioTrack,
+  type LocalVideoTrack,
+  MediaDeviceFailure,
+  Track,
+} from "livekit-client";
 import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoginCard } from "@/components/auth/LoginCard";
 import { auth } from "@/lib/firebase/client";
 import { formatEsMxDateTime } from "@/lib/utils/date-format";
+import {
+  useStudentsPip,
+  type ParticipantsPipTile,
+} from "./_components/StudentsPipWindow";
 
 type LiveTokenResponse = {
   success?: boolean;
@@ -443,10 +456,8 @@ function LiveRoomChatPanel({ visible }: { visible: boolean }) {
 
 function LiveRoomConference({
   viewerRole,
-  isSessionLive,
 }: {
   viewerRole: "teacher" | "student" | null;
-  isSessionLive: boolean;
 }) {
   const participants = useParticipants();
   const speakingParticipants = useSpeakingParticipants();
@@ -497,6 +508,26 @@ function LiveRoomConference({
   const canPublishSignalPackets =
     connectionState === ConnectionState.Connected &&
     localParticipantPermissions?.canPublishData !== false;
+
+  const remoteCameraPipTiles = useMemo<ParticipantsPipTile[]>(() => {
+    const seen = new Set<string>();
+    const result: ParticipantsPipTile[] = [];
+    for (const track of tracks) {
+      if (track.source !== Track.Source.Camera) continue;
+      if (track.participant.isLocal) continue;
+      const id = track.participant.identity.trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      result.push({
+        id,
+        name: track.participant.name?.trim() || id,
+        track: isTrackReference(track) ? (track.publication.track ?? null) : null,
+      });
+    }
+    return result;
+  }, [tracks]);
+
+  const studentsPip = useStudentsPip(remoteCameraPipTiles);
 
   const screenShareTrack = useMemo(() => {
     const screenShares = tracks.filter(
@@ -726,18 +757,6 @@ function LiveRoomConference({
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
-      {viewerRole === "teacher" && !isSessionLive ? (
-        <div className="pointer-events-none absolute left-1/2 top-3 z-20 flex w-full max-w-[42rem] -translate-x-1/2 justify-center px-3">
-          <div className="pointer-events-auto rounded-2xl border border-emerald-400/30 bg-emerald-500/15 px-4 py-3 text-center text-emerald-50 shadow-lg backdrop-blur">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-200">
-              Sala de preparación
-            </p>
-            <p className="mt-1 text-sm">
-              Prueba cámara, micrófono y pantalla antes de iniciar. Los alumnos todavía no pueden entrar.
-            </p>
-          </div>
-        </div>
-      ) : null}
       {raisedHandsList.length > 0 ? (
         <div className="pointer-events-none absolute left-3 top-3 z-20 flex max-w-[70vw] flex-wrap gap-2">
           {raisedHandsList.map((entry) => (
@@ -851,6 +870,20 @@ function LiveRoomConference({
                     {isScreenSharing ? "Detener pantalla" : "Compartir pantalla"}
                   </TrackToggle>
                 ) : null}
+                {canShareScreen && studentsPip.supported ? (
+                  <button
+                    type="button"
+                    onClick={studentsPip.toggle}
+                    title="Abre una ventana flotante con los alumnos que permanece visible mientras compartes tu pantalla en otra aplicación."
+                    className={`rounded-lg border px-3 py-2 text-sm font-semibold transition ${
+                      studentsPip.active
+                        ? "border-sky-500 bg-sky-600 text-white hover:bg-sky-500"
+                        : "border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800"
+                    }`}
+                  >
+                    {studentsPip.active ? "Cerrar ventana de alumnos" : "Ver alumnos (flotante)"}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => {
@@ -883,6 +916,294 @@ function LiveRoomConference({
       </LayoutContextProvider>
       <StartAudio label="Habilitar audio" />
       <RoomAudioRenderer />
+      {studentsPip.portal}
+    </div>
+  );
+}
+
+function TeacherPreparationRoom({
+  classTitle,
+  scheduledStartAt,
+  timezone,
+  starting,
+  errorMessage,
+  onStart,
+  onLeave,
+}: {
+  classTitle: string;
+  scheduledStartAt: string | null;
+  timezone: string;
+  starting: boolean;
+  errorMessage: string | null;
+  onStart: (choices: LocalUserChoices) => void | Promise<void>;
+  onLeave: () => void;
+}) {
+  const [videoEnabled, setVideoEnabled] = useState(true);
+  const [audioEnabled, setAudioEnabled] = useState(true);
+  const [videoDeviceId, setVideoDeviceId] = useState("");
+  const [audioDeviceId, setAudioDeviceId] = useState("");
+  const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
+  const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [micLevel, setMicLevel] = useState(0);
+  const videoElementRef = useRef<HTMLVideoElement>(null);
+
+  const handlePreviewError = useCallback((previewTrackError: Error) => {
+    console.error("No se pudo abrir la vista previa de dispositivos", previewTrackError);
+    setPreviewError(
+      "No pudimos acceder a tu cámara o micrófono. Revisa los permisos del navegador.",
+    );
+  }, []);
+
+  const previewTracks = usePreviewTracks(
+    {
+      audio: audioEnabled ? { deviceId: audioDeviceId || undefined } : false,
+      video: videoEnabled ? { deviceId: videoDeviceId || undefined } : false,
+    },
+    handlePreviewError,
+  );
+
+  const videoPreviewTrack = useMemo(
+    () =>
+      (previewTracks?.find((track) => track.kind === Track.Kind.Video) as
+        | LocalVideoTrack
+        | undefined) ?? undefined,
+    [previewTracks],
+  );
+  const audioPreviewTrack = useMemo(
+    () =>
+      (previewTracks?.find((track) => track.kind === Track.Kind.Audio) as
+        | LocalAudioTrack
+        | undefined) ?? undefined,
+    [previewTracks],
+  );
+
+  const hasPreviewTracks = Boolean(previewTracks && previewTracks.length > 0);
+  const showPreviewError = Boolean(previewError) && !hasPreviewTracks;
+
+  useEffect(() => {
+    const element = videoElementRef.current;
+    if (!element || !videoPreviewTrack) return;
+    videoPreviewTrack.attach(element);
+    return () => {
+      videoPreviewTrack.detach(element);
+    };
+  }, [videoPreviewTrack]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadDevices = async () => {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        if (cancelled) return;
+        setCameras(devices.filter((device) => device.kind === "videoinput"));
+        setMicrophones(devices.filter((device) => device.kind === "audioinput"));
+      } catch {
+        // ignore enumeration errors
+      }
+    };
+    void loadDevices();
+    navigator.mediaDevices.addEventListener?.("devicechange", loadDevices);
+    return () => {
+      cancelled = true;
+      navigator.mediaDevices.removeEventListener?.("devicechange", loadDevices);
+    };
+  }, [previewTracks]);
+
+  useEffect(() => {
+    if (!audioEnabled || !audioPreviewTrack) {
+      return;
+    }
+    const mediaStreamTrack = audioPreviewTrack.mediaStreamTrack;
+    if (!mediaStreamTrack) return;
+    const AudioContextImpl =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextImpl) return;
+
+    const audioContext = new AudioContextImpl();
+    const sourceStream = new MediaStream([mediaStreamTrack]);
+    const source = audioContext.createMediaStreamSource(sourceStream);
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+    const buffer = new Uint8Array(analyser.frequencyBinCount);
+    let frame = 0;
+    const measure = () => {
+      analyser.getByteTimeDomainData(buffer);
+      let peak = 0;
+      for (let index = 0; index < buffer.length; index += 1) {
+        const deviation = Math.abs(buffer[index] - 128) / 128;
+        if (deviation > peak) peak = deviation;
+      }
+      setMicLevel(peak);
+      frame = requestAnimationFrame(measure);
+    };
+    measure();
+    return () => {
+      cancelAnimationFrame(frame);
+      source.disconnect();
+      analyser.disconnect();
+      void audioContext.close().catch(() => {});
+    };
+  }, [audioEnabled, audioPreviewTrack]);
+
+  const handleStart = useCallback(() => {
+    void onStart({
+      videoEnabled,
+      audioEnabled,
+      videoDeviceId,
+      audioDeviceId,
+      username: "",
+    });
+  }, [audioDeviceId, audioEnabled, onStart, videoDeviceId, videoEnabled]);
+
+  const micLevelPercent =
+    audioEnabled && audioPreviewTrack ? Math.min(100, Math.round(micLevel * 140)) : 0;
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 py-8 text-white">
+      <div className="w-full max-w-3xl rounded-3xl border border-slate-800 bg-slate-900/70 p-6 shadow-2xl">
+        <div className="text-center">
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-300">
+            Sala de preparación
+          </p>
+          <h1 className="mt-1 text-2xl font-semibold">{classTitle}</h1>
+          <p className="mx-auto mt-2 max-w-lg text-sm text-slate-300">
+            Prueba tu cámara y micrófono antes de iniciar. Solo tú ves esta pantalla; los alumnos no
+            podrán entrar hasta que inicies la clase.
+          </p>
+          {scheduledStartAt ? (
+            <p className="mt-2 text-xs text-slate-400">
+              Inicio programado: {formatEsMxDateTime(scheduledStartAt, { timeZone: timezone })} (
+              {timezone})
+            </p>
+          ) : null}
+        </div>
+
+        <div className="mt-5 overflow-hidden rounded-2xl border border-slate-800 bg-black">
+          <div className="relative aspect-video w-full">
+            {videoEnabled ? (
+              <video
+                ref={videoElementRef}
+                className="h-full w-full -scale-x-100 object-cover"
+                muted
+                playsInline
+              />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center text-sm text-slate-400">
+                Cámara desactivada
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-3 flex items-center gap-3">
+          <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Nivel de micrófono
+          </span>
+          <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-800">
+            <div
+              className="h-full rounded-full bg-emerald-500 transition-[width] duration-75"
+              style={{ width: `${micLevelPercent}%` }}
+            />
+          </div>
+        </div>
+
+        {showPreviewError ? (
+          <p className="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+            {previewError}
+          </p>
+        ) : null}
+        {errorMessage ? (
+          <p className="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+            {errorMessage}
+          </p>
+        ) : null}
+
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Cámara
+            </label>
+            <div className="flex items-center gap-2">
+              <select
+                value={videoDeviceId}
+                onChange={(event) => setVideoDeviceId(event.target.value)}
+                disabled={!videoEnabled}
+                className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white disabled:opacity-50"
+              >
+                <option value="">Predeterminada</option>
+                {cameras.map((camera, index) => (
+                  <option key={camera.deviceId || index} value={camera.deviceId}>
+                    {camera.label || `Cámara ${index + 1}`}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => setVideoEnabled((current) => !current)}
+                className={`shrink-0 rounded-lg border px-3 py-2 text-xs font-semibold ${
+                  videoEnabled
+                    ? "border-emerald-500 bg-emerald-600/20 text-emerald-200 hover:bg-emerald-600/30"
+                    : "border-slate-600 bg-slate-800 text-slate-300 hover:bg-slate-700"
+                }`}
+              >
+                {videoEnabled ? "Activada" : "Activar"}
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Micrófono
+            </label>
+            <div className="flex items-center gap-2">
+              <select
+                value={audioDeviceId}
+                onChange={(event) => setAudioDeviceId(event.target.value)}
+                disabled={!audioEnabled}
+                className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white disabled:opacity-50"
+              >
+                <option value="">Predeterminado</option>
+                {microphones.map((microphone, index) => (
+                  <option key={microphone.deviceId || index} value={microphone.deviceId}>
+                    {microphone.label || `Micrófono ${index + 1}`}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => setAudioEnabled((current) => !current)}
+                className={`shrink-0 rounded-lg border px-3 py-2 text-xs font-semibold ${
+                  audioEnabled
+                    ? "border-emerald-500 bg-emerald-600/20 text-emerald-200 hover:bg-emerald-600/30"
+                    : "border-slate-600 bg-slate-800 text-slate-300 hover:bg-slate-700"
+                }`}
+              >
+                {audioEnabled ? "Activado" : "Activar"}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-6 flex flex-col-reverse items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <button
+            type="button"
+            onClick={onLeave}
+            className="rounded-lg border border-slate-600 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+          >
+            Salir
+          </button>
+          <button
+            type="button"
+            disabled={starting}
+            onClick={handleStart}
+            className="rounded-lg bg-emerald-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
+          >
+            {starting ? "Iniciando..." : "Iniciar clase en vivo"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -942,6 +1263,7 @@ export default function LiveClassRoomPage() {
   const [recordingStatusLoading, setRecordingStatusLoading] = useState(false);
   const [recordingStatusNotice, setRecordingStatusNotice] = useState<string | null>(null);
   const [chromeWarningDismissed, setChromeWarningDismissed] = useState(false);
+  const [teacherChoices, setTeacherChoices] = useState<LocalUserChoices | null>(null);
   const browserSupported = useMemo(() => isBrowserSupported(), []);
   const browserInfo = useMemo(() => detectLiveBrowser(), []);
   const shouldShowChromeRecommendation = browserSupported && !browserInfo.isRecommendedChrome && !chromeWarningDismissed;
@@ -950,12 +1272,16 @@ export default function LiveClassRoomPage() {
       adaptiveStream: true,
       dynacast: true,
       videoCaptureDefaults: {
+        deviceId: teacherChoices?.videoDeviceId || undefined,
         resolution: {
           width: 640,
           height: 360,
           frameRate: 15,
         },
         frameRate: 15,
+      },
+      audioCaptureDefaults: {
+        deviceId: teacherChoices?.audioDeviceId || undefined,
       },
       publishDefaults: {
         simulcast: true,
@@ -969,7 +1295,7 @@ export default function LiveClassRoomPage() {
         },
       },
     }),
-    [],
+    [teacherChoices],
   );
 
   useEffect(() => {
@@ -1136,6 +1462,14 @@ export default function LiveClassRoomPage() {
       setStartingSession(false);
     }
   }, [asRole, classId, courseId, lessonId, user]);
+
+  const handleTeacherStart = useCallback(
+    async (choices: LocalUserChoices) => {
+      setTeacherChoices(choices);
+      await startSession();
+    },
+    [startSession],
+  );
 
   const requestEndSessionConfirmation = useCallback(() => {
     if (asRole !== "teacher" || endingSession) return;
@@ -1599,6 +1933,20 @@ export default function LiveClassRoomPage() {
     );
   }
 
+  if (asRole === "teacher" && !isSessionLive) {
+    return (
+      <TeacherPreparationRoom
+        classTitle={classTitle}
+        scheduledStartAt={scheduledStartAt}
+        timezone={timezone}
+        starting={startingSession}
+        errorMessage={error}
+        onStart={handleTeacherStart}
+        onLeave={leaveRoom}
+      />
+    );
+  }
+
   return (
     <div className="h-screen w-full bg-slate-950">
       {livekitError || shouldShowChromeRecommendation ? (
@@ -1625,10 +1973,10 @@ export default function LiveClassRoomPage() {
         serverUrl={livekitUrl}
         connect={true}
         options={liveKitRoomOptions}
-        // Publish media manually from controls to avoid browser/device-specific
-        // join failures when mic/camera permissions are blocked.
-        audio={false}
-        video={false}
+        // Teachers reach the room only after passing the device test, so we
+        // auto-publish the devices they selected there. Students never publish.
+        audio={asRole === "teacher" ? Boolean(teacherChoices?.audioEnabled) : false}
+        video={asRole === "teacher" ? Boolean(teacherChoices?.videoEnabled) : false}
         onError={(liveError) => {
           console.error("LiveKit error", liveError);
           setLivekitError("No se pudo conectar a la sala. Revisa internet y permisos del navegador.");
@@ -1665,7 +2013,7 @@ export default function LiveClassRoomPage() {
         data-lk-theme="default"
         className="h-full w-full"
       >
-        <LiveRoomConference viewerRole={asRole} isSessionLive={isSessionLive} />
+        <LiveRoomConference viewerRole={asRole} />
       </LiveKitRoom>
       <div className="pointer-events-none fixed left-0 right-0 top-0 flex justify-between p-3">
         <div className="flex items-center gap-2">
@@ -1676,7 +2024,7 @@ export default function LiveClassRoomPage() {
             className="pointer-events-auto rounded-full bg-black/70 px-3 py-1 text-xs font-semibold text-white"
             title={roomName ?? undefined}
           >
-            {asRole === "teacher" && !isSessionLive ? "Sala de preparación" : "Sala en vivo"}
+            Sala en vivo
           </span>
         </div>
         <div className="pointer-events-auto flex items-center gap-2">
@@ -1684,18 +2032,6 @@ export default function LiveClassRoomPage() {
             <span className="rounded-full bg-black/70 px-3 py-1 text-xs font-semibold text-white">
               Grabación: {recordingStatusText}
             </span>
-          ) : null}
-          {asRole === "teacher" && !isSessionLive ? (
-            <button
-              type="button"
-              disabled={startingSession}
-              onClick={() => {
-                void startSession();
-              }}
-              className="rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
-            >
-              {startingSession ? "Iniciando..." : "Iniciar clase en vivo"}
-            </button>
           ) : null}
           {canManageClass ? (
             <button

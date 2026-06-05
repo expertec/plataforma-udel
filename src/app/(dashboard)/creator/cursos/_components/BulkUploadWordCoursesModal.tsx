@@ -174,7 +174,11 @@ function PreviewClassIcon({ type }: { type: WordImportedClass["type"] }) {
 
 function classPreviewSubtitle(classItem: WordImportedClass): string {
   if (classItem.type === "video") {
-    return classItem.videoUrl?.trim() || "Sin URL de video";
+    return (
+      classItem.content?.trim().replace(/\s+/g, " ").slice(0, 120) ||
+      classItem.videoUrl?.trim() ||
+      "Sin URL de video"
+    );
   }
   if (classItem.type === "quiz") {
     const questionsCount = classItem.quizQuestions?.length ?? 0;

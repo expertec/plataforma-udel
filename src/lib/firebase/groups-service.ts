@@ -20,6 +20,7 @@ import {
   QuerySnapshot,
   QueryDocumentSnapshot,
 } from "firebase/firestore";
+import { auth } from "@/lib/firebase/client";
 import { db } from "@/lib/firebase/firestore";
 import { doc as firestoreDoc } from "firebase/firestore";
 import { isStudentStatusActive } from "@/lib/students/status";
@@ -899,7 +900,59 @@ export type GroupStudent = {
   enrolledAt?: Date;
 };
 
+type GroupStudentsApiResponse = {
+  success?: boolean;
+  error?: string;
+  data?: {
+    students?: Array<{
+      id: string;
+      studentName: string;
+      studentEmail: string;
+      status: string;
+      enrolledAtMs?: number;
+    }>;
+  };
+};
+
+const toGroupStudentFromApi = (item: {
+  id: string;
+  studentName: string;
+  studentEmail: string;
+  status: string;
+  enrolledAtMs?: number;
+}): GroupStudent => ({
+  id: item.id,
+  studentName: item.studentName ?? "",
+  studentEmail: item.studentEmail ?? "",
+  status: item.status ?? "active",
+  enrolledAt:
+    typeof item.enrolledAtMs === "number" && Number.isFinite(item.enrolledAtMs)
+      ? new Date(item.enrolledAtMs)
+      : undefined,
+});
+
 export async function getGroupStudents(groupId: string): Promise<GroupStudent[]> {
+  const currentUser = auth.currentUser;
+  if (currentUser) {
+    const token = await currentUser.getIdToken();
+    const response = await fetch(`/api/groups/${encodeURIComponent(groupId)}/students`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      cache: "no-store",
+    });
+
+    const payload = (await response.json().catch(() => ({}))) as GroupStudentsApiResponse;
+    if (!response.ok || payload.success === false) {
+      throw new Error(payload.error ?? "No se pudieron cargar los alumnos del grupo");
+    }
+
+    return (payload.data?.students ?? [])
+      .map(toGroupStudentFromApi)
+      .filter((student) => isStudentStatusActive(student.status));
+  }
+
   const ref = collection(db, "groups", groupId, "students");
   const q = query(ref, orderBy("enrolledAt", "desc"));
   const snap = await getDocs(q);

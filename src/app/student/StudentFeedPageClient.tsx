@@ -68,12 +68,11 @@ import {
   type StudentPreviewFeedItem,
 } from "@/lib/student-preview";
 import {
-  isForumAudioTranscodeCandidate,
   pickPreferredAudioRecordingMimeType,
+  resolvePreferredContentTypeForMediaFile,
+  resolvePreferredExtensionForMediaFile,
   resolvePreferredExtensionForMimeType,
-  transcodeAudioFileToWav,
   validateForumMediaFile,
-  validateForumMediaUrl,
 } from "@/lib/media/forum-media";
 
 type FeedClass = {
@@ -669,6 +668,7 @@ export default function StudentFeedPageClient() {
   const [assignmentPanel, setAssignmentPanel] = useState<{ open: boolean; classId?: string | null }>({ open: false });
   const [assignmentFileMap, setAssignmentFileMap] = useState<Record<string, File | null>>({});
   const [assignmentAudioMap, setAssignmentAudioMap] = useState<Record<string, File | null>>({});
+  const [assignmentAudioNormalizingMap, setAssignmentAudioNormalizingMap] = useState<Record<string, boolean>>({});
   const [assignmentUploadingMap, setAssignmentUploadingMap] = useState<Record<string, boolean>>({});
   const [assignmentStatusMap, setAssignmentStatusMap] = useState<Record<string, "submitted">>({});
   const [assignmentSubmissionMap, setAssignmentSubmissionMap] = useState<
@@ -5431,8 +5431,11 @@ export default function StudentFeedPageClient() {
                     selectedFile={assignmentFileMap[cls.id] ?? null}
                     audioFile={assignmentAudioMap[cls.id] ?? null}
                     uploading={assignmentUploadingMap[cls.id] ?? false}
+                    normalizingAudio={assignmentAudioNormalizingMap[cls.id] ?? false}
                     onFileChange={(file) => setAssignmentFileMap((prev) => ({ ...prev, [cls.id]: file }))}
-                    onAudioChange={(file) => setAssignmentAudioMap((prev) => ({ ...prev, [cls.id]: file }))}
+                    onAudioChange={(file, source) => {
+                      void handleAssignmentAudioFileSelection(cls.id, file, source ?? "upload");
+                    }}
                     submitted={assignmentStatusMap[cls.id] === "submitted"}
                     submissionStatus={submissionInfo?.status ?? null}
                     submissionGrade={submissionInfo?.grade ?? null}
@@ -5558,7 +5561,10 @@ export default function StudentFeedPageClient() {
                         `assignments/${currentUser.uid}/${cls.id}/${prefix}-${Date.now()}-${media.name}`,
                       );
                       await uploadBytes(storageRef, media, {
-                        contentType: media.type || "application/octet-stream",
+                        contentType: resolvePreferredContentTypeForMediaFile(
+                          media,
+                          media.type || "application/octet-stream",
+                        ),
                         contentDisposition: "inline",
                       });
                       return await getDownloadURL(storageRef);
@@ -6703,27 +6709,14 @@ function getErrorMessage(error: unknown) {
     : "";
 }
 
-async function normalizeForumAudioFile(file: File): Promise<File> {
-  const validationError = validateForumMediaFile("audio", file);
-  const shouldTranscode = Boolean(validationError) || isForumAudioTranscodeCandidate(file);
-
-  if (shouldTranscode) {
-    try {
-      const normalized = await transcodeAudioFileToWav(file);
-      const normalizedValidationError = validateForumMediaFile("audio", normalized);
-      if (normalizedValidationError) {
-        throw new Error(normalizedValidationError);
-      }
-      return normalized;
-    } catch {
-      throw new Error(
-        "No se pudo convertir el audio a WAV compatible. Sube un MP3, M4A, AAC o WAV.",
-      );
-    }
+async function normalizeForumAudioFile(file: File, source: "upload" | "recording"): Promise<File> {
+  if (source === "upload") {
+    throw new Error("Formato no admitido. Favor de grabar el audio en la plataforma.");
   }
 
+  const validationError = validateForumMediaFile("audio", file);
   if (validationError) {
-    throw new Error(validationError);
+    throw new Error("Formato no admitido. Favor de grabar el audio en la plataforma.");
   }
 
   return file;
@@ -8097,7 +8090,6 @@ function ForumPanel({
   // Estados para crear aportación
   const [text, setText] = useState("");
   const [mediaFile, setMediaFile] = useState<File | null>(null);
-  const [mediaUrl, setMediaUrl] = useState("");
   const [previewUrl, setPreviewUrl] = useState("");
   const [uploading, setUploading] = useState(false);
   const [normalizingAudio, setNormalizingAudio] = useState(false);
@@ -8119,13 +8111,9 @@ function ForumPanel({
         URL.revokeObjectURL(url);
       };
     }
-    if (mediaUrl.trim()) {
-      setPreviewUrl(mediaUrl.trim());
-    } else {
-      setPreviewUrl("");
-    }
+    setPreviewUrl("");
     return undefined;
-  }, [mediaFile, mediaUrl]);
+  }, [mediaFile]);
 
   useEffect(() => {
     if (!open || !classMeta?.courseId || !classMeta.lessonId || !classMeta.classDocId) {
@@ -8272,26 +8260,47 @@ function ForumPanel({
     }
   };
 
-  const handleAudioFileSelection = async (file: File | null) => {
+  const handleAudioFileSelection = async (file: File | null, source: "upload" | "recording") => {
     if (!file) {
       setMediaFile(null);
+      setNormalizingAudio(false);
       return;
     }
 
     setNormalizingAudio(true);
     try {
-      const normalized = await normalizeForumAudioFile(file);
+      const normalized = await normalizeForumAudioFile(file, source);
       setMediaFile(normalized);
-      setMediaUrl("");
-      if (normalized !== file) {
-        toast.success("Audio normalizado a WAV para mejorar compatibilidad.");
-      }
     } catch (error) {
       const message = getErrorMessage(error) || "No se pudo procesar el audio seleccionado.";
       toast.error(message);
       setMediaFile(null);
     } finally {
       setNormalizingAudio(false);
+    }
+  };
+
+  const handleAssignmentAudioFileSelection = async (
+    classId: string,
+    file: File | null,
+    source: "upload" | "recording",
+  ) => {
+    if (!file) {
+      setAssignmentAudioMap((prev) => ({ ...prev, [classId]: null }));
+      setAssignmentAudioNormalizingMap((prev) => ({ ...prev, [classId]: false }));
+      return;
+    }
+
+    setAssignmentAudioNormalizingMap((prev) => ({ ...prev, [classId]: true }));
+    try {
+      const normalized = await normalizeForumAudioFile(file, source);
+      setAssignmentAudioMap((prev) => ({ ...prev, [classId]: normalized }));
+    } catch (error) {
+      const message = getErrorMessage(error) || "No se pudo procesar el audio seleccionado.";
+      toast.error(message);
+      setAssignmentAudioMap((prev) => ({ ...prev, [classId]: null }));
+    } finally {
+      setAssignmentAudioNormalizingMap((prev) => ({ ...prev, [classId]: false }));
     }
   };
 
@@ -8348,7 +8357,7 @@ function ForumPanel({
         streamRef.current = null;
         setRecording(false);
 
-        void handleAudioFileSelection(rawFile);
+        void handleAudioFileSelection(rawFile, "recording");
       };
       recorder.start();
       setRecording(true);
@@ -8384,8 +8393,8 @@ function ForumPanel({
       toast.error("Sube un archivo de video");
       return;
     }
-    if (audioFormat && !mediaFile && !mediaUrl.trim()) {
-      toast.error("Sube un archivo o pega un enlace");
+    if (audioFormat && !mediaFile) {
+      toast.error("Formato no admitido. Favor de grabar el audio en la plataforma.");
       return;
     }
     if (mediaFile && audioFormat) {
@@ -8402,22 +8411,17 @@ function ForumPanel({
         return;
       }
     }
-    if (!mediaFile && audioFormat && mediaUrl.trim()) {
-      const urlValidationError = validateForumMediaUrl("audio", mediaUrl);
-      if (urlValidationError) {
-        toast.error(urlValidationError);
-        return;
-      }
-    }
-
     setUploading(true);
     try {
-      let storedUrl = mediaUrl.trim();
+      let storedUrl = "";
       if (mediaFile) {
         const storage = getStorage();
         const fallbackExt = requiredFormat === "audio" ? "wav" : "mp4";
-        const ext = resolvePreferredExtensionForMimeType(mediaFile.type, fallbackExt);
-        const contentType = mediaFile.type || (requiredFormat === "audio" ? "audio/wav" : "video/mp4");
+        const ext = resolvePreferredExtensionForMediaFile(mediaFile, fallbackExt);
+        const contentType = resolvePreferredContentTypeForMediaFile(
+          mediaFile,
+          requiredFormat === "audio" ? "audio/wav" : "video/mp4",
+        );
         const storageRef = ref(
           storage,
           `forum-posts/${studentId}/${classMeta.classDocId}/${uuidv4()}.${ext}`,
@@ -8435,13 +8439,17 @@ function ForumPanel({
         authorName: studentName || "Estudiante",
         format: requiredFormat,
         mediaUrl: storedUrl || null,
-        mediaMimeType: mediaFile?.type || null,
+        mediaMimeType: mediaFile
+          ? resolvePreferredContentTypeForMediaFile(
+              mediaFile,
+              requiredFormat === "audio" ? "audio/wav" : "video/mp4",
+            )
+          : null,
       });
 
       toast.success("Aporte publicado");
       setText("");
       setMediaFile(null);
-      setMediaUrl("");
       setStudentPost({
         id: studentId,
         text: text.trim(),
@@ -8449,7 +8457,12 @@ function ForumPanel({
         authorName: studentName || "Estudiante",
         format: requiredFormat,
         mediaUrl: storedUrl || null,
-        mediaMimeType: mediaFile?.type || null,
+        mediaMimeType: mediaFile
+          ? resolvePreferredContentTypeForMediaFile(
+              mediaFile,
+              requiredFormat === "audio" ? "audio/wav" : "video/mp4",
+            )
+          : null,
         createdAt: new Date(),
         repliesCount: 0,
         status: "pending",
@@ -8500,7 +8513,6 @@ function ForumPanel({
       setStudentPost(null);
       setText("");
       setMediaFile(null);
-      setMediaUrl("");
       setPreviewUrl("");
       setPosts((prev) => prev.filter((post) => post.id !== studentId));
       setReplies((prev) => {
@@ -8803,25 +8815,15 @@ function ForumPanel({
                 <p className="text-[11px] leading-5 text-white/55">
                   Si no aparece el aviso del navegador, toca la ayuda y sigue los pasos.
                 </p>
-                <p className="text-[11px] leading-5 text-white/55">
-                  Los enlaces deben ser directos al archivo (MP3/M4A/AAC/WAV), no páginas de YouTube o Vimeo.
-                </p>
                 <div className="space-y-2">
                   <input
                     type="file"
-                    accept="audio/*,.wav,.wave,.mp3,.m4a,.aac,.ogg,.oga,.flac,.opus,.weba,.mpeg"
+                    accept="audio/*,audio/mp4,audio/x-m4a,.wav,.wave,.mp3,.m4a,.aac,.ogg,.oga,.flac,.opus,.weba,.mpeg"
                     onChange={(e) => {
-                      void handleAudioFileSelection(e.target.files?.[0] ?? null);
+                      void handleAudioFileSelection(e.target.files?.[0] ?? null, "upload");
                     }}
                     disabled={uploading || normalizingAudio}
                     className="w-full text-sm text-white"
-                  />
-                  <input
-                    value={mediaUrl}
-                    onChange={(e) => setMediaUrl(e.target.value)}
-                    disabled={uploading}
-                    placeholder="https://.../archivo.mp3 (opcional)"
-                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none"
                   />
                   {mediaFile ? (
                     <p className="text-xs text-white/70">Archivo seleccionado: {mediaFile.name}</p>
@@ -8902,8 +8904,9 @@ type AssignmentPanelProps = {
   selectedFile: File | null;
   audioFile: File | null;
   onFileChange: (file: File | null) => void;
-  onAudioChange: (file: File | null) => void;
+  onAudioChange: (file: File | null, source?: "upload" | "recording") => void;
   uploading: boolean;
+  normalizingAudio: boolean;
   submitted: boolean;
   submissionStatus: SubmissionStatus | null;
   submissionGrade: number | null;
@@ -8926,6 +8929,7 @@ function AssignmentPanel({
   onFileChange,
   onAudioChange,
   uploading,
+  normalizingAudio,
   submitted,
   submissionStatus,
   submissionGrade,
@@ -8993,7 +8997,7 @@ function AssignmentPanel({
         streamRef.current = null;
         const blob = new Blob(chunksRef.current, { type: "audio/webm" });
         const file = new File([blob], `grabacion-${Date.now()}.webm`, { type: "audio/webm" });
-        onAudioChange(file);
+        onAudioChange(file, "recording");
         setRecording(false);
       });
       recorder.start();
@@ -9153,7 +9157,7 @@ function AssignmentPanel({
                   <button
                     type="button"
                     onClick={handleAudioRecording}
-                    disabled={uploading}
+                    disabled={uploading || normalizingAudio}
                     className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold ${
                         recording ? "bg-red-600 text-white" : "bg-white/10 text-white hover:bg-white/20"
                       }`}
@@ -9170,9 +9174,9 @@ function AssignmentPanel({
                     </button>
                     <input
                       type="file"
-                      accept="audio/*,.wav,.wave,.mp3,.m4a,.aac,.ogg,.oga,.flac,.opus,.weba,.mpeg"
-                      disabled={uploading}
-                      onChange={(e) => onAudioChange(e.target.files?.[0] ?? null)}
+                      accept="audio/*,audio/mp4,audio/x-m4a,.wav,.wave,.mp3,.m4a,.aac,.ogg,.oga,.flac,.opus,.weba,.mpeg"
+                      disabled={uploading || normalizingAudio}
+                      onChange={(e) => onAudioChange(e.target.files?.[0] ?? null, "upload")}
                       className="w-full cursor-pointer rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white placeholder:text-white/50 transition hover:border-blue-400 focus:border-blue-500 focus:outline-none"
                     />
                   </div>
@@ -9180,13 +9184,16 @@ function AssignmentPanel({
                   <p className="text-[11px] leading-5 text-white/55">
                     Si el navegador no muestra el aviso, abre la ayuda y sigue los pasos.
                   </p>
+                  {normalizingAudio ? (
+                    <p className="text-xs text-amber-200">Procesando audio para compatibilidad...</p>
+                  ) : null}
                   {audioFile ? (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-xs text-white/70">
                         <span className="truncate">{audioFile.name}</span>
                         <button
                           type="button"
-                          onClick={() => onAudioChange(null)}
+                          onClick={() => onAudioChange(null, "upload")}
                           className="text-xs font-semibold text-red-300 hover:text-red-200"
                         >
                           Quitar
@@ -9207,12 +9214,12 @@ function AssignmentPanel({
             <button
               type="button"
               onClick={onSubmit}
-              disabled={uploading}
+              disabled={uploading || normalizingAudio}
               className={`mt-3 inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold text-white ${
-                uploading ? "bg-green-600/60 cursor-wait" : "bg-green-600 hover:bg-green-500"
+                uploading || normalizingAudio ? "bg-green-600/60 cursor-wait" : "bg-green-600 hover:bg-green-500"
               }`}
             >
-              {uploading ? "Enviando..." : "Enviar tarea"}
+              {uploading ? "Enviando..." : normalizingAudio ? "Procesando audio..." : "Enviar tarea"}
             </button>
           </div>
         )}

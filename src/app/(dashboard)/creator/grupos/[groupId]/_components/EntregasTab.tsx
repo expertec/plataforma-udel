@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { collection, doc, getDoc, getDocs, orderBy, query } from "firebase/firestore";
-import { db } from "@/lib/firebase/firestore";
 import { getAllSubmissions, Submission } from "@/lib/firebase/submissions-service";
 import { getForumPosts } from "@/lib/firebase/forum-service";
+import { getGroupStudents } from "@/lib/firebase/groups-service";
+import { db } from "@/lib/firebase/firestore";
 import { SubmissionsModal } from "./SubmissionsModal";
 
 type EntregasTabProps = {
@@ -60,8 +61,8 @@ export function EntregasTab({
     const load = async () => {
       setLoading(true);
       try {
-        const studentsSnap = await getDocs(collection(db, "groups", groupId, "students"));
-        const studentIds = new Set(studentsSnap.docs.map((d) => d.id));
+        const students = await getGroupStudents(groupId);
+        const studentIds = new Set(students.map((student) => student.id));
 
         const allClasses: Array<{
           lessonId: string;

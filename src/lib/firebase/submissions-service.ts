@@ -13,6 +13,7 @@ import {
   where,
   deleteDoc,
 } from "firebase/firestore";
+import { auth } from "@/lib/firebase/client";
 import { db } from "@/lib/firebase/firestore";
 
 export type SubmissionStatus = "pending" | "graded" | "late";
@@ -50,6 +51,36 @@ export type Submission = {
   gradedAt?: Date | null;
   gradedById?: string;
   gradedByName?: string;
+};
+
+type SubmissionsApiResponse = {
+  success?: boolean;
+  error?: string;
+  data?: {
+    submissions?: Array<{
+      id: string;
+      classId: string;
+      classDocId?: string;
+      courseId?: string;
+      courseTitle?: string;
+      lessonId?: string;
+      lessonTitle?: string;
+      className: string;
+      classType: string;
+      studentId: string;
+      studentName: string;
+      submittedAtMs?: number;
+      fileUrl?: string;
+      audioUrl?: string;
+      content?: string;
+      status: string;
+      grade?: number;
+      feedback?: string;
+      gradedAtMs?: number;
+      gradedById?: string;
+      gradedByName?: string;
+    }>;
+  };
 };
 
 export function hasNumericSubmissionGrade(
@@ -190,13 +221,62 @@ export async function getSubmissionsByClass(
   groupId: string,
   classId: string,
 ): Promise<Submission[]> {
-  const ref = collection(db, "groups", groupId, "submissions");
-  const q = query(ref, where("classId", "==", classId), orderBy("submittedAt", "desc"));
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => toSubmission(d.id, d.data()));
+  const all = await getAllSubmissions(groupId);
+  return all.filter((submission) => submission.classId === classId);
 }
 
 export async function getAllSubmissions(groupId: string): Promise<Submission[]> {
+  const currentUser = auth.currentUser;
+  if (currentUser) {
+    const token = await currentUser.getIdToken();
+    const response = await fetch(`/api/groups/${encodeURIComponent(groupId)}/submissions`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      cache: "no-store",
+    });
+
+    const payload = (await response.json().catch(() => ({}))) as SubmissionsApiResponse;
+    if (!response.ok || payload.success === false) {
+      throw new Error(payload.error ?? "No se pudieron cargar las entregas");
+    }
+
+    return (payload.data?.submissions ?? []).map((item) => ({
+      id: item.id,
+      classId: item.classId ?? "",
+      classDocId: item.classDocId,
+      courseId: item.courseId,
+      courseTitle: item.courseTitle,
+      lessonId: item.lessonId,
+      lessonTitle: item.lessonTitle,
+      className: item.className ?? "",
+      classType: item.classType ?? "",
+      studentId: item.studentId ?? "",
+      studentName: item.studentName ?? "",
+      submittedAt:
+        typeof item.submittedAtMs === "number" && Number.isFinite(item.submittedAtMs)
+          ? new Date(item.submittedAtMs)
+          : null,
+      fileUrl: item.fileUrl ?? "",
+      audioUrl: item.audioUrl ?? "",
+      content: item.content ?? "",
+      status: ["pending", "graded", "late"].includes(item.status) ? item.status : "pending",
+      grade: item.grade,
+      feedback: item.feedback ?? "",
+      gradedAt:
+        typeof item.gradedAtMs === "number" && Number.isFinite(item.gradedAtMs)
+          ? new Date(item.gradedAtMs)
+          : null,
+      gradedById: item.gradedById,
+      gradedByName: item.gradedByName,
+    }));
+  }
+
+  return getAllSubmissionsDirect(groupId);
+}
+
+export async function getAllSubmissionsDirect(groupId: string): Promise<Submission[]> {
   const ref = collection(db, "groups", groupId, "submissions");
   const q = query(ref, orderBy("submittedAt", "desc"));
   const snap = await getDocs(q);

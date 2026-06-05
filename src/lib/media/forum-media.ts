@@ -55,66 +55,15 @@ const MIME_TYPE_TO_EXTENSION: Record<string, string> = {
   "video/x-m4v": "m4v",
 };
 
-type AudioContextCtor = new () => AudioContext;
-
-function clampSample(value: number): number {
-  return Math.max(-1, Math.min(1, value));
-}
-
-function writeAscii(view: DataView, offset: number, text: string): void {
-  for (let index = 0; index < text.length; index += 1) {
-    view.setUint8(offset + index, text.charCodeAt(index));
-  }
-}
-
-function encodeAudioBufferAsWav(audioBuffer: AudioBuffer): ArrayBuffer {
-  const channels = audioBuffer.numberOfChannels;
-  const sampleRate = audioBuffer.sampleRate;
-  const sampleCount = audioBuffer.length;
-  const bytesPerSample = 2;
-  const blockAlign = channels * bytesPerSample;
-  const byteRate = sampleRate * blockAlign;
-  const dataLength = sampleCount * blockAlign;
-  const totalLength = 44 + dataLength;
-  const buffer = new ArrayBuffer(totalLength);
-  const view = new DataView(buffer);
-
-  writeAscii(view, 0, "RIFF");
-  view.setUint32(4, totalLength - 8, true);
-  writeAscii(view, 8, "WAVE");
-  writeAscii(view, 12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM
-  view.setUint16(22, channels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, byteRate, true);
-  view.setUint16(32, blockAlign, true);
-  view.setUint16(34, 16, true); // 16-bit
-  writeAscii(view, 36, "data");
-  view.setUint32(40, dataLength, true);
-
-  let offset = 44;
-  for (let frame = 0; frame < sampleCount; frame += 1) {
-    for (let channel = 0; channel < channels; channel += 1) {
-      const sample = clampSample(audioBuffer.getChannelData(channel)[frame] ?? 0);
-      const value = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-      view.setInt16(offset, Math.round(value), true);
-      offset += bytesPerSample;
-    }
-  }
-
-  return buffer;
-}
-
-function createAudioContextInstance(): AudioContext | null {
-  if (typeof window === "undefined") return null;
-  const windowWithLegacy = window as typeof window & {
-    webkitAudioContext?: AudioContextCtor;
-  };
-  const Ctor: AudioContextCtor | undefined = window.AudioContext ?? windowWithLegacy.webkitAudioContext;
-  if (!Ctor) return null;
-  return new Ctor();
-}
+const EXTENSION_TO_MIME_TYPE: Record<string, string> = {
+  mp3: "audio/mpeg",
+  m4a: "audio/mp4",
+  aac: "audio/aac",
+  wav: "audio/wav",
+  wave: "audio/wav",
+  mp4: "video/mp4",
+  m4v: "video/x-m4v",
+};
 
 function isBlockedMediaHost(hostname: string): boolean {
   const normalizedHost = hostname.toLowerCase();
@@ -142,10 +91,17 @@ export function isForumAudioTranscodeCandidate(file: File): boolean {
   return mimeType.includes("webm") ||
     mimeType.includes("ogg") ||
     mimeType.includes("opus") ||
+    mimeType === "audio/mp4" ||
+    mimeType === "audio/x-m4a" ||
+    mimeType === "audio/m4a" ||
+    mimeType === "audio/aac" ||
+    mimeType === "audio/x-aac" ||
     extension === "webm" ||
     extension === "ogg" ||
     extension === "oga" ||
-    extension === "opus";
+    extension === "opus" ||
+    extension === "m4a" ||
+    extension === "aac";
 }
 
 export function pickPreferredAudioRecordingMimeType(): string | null {
@@ -170,23 +126,31 @@ export function resolvePreferredExtensionForMimeType(
   return MIME_TYPE_TO_EXTENSION[normalized] ?? fallbackExtension;
 }
 
-export async function transcodeAudioFileToWav(file: File): Promise<File> {
-  const context = createAudioContextInstance();
-  if (!context) {
-    throw new Error("NO_AUDIO_CONTEXT");
+export function resolvePreferredExtensionForMediaFile(
+  file: File,
+  fallbackExtension: string,
+): string {
+  const normalizedMime = normalizeMediaMimeType(file.type);
+  const extensionFromMime = MIME_TYPE_TO_EXTENSION[normalizedMime];
+  if (extensionFromMime) return extensionFromMime;
+
+  const extensionFromName = getMediaFileExtension(file.name);
+  if (extensionFromName in EXTENSION_TO_MIME_TYPE) {
+    return extensionFromName;
   }
 
-  try {
-    const sourceBuffer = await file.arrayBuffer();
-    const decoded = await context.decodeAudioData(sourceBuffer.slice(0));
-    const wavBuffer = encodeAudioBufferAsWav(decoded);
-    const baseName = file.name.replace(/\.[^./\\]+$/, "") || `audio-${Date.now()}`;
-    return new File([wavBuffer], `${baseName}.wav`, {
-      type: "audio/wav",
-    });
-  } finally {
-    await context.close().catch(() => undefined);
-  }
+  return fallbackExtension;
+}
+
+export function resolvePreferredContentTypeForMediaFile(
+  file: File,
+  fallbackContentType: string,
+): string {
+  const normalizedMime = normalizeMediaMimeType(file.type);
+  if (normalizedMime) return normalizedMime;
+
+  const extensionFromName = getMediaFileExtension(file.name);
+  return EXTENSION_TO_MIME_TYPE[extensionFromName] ?? fallbackContentType;
 }
 
 export function validateForumMediaFile(

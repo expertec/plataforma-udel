@@ -13,12 +13,12 @@ import {
   serverTimestamp,
   setDoc,
   writeBatch,
-  where,
 } from "firebase/firestore";
 import toast from "react-hot-toast";
 import { jsPDF } from "jspdf";
 import { db } from "@/lib/firebase/firestore";
 import { auth } from "@/lib/firebase/client";
+import { getGroupStudents } from "@/lib/firebase/groups-service";
 import {
   Submission,
   getAllSubmissions,
@@ -26,7 +26,7 @@ import {
   shouldPreferIncomingSubmission,
 } from "@/lib/firebase/submissions-service";
 import { getForumPosts } from "@/lib/firebase/forum-service";
-import { UserRole, isAdminTeacherRole, isCampusCoordinatorRole } from "@/lib/firebase/roles";
+import { UserRole, isAdminTeacherRole } from "@/lib/firebase/roles";
 
 type CalificacionesTabProps = {
   groupId: string;
@@ -126,6 +126,14 @@ type CourseClosureState = {
   reopenedById?: string;
   reopenedByName?: string;
   updatedAt?: Date | null;
+};
+
+type StudentEnrollmentsApiResponse = {
+  success?: boolean;
+  error?: string;
+  data?: {
+    enrollments?: Array<Record<string, unknown> & { __id: string }>;
+  };
 };
 
 type EnrollmentRecord = {
@@ -392,10 +400,9 @@ export function CalificacionesTab({
     const load = async () => {
       setLoading(true);
       try {
-        const studentsSnap = await getDocs(collection(db, "groups", groupId, "students"));
-        const nextStudents = studentsSnap.docs.map((d) => ({
-          id: d.id,
-          name: d.data().studentName ?? "",
+        const nextStudents = (await getGroupStudents(groupId)).map((student) => ({
+          id: student.id,
+          name: student.studentName ?? "",
         }));
         const studentIdSet = new Set(nextStudents.map((student) => student.id));
 
@@ -413,71 +420,26 @@ export function CalificacionesTab({
         }
 
         let enrollmentDocs: Array<{ __id: string; [key: string]: unknown }> = [];
-        const isCoordinatorView = isCampusCoordinatorRole(userRole);
-        let shouldRunEnrollmentFallbackByDocId = isCoordinatorView;
-        if (!isCoordinatorView) {
-          try {
-            const enrollmentsSnap = await getDocs(
-              query(collection(db, "studentEnrollments"), where("groupId", "==", groupId)),
-            );
-            enrollmentDocs = enrollmentsSnap.docs.map((docSnap) => ({
-              ...(docSnap.data() as Record<string, unknown>),
-              __id: docSnap.id,
-            }));
-          } catch (error) {
-            if (isPermissionDeniedError(error)) {
-              shouldRunEnrollmentFallbackByDocId = true;
-              console.warn("Sin permisos para leer studentEnrollments del grupo:", groupId, error);
-            } else {
-              throw error;
-            }
+        try {
+          const token = await auth.currentUser?.getIdToken();
+          if (!token) {
+            throw new Error("No se pudo obtener el token de sesión");
           }
-        }
-        if (shouldRunEnrollmentFallbackByDocId) {
-          const fallbackEnrollmentIds = Array.from(
-            new Set(
-              nextStudents
-                .map((student) => `${groupId}_${student.id}`.trim())
-                .filter((enrollmentId) => enrollmentId !== `${groupId}_`),
-            ),
-          );
-
-          const fallbackResults = await Promise.allSettled(
-            fallbackEnrollmentIds.map((enrollmentId) =>
-              getDoc(doc(db, "studentEnrollments", enrollmentId)),
-            ),
-          );
-
-          let fallbackPermissionDenied = false;
-          fallbackResults.forEach((result) => {
-            if (result.status === "fulfilled") {
-              if (!result.value.exists()) return;
-              enrollmentDocs.push({
-                ...(result.value.data() as Record<string, unknown>),
-                __id: result.value.id,
-              });
-              return;
-            }
-
-            if (isPermissionDeniedError(result.reason)) {
-              fallbackPermissionDenied = true;
-              return;
-            }
-
-            throw result.reason;
+          const response = await fetch(`/api/groups/${encodeURIComponent(groupId)}/student-enrollments`, {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+            cache: "no-store",
           });
-
-          if (fallbackPermissionDenied) {
-            // En vista de coordinación intentamos leer múltiples IDs canónicos;
-            // algunos pueden no existir aún en grupos legacy, sin romper la pantalla.
-            if (!isCoordinatorView) {
-              permissionWarningShown = true;
-              console.warn(
-                "Sin permisos para leer studentEnrollments por documento del grupo:",
-                groupId,
-              );
-            }
+          const payload = (await response.json().catch(() => ({}))) as StudentEnrollmentsApiResponse;
+          if (!response.ok || payload.success === false) {
+            throw new Error(payload.error ?? "No se pudieron cargar las inscripciones del grupo");
           }
+          enrollmentDocs = (payload.data?.enrollments ?? []) as Array<{ __id: string; [key: string]: unknown }>;
+        } catch (error) {
+          permissionWarningShown = true;
+          console.warn("No se pudieron cargar studentEnrollments del grupo:", groupId, error);
         }
 
         const enrollmentsMap: Record<string, EnrollmentRecord> = {};
@@ -976,28 +938,37 @@ export function CalificacionesTab({
   }, [breakdownStudentId, rows]);
 
   const fetchConceptSuggestions = useCallback(async (): Promise<string[]> => {
-    const [suggestionsSnap, extrasByCourse] = await Promise.all([
-      getDocs(query(collection(db, "gradeConceptSuggestions"), limit(400))),
-      Promise.all(
-        courses.map(async (course) => {
-          const courseId = course.courseId?.trim() ?? "";
-          if (!courseId) return [] as ExtraConceptDefinition[];
-          try {
-            const extrasSnap = await getDoc(
-              doc(db, "groups", groupId, "grades", getCourseExtrasDocId(courseId)),
-            );
-            if (!extrasSnap.exists()) return [] as ExtraConceptDefinition[];
-            const extrasData = extrasSnap.data() as { extraConcepts?: unknown };
-            return normalizeExtraConceptDefinitions(extrasData.extraConcepts, courseId);
-          } catch {
-            return [] as ExtraConceptDefinition[];
-          }
-        }),
-      ),
-    ]);
+    let suggestionsDocs: Array<{ data: () => unknown }> = [];
+    try {
+      const suggestionsSnap = await getDocs(query(collection(db, "gradeConceptSuggestions"), limit(400)));
+      suggestionsDocs = suggestionsSnap.docs;
+    } catch (error) {
+      if (isPermissionDeniedError(error)) {
+        return [];
+      }
+      throw error;
+    }
+
+    const extrasByCourse = await Promise.all(
+      courses.map(async (course) => {
+        const courseId = course.courseId?.trim() ?? "";
+        if (!courseId) return [] as ExtraConceptDefinition[];
+        try {
+          const extrasSnap = await getDoc(
+            doc(db, "groups", groupId, "grades", getCourseExtrasDocId(courseId)),
+          );
+          if (!extrasSnap.exists()) return [] as ExtraConceptDefinition[];
+          const extrasData = extrasSnap.data() as { extraConcepts?: unknown };
+          return normalizeExtraConceptDefinitions(extrasData.extraConcepts, courseId);
+        } catch (error) {
+          if (isPermissionDeniedError(error)) return [] as ExtraConceptDefinition[];
+          return [] as ExtraConceptDefinition[];
+        }
+      }),
+    );
 
     const rankedSuggestions = [
-      ...suggestionsSnap.docs
+      ...suggestionsDocs
         .map((docSnap) => {
           const data = docSnap.data() as { concept?: unknown; usageCount?: unknown };
           const concept = typeof data.concept === "string" ? data.concept.trim() : "";
@@ -1059,7 +1030,9 @@ export function CalificacionesTab({
         if (cancelled) return;
         setExtraConceptSuggestions(suggestions);
       } catch (error) {
-        console.warn("No se pudieron cargar sugerencias de conceptos extra:", error);
+        if (!isPermissionDeniedError(error)) {
+          console.warn("No se pudieron cargar sugerencias de conceptos extra:", error);
+        }
       }
     };
     void loadConceptSuggestions();
@@ -1184,7 +1157,9 @@ export function CalificacionesTab({
           [key]: toExtraConceptDrafts(concepts),
         }));
       } catch (error) {
-        console.warn("No se pudieron cargar los extras globales de la materia:", error);
+        if (!isPermissionDeniedError(error)) {
+          console.warn("No se pudieron cargar los extras globales de la materia:", error);
+        }
       }
     };
     void loadCourseExtraConcepts();
@@ -1563,7 +1538,9 @@ export function CalificacionesTab({
         return merged;
       });
     } catch (error) {
-      console.warn("No se pudieron actualizar sugerencias de conceptos extra:", error);
+      if (!isPermissionDeniedError(error)) {
+        console.warn("No se pudieron actualizar sugerencias de conceptos extra:", error);
+      }
     }
   };
 
@@ -1607,7 +1584,9 @@ export function CalificacionesTab({
         setExtraConceptSuggestions(suggestions);
       })
       .catch((error) => {
-        console.warn("No se pudieron refrescar sugerencias de conceptos extra:", error);
+        if (!isPermissionDeniedError(error)) {
+          console.warn("No se pudieron refrescar sugerencias de conceptos extra:", error);
+        }
       });
     const currentDrafts = getCourseExtraConceptDrafts();
     setExtraConceptModalDrafts(currentDrafts.map((entry) => ({ ...entry })));

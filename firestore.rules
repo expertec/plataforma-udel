@@ -65,7 +65,10 @@ service cloud.firestore {
           userRole() != 'student'
         );
     }
-    function isCampusCoordinator() { return isSignedIn() && userRole() == 'coordinadorPlantel'; }
+    function isCampusCoordinator() {
+      return isSignedIn() &&
+        (userRole() == 'coordinadorPlantel' || userRole() == 'director');
+    }
     function isAdminOrCampusCoordinator() { return isSignedIn() && (isAdmin() || isCampusCoordinator()); }
     function userPlantelId() {
       return isSignedIn() &&

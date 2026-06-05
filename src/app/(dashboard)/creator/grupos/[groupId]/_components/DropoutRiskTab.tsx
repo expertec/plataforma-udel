@@ -1,9 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { collection, getDocs, limit, orderBy, query, where } from "firebase/firestore";
 import toast from "react-hot-toast";
-import { db } from "@/lib/firebase/firestore";
 import { getAllSubmissions } from "@/lib/firebase/submissions-service";
 
 const INACTIVITY_DAYS_THRESHOLD = 7;
@@ -39,45 +37,6 @@ type Props = {
   students: GroupStudentSummary[];
 };
 
-function toDate(value: unknown): Date | null {
-  if (!value) return null;
-
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : value;
-  }
-
-  if (typeof value === "object") {
-    if ("toDate" in value && typeof (value as { toDate?: unknown }).toDate === "function") {
-      try {
-        const date = (value as { toDate: () => Date }).toDate();
-        return Number.isNaN(date.getTime()) ? null : date;
-      } catch {
-        return null;
-      }
-    }
-
-    const seconds = (value as { seconds?: unknown }).seconds;
-    const nanoseconds = (value as { nanoseconds?: unknown }).nanoseconds;
-    if (typeof seconds === "number" && Number.isFinite(seconds)) {
-      const nanos = typeof nanoseconds === "number" && Number.isFinite(nanoseconds) ? nanoseconds : 0;
-      const date = new Date(Math.trunc(seconds * 1000 + nanos / 1_000_000));
-      return Number.isNaN(date.getTime()) ? null : date;
-    }
-  }
-
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-
-  if (typeof value === "string") {
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-
-  return null;
-}
-
 function formatDateTime(value: Date | null): string {
   if (!value) return "Sin registro";
   return new Intl.DateTimeFormat("es-MX", {
@@ -96,10 +55,17 @@ function daysSince(value: Date | null, now: Date): number | null {
   return Math.floor(delta / MS_PER_DAY);
 }
 
-function chooseLatestDate(a: Date | null, b: Date | null): Date | null {
-  if (!a) return b;
-  if (!b) return a;
-  return a > b ? a : b;
+function isPermissionDeniedLikeError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const code = (error as { code?: unknown }).code;
+  if (code === "permission-denied") return true;
+  const status = (error as { status?: unknown }).status;
+  if (status === 403) return true;
+  const message = (error as { message?: unknown }).message;
+  return (
+    typeof message === "string" &&
+    /Missing or insufficient permissions|No se pudieron cargar las entregas/i.test(message)
+  );
 }
 
 export function DropoutRiskTab({ groupId, courseIds, students }: Props) {
@@ -124,30 +90,17 @@ export function DropoutRiskTab({ groupId, courseIds, students }: Props) {
 
       const studentIds = new Set(studentList.map((student) => student.id));
 
-      const [allSubmissions, enrollmentsSnap] = await Promise.all([
-        getAllSubmissions(groupId),
-        getDocs(query(collection(db, "studentEnrollments"), where("groupId", "==", groupId))),
-      ]);
+      const allSubmissions = await getAllSubmissions(groupId);
 
       const evaluableClassIds = new Set<string>();
-      await Promise.all(
-        normalizedCourseIds.map(async (courseId) => {
-          const lessonsSnap = await getDocs(collection(db, "courses", courseId, "lessons"));
-          await Promise.all(
-            lessonsSnap.docs.map(async (lessonDoc) => {
-              const classesSnap = await getDocs(
-                collection(db, "courses", courseId, "lessons", lessonDoc.id, "classes"),
-              );
-              classesSnap.docs.forEach((classDoc) => {
-                const classData = classDoc.data() as { type?: string; hasAssignment?: boolean };
-                const isEvaluable = classData.type === "quiz" || classData.hasAssignment === true;
-                if (!isEvaluable) return;
-                evaluableClassIds.add(classDoc.id);
-              });
-            }),
-          );
-        }),
-      );
+      allSubmissions.forEach((submission) => {
+        const classId = (submission.classDocId ?? submission.classId ?? "").trim();
+        if (!classId) return;
+        if (submission.classType !== "quiz" && submission.classType !== "assignment" && submission.classType !== "forum") {
+          return;
+        }
+        evaluableClassIds.add(classId);
+      });
 
       const totalEvaluableActivities = evaluableClassIds.size;
       const lastSubmissionByStudent = new Map<string, Date>();
@@ -172,54 +125,12 @@ export function DropoutRiskTab({ groupId, courseIds, students }: Props) {
         submittedEvaluableByStudent.set(studentId, current);
       });
 
-      const enrollmentEntries: Array<{ studentId: string; enrollmentId: string }> = [];
-      enrollmentsSnap.docs.forEach((docSnap) => {
-        const data = docSnap.data() as { studentId?: unknown };
-        const fromField = typeof data.studentId === "string" ? data.studentId.trim() : "";
-        const fromId =
-          docSnap.id.includes("_") && docSnap.id.split("_").length > 1
-            ? docSnap.id.split("_").slice(1).join("_").trim()
-            : "";
-        const studentId = fromField || fromId;
-        if (!studentId || !studentIds.has(studentId)) return;
-        enrollmentEntries.push({ studentId, enrollmentId: docSnap.id });
-      });
-
-      const lastProgressByStudent = new Map<string, Date>();
-      await Promise.all(
-        enrollmentEntries.map(async ({ studentId, enrollmentId }) => {
-          const progressSnap = await getDocs(
-            query(
-              collection(db, "studentEnrollments", enrollmentId, "classProgress"),
-              orderBy("lastUpdated", "desc"),
-              limit(1),
-            ),
-          );
-          if (progressSnap.empty) return;
-          const progressData = progressSnap.docs[0].data() as {
-            lastUpdated?: unknown;
-            completedAt?: unknown;
-            updatedAt?: unknown;
-          };
-          const latestProgressAt =
-            toDate(progressData.lastUpdated) ??
-            toDate(progressData.completedAt) ??
-            toDate(progressData.updatedAt);
-          if (!latestProgressAt) return;
-          const previous = lastProgressByStudent.get(studentId);
-          if (!previous || latestProgressAt > previous) {
-            lastProgressByStudent.set(studentId, latestProgressAt);
-          }
-        }),
-      );
-
       const now = new Date();
       const computedRows: RiskRow[] = studentList.map((student) => {
         const submittedSet = submittedEvaluableByStudent.get(student.id) ?? new Set<string>();
         const pendingDeliveries = Math.max(totalEvaluableActivities - submittedSet.size, 0);
         const lastSubmissionAt = lastSubmissionByStudent.get(student.id) ?? null;
-        const lastProgressAt = lastProgressByStudent.get(student.id) ?? null;
-        const lastActivityAt = chooseLatestDate(lastProgressAt, lastSubmissionAt);
+        const lastActivityAt = lastSubmissionAt;
         const daysWithoutActivity = daysSince(lastActivityAt, now);
         const daysWithoutSubmission = daysSince(lastSubmissionAt, now);
         const enrollmentAgeDays = daysSince(student.enrolledAt ?? null, now);
@@ -287,6 +198,10 @@ export function DropoutRiskTab({ groupId, courseIds, students }: Props) {
 
       setRows(atRiskRows);
     } catch (error) {
+      if (isPermissionDeniedLikeError(error)) {
+        setRows([]);
+        return;
+      }
       console.error("Error calculando riesgo de deserción:", error);
       setRows([]);
       setErrorMessage("No se pudo calcular el riesgo de deserción.");
@@ -294,7 +209,7 @@ export function DropoutRiskTab({ groupId, courseIds, students }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [groupId, normalizedCourseIds, students]);
+  }, [groupId, students]);
 
   useEffect(() => {
     void loadRiskRows();

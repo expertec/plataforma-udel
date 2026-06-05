@@ -24,6 +24,7 @@ type ParsedRow = {
   classTitle: string;
   classType: "video" | "text" | "audio" | "quiz" | "image";
   content: string;
+  videoDescription: string;
   duration: number | null;
   order: number | null;
   imageUrls: string[];
@@ -54,6 +55,56 @@ const fieldKeys = {
   imageUrls: ["ImageUrls", "Imagenes", "Imágenes"],
   hasAssignment: ["HasAssignment", "Asignacion", "Asignación", "TieneTarea"],
   assignmentTemplateUrl: ["AssignmentTemplateUrl", "Template", "Plantilla"],
+};
+
+const isVideoUrl = (value: string): boolean => {
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    return host.includes("vimeo.com") || host.includes("youtube.com") || host.includes("youtu.be");
+  } catch {
+    return /vimeo\.com|youtube\.com|youtu\.be/i.test(value);
+  }
+};
+
+const looksLikeVideoDescription = (value: string): boolean => {
+  const text = value.trim();
+  if (!text) return false;
+  if (isVideoUrl(text)) return false;
+  if (text.length < 30) return false;
+  return /\s/.test(text);
+};
+
+const mergeVideoDescriptions = (rows: ParsedRow[]): ParsedRow[] => {
+  const merged: ParsedRow[] = [];
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const current = rows[index]!;
+    const next = rows[index + 1];
+
+    if (
+      current.classType === "text" &&
+      next &&
+      next.classType === "video" &&
+      current.courseTitle.trim() === next.courseTitle.trim() &&
+      current.lessonTitle.trim() === next.lessonTitle.trim() &&
+      looksLikeVideoDescription(current.content) &&
+      next.content.trim().length > 0
+    ) {
+      merged.push({
+        ...next,
+        row: current.row,
+        order: current.order ?? next.order,
+        videoDescription: current.content.trim(),
+      });
+      index += 1;
+      continue;
+    }
+
+    merged.push(current);
+  }
+
+  return merged;
 };
 
 const sampleData = [
@@ -142,7 +193,7 @@ export function BulkUploadCoursesModal({
     if (inputRef.current) inputRef.current.value = "";
   };
 
-  const getField = (row: Record<string, any>, keys: string[]) => {
+  const getField = (row: Record<string, unknown>, keys: string[]) => {
     for (const key of keys) {
       if (row[key] === undefined || row[key] === null) continue;
       const value = String(row[key]).trim();
@@ -163,7 +214,7 @@ export function BulkUploadCoursesModal({
         setParseError("El archivo no tiene hojas válidas.");
         return;
       }
-      const rows = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { defval: "" });
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "" });
       const normalizeType = (val: string): ParsedRow["classType"] => {
         const t = val.toLowerCase();
         if (["video", "texto", "text"].includes(t)) return t === "video" ? "video" : "text";
@@ -213,6 +264,7 @@ export function BulkUploadCoursesModal({
             classTitle,
             classType,
             content,
+            videoDescription: "",
             duration,
             order,
             imageUrls,
@@ -226,9 +278,10 @@ export function BulkUploadCoursesModal({
         setParseError("No se encontraron filas válidas. Asegúrate de incluir Curso, Lección y TítuloClase.");
         return;
       }
-      setParsedRows(mapped);
+      const normalizedRows = mergeVideoDescriptions(mapped);
+      setParsedRows(normalizedRows);
       setFileName(file.name);
-      toast.success(`Archivo leído: ${mapped.length} clase(s) detectadas`);
+      toast.success(`Archivo leído: ${normalizedRows.length} clase(s) detectadas`);
     } catch (err) {
       console.error(err);
       setParseError("No se pudo leer el archivo. Usa un Excel o CSV con encabezados.");
@@ -321,6 +374,7 @@ export function BulkUploadCoursesModal({
           };
 
           if (row.classType === "video") payload.videoUrl = row.content;
+          if (row.classType === "video") payload.content = row.videoDescription || undefined;
           else if (row.classType === "audio") payload.audioUrl = row.content;
           else if (row.classType === "text" || row.classType === "quiz") payload.content = row.content;
           else if (row.classType === "image") {
@@ -497,6 +551,11 @@ export function BulkUploadCoursesModal({
                               {row.content}
                             </p>
                           )}
+                          {row.classType === "video" && row.videoDescription ? (
+                            <p className="pt-1 text-[11px] text-slate-600 line-clamp-2">
+                              Descripción: {row.videoDescription}
+                            </p>
+                          ) : null}
                         </div>
                         <div className="flex flex-wrap gap-2 text-xs text-slate-500">
                           {row.imageUrls.length > 0 && <span>{row.imageUrls.length} imagen(es)</span>}

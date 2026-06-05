@@ -248,6 +248,28 @@ function buildTextClass(lines: string[], textIndex: number): WordImportedClass |
   };
 }
 
+function buildVideoClass(params: {
+  title: string;
+  videoUrl: string;
+  descriptionLines: string[];
+  videoIndex: number;
+}): WordImportedClass {
+  const { title, videoUrl, descriptionLines, videoIndex } = params;
+  const description = descriptionLines.join("\n\n").trim();
+  const engagementFlags = inferClassEngagementFlags({
+    title,
+    lines: descriptionLines.length > 0 ? descriptionLines : [videoUrl],
+  });
+
+  return {
+    title: title || `Video ${videoIndex}`,
+    type: "video",
+    videoUrl,
+    content: description || undefined,
+    ...engagementFlags,
+  };
+}
+
 function parseQuizQuestions(lines: string[]): WordImportedQuizQuestion[] {
   const questions: WordImportedQuizQuestion[] = [];
   let i = 0;
@@ -419,24 +441,23 @@ function buildClasses(sectionLines: string[]): WordImportedClass[] {
     }
 
     const { title, remaining } = pickTitleBeforeUrl(buffer);
-    buffer = remaining;
-    flushTextBuffer();
 
     if (isVideoUrl(url)) {
-      const resolvedTitle = title || `Video ${videoCounter}`;
-      const engagementFlags = inferClassEngagementFlags({
-        title: resolvedTitle,
-        lines: [line],
-      });
-      classes.push({
-        title: resolvedTitle,
-        type: "video",
-        videoUrl: url,
-        ...engagementFlags,
-      });
+      classes.push(
+        buildVideoClass({
+          title: title || `Video ${videoCounter}`,
+          videoUrl: url,
+          descriptionLines: remaining,
+          videoIndex: videoCounter,
+        }),
+      );
+      buffer = [];
       videoCounter += 1;
       continue;
     }
+
+    buffer = remaining;
+    flushTextBuffer();
 
     const resolvedTitle = title ? `Recurso: ${title}` : `Recurso externo ${resourceCounter}`;
     const engagementFlags = inferClassEngagementFlags({
