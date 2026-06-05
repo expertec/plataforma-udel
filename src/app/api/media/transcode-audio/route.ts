@@ -19,12 +19,13 @@ class TranscodeError extends Error {
 }
 
 async function runFfmpeg(inputPath: string, outputPath: string): Promise<void> {
-  if (!ffmpegPath) {
+  const resolvedFfmpegPath = ffmpegPath;
+  if (!resolvedFfmpegPath) {
     throw new TranscodeError(500, "No se encontró ffmpeg en el servidor");
   }
 
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(ffmpegPath, [
+    const child = spawn(resolvedFfmpegPath, [
       "-y",
       "-i",
       inputPath,

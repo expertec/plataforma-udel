@@ -261,7 +261,11 @@ export async function getAllSubmissions(groupId: string): Promise<Submission[]> 
       fileUrl: item.fileUrl ?? "",
       audioUrl: item.audioUrl ?? "",
       content: item.content ?? "",
-      status: ["pending", "graded", "late"].includes(item.status) ? item.status : "pending",
+      status: (["pending", "graded", "late"] as SubmissionStatus[]).includes(
+        item.status as SubmissionStatus,
+      )
+        ? (item.status as SubmissionStatus)
+        : "pending",
       grade: item.grade,
       feedback: item.feedback ?? "",
       gradedAt:

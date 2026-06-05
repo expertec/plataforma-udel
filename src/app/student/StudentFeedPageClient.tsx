@@ -669,6 +669,29 @@ export default function StudentFeedPageClient() {
   const [assignmentFileMap, setAssignmentFileMap] = useState<Record<string, File | null>>({});
   const [assignmentAudioMap, setAssignmentAudioMap] = useState<Record<string, File | null>>({});
   const [assignmentAudioNormalizingMap, setAssignmentAudioNormalizingMap] = useState<Record<string, boolean>>({});
+  const handleAssignmentAudioFileSelection = async (
+    classId: string,
+    file: File | null,
+    source: "upload" | "recording",
+  ) => {
+    if (!file) {
+      setAssignmentAudioMap((prev) => ({ ...prev, [classId]: null }));
+      setAssignmentAudioNormalizingMap((prev) => ({ ...prev, [classId]: false }));
+      return;
+    }
+
+    setAssignmentAudioNormalizingMap((prev) => ({ ...prev, [classId]: true }));
+    try {
+      const normalized = await normalizeForumAudioFile(file, source);
+      setAssignmentAudioMap((prev) => ({ ...prev, [classId]: normalized }));
+    } catch (error) {
+      const message = getErrorMessage(error) || "No se pudo procesar el audio seleccionado.";
+      toast.error(message);
+      setAssignmentAudioMap((prev) => ({ ...prev, [classId]: null }));
+    } finally {
+      setAssignmentAudioNormalizingMap((prev) => ({ ...prev, [classId]: false }));
+    }
+  };
   const [assignmentUploadingMap, setAssignmentUploadingMap] = useState<Record<string, boolean>>({});
   const [assignmentStatusMap, setAssignmentStatusMap] = useState<Record<string, "submitted">>({});
   const [assignmentSubmissionMap, setAssignmentSubmissionMap] = useState<
@@ -8277,30 +8300,6 @@ function ForumPanel({
       setMediaFile(null);
     } finally {
       setNormalizingAudio(false);
-    }
-  };
-
-  const handleAssignmentAudioFileSelection = async (
-    classId: string,
-    file: File | null,
-    source: "upload" | "recording",
-  ) => {
-    if (!file) {
-      setAssignmentAudioMap((prev) => ({ ...prev, [classId]: null }));
-      setAssignmentAudioNormalizingMap((prev) => ({ ...prev, [classId]: false }));
-      return;
-    }
-
-    setAssignmentAudioNormalizingMap((prev) => ({ ...prev, [classId]: true }));
-    try {
-      const normalized = await normalizeForumAudioFile(file, source);
-      setAssignmentAudioMap((prev) => ({ ...prev, [classId]: normalized }));
-    } catch (error) {
-      const message = getErrorMessage(error) || "No se pudo procesar el audio seleccionado.";
-      toast.error(message);
-      setAssignmentAudioMap((prev) => ({ ...prev, [classId]: null }));
-    } finally {
-      setAssignmentAudioNormalizingMap((prev) => ({ ...prev, [classId]: false }));
     }
   };
 

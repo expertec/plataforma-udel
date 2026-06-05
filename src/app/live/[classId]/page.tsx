@@ -22,7 +22,6 @@ import {
   useMaybeLayoutContext,
   useParticipants,
   usePreviewTracks,
-  useSpeakingParticipants,
   type LocalUserChoices,
   type TrackReference,
   type WidgetState,
@@ -460,7 +459,6 @@ function LiveRoomConference({
   viewerRole: "teacher" | "student" | null;
 }) {
   const participants = useParticipants();
-  const speakingParticipants = useSpeakingParticipants();
   const connectionState = useConnectionState();
   const localParticipantPermissions = useLocalParticipantPermissions();
   const tracks = useTracks(
@@ -538,27 +536,20 @@ function LiveRoomConference({
     return subscribed ?? screenShares[0] ?? null;
   }, [tracks]);
 
-  const activeTeacherParticipant = useMemo(
-    () =>
-      speakingParticipants.find((participant) =>
-        isTeacherLikeLiveRole(parseParticipantRoleFromMetadata(participant.metadata)),
-      ) ?? null,
-    [speakingParticipants],
-  );
-
-  const teacherSpeakerCameraTrack = useMemo(() => {
-    if (!activeTeacherParticipant) return null;
+  // In a live class the focused tile should always stay on the teacher's camera,
+  // regardless of who is speaking (speaker detection is too noise-sensitive).
+  const teacherCameraTrack = useMemo(() => {
     const teacherCameraTracks = tracks.filter(
       (track): track is TrackReference =>
         isTrackReference(track) &&
         track.source === Track.Source.Camera &&
-        track.participant.identity === activeTeacherParticipant.identity,
+        isTeacherLikeLiveRole(parseParticipantRoleFromMetadata(track.participant.metadata)),
     );
     const subscribed = teacherCameraTracks.find((track) => track.publication.isSubscribed);
     return subscribed ?? teacherCameraTracks[0] ?? null;
-  }, [activeTeacherParticipant, tracks]);
+  }, [tracks]);
 
-  const focusTrack = screenShareTrack ?? teacherSpeakerCameraTrack ?? null;
+  const focusTrack = screenShareTrack ?? teacherCameraTrack ?? null;
 
   const nonFocusedTracks = useMemo(() => {
     if (!focusTrack) return tracks;
