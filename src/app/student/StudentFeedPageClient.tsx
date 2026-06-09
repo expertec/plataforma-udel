@@ -68,10 +68,12 @@ import {
   type StudentPreviewFeedItem,
 } from "@/lib/student-preview";
 import {
+  isForumAudioTranscodeCandidate,
   pickPreferredAudioRecordingMimeType,
   resolvePreferredContentTypeForMediaFile,
   resolvePreferredExtensionForMediaFile,
   resolvePreferredExtensionForMimeType,
+  transcodeForumAudioToWav,
   validateForumMediaFile,
 } from "@/lib/media/forum-media";
 
@@ -6733,16 +6735,31 @@ function getErrorMessage(error: unknown) {
 }
 
 async function normalizeForumAudioFile(file: File, source: "upload" | "recording"): Promise<File> {
-  if (source === "upload") {
-    throw new Error("Formato no admitido. Favor de grabar el audio en la plataforma.");
-  }
-
+  // MP3 y WAV se reproducen de forma fiable en todos los navegadores y
+  // dispositivos, así que se usan tal cual. El resto (M4A/AAC, que muchas
+  // veces muestran 0:00 y no reproducen; y webm/opus/ogg de grabaciones en
+  // Android) se convierte a WAV.
   const validationError = validateForumMediaFile("audio", file);
-  if (validationError) {
-    throw new Error("Formato no admitido. Favor de grabar el audio en la plataforma.");
+  const shouldTranscode = Boolean(validationError) || isForumAudioTranscodeCandidate(file);
+  if (!shouldTranscode) {
+    return file;
   }
 
-  return file;
+  // La conversión se hace en el servidor con ffmpeg, fiable en cualquier
+  // dispositivo (a diferencia del decode en el navegador, que falla en iOS).
+  try {
+    const normalized = await transcodeForumAudioToWav(file);
+    const normalizedValidationError = validateForumMediaFile("audio", normalized);
+    if (normalizedValidationError) {
+      throw new Error(normalizedValidationError);
+    }
+    return normalized;
+  } catch {
+    if (source === "upload") {
+      throw new Error("Audio no compatible. Usa MP3, M4A, AAC o WAV.");
+    }
+    throw new Error("No se pudo procesar la grabación. Intenta grabar de nuevo.");
+  }
 }
 
 function MicrophonePermissionGuide({
@@ -8393,7 +8410,7 @@ function ForumPanel({
       return;
     }
     if (audioFormat && !mediaFile) {
-      toast.error("Formato no admitido. Favor de grabar el audio en la plataforma.");
+      toast.error("Sube o graba un audio antes de enviar tu aporte.");
       return;
     }
     if (mediaFile && audioFormat) {

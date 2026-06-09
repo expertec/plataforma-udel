@@ -153,6 +153,33 @@ export function resolvePreferredContentTypeForMediaFile(
   return EXTENSION_TO_MIME_TYPE[extensionFromName] ?? fallbackContentType;
 }
 
+export async function transcodeForumAudioToWav(file: File): Promise<File> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await fetch("/api/media/transcode-audio", {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw new Error("TRANSCODE_FAILED");
+  }
+
+  const blob = await response.blob();
+  if (blob.size <= 0) {
+    throw new Error("TRANSCODE_FAILED");
+  }
+
+  const headerName = response.headers.get("X-Output-Filename");
+  const baseName =
+    (headerName && headerName.trim()) ||
+    file.name.replace(/\.[^./\\]+$/, "") ||
+    `audio-${Date.now()}`;
+
+  return new File([blob], `${baseName}.wav`, { type: "audio/wav" });
+}
+
 export function validateForumMediaFile(
   kind: ForumMediaKind,
   file: File,

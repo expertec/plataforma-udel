@@ -18,11 +18,27 @@ class TranscodeError extends Error {
   }
 }
 
-async function runFfmpeg(inputPath: string, outputPath: string): Promise<void> {
-  const resolvedFfmpegPath = ffmpegPath;
-  if (!resolvedFfmpegPath) {
-    throw new TranscodeError(500, "No se encontró ffmpeg en el servidor");
+async function resolveFfmpegBinary(): Promise<string> {
+  const candidates = [
+    ffmpegPath,
+    process.env.FFMPEG_PATH,
+    path.join(process.cwd(), "node_modules", "ffmpeg-static", "ffmpeg"),
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+
+  for (const candidate of candidates) {
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      // Probar siguiente candidato.
+    }
   }
+
+  throw new TranscodeError(500, "No se encontró ffmpeg en el servidor");
+}
+
+async function runFfmpeg(inputPath: string, outputPath: string): Promise<void> {
+  const resolvedFfmpegPath = await resolveFfmpegBinary();
 
   await new Promise<void>((resolve, reject) => {
     const child = spawn(resolvedFfmpegPath, [
