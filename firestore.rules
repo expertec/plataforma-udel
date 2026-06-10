@@ -612,9 +612,18 @@ service cloud.firestore {
           resource.data.studentId == request.auth.uid &&
           !submissionIsGraded()
         ) || isAdmin() || isAdminTeacher() || (
-          isTeacherLike() &&
+          // Estar asignado como docente/mentor del grupo ya prueba que es el
+          // docente; no exigimos isTeacherLike() porque el rol en users/{uid}
+          // puede no estar normalizado y bloquearía calificar (sí podía leer).
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
           isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId))
+        ) || (
+          // Grupos con varias materias: el titular de la materia (o su mentor)
+          // puede calificar las entregas de esa materia aunque no sea el
+          // teacherId del grupo. Igual que la calificación de foro.
+          "courseId" in resource.data &&
+          resource.data.courseId is string &&
+          canManageCourse(resource.data.courseId)
         );
       }
 

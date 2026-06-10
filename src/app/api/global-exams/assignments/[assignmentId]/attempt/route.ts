@@ -268,8 +268,10 @@ export async function POST(
       );
     });
 
-    let gradeSynced = !assignment.courseId;
-    if (assignment.courseId) {
+    // Solo se sincroniza a kardex si hay materia y grupo (inscripcion destino).
+    // Sin grupo, el resultado queda en la asignacion pero no se ata a una nota.
+    let gradeSynced = !assignment.courseId || !assignment.groupId;
+    if (assignment.courseId && assignment.groupId) {
       try {
         await syncGlobalExamGradeToEnrollments({
           assignmentId: assignment.id,

@@ -89,10 +89,6 @@ function cloneTemplateQuestions(questions: GlobalExamQuestion[]): QuestionFormSt
   }));
 }
 
-function getStudentLabel(student: StudentUser): string {
-  return `${student.name} | ${student.email || "sin correo"}${student.program ? ` | ${student.program}` : ""}`;
-}
-
 export default function GlobalExamsPage() {
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [loadingContext, setLoadingContext] = useState(true);
@@ -125,6 +121,13 @@ export default function GlobalExamsPage() {
   const isAdmin = isAdminTeacherRole(userRole);
   const isCoordinator = isCampusCoordinatorRole(userRole);
 
+  const STUDENT_RESULTS_LIMIT = 50;
+
+  const selectedStudent = useMemo(
+    () => students.find((student) => student.id === assignmentStudentId) ?? null,
+    [assignmentStudentId, students],
+  );
+
   const filteredStudents = useMemo(() => {
     const query = studentSearch.trim().toLowerCase();
     if (!query) return students;
@@ -133,6 +136,11 @@ export default function GlobalExamsPage() {
       return haystack.includes(query);
     });
   }, [studentSearch, students]);
+
+  const visibleStudents = useMemo(
+    () => filteredStudents.slice(0, STUDENT_RESULTS_LIMIT),
+    [filteredStudents],
+  );
 
   const selectedTemplate = useMemo(
     () => templates.find((template) => template.id === assignmentTemplateId) ?? null,
@@ -393,8 +401,8 @@ export default function GlobalExamsPage() {
 
   const handleSubmitAssignment = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!assignmentTemplateId || !assignmentStudentId || !assignmentGroupId) {
-      toast.error("Selecciona plantilla, alumno y grupo");
+    if (!assignmentTemplateId || !assignmentStudentId) {
+      toast.error("Selecciona plantilla y alumno");
       return;
     }
 
@@ -857,32 +865,81 @@ export default function GlobalExamsPage() {
                   </select>
                 </label>
 
-                <label className="space-y-2 text-sm">
-                  <span className="font-medium text-slate-700">Buscar alumno</span>
-                  <input
-                    value={studentSearch}
-                    onChange={(event) => setStudentSearch(event.target.value)}
-                    placeholder="Nombre, correo o programa"
-                    className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
-                  />
-                </label>
+                <div className="space-y-2 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-slate-700">Alumno</span>
+                    {selectedStudent ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAssignmentStudentId("");
+                          setStudentSearch("");
+                        }}
+                        className="text-xs font-medium text-blue-700 hover:underline"
+                      >
+                        Cambiar
+                      </button>
+                    ) : null}
+                  </div>
 
-                <label className="space-y-2 text-sm">
-                  <span className="font-medium text-slate-700">Alumno</span>
-                  <select
-                    value={assignmentStudentId}
-                    onChange={(event) => setAssignmentStudentId(event.target.value)}
-                    className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
-                    required
-                  >
-                    <option value="">Selecciona un alumno</option>
-                    {filteredStudents.map((student) => (
-                      <option key={student.id} value={student.id}>
-                        {getStudentLabel(student)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                  {selectedStudent ? (
+                    <div className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2.5">
+                      <p className="text-sm font-semibold text-slate-900">{selectedStudent.name}</p>
+                      <p className="text-xs text-slate-600">
+                        {selectedStudent.email || "sin correo"}
+                        {selectedStudent.program ? ` | ${selectedStudent.program}` : ""}
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      <input
+                        value={studentSearch}
+                        onChange={(event) => setStudentSearch(event.target.value)}
+                        placeholder="Busca por nombre, correo o programa"
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
+                      />
+                      {studentSearch.trim() ? (
+                        <>
+                          <div className="max-h-64 overflow-y-auto rounded-xl border border-slate-200 bg-white">
+                            {visibleStudents.length === 0 ? (
+                              <p className="px-3 py-3 text-xs text-slate-500">
+                                {students.length === 0
+                                  ? "No hay alumnos disponibles para tu alcance."
+                                  : "Sin coincidencias. Ajusta tu búsqueda."}
+                              </p>
+                            ) : (
+                              visibleStudents.map((student) => (
+                                <button
+                                  key={student.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setAssignmentStudentId(student.id);
+                                    setStudentSearch("");
+                                  }}
+                                  className="block w-full border-b border-slate-100 px-3 py-2 text-left transition last:border-b-0 hover:bg-blue-50"
+                                >
+                                  <span className="block text-sm font-medium text-slate-800">
+                                    {student.name}
+                                  </span>
+                                  <span className="block text-xs text-slate-500">
+                                    {student.email || "sin correo"}
+                                    {student.program ? ` | ${student.program}` : ""}
+                                  </span>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                          {filteredStudents.length > visibleStudents.length ? (
+                            <p className="text-xs text-slate-500">
+                              Mostrando {visibleStudents.length} de {filteredStudents.length}. Refina
+                              tu búsqueda para acotar.
+                            </p>
+                          ) : null}
+                        </>
+                      ) : null}
+                    </>
+                  )}
+                </div>
 
                 <div className="grid gap-4 lg:grid-cols-2">
                   <label className="space-y-2 text-sm">
@@ -898,16 +955,18 @@ export default function GlobalExamsPage() {
                   </label>
 
                   <label className="space-y-2 text-sm">
-                    <span className="font-medium text-slate-700">Grupo para regularizacion</span>
+                    <span className="font-medium text-slate-700">
+                      Grupo para regularizacion{" "}
+                      <span className="font-normal text-slate-400">(opcional)</span>
+                    </span>
                     <select
                       value={assignmentGroupId}
                       onChange={(event) => setAssignmentGroupId(event.target.value)}
                       className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
-                      required
                       disabled={resolvingEnrollments || candidateEnrollments.length === 0}
                     >
                       <option value="">
-                        {resolvingEnrollments ? "Resolviendo grupos..." : "Selecciona un grupo"}
+                        {resolvingEnrollments ? "Resolviendo grupos..." : "Sin grupo"}
                       </option>
                       {candidateEnrollments.map((enrollment) => (
                         <option key={enrollment.groupId} value={enrollment.groupId}>
@@ -916,6 +975,22 @@ export default function GlobalExamsPage() {
                         </option>
                       ))}
                     </select>
+                    {!resolvingEnrollments &&
+                    assignmentStudentId &&
+                    assignmentTemplateId &&
+                    candidateEnrollments.length === 0 ? (
+                      <p className="text-xs text-amber-600">
+                        {selectedTemplate?.courseId
+                          ? "El alumno no tiene una inscripción activa en esta materia. Se puede habilitar el examen, pero sin inscripción la nota no se sincroniza a kardex ni se abre el contenido."
+                          : "Esta plantilla no está ligada a una materia, por lo que no hay nota que sincronizar ni contenido que desbloquear."}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-slate-500">
+                        Opcional: si lo dejas en &quot;Sin grupo&quot;, el sistema usará
+                        automáticamente la inscripción del alumno en esta materia para sincronizar la
+                        nota a kardex y desbloquear el contenido en modo estudio.
+                      </p>
+                    )}
                   </label>
                 </div>
 

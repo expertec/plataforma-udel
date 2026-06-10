@@ -76,9 +76,9 @@ export async function POST(request: NextRequest) {
     const reason = normalizeReason(body.reason);
     const requestedEnabled = body.enabled === true;
 
-    if (!templateId || !studentId || !requestedGroupId) {
+    if (!templateId || !studentId) {
       return NextResponse.json(
-        { success: false, error: "templateId, studentId y groupId son requeridos" },
+        { success: false, error: "templateId y studentId son requeridos" },
         { status: 400 },
       );
     }
@@ -116,23 +116,62 @@ export async function POST(request: NextRequest) {
         ? new Set(await getCoordinatorScopeGroupIds(access.uid, access.plantelIds))
         : undefined;
 
-    const enrollments = await resolveStudentCourseEnrollments(
-      studentId,
-      template.courseId,
-      coordinatorScopeGroupIds,
-    );
-    const targetEnrollment = enrollments.find((enrollment) => enrollment.groupId === requestedGroupId);
-    if (!targetEnrollment) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: template.courseId
-            ? "El alumno no tiene una inscripcion valida para esa materia dentro de ese grupo"
-            : "El alumno no tiene una inscripcion valida dentro de ese grupo",
-        },
-        { status: 400 },
+    const studentData = studentSnap.data() ?? {};
+
+    // El grupo es opcional en la UI. Con grupo explicito: se valida la
+    // inscripcion del alumno. Sin grupo: el servidor intenta resolver
+    // automaticamente la inscripcion del alumno en la materia de la plantilla,
+    // para que la nota se sincronice a kardex y se desbloquee el contenido en
+    // modo estudio sin que el operador tenga que elegir el grupo a mano.
+    let targetEnrollment:
+      | Awaited<ReturnType<typeof resolveStudentCourseEnrollments>>[number]
+      | null = null;
+
+    if (requestedGroupId) {
+      const enrollments = await resolveStudentCourseEnrollments(
+        studentId,
+        template.courseId,
+        coordinatorScopeGroupIds,
       );
+      targetEnrollment = enrollments.find((enrollment) => enrollment.groupId === requestedGroupId) ?? null;
+      if (!targetEnrollment) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: template.courseId
+              ? "El alumno no tiene una inscripcion valida para esa materia dentro de ese grupo"
+              : "El alumno no tiene una inscripcion valida dentro de ese grupo",
+          },
+          { status: 400 },
+        );
+      }
+    } else if (template.courseId) {
+      // Auto-resolver: si el alumno ya tiene inscripcion en la materia, la
+      // usamos para que la nota se sincronice y el contenido se desbloquee.
+      const enrollments = await resolveStudentCourseEnrollments(
+        studentId,
+        template.courseId,
+        coordinatorScopeGroupIds,
+      );
+      targetEnrollment = enrollments[0] ?? null;
     }
+
+    if (!targetEnrollment && coordinatorScopeGroupIds !== undefined) {
+      // Sin inscripcion resuelta no hay alcance por grupo, asi que coordinacion
+      // solo puede asignar a alumnos de su mismo plantel.
+      const studentPlantelIds = Array.isArray(studentData.plantelIds)
+        ? (studentData.plantelIds as unknown[]).map((value) => asTrimmedString(value)).filter(Boolean)
+        : [asTrimmedString(studentData.plantelId)].filter(Boolean);
+      const sharesPlantel = studentPlantelIds.some((plantelId) => access.plantelIds.includes(plantelId));
+      if (!sharesPlantel) {
+        return NextResponse.json(
+          { success: false, error: "El alumno no pertenece a tu plantel" },
+          { status: 403 },
+        );
+      }
+    }
+
+    const resolvedGroupId = targetEnrollment?.groupId ?? "";
 
     const existingAssignmentsSnap = await db
       .collection("globalExamAssignments")
@@ -140,7 +179,7 @@ export async function POST(request: NextRequest) {
       .get();
     const duplicated = existingAssignmentsSnap.docs.find((docSnap) => {
       const data = docSnap.data();
-      if (asTrimmedString(data.groupId) !== targetEnrollment.groupId) return false;
+      if (asTrimmedString(data.groupId) !== resolvedGroupId) return false;
       if (template.courseId) {
         return asTrimmedString(data.courseId) === template.courseId;
       }
@@ -151,14 +190,13 @@ export async function POST(request: NextRequest) {
         {
           success: false,
           error: template.courseId
-            ? "Ya existe una asignacion de examen global para este alumno en esa materia y grupo"
-            : "Ya existe una asignacion de esta plantilla para este alumno en ese grupo",
+            ? "Ya existe una asignacion de examen global para este alumno en esa materia"
+            : "Ya existe una asignacion de esta plantilla para este alumno",
         },
         { status: 409 },
       );
     }
 
-    const studentData = studentSnap.data() ?? {};
     const studentName =
       asTrimmedString(studentData.displayName) ||
       asTrimmedString(studentData.name) ||
@@ -167,15 +205,23 @@ export async function POST(request: NextRequest) {
     const actorName = access.displayName || access.email || "Coordinacion";
     const now = new Date();
 
+    // Sin grupo, tomamos el plantel del alumno para conservar contexto/visibilidad.
+    const studentPlantelId = Array.isArray(studentData.plantelIds)
+      ? asTrimmedString((studentData.plantelIds as unknown[])[0])
+      : asTrimmedString(studentData.plantelId);
+    const studentPlantelName = Array.isArray(studentData.plantelNames)
+      ? asTrimmedString((studentData.plantelNames as unknown[])[0])
+      : asTrimmedString(studentData.plantelName);
+
     const assignmentRef = await db.collection("globalExamAssignments").add({
       templateId: template.id,
       templateTitle: template.title,
       courseId: template.courseId,
       courseName: template.courseName,
-      groupId: targetEnrollment.groupId,
-      groupName: targetEnrollment.groupName,
-      plantelId: targetEnrollment.plantelId,
-      plantelName: targetEnrollment.plantelName,
+      groupId: targetEnrollment?.groupId ?? "",
+      groupName: targetEnrollment?.groupName ?? "",
+      plantelId: targetEnrollment?.plantelId ?? studentPlantelId,
+      plantelName: targetEnrollment?.plantelName ?? studentPlantelName,
       studentId,
       studentName,
       studentEmail,
