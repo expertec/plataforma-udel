@@ -35,6 +35,8 @@ type QuizAnswer = {
   isCorrect?: boolean;
 };
 
+const EMPTY_QUIZ_ANSWERS: QuizAnswer[] = [];
+
 const normalizeQuizPointValue = (value: unknown): number => {
   const parsed =
     typeof value === "number"
@@ -53,6 +55,12 @@ const formatQuizPoints = (value: number) => {
   return normalized.toFixed(2).replace(/\.?0+$/, "");
 };
 
+const isLegacyQuizPercentGrade = (grade: number, quizPointsMax: number): boolean =>
+  quizPointsMax > 0 && grade > quizPointsMax && grade <= 100;
+
+const convertLegacyQuizPercentToPoints = (grade: number, quizPointsMax: number): number =>
+  roundQuizPoints((grade / 100) * quizPointsMax);
+
 type QuizDetailModalProps = {
   submission: Submission & { answers?: QuizAnswer[] };
   questions: Array<{
@@ -66,8 +74,12 @@ type QuizDetailModalProps = {
 };
 
 function QuizDetailModal({ submission, questions, onClose, onGrade }: QuizDetailModalProps) {
-  const answers = submission.answers ?? [];
+  const answers = submission.answers ?? EMPTY_QUIZ_ANSWERS;
   const existingGrade = submission.grade;
+  const questionById = useMemo(
+    () => new Map(questions.map((question) => [question.id, question] as const)),
+    [questions],
+  );
 
   // Si ya tiene calificación, es autocalificado - mostrar preguntas con respuestas
   // Si no tiene calificación, es manual - mostrar solo respuestas del alumno
@@ -77,6 +89,7 @@ function QuizDetailModal({ submission, questions, onClose, onGrade }: QuizDetail
   const [manualGrade, setManualGrade] = useState<number | undefined>(existingGrade ?? undefined);
   const [feedback, setFeedback] = useState(submission.feedback ?? "");
   const [saving, setSaving] = useState(false);
+  const [correctingLegacyGrade, setCorrectingLegacyGrade] = useState(false);
 
   // Mostrar formulario de calificación manual si no tiene calificación
   const needsManualGrade = existingGrade == null;
@@ -98,25 +111,53 @@ function QuizDetailModal({ submission, questions, onClose, onGrade }: QuizDetail
     }
   };
 
+  const recoveredQuizGrade = useMemo(() => {
+    let matchedQuestions = 0;
+    let earnedPoints = 0;
+
+    answers.forEach((answer) => {
+      const question = questionById.get(answer.questionId);
+      if (!question) return;
+      matchedQuestions += 1;
+      const selectedOption = question.options.find((option) => option.id === answer.selectedOptionId);
+      if (selectedOption?.isCorrect) {
+        earnedPoints += normalizeQuizPointValue(question.pointValue);
+      }
+    });
+
+    return {
+      matchedQuestions,
+      earnedPoints: roundQuizPoints(earnedPoints),
+    };
+  }, [answers, questionById]);
+
   // Calcular respuestas correctas para quizzes autocalificados
-  const correctCount = isAutoGraded ? answers.filter((a) => {
-    const q = questions.find((qq) => qq.id === a.questionId);
-    const opt = q?.options?.find((o) => o.id === a.selectedOptionId);
-    return opt?.isCorrect === true;
-  }).length : 0;
+  const correctCount = isAutoGraded
+    ? answers.filter((a) => {
+        const q = questionById.get(a.questionId);
+        const opt = q?.options?.find((o) => o.id === a.selectedOptionId);
+        return opt?.isCorrect === true;
+      }).length
+    : 0;
   const totalQuestionPoints = roundQuizPoints(
     questions.reduce((sum, question) => sum + normalizeQuizPointValue(question.pointValue), 0),
   );
   const quizPointsMax = questions.length > 0 ? totalQuestionPoints : 100;
-  const normalizeQuizRatio = (grade: number) => {
-    if (quizPointsMax > 0 && grade <= quizPointsMax) {
-      return Math.max(0, Math.min(grade / quizPointsMax, 1));
-    }
-    if (grade <= 100) return Math.max(0, Math.min(grade / 100, 1));
-    if (quizPointsMax > 0) return Math.max(0, Math.min(grade / quizPointsMax, 1));
-    return 0;
-  };
-  const existingGradeRatio = typeof existingGrade === "number" ? normalizeQuizRatio(existingGrade) : 0;
+  const legacyGradeDetected =
+    typeof existingGrade === "number" && isLegacyQuizPercentGrade(existingGrade, quizPointsMax);
+  const correctedGradeFromAnswers =
+    recoveredQuizGrade.matchedQuestions > 0 ? recoveredQuizGrade.earnedPoints : null;
+  const correctedGradeFromLegacyPercent =
+    legacyGradeDetected ? convertLegacyQuizPercentToPoints(existingGrade, quizPointsMax) : null;
+  const suggestedCorrectedGrade = correctedGradeFromAnswers ?? correctedGradeFromLegacyPercent;
+  const existingGradeRatio =
+    typeof existingGrade === "number"
+      ? legacyGradeDetected && suggestedCorrectedGrade != null && quizPointsMax > 0
+        ? Math.max(0, Math.min(suggestedCorrectedGrade / quizPointsMax, 1))
+        : quizPointsMax > 0
+        ? Math.max(0, Math.min(existingGrade / quizPointsMax, 1))
+        : 0
+      : 0;
   const existingGradeBadgeClass =
     existingGradeRatio >= 0.8
       ? "bg-emerald-100 text-emerald-700"
@@ -124,14 +165,24 @@ function QuizDetailModal({ submission, questions, onClose, onGrade }: QuizDetail
       ? "bg-amber-100 text-amber-700"
       : "bg-red-100 text-red-700";
   const existingGradeLabel =
-    typeof existingGrade === "number" &&
-    quizPointsMax > 0 &&
-    existingGrade <= quizPointsMax &&
-    questions.length > 0
-      ? `${formatQuizPoints(existingGrade)}/${formatQuizPoints(quizPointsMax)}`
-      : typeof existingGrade === "number"
-      ? formatQuizPoints(existingGrade)
+    typeof existingGrade === "number"
+      ? legacyGradeDetected && suggestedCorrectedGrade != null
+        ? `${formatQuizPoints(existingGrade)}% → ${formatQuizPoints(suggestedCorrectedGrade)}/${formatQuizPoints(quizPointsMax)}`
+        : quizPointsMax > 0 && existingGrade <= quizPointsMax && questions.length > 0
+        ? `${formatQuizPoints(existingGrade)}/${formatQuizPoints(quizPointsMax)}`
+        : formatQuizPoints(existingGrade)
       : existingGrade;
+
+  const handleCorrectLegacyGrade = async () => {
+    if (!onGrade || suggestedCorrectedGrade == null) return;
+    setCorrectingLegacyGrade(true);
+    try {
+      await onGrade(suggestedCorrectedGrade, feedback);
+      onClose();
+    } finally {
+      setCorrectingLegacyGrade(false);
+    }
+  };
 
   return (
     <Dialog open onOpenChange={(open) => (!open ? onClose() : null)}>
@@ -152,6 +203,34 @@ function QuizDetailModal({ submission, questions, onClose, onGrade }: QuizDetail
         </DialogHeader>
 
         <div className="mt-4 space-y-4">
+          {legacyGradeDetected ? (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              <p className="font-semibold">Calificación heredada detectada</p>
+              <p className="mt-1">
+                Esta entrega parece guardar la nota en escala 0-100. Puedes convertirla a puntos
+                para que quede consistente con el quiz actual.
+              </p>
+              {suggestedCorrectedGrade != null ? (
+                <p className="mt-1 text-xs text-amber-800">
+                  Corrección sugerida: {formatQuizPoints(suggestedCorrectedGrade)}/
+                  {formatQuizPoints(quizPointsMax)}
+                </p>
+              ) : null}
+              {onGrade ? (
+                <div className="mt-3 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={handleCorrectLegacyGrade}
+                    disabled={correctingLegacyGrade || suggestedCorrectedGrade == null}
+                    className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-500 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {correctingLegacyGrade ? "Corrigiendo..." : "Corregir a puntos"}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
           {/* VISTA PARA QUIZZES AUTOCALIFICADOS - Preguntas con respuestas en cards */}
           {isAutoGraded && (
             <>
@@ -1027,6 +1106,12 @@ export function SubmissionsModal({
     : 100;
   const inlineGradeMax = isForumClass ? 5 : isQuizClass ? quizInlineGradeMax : 100;
   const getQuizGradeRatio = (grade: number) => {
+    if (isLegacyQuizPercentGrade(grade, quizInlineGradeMax)) {
+      return Math.max(
+        0,
+        Math.min(convertLegacyQuizPercentToPoints(grade, quizInlineGradeMax) / quizInlineGradeMax, 1),
+      );
+    }
     if (quizInlineGradeMax > 0 && grade <= quizInlineGradeMax) {
       return Math.max(0, Math.min(grade / quizInlineGradeMax, 1));
     }
@@ -1041,9 +1126,13 @@ export function SubmissionsModal({
     return "bg-red-100 text-red-700";
   };
   const formatQuizGradeLabel = (grade: number) =>
-    quizQuestions.length > 0 && quizInlineGradeMax > 0 && grade <= quizInlineGradeMax
-      ? `${formatQuizPoints(grade)}/${formatQuizPoints(quizInlineGradeMax)}`
-      : `${formatQuizPoints(grade)}`;
+    isLegacyQuizPercentGrade(grade, quizInlineGradeMax)
+      ? `${formatQuizPoints(grade)}% → ${formatQuizPoints(
+          convertLegacyQuizPercentToPoints(grade, quizInlineGradeMax),
+        )}/${formatQuizPoints(quizInlineGradeMax)}`
+      : quizQuestions.length > 0 && quizInlineGradeMax > 0 && grade <= quizInlineGradeMax
+        ? `${formatQuizPoints(grade)}/${formatQuizPoints(quizInlineGradeMax)}`
+        : `${formatQuizPoints(grade)}`;
 
   const parseInlineGrade = (raw: string): number | null => {
     const normalized = raw.trim().replace(",", ".");
