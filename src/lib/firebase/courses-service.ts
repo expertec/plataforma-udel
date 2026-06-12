@@ -753,6 +753,32 @@ async function updateLessonViaApiFallback(
   }
 }
 
+async function deleteLessonViaApiFallback(courseId: string, lessonId: string): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error("No hay sesión activa para eliminar la lección");
+  }
+
+  const token = await currentUser.getIdToken();
+  const response = await fetch(
+    `/api/courses/${encodeURIComponent(courseId)}/lessons/${encodeURIComponent(lessonId)}`,
+    {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    },
+  );
+
+  const data = (await response.json().catch(() => null)) as
+    | { success?: boolean; error?: string }
+    | null;
+
+  if (!response.ok || !data?.success) {
+    throw new Error(data?.error || "No se pudo eliminar la lección");
+  }
+}
+
 export async function createLesson(input: CreateLessonInput): Promise<string> {
   const lessonsRef = collection(db, "courses", input.courseId, "lessons");
   let docRef;
@@ -809,9 +835,25 @@ export async function updateLesson(input: UpdateLessonInput): Promise<void> {
 
 export async function deleteLesson(courseId: string, lessonId: string): Promise<void> {
   const lessonRef = doc(db, "courses", courseId, "lessons", lessonId);
-  await deleteDoc(lessonRef);
+  try {
+    await deleteDoc(lessonRef);
+  } catch (error) {
+    if (isPermissionDeniedError(error)) {
+      await deleteLessonViaApiFallback(courseId, lessonId);
+      return;
+    }
+    throw error;
+  }
+
   const courseRef = doc(db, "courses", courseId);
-  await updateDoc(courseRef, { lessonsCount: increment(-1) });
+  try {
+    await updateDoc(courseRef, { lessonsCount: increment(-1) });
+  } catch (error) {
+    if (!isPermissionDeniedError(error)) {
+      throw error;
+    }
+    console.warn("No se pudo actualizar lessonsCount después de eliminar la lección", error);
+  }
 }
 
 export type ClassItem = {
@@ -1032,6 +1074,34 @@ async function updateClassViaApiFallback(
   }
 }
 
+async function deleteClassViaApiFallback(
+  input: Pick<UpdateClassInput, "courseId" | "lessonId" | "classId">,
+): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error("No hay sesión activa para eliminar la clase");
+  }
+
+  const token = await currentUser.getIdToken();
+  const response = await fetch(
+    `/api/courses/${encodeURIComponent(input.courseId)}/lessons/${encodeURIComponent(input.lessonId)}/classes/${encodeURIComponent(input.classId)}`,
+    {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    },
+  );
+
+  const data = (await response.json().catch(() => null)) as
+    | { success?: boolean; error?: string }
+    | null;
+
+  if (!response.ok || !data?.success) {
+    throw new Error(data?.error || "No se pudo eliminar la clase");
+  }
+}
+
 export async function updateClass(input: UpdateClassInput): Promise<void> {
   const classRef = doc(
     db,
@@ -1148,7 +1218,15 @@ export async function deleteClass(
     "classes",
     classId,
   );
-  await deleteDoc(classRef);
+  try {
+    await deleteDoc(classRef);
+  } catch (error) {
+    if (isPermissionDeniedError(error)) {
+      await deleteClassViaApiFallback({ courseId, lessonId, classId });
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function publishCourse(courseId: string, isPublished: boolean): Promise<void> {
@@ -1338,17 +1416,59 @@ export async function createQuizQuestion(input: CreateQuizQuestionInput): Promis
     input.classId,
     "questions",
   );
-  const docRef = await addDoc(refQuestions, {
-    prompt: input.prompt,
-    explanation: input.explanation ?? null,
-    type: input.type ?? "multiple",
-    options: input.options,
-    order: input.order,
-    pointValue: normalizeQuizQuestionPointValue(input.pointValue),
-    answerText: input.answerText ?? null,
-    createdAt: serverTimestamp(),
-  });
-  return docRef.id;
+  try {
+    const docRef = await addDoc(refQuestions, {
+      prompt: input.prompt,
+      explanation: input.explanation ?? null,
+      type: input.type ?? "multiple",
+      options: input.options,
+      order: input.order,
+      pointValue: normalizeQuizQuestionPointValue(input.pointValue),
+      answerText: input.answerText ?? null,
+      createdAt: serverTimestamp(),
+    });
+    return docRef.id;
+  } catch (error) {
+    if (!isPermissionDeniedError(error)) {
+      throw error;
+    }
+
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      throw new Error("No hay sesión activa para crear la pregunta del quiz");
+    }
+
+    const token = await currentUser.getIdToken();
+    const response = await fetch(
+      `/api/courses/${encodeURIComponent(input.courseId)}/lessons/${encodeURIComponent(input.lessonId)}/classes/${encodeURIComponent(input.classId)}/questions`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          prompt: input.prompt,
+          explanation: input.explanation ?? null,
+          options: input.options,
+          order: input.order,
+          pointValue: normalizeQuizQuestionPointValue(input.pointValue),
+          type: input.type ?? "multiple",
+          answerText: input.answerText ?? null,
+        }),
+      },
+    );
+
+    const payload = (await response.json().catch(() => null)) as
+      | { success?: boolean; data?: { questionId?: string }; error?: string }
+      | null;
+
+    if (!response.ok || !payload?.success || !payload?.data?.questionId) {
+      throw new Error(payload?.error || "No se pudo crear la pregunta del quiz");
+    }
+
+    return payload.data.questionId;
+  }
 }
 
 export async function deleteQuizQuestion(
@@ -1368,7 +1488,37 @@ export async function deleteQuizQuestion(
     "questions",
     questionId,
   );
-  await deleteDoc(refQuestion);
+  try {
+    await deleteDoc(refQuestion);
+  } catch (error) {
+    if (!isPermissionDeniedError(error)) {
+      throw error;
+    }
+
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      throw new Error("No hay sesión activa para eliminar la pregunta del quiz");
+    }
+
+    const token = await currentUser.getIdToken();
+    const response = await fetch(
+      `/api/courses/${encodeURIComponent(courseId)}/lessons/${encodeURIComponent(lessonId)}/classes/${encodeURIComponent(classId)}/questions/${encodeURIComponent(questionId)}`,
+      {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      },
+    );
+
+    const payload = (await response.json().catch(() => null)) as
+      | { success?: boolean; error?: string }
+      | null;
+
+    if (!response.ok || !payload?.success) {
+      throw new Error(payload?.error || "No se pudo eliminar la pregunta del quiz");
+    }
+  }
 }
 
 /* ===== Enrollments & progreso ===== */

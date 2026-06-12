@@ -252,7 +252,7 @@ export function ClassItem({
           className="rounded-md p-2 hover:bg-slate-100"
           aria-label="Eliminar clase"
         >
-          <Icon path="M6 6h12M9 6v12m6-12v12M5 6h14" />
+          <Icon path="M4 7h16M10 11v6m4-6v6M6 7l1 12h10l1-12M9 7V4h6v3" />
         </button>
       </div>
     </div>

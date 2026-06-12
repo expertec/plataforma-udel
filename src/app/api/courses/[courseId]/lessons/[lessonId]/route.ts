@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { FieldValue, type DocumentReference } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 
 export const runtime = "nodejs";
@@ -232,6 +233,17 @@ function toErrorResponse(error: unknown): NextResponse {
   );
 }
 
+async function deleteDocumentTree(docRef: DocumentReference): Promise<void> {
+  const subcollections = await docRef.listCollections();
+  for (const collectionRef of subcollections) {
+    const snapshot = await collectionRef.get();
+    for (const childDoc of snapshot.docs) {
+      await deleteDocumentTree(childDoc.ref);
+    }
+  }
+  await docRef.delete();
+}
+
 export async function PATCH(
   request: NextRequest,
   context: { params: Promise<{ courseId: string; lessonId: string }> },
@@ -311,6 +323,61 @@ export async function PATCH(
         { merge: true },
       );
     }
+    await batch.commit();
+
+    return NextResponse.json({ success: true }, { status: 200 });
+  } catch (error: unknown) {
+    return toErrorResponse(error);
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  context: { params: Promise<{ courseId: string; lessonId: string }> },
+) {
+  try {
+    const { courseId, lessonId } = await context.params;
+    const normalizedCourseId = asTrimmedString(courseId);
+    const normalizedLessonId = asTrimmedString(lessonId);
+    if (!normalizedCourseId || !normalizedLessonId) {
+      throw new RouteAccessError(400, "courseId o lessonId inválido");
+    }
+
+    const teacherContext = await resolveTeacherContext(request);
+    const access = await canUserManageCourse({
+      courseId: normalizedCourseId,
+      uid: teacherContext.uid,
+      role: teacherContext.role,
+      coordinatorPlantelIds: teacherContext.coordinatorPlantelIds,
+    });
+
+    if (!access.allowed) {
+      throw new RouteAccessError(403, "Missing or insufficient permissions.");
+    }
+
+    const db = getAdminFirestore();
+    const courseRef = db.collection("courses").doc(normalizedCourseId);
+    const lessonRef = courseRef.collection("lessons").doc(normalizedLessonId);
+    const lessonSnap = await lessonRef.get();
+    if (!lessonSnap.exists) {
+      throw new RouteAccessError(404, "Lección no encontrada");
+    }
+
+    await deleteDocumentTree(lessonRef);
+
+    const nextMentorIds = access.shouldBackfillMentor
+      ? Array.from(new Set([...access.mentorIds, teacherContext.uid]))
+      : access.mentorIds;
+
+    const batch = db.batch();
+    batch.set(
+      courseRef,
+      {
+        lessonsCount: FieldValue.increment(-1),
+        ...(access.shouldBackfillMentor ? { mentorIds: nextMentorIds } : {}),
+      },
+      { merge: true },
+    );
     await batch.commit();
 
     return NextResponse.json({ success: true }, { status: 200 });

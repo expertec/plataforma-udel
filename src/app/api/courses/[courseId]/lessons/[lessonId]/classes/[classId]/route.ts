@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { type DocumentReference } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 import { mergeTeacherEditableLiveSession } from "@/lib/live-classes/types";
 
@@ -312,6 +313,17 @@ function toErrorResponse(error: unknown): NextResponse {
   );
 }
 
+async function deleteDocumentTree(docRef: DocumentReference): Promise<void> {
+  const subcollections = await docRef.listCollections();
+  for (const collectionRef of subcollections) {
+    const snapshot = await collectionRef.get();
+    for (const childDoc of snapshot.docs) {
+      await deleteDocumentTree(childDoc.ref);
+    }
+  }
+  await docRef.delete();
+}
+
 export async function PATCH(
   request: NextRequest,
   context: { params: Promise<{ courseId: string; lessonId: string; classId: string }> },
@@ -470,6 +482,68 @@ export async function PATCH(
 
     const batch = db.batch();
     batch.update(classRef, payload);
+    if (access.shouldBackfillMentor) {
+      batch.set(
+        courseRef,
+        {
+          mentorIds: nextMentorIds,
+        },
+        { merge: true },
+      );
+    }
+    await batch.commit();
+
+    return NextResponse.json({ success: true }, { status: 200 });
+  } catch (error: unknown) {
+    return toErrorResponse(error);
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  context: { params: Promise<{ courseId: string; lessonId: string; classId: string }> },
+) {
+  try {
+    const { courseId, lessonId, classId } = await context.params;
+    const normalizedCourseId = asTrimmedString(courseId);
+    const normalizedLessonId = asTrimmedString(lessonId);
+    const normalizedClassId = asTrimmedString(classId);
+    if (!normalizedCourseId || !normalizedLessonId || !normalizedClassId) {
+      throw new RouteAccessError(400, "courseId, lessonId o classId inválido");
+    }
+
+    const teacherContext = await resolveTeacherContext(request);
+    const access = await canUserManageCourse({
+      courseId: normalizedCourseId,
+      uid: teacherContext.uid,
+      role: teacherContext.role,
+      coordinatorPlantelIds: teacherContext.coordinatorPlantelIds,
+    });
+
+    if (!access.allowed) {
+      throw new RouteAccessError(403, "Missing or insufficient permissions.");
+    }
+
+    const db = getAdminFirestore();
+    const courseRef = db.collection("courses").doc(normalizedCourseId);
+    const classRef = courseRef
+      .collection("lessons")
+      .doc(normalizedLessonId)
+      .collection("classes")
+      .doc(normalizedClassId);
+
+    const classSnap = await classRef.get();
+    if (!classSnap.exists) {
+      throw new RouteAccessError(404, "Clase no encontrada");
+    }
+
+    await deleteDocumentTree(classRef);
+
+    const nextMentorIds = access.shouldBackfillMentor
+      ? Array.from(new Set([...access.mentorIds, teacherContext.uid]))
+      : access.mentorIds;
+
+    const batch = db.batch();
     if (access.shouldBackfillMentor) {
       batch.set(
         courseRef,

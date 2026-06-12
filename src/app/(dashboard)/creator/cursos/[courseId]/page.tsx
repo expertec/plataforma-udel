@@ -47,7 +47,13 @@ import {
 
 type ConfirmState =
   | { open: false }
-  | { open: true; message: string; onConfirm: () => Promise<void> | void };
+  | {
+      open: true;
+      message: string;
+      onConfirm: () => Promise<void> | void;
+      confirmLabel?: string;
+      busyLabel?: string;
+    };
 
 async function compressImage(file: File, maxSize = 1280, quality = 0.72): Promise<Blob> {
   const img = document.createElement("img");
@@ -108,6 +114,7 @@ export default function CourseBuilderPage() {
   }>({ open: false, lesson: null, classItem: null });
   const classListeners = useRef<Record<string, Unsubscribe>>({});
   const [confirmState, setConfirmState] = useState<ConfirmState>({ open: false });
+  const [confirmActionLoading, setConfirmActionLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"info" | "lessons" | "groups">("info");
   const [courseInfo, setCourseInfo] = useState<Partial<Course> | null>(null);
   const [savingInfo, setSavingInfo] = useState(false);
@@ -704,7 +711,10 @@ export default function CourseBuilderPage() {
     setConfirmState({
       open: true,
       message: "¿Eliminar lección y todas sus clases?",
+      confirmLabel: "Eliminar lección",
+      busyLabel: "Eliminando...",
       onConfirm: async () => {
+        setConfirmActionLoading(true);
         try {
           await deleteLesson(courseId, lessonId);
           setLessons((prev) => prev.filter((l) => l.id !== lessonId));
@@ -724,6 +734,7 @@ export default function CourseBuilderPage() {
           console.error(err);
           toast.error("No se pudo eliminar la lección");
         } finally {
+          setConfirmActionLoading(false);
           setConfirmState({ open: false });
         }
       },
@@ -769,7 +780,10 @@ export default function CourseBuilderPage() {
     setConfirmState({
       open: true,
       message: "¿Eliminar esta clase?",
+      confirmLabel: "Eliminar clase",
+      busyLabel: "Eliminando...",
       onConfirm: async () => {
+        setConfirmActionLoading(true);
         try {
           await deleteClass(courseId, lessonId, classId);
           setClassesMap((prev) => ({
@@ -781,6 +795,7 @@ export default function CourseBuilderPage() {
           console.error(err);
           toast.error("No se pudo eliminar la clase");
         } finally {
+          setConfirmActionLoading(false);
           setConfirmState({ open: false });
         }
       },
@@ -1716,17 +1731,27 @@ export default function CourseBuilderPage() {
             <div className="mt-4 flex items-center justify-end gap-3">
               <button
                 type="button"
-                onClick={() => setConfirmState({ open: false })}
-                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                onClick={() => {
+                  if (confirmActionLoading) return;
+                  setConfirmState({ open: false });
+                }}
+                disabled={confirmActionLoading}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Cancelar
               </button>
               <button
                 type="button"
-                onClick={() => confirmState.onConfirm()}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"
+                onClick={() => {
+                  if (confirmActionLoading) return;
+                  void confirmState.onConfirm();
+                }}
+                disabled={confirmActionLoading}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Confirmar
+                {confirmActionLoading
+                  ? confirmState.busyLabel ?? "Procesando..."
+                  : confirmState.confirmLabel ?? "Confirmar"}
               </button>
             </div>
           </div>
