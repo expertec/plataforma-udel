@@ -177,6 +177,15 @@ export default function GlobalExamsPage() {
 
   const canCreateTemplates = isAdmin;
 
+  const persistSelectedStudent = (student: StudentUser) => {
+    setStudents((prev) => {
+      if (prev.some((item) => item.id === student.id)) return prev;
+      return [student, ...prev];
+    });
+    setAssignmentStudentId(student.id);
+    setStudentSearch("");
+  };
+
   const resetTemplateForm = () => {
     setEditingTemplateId(null);
     setTemplateTitle("");
@@ -994,8 +1003,7 @@ export default function GlobalExamsPage() {
                                   key={student.id}
                                   type="button"
                                   onClick={() => {
-                                    setAssignmentStudentId(student.id);
-                                    setStudentSearch("");
+                                    persistSelectedStudent(student);
                                   }}
                                   className="block w-full border-b border-slate-100 px-3 py-2 text-left transition last:border-b-0 hover:bg-blue-50"
                                 >
@@ -1062,7 +1070,7 @@ export default function GlobalExamsPage() {
                     candidateEnrollments.length === 0 ? (
                       <p className="text-xs text-amber-600">
                         {selectedTemplate?.courseId
-                          ? "El alumno no tiene una inscripción activa en esta materia. Se puede habilitar el examen, pero sin inscripción la nota no se sincroniza a kardex ni se abre el contenido."
+                          ? "No se encontró una inscripción actual o histórica utilizable para esta materia. Aun así, al crear la asignación el sistema generará un acceso técnico para reflejar la calificación en kardex y abrir la materia en modo estudio."
                           : "Esta plantilla no está ligada a una materia, por lo que no hay nota que sincronizar ni contenido que desbloquear."}
                       </p>
                     ) : (

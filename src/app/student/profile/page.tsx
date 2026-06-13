@@ -246,8 +246,18 @@ export default function StudentProfilePage() {
           string,
           { finalGrade: number | null; closedAtTs: number; closedAt?: string }
         >();
+        const courseNameByCourseId = new Map<string, string>();
         enrSnap.docs.forEach((docSnap) => {
-          const data = docSnap.data() as { courseClosures?: Record<string, unknown> };
+          const data = docSnap.data() as {
+            courseId?: string;
+            courseName?: string;
+            courseClosures?: Record<string, unknown>;
+          };
+          const enrollmentCourseId = (data.courseId ?? "").trim();
+          const enrollmentCourseName = (data.courseName ?? "").trim();
+          if (enrollmentCourseId && enrollmentCourseName && !courseNameByCourseId.has(enrollmentCourseId)) {
+            courseNameByCourseId.set(enrollmentCourseId, enrollmentCourseName);
+          }
           const closures = (data.courseClosures ?? {}) as Record<string, unknown>;
           Object.entries(closures).forEach(([courseId, closureRaw]) => {
             const normalizedCourseId = courseId.trim();
@@ -255,6 +265,11 @@ export default function StudentProfilePage() {
             if (!closureRaw || typeof closureRaw !== "object") return;
             const closure = closureRaw as Record<string, unknown>;
             if (closure.status !== "closed") return;
+            const closureCourseName =
+              typeof closure.courseName === "string" ? closure.courseName.trim() : "";
+            if (closureCourseName && !courseNameByCourseId.has(normalizedCourseId)) {
+              courseNameByCourseId.set(normalizedCourseId, closureCourseName);
+            }
 
             const closedAtDate =
               toClosureDate(closure.closedAt) ??
@@ -276,25 +291,19 @@ export default function StudentProfilePage() {
           });
         });
 
-        if (!enrollmentGroupIds.length) {
-          setTasks([]);
-          setStudyRoute([]);
-          setDailyPoints([]);
-          setDailyPointsByCourse([]);
-          return;
-        }
-
-        const submissionsByGroup = await Promise.all(
-          enrollmentGroupIds.map(async (gid) => {
-            try {
-              const submissions = await getStudentSubmissions(gid, user.uid);
-              return submissions.map((sub) => ({ ...sub, groupId: gid }));
-            } catch (err) {
-              console.warn(`No se pudieron cargar entregas del grupo ${gid}:`, err);
-              return [];
-            }
-          }),
-        );
+        const submissionsByGroup = enrollmentGroupIds.length
+          ? await Promise.all(
+              enrollmentGroupIds.map(async (gid) => {
+                try {
+                  const submissions = await getStudentSubmissions(gid, user.uid);
+                  return submissions.map((sub) => ({ ...sub, groupId: gid }));
+                } catch (err) {
+                  console.warn(`No se pudieron cargar entregas del grupo ${gid}:`, err);
+                  return [];
+                }
+              }),
+            )
+          : [];
 
         const allSubmissions: Array<Submission & { groupId: string }> = submissionsByGroup.flat();
         const courseCache = new Map<
@@ -470,8 +479,25 @@ export default function StudentProfilePage() {
               closedAtTs: isClosed ? closureInfo?.closedAtTs : undefined,
               weeks,
             };
-          })
-          .sort((a, b) => a.course.localeCompare(b.course));
+          });
+
+        const routeCourseIds = new Set(
+          route.map((course) => (course.courseId ?? "").trim()).filter((courseId) => courseId.length > 0),
+        );
+        closedCourseMap.forEach((closureInfo, courseId) => {
+          if (routeCourseIds.has(courseId)) return;
+          route.push({
+            courseId,
+            course: courseNameByCourseId.get(courseId) ?? courseId ?? "Materia cerrada",
+            isClosed: true,
+            finalGradeLabel:
+              typeof closureInfo.finalGrade === "number" ? closureInfo.finalGrade.toFixed(1) : undefined,
+            closedAt: closureInfo.closedAt,
+            closedAtTs: closureInfo.closedAtTs,
+            weeks: [],
+          });
+        });
+        route.sort((a, b) => a.course.localeCompare(b.course));
 
         const formatDateKey = (date: Date) =>
           `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(

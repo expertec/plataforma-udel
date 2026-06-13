@@ -3,6 +3,7 @@ import { getAdminFirestore } from "@/lib/firebase/admin";
 import type { GlobalExamAssignmentReason } from "@/lib/global-exams/types";
 import {
   getGlobalExamAssignments,
+  ensureGlobalExamStudyEnrollment,
   resolveStudentCourseEnrollments,
   toGlobalExamAssignmentRecord,
   toGlobalExamTemplateRecord,
@@ -132,6 +133,7 @@ export async function POST(request: NextRequest) {
         studentId,
         template.courseId,
         coordinatorScopeGroupIds,
+        template.courseName,
       );
       targetEnrollment = enrollments.find((enrollment) => enrollment.groupId === requestedGroupId) ?? null;
       if (!targetEnrollment) {
@@ -152,6 +154,7 @@ export async function POST(request: NextRequest) {
         studentId,
         template.courseId,
         coordinatorScopeGroupIds,
+        template.courseName,
       );
       targetEnrollment = enrollments[0] ?? null;
     }
@@ -171,7 +174,16 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const resolvedGroupId = targetEnrollment?.groupId ?? "";
+    let studyContextEnrollment = targetEnrollment;
+    if (!studyContextEnrollment) {
+      const activeEnrollments = await resolveStudentCourseEnrollments(
+        studentId,
+        undefined,
+        coordinatorScopeGroupIds,
+      );
+      studyContextEnrollment = activeEnrollments[0] ?? null;
+    }
+    const resolvedGroupId = studyContextEnrollment?.groupId ?? "";
 
     const existingAssignmentsSnap = await db
       .collection("globalExamAssignments")
@@ -216,12 +228,12 @@ export async function POST(request: NextRequest) {
     const assignmentRef = await db.collection("globalExamAssignments").add({
       templateId: template.id,
       templateTitle: template.title,
-      courseId: template.courseId,
-      courseName: template.courseName,
-      groupId: targetEnrollment?.groupId ?? "",
-      groupName: targetEnrollment?.groupName ?? "",
-      plantelId: targetEnrollment?.plantelId ?? studentPlantelId,
-      plantelName: targetEnrollment?.plantelName ?? studentPlantelName,
+      courseId: targetEnrollment?.courseId ?? template.courseId,
+      courseName: targetEnrollment?.courseName ?? template.courseName,
+      groupId: studyContextEnrollment?.groupId ?? "",
+      groupName: studyContextEnrollment?.groupName ?? "",
+      plantelId: studyContextEnrollment?.plantelId ?? studentPlantelId,
+      plantelName: studyContextEnrollment?.plantelName ?? studentPlantelName,
       studentId,
       studentName,
       studentEmail,
@@ -247,6 +259,21 @@ export async function POST(request: NextRequest) {
       createdAt: now,
       updatedAt: now,
     });
+
+    if (template.courseId) {
+      await ensureGlobalExamStudyEnrollment({
+        studentId,
+        studentName,
+        studentEmail,
+        courseId: targetEnrollment?.courseId ?? template.courseId,
+        courseName: targetEnrollment?.courseName ?? template.courseName,
+        groupId: studyContextEnrollment?.groupId ?? "",
+        groupName: studyContextEnrollment?.groupName ?? "Modo estudio",
+        plantelId: studyContextEnrollment?.plantelId ?? studentPlantelId,
+        plantelName: studyContextEnrollment?.plantelName ?? studentPlantelName,
+        assignmentId: assignmentRef.id,
+      });
+    }
 
     const createdSnap = await assignmentRef.get();
     return NextResponse.json({

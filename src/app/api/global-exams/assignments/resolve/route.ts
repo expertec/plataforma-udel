@@ -42,7 +42,12 @@ export async function GET(request: NextRequest) {
       access.role === "coordinadorPlantel" || access.role === "director"
         ? new Set(await getCoordinatorScopeGroupIds(access.uid, access.plantelIds))
         : undefined;
-    const enrollments = await resolveStudentCourseEnrollments(studentId, template.courseId, allowedGroupIds);
+    const enrollments = await resolveStudentCourseEnrollments(
+      studentId,
+      template.courseId,
+      allowedGroupIds,
+      template.courseName,
+    );
 
     return NextResponse.json({
       success: true,

@@ -2571,6 +2571,14 @@ export default function StudentFeedPageClient() {
         const activeEnrollmentDocs = enrSnap.docs.filter((docSnap) =>
           !isStudentStatusBlocked(docSnap.data().status),
         );
+        const regularEnrollmentDocs = activeEnrollmentDocs.filter((docSnap) => {
+          const data = docSnap.data();
+          return !(data.studyOnly === true || trimSafeString(data.source) === "globalExamStudy");
+        });
+        const studyOnlyEnrollmentDocs = activeEnrollmentDocs.filter((docSnap) => {
+          const data = docSnap.data();
+          return data.studyOnly === true || trimSafeString(data.source) === "globalExamStudy";
+        });
 
         if (activeEnrollmentDocs.length === 0) {
           setError(
@@ -2588,14 +2596,14 @@ export default function StudentFeedPageClient() {
         setLoadingProgress(25);
         const globalExamStudyCourseKeys = await fetchGlobalExamStudyCourseKeys(currentUser);
 
-        // Usar el primer enrollment para setEnrollmentId (compatibilidad con sistema de progreso actual)
-        const primaryEnrollmentId = allEnrollmentIds[0];
+        // Preferir un enrollment regular para progreso y compatibilidad.
+        const primaryEnrollmentId = regularEnrollmentDocs[0]?.id ?? allEnrollmentIds[0];
         setEnrollmentId(primaryEnrollmentId);
 
         // Cargar progreso guardado de TODOS los enrollments
         setLoadingStage("progress");
         setLoadingProgress(35);
-        const additionalEnrollIds = allEnrollmentIds.slice(1);
+        const additionalEnrollIds = allEnrollmentIds.filter((enrollId) => enrollId !== primaryEnrollmentId);
         await loadProgressFromFirestore(primaryEnrollmentId, additionalEnrollIds);
 
         setLoadingStage("courses");
@@ -2604,12 +2612,157 @@ export default function StudentFeedPageClient() {
         const feed: FeedClass[] = [];
         const nextCourseClosures: Record<string, CourseClosureState> = {};
         let firstStudentName = "";
-        const groupNames: string[] = [];
-        const totalEnrollments = activeEnrollmentDocs.length;
+        const groupNames = new Set<string>();
+        const renderedRegularCourseIds = new Set<string>();
+        const totalEnrollments = regularEnrollmentDocs.length + studyOnlyEnrollmentDocs.length;
+
+        const captureEnrollmentClosures = (
+          enrollment: Record<string, unknown>,
+          currentEnrollmentId: string,
+        ) => {
+          const rawCourseClosures = (enrollment.courseClosures ?? {}) as Record<string, unknown>;
+          Object.entries(rawCourseClosures).forEach(([courseIdKey, closureValue]) => {
+            if (!closureValue || typeof closureValue !== "object") return;
+            const normalizedCourseId = courseIdKey.trim();
+            if (!normalizedCourseId) return;
+            const closure = closureValue as Record<string, unknown>;
+            const status = closure.status === "closed" || closure.status === "open" ? closure.status : undefined;
+            if (!status) return;
+            const mapKey = `${currentEnrollmentId}::${normalizedCourseId}`;
+            nextCourseClosures[mapKey] = {
+              status,
+              finalGrade:
+                typeof closure.finalGrade === "number" && Number.isFinite(closure.finalGrade)
+                  ? closure.finalGrade
+                  : undefined,
+              autoGrade:
+                typeof closure.autoGrade === "number" && Number.isFinite(closure.autoGrade)
+                  ? closure.autoGrade
+                  : null,
+              manualOverride: closure.manualOverride === true,
+              pendingUngradedCount:
+                typeof closure.pendingUngradedCount === "number" ? closure.pendingUngradedCount : undefined,
+              closedAt: (closure.closedAt as { toDate?: () => Date } | undefined)?.toDate?.() ?? null,
+              reopenedAt: (closure.reopenedAt as { toDate?: () => Date } | undefined)?.toDate?.() ?? null,
+              updatedAt: (closure.updatedAt as { toDate?: () => Date } | undefined)?.toDate?.() ?? null,
+              closedById: typeof closure.closedById === "string" ? closure.closedById : undefined,
+              closedByName: typeof closure.closedByName === "string" ? closure.closedByName : undefined,
+              reopenedById: typeof closure.reopenedById === "string" ? closure.reopenedById : undefined,
+              reopenedByName: typeof closure.reopenedByName === "string" ? closure.reopenedByName : undefined,
+            };
+          });
+        };
+
+        const processCourseContent = async (params: {
+          currentGroupId: string;
+          currentGroupName: string;
+          currentEnrollmentId: string;
+          isGroupInPerson: boolean;
+          courseId: string;
+          courseName: string;
+          teacherId?: string;
+          teacherName?: string;
+          isStudyOnlyCourse: boolean;
+        }) => {
+          const {
+            currentGroupId,
+            currentGroupName,
+            currentEnrollmentId,
+            isGroupInPerson,
+            courseId,
+            courseName,
+            teacherId,
+            teacherName,
+            isStudyOnlyCourse,
+          } = params;
+          const courseDoc = await getDoc(doc(db, "courses", courseId));
+          const courseData = courseDoc.exists() ? courseDoc.data() : null;
+          if (!courseData || courseData?.isArchived) {
+            return false;
+          }
+
+          const cover =
+            (Array.isArray(courseData.imageUrls) ? courseData.imageUrls.find(Boolean) : null) ??
+            courseData.imageUrl ??
+            courseData.thumbnail ??
+            "";
+          if (cover) {
+            setCourseCoverMap((prev) => ({ ...prev, [courseId]: cover }));
+          }
+
+          const courseTitle = courseData?.title ?? courseName ?? "Curso";
+          const lessonsSnap = await getDocs(
+            query(collection(db, "courses", courseId, "lessons"), orderBy("order", "asc")),
+          );
+          for (const lesson of lessonsSnap.docs) {
+            try {
+              const ldata = lesson.data();
+              const lessonTitle = ldata.title ?? "Lección";
+              const classesSnap = await getDocs(
+                query(
+                  collection(db, "courses", courseId, "lessons", lesson.id, "classes"),
+                  orderBy("order", "asc"),
+                ),
+              );
+              classesSnap.forEach((cls) => {
+                const c = cls.data();
+                const normType = normalizeClassType(c.type);
+                if (isStudyOnlyCourse && normType === "quiz") return;
+                const imageArray =
+                  c.images ??
+                  c.imageUrls ??
+                  (c.imageUrl ? [c.imageUrl] : []);
+
+                feed.push({
+                  id: `${currentGroupId}_${courseId}_${cls.id}`,
+                  classDocId: cls.id,
+                  title: c.title ?? "Clase sin título",
+                  type: normType,
+                  courseId,
+                  lessonId: lesson.id,
+                  enrollmentId: currentEnrollmentId,
+                  groupId: currentGroupId,
+                  groupName: currentGroupName,
+                  groupIsInPerson: isGroupInPerson,
+                  teacherId,
+                  teacherName,
+                  classTitle: c.title ?? "Clase sin título",
+                  videoUrl: trimSafeString(c.videoUrl),
+                  audioUrl: trimSafeString(c.audioUrl),
+                  content: c.content ?? "",
+                  images: Array.isArray(imageArray)
+                    ? imageArray.map((u: unknown) => trimSafeString(u)).filter(Boolean)
+                    : [],
+                  hasAssignment: isStudyOnlyCourse ? false : (c.hasAssignment ?? false),
+                  assignmentTemplateUrl: isStudyOnlyCourse ? "" : (c.assignmentTemplateUrl ?? ""),
+                  assignmentSubmissionType: c.assignmentSubmissionType === "audio" ? "audio" : "file",
+                  isClassroomActivity: c.isClassroomActivity ?? false,
+                  showInStudentPlatform: c.showInStudentPlatform ?? true,
+                  lessonTitle,
+                  lessonName: lessonTitle,
+                  courseTitle,
+                  likesCount: c.likesCount ?? 0,
+                  forumEnabled: isStudyOnlyCourse ? false : (c.forumEnabled ?? false),
+                  forumRequiredFormat: isStudyOnlyCourse ? null : (c.forumRequiredFormat ?? null),
+                  liveSession: normalizeLiveSession(c.liveSession),
+                  studyOnly: isStudyOnlyCourse,
+                });
+              });
+            } catch (lessonErr) {
+              console.warn(`Error cargando lección ${lesson.id}, continuando...`, lessonErr);
+            }
+          }
+
+          setCourseTitleMap((prev) => ({
+            ...prev,
+            [courseId]: courseTitle,
+          }));
+          return true;
+        };
 
         // 2) Iterar sobre TODOS los enrollments (con manejo de errores por enrollment)
-        for (let enrollIdx = 0; enrollIdx < activeEnrollmentDocs.length; enrollIdx++) {
-          const enrollmentDoc = activeEnrollmentDocs[enrollIdx];
+        for (let enrollIdx = 0; enrollIdx < regularEnrollmentDocs.length; enrollIdx++) {
+          const enrollmentDoc = regularEnrollmentDocs[enrollIdx];
           // Actualizar progreso (50-85% se divide entre enrollments)
           const enrollProgress = 50 + Math.round((enrollIdx / totalEnrollments) * 35);
           setLoadingProgress(enrollProgress);
@@ -2619,37 +2772,7 @@ export default function StudentFeedPageClient() {
             const currentGroupId = enrollment.groupId;
             const currentEnrollmentId = enrollmentDoc.id;
 
-            const rawCourseClosures = (enrollment.courseClosures ?? {}) as Record<string, unknown>;
-            Object.entries(rawCourseClosures).forEach(([courseIdKey, closureValue]) => {
-              if (!closureValue || typeof closureValue !== "object") return;
-              const normalizedCourseId = courseIdKey.trim();
-              if (!normalizedCourseId) return;
-              const closure = closureValue as Record<string, unknown>;
-              const status = closure.status === "closed" || closure.status === "open" ? closure.status : undefined;
-              if (!status) return;
-              const mapKey = `${currentEnrollmentId}::${normalizedCourseId}`;
-              nextCourseClosures[mapKey] = {
-                status,
-                finalGrade:
-                  typeof closure.finalGrade === "number" && Number.isFinite(closure.finalGrade)
-                    ? closure.finalGrade
-                    : undefined,
-                autoGrade:
-                  typeof closure.autoGrade === "number" && Number.isFinite(closure.autoGrade)
-                    ? closure.autoGrade
-                    : null,
-                manualOverride: closure.manualOverride === true,
-                pendingUngradedCount:
-                  typeof closure.pendingUngradedCount === "number" ? closure.pendingUngradedCount : undefined,
-                closedAt: (closure.closedAt as { toDate?: () => Date } | undefined)?.toDate?.() ?? null,
-                reopenedAt: (closure.reopenedAt as { toDate?: () => Date } | undefined)?.toDate?.() ?? null,
-                updatedAt: (closure.updatedAt as { toDate?: () => Date } | undefined)?.toDate?.() ?? null,
-                closedById: typeof closure.closedById === "string" ? closure.closedById : undefined,
-                closedByName: typeof closure.closedByName === "string" ? closure.closedByName : undefined,
-                reopenedById: typeof closure.reopenedById === "string" ? closure.reopenedById : undefined,
-                reopenedByName: typeof closure.reopenedByName === "string" ? closure.reopenedByName : undefined,
-              };
-            });
+            captureEnrollmentClosures(enrollment, currentEnrollmentId);
 
             if (!firstStudentName) {
               firstStudentName = enrollment.studentName ?? currentUser.displayName ?? "Estudiante";
@@ -2665,7 +2788,7 @@ export default function StudentFeedPageClient() {
             const groupData = groupDoc.data();
             const currentGroupName = groupData.groupName ?? "Grupo";
             const isGroupInPerson = groupData.isInPerson === true;
-            groupNames.push(currentGroupName);
+            groupNames.add(currentGroupName);
 
             const coursesArray: Array<{ courseId: string; courseName: string }> =
               Array.isArray(groupData.courses) && groupData.courses.length > 0
@@ -2679,104 +2802,67 @@ export default function StudentFeedPageClient() {
               try {
                 const studyCourseKey = `${currentGroupId}::${courseEntry.courseId}`;
                 const isStudyOnlyCourse = globalExamStudyCourseKeys.has(studyCourseKey);
-                const courseDoc = await getDoc(doc(db, "courses", courseEntry.courseId));
-                const courseData = courseDoc.exists() ? courseDoc.data() : null;
-                if (!courseData) {
-                  // Curso eliminado: saltar
-                  continue;
-                }
-
-                const cover =
-                  (Array.isArray(courseData.imageUrls) ? courseData.imageUrls.find(Boolean) : null) ??
-                  courseData.imageUrl ??
-                  courseData.thumbnail ??
-                  "";
-                if (cover) {
-                  setCourseCoverMap((prev) => ({ ...prev, [courseEntry.courseId]: cover }));
-                }
-
-                const courseTitle = courseData?.title ?? courseEntry.courseName ?? "Curso";
-                if (courseData?.isArchived) {
-                  // Saltar cursos archivados
-                  continue;
-                }
                 const assignedTeacher = resolveTeacherAssignmentForCourse({
                   groupData: groupData as Record<string, unknown>,
                   courseId: courseEntry.courseId,
                 });
-
-                // 4) Lecciones y clases por curso
-                const lessonsSnap = await getDocs(
-                  query(collection(db, "courses", courseEntry.courseId, "lessons"), orderBy("order", "asc")),
-                );
-                for (const lesson of lessonsSnap.docs) {
-                  try {
-                    const ldata = lesson.data();
-                    const lessonTitle = ldata.title ?? "Lección";
-                    const classesSnap = await getDocs(
-                      query(
-                        collection(db, "courses", courseEntry.courseId, "lessons", lesson.id, "classes"),
-                        orderBy("order", "asc"),
-                      ),
-                    );
-                    classesSnap.forEach((cls) => {
-                      const c = cls.data();
-                      const normType = normalizeClassType(c.type);
-                      if (isStudyOnlyCourse && normType === "quiz") return;
-                      const imageArray =
-                        c.images ??
-                        c.imageUrls ??
-                        (c.imageUrl ? [c.imageUrl] : []);
-
-                      feed.push({
-                        id: `${currentGroupId}_${courseEntry.courseId}_${cls.id}`,
-                        classDocId: cls.id,
-                        title: c.title ?? "Clase sin título",
-                        type: normType,
-                        courseId: courseEntry.courseId,
-                        lessonId: lesson.id,
-                        enrollmentId: currentEnrollmentId,
-                        groupId: currentGroupId,
-                        groupName: currentGroupName,
-                        groupIsInPerson: isGroupInPerson,
-                        teacherId: assignedTeacher.teacherId,
-                        teacherName: assignedTeacher.teacherName,
-                        classTitle: c.title ?? "Clase sin título",
-                        videoUrl: trimSafeString(c.videoUrl),
-                        audioUrl: trimSafeString(c.audioUrl),
-                        content: c.content ?? "",
-                        images: Array.isArray(imageArray)
-                          ? imageArray.map((u: unknown) => trimSafeString(u)).filter(Boolean)
-                          : [],
-                        hasAssignment: isStudyOnlyCourse ? false : (c.hasAssignment ?? false),
-                        assignmentTemplateUrl: isStudyOnlyCourse ? "" : (c.assignmentTemplateUrl ?? ""),
-                        assignmentSubmissionType: c.assignmentSubmissionType === "audio" ? "audio" : "file",
-                        isClassroomActivity: c.isClassroomActivity ?? false,
-                        showInStudentPlatform: c.showInStudentPlatform ?? true,
-                        lessonTitle,
-                        lessonName: lessonTitle,
-                        courseTitle,
-                        likesCount: c.likesCount ?? 0,
-                        forumEnabled: isStudyOnlyCourse ? false : (c.forumEnabled ?? false),
-                        forumRequiredFormat: isStudyOnlyCourse ? null : (c.forumRequiredFormat ?? null),
-                        liveSession: normalizeLiveSession(c.liveSession),
-                        studyOnly: isStudyOnlyCourse,
-                      });
-                    });
-                  } catch (lessonErr) {
-                    console.warn(`Error cargando lección ${lesson.id}, continuando...`, lessonErr);
-                  }
-                }
-                setCourseTitleMap((prev) => ({
-                  ...prev,
-                  [courseEntry.courseId]: courseTitle,
-                }));
+                await processCourseContent({
+                  currentGroupId,
+                  currentGroupName,
+                  currentEnrollmentId,
+                  isGroupInPerson,
+                  courseId: courseEntry.courseId,
+                  courseName: courseEntry.courseName ?? "",
+                  teacherId: assignedTeacher.teacherId,
+                  teacherName: assignedTeacher.teacherName,
+                  isStudyOnlyCourse,
+                });
+                renderedRegularCourseIds.add(courseEntry.courseId);
               } catch (courseErr) {
                 console.warn(`Error cargando curso ${courseEntry.courseId}, continuando...`, courseErr);
               }
             }
           } catch (enrollErr) {
             console.warn(`Error cargando enrollment ${enrollmentDoc.id}, continuando...`, enrollErr);
+          }
+        }
+
+        for (let enrollIdx = 0; enrollIdx < studyOnlyEnrollmentDocs.length; enrollIdx++) {
+          const enrollmentDoc = studyOnlyEnrollmentDocs[enrollIdx];
+          const enrollProgress =
+            50 + Math.round(((regularEnrollmentDocs.length + enrollIdx) / totalEnrollments) * 35);
+          setLoadingProgress(enrollProgress);
+
+          try {
+            const enrollment = enrollmentDoc.data();
+            const currentEnrollmentId = enrollmentDoc.id;
+            const courseId = trimSafeString(enrollment.courseId);
+            if (!courseId || renderedRegularCourseIds.has(courseId)) {
+              captureEnrollmentClosures(enrollment, currentEnrollmentId);
+              continue;
+            }
+
+            captureEnrollmentClosures(enrollment, currentEnrollmentId);
+
+            if (!firstStudentName) {
+              firstStudentName = enrollment.studentName ?? currentUser.displayName ?? "Estudiante";
+            }
+
+            const currentGroupId = trimSafeString(enrollment.groupId) || `globalExamStudy:${courseId}`;
+            const currentGroupName = trimSafeString(enrollment.groupName) || "Modo estudio";
+            groupNames.add(currentGroupName);
+
+            await processCourseContent({
+              currentGroupId,
+              currentGroupName,
+              currentEnrollmentId,
+              isGroupInPerson: false,
+              courseId,
+              courseName: trimSafeString(enrollment.courseName),
+              isStudyOnlyCourse: true,
+            });
+          } catch (enrollErr) {
+            console.warn(`Error cargando enrollment de modo estudio ${enrollmentDoc.id}, continuando...`, enrollErr);
           }
         }
 
@@ -2797,8 +2883,9 @@ export default function StudentFeedPageClient() {
 
         // Actualizar nombres mostrados
         setStudentName(firstStudentName);
-        setGroupName(groupNames.length > 1 ? `${groupNames.length} grupos` : groupNames[0] || "");
-        setCourseName(groupNames.length > 1 ? "Múltiples cursos" : feed[0]?.courseTitle || "");
+        const groupNameList = Array.from(groupNames);
+        setGroupName(groupNameList.length > 1 ? `${groupNameList.length} grupos` : groupNameList[0] || "");
+        setCourseName(groupNameList.length > 1 ? "Múltiples cursos" : feed[0]?.courseTitle || "");
 
         const initialLikes: Record<string, number> = {};
         feed.forEach((item) => {

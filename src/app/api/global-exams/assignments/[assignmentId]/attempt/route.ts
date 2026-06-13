@@ -6,6 +6,8 @@ import {
 } from "@/lib/global-exams/types";
 import {
   canAccessGlobalExamAssignment,
+  ensureGlobalExamStudyEnrollment,
+  resolveStudentCourseEnrollments,
   syncGlobalExamGradeToEnrollments,
   toGlobalExamAssignmentRecord,
   toGlobalExamAttemptRecord,
@@ -268,22 +270,78 @@ export async function POST(
       );
     });
 
-    // Solo se sincroniza a kardex si hay materia y grupo (inscripcion destino).
-    // Sin grupo, el resultado queda en la asignacion pero no se ata a una nota.
-    let gradeSynced = !assignment.courseId || !assignment.groupId;
-    if (assignment.courseId && assignment.groupId) {
+    let syncTarget = {
+      groupId: assignment.groupId,
+      groupName: assignment.groupName,
+      plantelId: assignment.plantelId,
+      plantelName: assignment.plantelName,
+    };
+
+    if (assignment.courseId && !assignment.groupId) {
+      try {
+        const historicalEnrollments = await resolveStudentCourseEnrollments(
+          assignment.studentId,
+          assignment.courseId,
+          undefined,
+          assignment.courseName,
+        );
+        const resolvedEnrollment = historicalEnrollments[0] ?? null;
+        if (resolvedEnrollment) {
+          syncTarget = {
+            groupId: resolvedEnrollment.groupId,
+            groupName: resolvedEnrollment.groupName,
+            plantelId: resolvedEnrollment.plantelId || assignment.plantelId,
+            plantelName: resolvedEnrollment.plantelName || assignment.plantelName,
+          };
+          await assignmentRef.set(
+            {
+              groupId: syncTarget.groupId,
+              groupName: syncTarget.groupName,
+              plantelId: syncTarget.plantelId,
+              plantelName: syncTarget.plantelName,
+              updatedAt: now,
+            },
+            { merge: true },
+          );
+        }
+      } catch (resolveError) {
+        console.error("No se pudo resolver una inscripcion historica para sincronizar kardex", resolveError);
+      }
+    }
+
+    if (assignment.courseId) {
+      try {
+        await ensureGlobalExamStudyEnrollment({
+          studentId: assignment.studentId,
+          studentName: assignment.studentName,
+          studentEmail: assignment.studentEmail,
+          courseId: assignment.courseId,
+          courseName: assignment.courseName,
+          groupId: syncTarget.groupId,
+          groupName: syncTarget.groupName || "Modo estudio",
+          plantelId: syncTarget.plantelId,
+          plantelName: syncTarget.plantelName,
+          assignmentId: assignment.id,
+        });
+      } catch (studyEnrollmentError) {
+        console.error("No se pudo asegurar el acceso tecnico de modo estudio", studyEnrollmentError);
+      }
+    }
+
+    let gradeSynced = !assignment.courseId;
+    if (assignment.courseId) {
       try {
         await syncGlobalExamGradeToEnrollments({
           assignmentId: assignment.id,
           studentId: assignment.studentId,
           studentName: assignment.studentName,
           studentEmail: assignment.studentEmail,
-          groupId: assignment.groupId,
-          groupName: assignment.groupName,
+          groupId: syncTarget.groupId,
+          groupName: syncTarget.groupName,
           courseId: assignment.courseId,
           courseName: assignment.courseName,
-          plantelId: assignment.plantelId,
-          plantelName: assignment.plantelName,
+          plantelId: syncTarget.plantelId,
+          plantelName: syncTarget.plantelName,
           score: result.score,
           attemptNumber: committedAttemptNumber,
           attemptId: attemptRef.id,

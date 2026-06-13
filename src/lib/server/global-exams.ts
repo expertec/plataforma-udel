@@ -47,6 +47,19 @@ type SyncGlobalExamGradeParams = {
   passed: boolean;
 };
 
+type EnsureGlobalExamStudyEnrollmentParams = {
+  studentId: string;
+  studentName: string;
+  studentEmail: string;
+  courseId: string;
+  courseName: string;
+  plantelId?: string;
+  plantelName?: string;
+  groupId?: string;
+  groupName?: string;
+  assignmentId?: string;
+};
+
 function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -63,6 +76,10 @@ function asObject(value: unknown): FirestoreRecord {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as FirestoreRecord)
     : {};
+}
+
+function getGlobalExamStudyEnrollmentId(courseId: string, studentId: string): string {
+  return `globalExamStudy_${courseId.trim()}_${studentId.trim()}`;
 }
 
 function toIsoString(value: unknown): string | null {
@@ -96,17 +113,51 @@ function toIsoString(value: unknown): string | null {
   return null;
 }
 
-function getGroupCourseIds(groupData: FirestoreRecord): string[] {
-  const courseIds = Array.isArray(groupData.courseIds)
-    ? groupData.courseIds.filter(
-        (item): item is string => typeof item === "string" && item.trim().length > 0,
-      )
+function normalizeComparableText(value: unknown): string {
+  return asTrimmedString(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function getGroupCourses(
+  groupData: FirestoreRecord,
+): Array<{ courseId: string; courseName: string }> {
+  const directCourses = Array.isArray(groupData.courses)
+    ? groupData.courses
+        .map((item) => {
+          if (!item || typeof item !== "object") return null;
+          const record = item as FirestoreRecord;
+          const courseId = asTrimmedString(record.courseId);
+          if (!courseId) return null;
+          return {
+            courseId,
+            courseName: asTrimmedString(record.courseName),
+          };
+        })
+        .filter((item): item is { courseId: string; courseName: string } => item !== null)
     : [];
-  if (courseIds.length > 0) {
-    return Array.from(new Set(courseIds.map((courseId) => courseId.trim()).filter(Boolean)));
-  }
+  if (directCourses.length > 0) return directCourses;
+
   const legacyCourseId = asTrimmedString(groupData.courseId);
-  return legacyCourseId ? [legacyCourseId] : [];
+  if (!legacyCourseId) return [];
+  return [
+    {
+      courseId: legacyCourseId,
+      courseName: asTrimmedString(groupData.courseName),
+    },
+  ];
+}
+
+function hasCourseClosure(
+  enrollmentData: FirestoreRecord,
+  courseId: string,
+): boolean {
+  if (!courseId) return false;
+  const closures = asObject(enrollmentData.courseClosures);
+  const directMatch = closures[courseId];
+  if (directMatch && typeof directMatch === "object") return true;
+  return Object.keys(closures).some((key) => asTrimmedString(key) === courseId);
 }
 
 export function toGlobalExamTemplateRecord(
@@ -252,9 +303,11 @@ export async function resolveStudentCourseEnrollments(
   studentId: string,
   courseId?: string,
   allowedGroupIds?: Set<string>,
+  courseName?: string,
 ): Promise<GlobalExamCandidateEnrollment[]> {
   const normalizedStudentId = studentId.trim();
   const normalizedCourseId = asTrimmedString(courseId);
+  const normalizedCourseName = normalizeComparableText(courseName);
   const filterByCourse = normalizedCourseId.length > 0;
   if (!normalizedStudentId) return [];
 
@@ -264,14 +317,14 @@ export async function resolveStudentCourseEnrollments(
     .where("studentId", "==", normalizedStudentId)
     .get();
 
-  const enrollmentDocs = enrollmentSnap.docs.filter((docSnap) => {
+  const activeEnrollmentDocs = enrollmentSnap.docs.filter((docSnap) => {
     const data = docSnap.data() as FirestoreRecord;
     return isStudentStatusActive(data.status);
   });
 
   const groupIds = Array.from(
     new Set(
-      enrollmentDocs
+      enrollmentSnap.docs
         .map((docSnap) => asTrimmedString((docSnap.data() as FirestoreRecord).groupId))
         .filter(Boolean),
     ),
@@ -284,40 +337,85 @@ export async function resolveStudentCourseEnrollments(
     groupsById.set(groupSnap.id, groupSnap.data() as FirestoreRecord);
   });
 
-  const candidates = enrollmentDocs
+  const buildCandidate = (
+    docSnap: admin.firestore.QueryDocumentSnapshot,
+    options?: {
+      allowMissingGroupCourseMatch?: boolean;
+      allowMissingGroupDoc?: boolean;
+    },
+  ): GlobalExamCandidateEnrollment | null => {
+    const enrollmentData = docSnap.data() as FirestoreRecord;
+    const groupId = asTrimmedString(enrollmentData.groupId);
+    if (!groupId) return null;
+    if (allowedGroupIds && !allowedGroupIds.has(groupId)) return null;
+
+    const groupData = groupsById.get(groupId);
+    if (!groupData && !options?.allowMissingGroupDoc) return null;
+
+    const groupCourses = groupData ? getGroupCourses(groupData) : [];
+    const courseIds = groupCourses.map((course) => course.courseId);
+    const matchedGroupCourseByName =
+      normalizedCourseName.length > 0
+        ? groupCourses.find((course) => normalizeComparableText(course.courseName) === normalizedCourseName)
+        : undefined;
+    const enrollmentCourseId = asTrimmedString(enrollmentData.courseId);
+    const enrollmentCourseName = asTrimmedString(enrollmentData.courseName);
+    const historicalCourseMatch =
+      filterByCourse &&
+      (
+        enrollmentCourseId === normalizedCourseId ||
+        hasCourseClosure(enrollmentData, normalizedCourseId) ||
+        (normalizedCourseName.length > 0 &&
+          (normalizeComparableText(enrollmentCourseName) === normalizedCourseName ||
+            Boolean(matchedGroupCourseByName)))
+      );
+
+    if (
+      filterByCourse &&
+      !courseIds.includes(normalizedCourseId) &&
+      !historicalCourseMatch &&
+      !options?.allowMissingGroupCourseMatch
+    ) {
+      return null;
+    }
+
+    const matchedCourseId =
+      normalizedCourseId ||
+      enrollmentCourseId ||
+      matchedGroupCourseByName?.courseId ||
+      courseIds[0] ||
+      "";
+    const matchedCourseName =
+      matchedGroupCourseByName?.courseName ||
+      enrollmentCourseName ||
+      asTrimmedString(groupData?.courseName) ||
+      "Materia";
+
+    const resolvedCourseId = filterByCourse
+      ? matchedCourseId
+      : enrollmentCourseId || courseIds[0] || "";
+    const resolvedCourseName = filterByCourse
+      ? matchedCourseName
+      : asTrimmedString(enrollmentData.courseName) ||
+        asTrimmedString(groupData?.courseName) ||
+        "Sin materia";
+
+    return {
+      enrollmentId: docSnap.id,
+      groupId,
+      groupName:
+        asTrimmedString(groupData?.groupName) || asTrimmedString(enrollmentData.groupName) || "Grupo",
+      courseId: resolvedCourseId,
+      courseName: resolvedCourseName,
+      plantelId: asTrimmedString(enrollmentData.plantelId) || asTrimmedString(groupData?.plantelId),
+      plantelName:
+        asTrimmedString(enrollmentData.plantelName) || asTrimmedString(groupData?.plantelName),
+    } satisfies GlobalExamCandidateEnrollment;
+  };
+
+  const candidates = activeEnrollmentDocs
     .map((docSnap) => {
-      const enrollmentData = docSnap.data() as FirestoreRecord;
-      const groupId = asTrimmedString(enrollmentData.groupId);
-      if (!groupId) return null;
-      if (allowedGroupIds && !allowedGroupIds.has(groupId)) return null;
-
-      const groupData = groupsById.get(groupId);
-      if (!groupData) return null;
-
-      const courseIds = getGroupCourseIds(groupData);
-      if (filterByCourse && !courseIds.includes(normalizedCourseId)) return null;
-
-      const enrollmentCourseId = asTrimmedString(enrollmentData.courseId);
-      const resolvedCourseId = filterByCourse
-        ? normalizedCourseId
-        : enrollmentCourseId || courseIds[0] || "";
-      const resolvedCourseName = filterByCourse
-        ? asTrimmedString(groupData.courseName) || asTrimmedString(enrollmentData.courseName) || "Materia"
-        : asTrimmedString(enrollmentData.courseName) ||
-          asTrimmedString(groupData.courseName) ||
-          "Sin materia";
-
-      return {
-        enrollmentId: docSnap.id,
-        groupId,
-        groupName:
-          asTrimmedString(groupData.groupName) || asTrimmedString(enrollmentData.groupName) || "Grupo",
-        courseId: resolvedCourseId,
-        courseName: resolvedCourseName,
-        plantelId: asTrimmedString(enrollmentData.plantelId) || asTrimmedString(groupData.plantelId),
-        plantelName:
-          asTrimmedString(enrollmentData.plantelName) || asTrimmedString(groupData.plantelName),
-      } satisfies GlobalExamCandidateEnrollment;
+      return buildCandidate(docSnap);
     })
     .filter((candidate): candidate is GlobalExamCandidateEnrollment => candidate !== null);
 
@@ -327,7 +425,78 @@ export async function resolveStudentCourseEnrollments(
       uniqueByGroup.set(candidate.groupId, candidate);
     }
   });
-  return Array.from(uniqueByGroup.values());
+  if (uniqueByGroup.size > 0 || !filterByCourse) {
+    return Array.from(uniqueByGroup.values());
+  }
+
+  // Fallback historico: si la materia ya habia estado en otra inscripcion del
+  // alumno, reutilizamos ese enrollment para sincronizar el examen global al
+  // kardex previo, aunque el grupo actual ya no tenga ligada la materia.
+  const historicalByGroup = new Map<string, GlobalExamCandidateEnrollment>();
+  enrollmentSnap.docs.forEach((docSnap) => {
+    const enrollmentData = docSnap.data() as FirestoreRecord;
+    const groupId = asTrimmedString(enrollmentData.groupId);
+    const groupData = groupId ? groupsById.get(groupId) : undefined;
+    const groupCourses = groupData ? getGroupCourses(groupData) : [];
+    const courseIds = groupCourses.map((course) => course.courseId);
+    const enrollmentCourseId = asTrimmedString(enrollmentData.courseId);
+    const enrollmentCourseName = asTrimmedString(enrollmentData.courseName);
+    const hasHistoricalMatch =
+      courseIds.includes(normalizedCourseId) ||
+      enrollmentCourseId === normalizedCourseId ||
+      hasCourseClosure(enrollmentData, normalizedCourseId) ||
+      (normalizedCourseName.length > 0 &&
+        (normalizeComparableText(enrollmentCourseName) === normalizedCourseName ||
+          groupCourses.some((course) => normalizeComparableText(course.courseName) === normalizedCourseName)));
+    if (!hasHistoricalMatch) return;
+
+    const candidate = buildCandidate(docSnap, {
+      allowMissingGroupCourseMatch: true,
+      allowMissingGroupDoc: true,
+    });
+    if (!candidate) return;
+    if (!historicalByGroup.has(candidate.groupId)) {
+      historicalByGroup.set(candidate.groupId, candidate);
+    }
+  });
+
+  return Array.from(historicalByGroup.values());
+}
+
+export async function ensureGlobalExamStudyEnrollment(
+  params: EnsureGlobalExamStudyEnrollmentParams,
+): Promise<string | null> {
+  const studentId = asTrimmedString(params.studentId);
+  const courseId = asTrimmedString(params.courseId);
+  if (!studentId || !courseId) return null;
+
+  const enrollmentId = getGlobalExamStudyEnrollmentId(courseId, studentId);
+  const now = admin.firestore.Timestamp.now();
+  await getAdminFirestore()
+    .collection("studentEnrollments")
+    .doc(enrollmentId)
+    .set(
+      {
+        studentId,
+        studentName: asTrimmedString(params.studentName) || "Alumno",
+        studentEmail: asTrimmedString(params.studentEmail),
+        groupId: asTrimmedString(params.groupId),
+        groupName: asTrimmedString(params.groupName) || "Modo estudio",
+        courseId,
+        courseName: asTrimmedString(params.courseName) || "Materia",
+        plantelId: asTrimmedString(params.plantelId),
+        plantelName: asTrimmedString(params.plantelName),
+        status: "active",
+        source: "globalExamStudy",
+        studyOnly: true,
+        globalExamAssignmentId: asTrimmedString(params.assignmentId),
+        enrolledAt: now,
+        updatedAt: now,
+      },
+      { merge: true },
+    );
+
+  return enrollmentId;
 }
 
 export async function syncGlobalExamGradeToEnrollments(
@@ -353,9 +522,13 @@ export async function syncGlobalExamGradeToEnrollments(
   }
 
   if (targetDocs.length === 0) {
+    if (!params.groupId) {
+      return 0;
+    }
     const closurePayload = {
       status: "closed",
       finalGrade: params.score,
+      courseName: params.courseName,
       closedAt: now,
       updatedAt: now,
       gradeSource: "globalRegularizationExam",
@@ -397,6 +570,7 @@ export async function syncGlobalExamGradeToEnrollments(
         ...previousClosure,
         status: "closed",
         finalGrade: params.score,
+        courseName: params.courseName,
         closedAt: now,
         updatedAt: now,
         gradeSource: "globalRegularizationExam",
