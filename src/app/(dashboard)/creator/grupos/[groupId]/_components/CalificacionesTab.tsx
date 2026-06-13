@@ -1402,24 +1402,6 @@ export function CalificacionesTab({
         errorMessage: extraConceptsResolution.errorMessage,
       };
     }
-    const autoFinalGrade = roundGrade(
-      (row.autoGrade ?? 0) +
-      (campusGrades.campusTasksGrade ?? 0) +
-      (campusGrades.campusFinalExamGrade ?? 0) +
-      (campusGrades.globalExamGrade ?? 0) +
-      (campusGrades.extraordinaryExamGrade ?? 0) +
-      extraConceptsResolution.totalPoints,
-    );
-    if (!Number.isFinite(autoFinalGrade) || autoFinalGrade < 0 || autoFinalGrade > 100) {
-      return {
-        finalGrade: null,
-        manualOverride: false,
-        campusGrades,
-        extraConcepts: extraConceptsResolution.concepts,
-        extraPointsTotal: extraConceptsResolution.totalPoints,
-        errorMessage: "La sumatoria de la calificación final debe estar entre 0 y 100.",
-      };
-    }
 
     const key = getDraftKey(row.studentId);
     const hasManualDraft = Object.prototype.hasOwnProperty.call(draftFinalGrades, key);
@@ -1435,24 +1417,16 @@ export function CalificacionesTab({
           errorMessage: "La calificación final manual debe estar entre 0 y 100.",
         };
       }
-      if (parsedManual === null) {
+      if (parsedManual !== null) {
         return {
-          finalGrade: autoFinalGrade,
-          manualOverride: false,
+          finalGrade: roundGrade(parsedManual),
+          manualOverride: true,
           campusGrades,
           extraConcepts: extraConceptsResolution.concepts,
           extraPointsTotal: extraConceptsResolution.totalPoints,
           errorMessage: null,
         };
       }
-      return {
-        finalGrade: roundGrade(parsedManual),
-        manualOverride: true,
-        campusGrades,
-        extraConcepts: extraConceptsResolution.concepts,
-        extraPointsTotal: extraConceptsResolution.totalPoints,
-        errorMessage: null,
-      };
     }
 
     const campusGradesChangedSinceClosure =
@@ -1485,6 +1459,25 @@ export function CalificacionesTab({
         extraConcepts: extraConceptsResolution.concepts,
         extraPointsTotal: extraConceptsResolution.totalPoints,
         errorMessage: null,
+      };
+    }
+
+    const autoFinalGrade = roundGrade(
+      (row.autoGrade ?? 0) +
+      (campusGrades.campusTasksGrade ?? 0) +
+      (campusGrades.campusFinalExamGrade ?? 0) +
+      (campusGrades.globalExamGrade ?? 0) +
+      (campusGrades.extraordinaryExamGrade ?? 0) +
+      extraConceptsResolution.totalPoints,
+    );
+    if (!Number.isFinite(autoFinalGrade) || autoFinalGrade < 0 || autoFinalGrade > 100) {
+      return {
+        finalGrade: null,
+        manualOverride: false,
+        campusGrades,
+        extraConcepts: extraConceptsResolution.concepts,
+        extraPointsTotal: extraConceptsResolution.totalPoints,
+        errorMessage: "La sumatoria de la calificación final debe estar entre 0 y 100.",
       };
     }
 

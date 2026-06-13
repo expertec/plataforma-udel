@@ -786,12 +786,10 @@ export default function AlumnosPage() {
     };
 
     window.addEventListener("resize", closeMenu);
-    window.addEventListener("scroll", closeMenu, true);
     window.addEventListener("keydown", closeOnEscape);
 
     return () => {
       window.removeEventListener("resize", closeMenu);
-      window.removeEventListener("scroll", closeMenu, true);
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [openActionMenu]);
