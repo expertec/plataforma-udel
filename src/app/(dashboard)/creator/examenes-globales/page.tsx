@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { onAuthStateChanged } from "firebase/auth";
+import { type DocumentSnapshot } from "firebase/firestore";
 import { auth } from "@/lib/firebase/client";
 import { Course, getCourses } from "@/lib/firebase/courses-service";
 import {
@@ -33,6 +34,7 @@ import {
   getStudentUsersPaginated,
   type StudentUser,
 } from "@/lib/firebase/students-service";
+import { normalizeSearchText } from "@/lib/search";
 import {
   isAdminTeacherRole,
   isCampusCoordinatorRole,
@@ -98,7 +100,10 @@ export default function GlobalExamsPage() {
   const [assignments, setAssignments] = useState<GlobalExamAssignmentRecord[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
   const [students, setStudents] = useState<StudentUser[]>([]);
+  const [searchResults, setSearchResults] = useState<StudentUser[]>([]);
   const [studentSearch, setStudentSearch] = useState("");
+  const [searchingStudents, setSearchingStudents] = useState(false);
+  const searchStudentTokenRef = useRef(0);
 
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
   const [templateTitle, setTemplateTitle] = useState("");
@@ -120,22 +125,34 @@ export default function GlobalExamsPage() {
 
   const isAdmin = isAdminTeacherRole(userRole);
   const isCoordinator = isCampusCoordinatorRole(userRole);
+  const isStudentSearchActive = studentSearch.trim().length > 0;
 
   const STUDENT_RESULTS_LIMIT = 50;
 
+  const availableStudents = useMemo(() => {
+    const byId = new Map<string, StudentUser>();
+    students.forEach((student) => byId.set(student.id, student));
+    searchResults.forEach((student) => byId.set(student.id, student));
+    return Array.from(byId.values());
+  }, [students, searchResults]);
+
   const selectedStudent = useMemo(
-    () => students.find((student) => student.id === assignmentStudentId) ?? null,
-    [assignmentStudentId, students],
+    () => availableStudents.find((student) => student.id === assignmentStudentId) ?? null,
+    [assignmentStudentId, availableStudents],
   );
 
   const filteredStudents = useMemo(() => {
-    const query = studentSearch.trim().toLowerCase();
-    if (!query) return students;
-    return students.filter((student) => {
-      const haystack = [student.name, student.email, student.program].join(" ").toLowerCase();
+    const query = normalizeSearchText(studentSearch);
+    const searchBase =
+      isStudentSearchActive && !isCoordinator
+        ? searchResults
+        : students;
+    if (!query) return searchBase;
+    return searchBase.filter((student) => {
+      const haystack = normalizeSearchText([student.name, student.email, student.program].join(" "));
       return haystack.includes(query);
     });
-  }, [studentSearch, students]);
+  }, [studentSearch, students, searchResults, isStudentSearchActive, isCoordinator]);
 
   const visibleStudents = useMemo(
     () => filteredStudents.slice(0, STUDENT_RESULTS_LIMIT),
@@ -201,6 +218,68 @@ export default function GlobalExamsPage() {
       setLoadingData(false);
     }
   };
+
+  useEffect(() => {
+    const rawQuery = normalizeSearchText(studentSearch);
+    if (!rawQuery) {
+      searchStudentTokenRef.current += 1;
+      setSearchResults([]);
+      setSearchingStudents(false);
+      return;
+    }
+
+    if (isCoordinator) {
+      setSearchResults([]);
+      setSearchingStudents(false);
+      return;
+    }
+
+    const token = ++searchStudentTokenRef.current;
+    const timer = window.setTimeout(async () => {
+      setSearchingStudents(true);
+      setSearchResults([]);
+      try {
+        const normalized = rawQuery;
+        const results = new Map<string, StudentUser>();
+        let last: DocumentSnapshot | null = null;
+        let hasMore = true;
+        let pageCount = 0;
+        const MAX_PAGES = 60;
+        const PAGE_SIZE = 50;
+
+        while (hasMore && pageCount < MAX_PAGES) {
+          const page = await getStudentUsersPaginated(PAGE_SIZE, last, normalized);
+          if (searchStudentTokenRef.current !== token) return;
+
+          page.students.forEach((student) => {
+            results.set(student.id, student);
+          });
+
+          last = page.lastDoc;
+          hasMore = page.hasMore;
+          pageCount += 1;
+
+          if (results.size >= 50) break;
+        }
+
+        if (searchStudentTokenRef.current !== token) return;
+        setSearchResults(Array.from(results.values()));
+      } catch (error) {
+        console.error(error);
+        if (searchStudentTokenRef.current === token) {
+          toast.error("No se pudo buscar alumnos");
+        }
+      } finally {
+        if (searchStudentTokenRef.current === token) {
+          setSearchingStudents(false);
+        }
+      }
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [studentSearch, isCoordinator]);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -901,7 +980,9 @@ export default function GlobalExamsPage() {
                       {studentSearch.trim() ? (
                         <>
                           <div className="max-h-64 overflow-y-auto rounded-xl border border-slate-200 bg-white">
-                            {visibleStudents.length === 0 ? (
+                            {searchingStudents ? (
+                              <p className="px-3 py-3 text-xs text-slate-500">Buscando alumnos...</p>
+                            ) : visibleStudents.length === 0 ? (
                               <p className="px-3 py-3 text-xs text-slate-500">
                                 {students.length === 0
                                   ? "No hay alumnos disponibles para tu alcance."

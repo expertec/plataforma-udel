@@ -34,6 +34,7 @@ import {
   PlantelAssignment,
 } from "@/lib/firebase/planteles-service";
 import { suggestPlantelByPhone, type SuggestedPlantelByPhone } from "@/lib/planteles/lada-suggestions";
+import { normalizeSearchText } from "@/lib/search";
 import { StudentAllSubmissionsModal } from "./_components/StudentAllSubmissionsModal";
 import { StudentGradesModal } from "./_components/StudentGradesModal";
 import { StudentDropoutRiskTab } from "./_components/StudentDropoutRiskTab";
@@ -678,7 +679,7 @@ export default function AlumnosPage() {
       setSearching(false);
       return;
     }
-    const rawQuery = searchQuery.trim();
+    const rawQuery = normalizeSearchText(searchQuery);
     if (!rawQuery) {
       setSearchResults([]);
       setSearching(false);
@@ -689,7 +690,7 @@ export default function AlumnosPage() {
       setSearching(true);
       setSearchResults([]);
       try {
-        const normalized = rawQuery.toLowerCase();
+        const normalized = rawQuery;
         const results = new Map<string, StudentUser>();
         let last: DocumentSnapshot | null = null;
         let hasMore = true;
@@ -737,16 +738,16 @@ export default function AlumnosPage() {
     if (!searchQuery.trim()) {
       return base;
     }
-    const query = searchQuery.toLowerCase().trim();
+    const query = normalizeSearchText(searchQuery);
     return base.filter(
       (student) =>
-        student.name.toLowerCase().includes(query) ||
-        student.email.toLowerCase().includes(query) ||
-        (student.program ?? "").toLowerCase().includes(query) ||
-        getStudentPlantelSummary(student).toLowerCase().includes(query) ||
-        (student.phone ?? "").toLowerCase().includes(query) ||
-        (student.whatsapp ?? "").toLowerCase().includes(query)
-      );
+        normalizeSearchText(student.name).includes(query) ||
+        normalizeSearchText(student.email).includes(query) ||
+        normalizeSearchText(student.program ?? "").includes(query) ||
+        normalizeSearchText(getStudentPlantelSummary(student)).includes(query) ||
+        normalizeSearchText(student.phone ?? "").includes(query) ||
+        normalizeSearchText(student.whatsapp ?? "").includes(query)
+    );
   }, [students, searchResults, searchQuery, isSearchActive, canRunGlobalSearch]);
 
   const plantelSuggestionByStudentId = useMemo(() => {

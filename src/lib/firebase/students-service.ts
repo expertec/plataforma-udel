@@ -17,6 +17,7 @@ import { auth } from "./client";
 import { createAccountWithRole, updateUserPassword } from "./user-management";
 import { isStudentStatusActive } from "@/lib/students/status";
 import { buildPhoneLookupValues } from "@/lib/utils/phone";
+import { normalizeSearchText } from "@/lib/search";
 
 export type StudentUser = {
   id: string;
@@ -138,12 +139,12 @@ export async function getStudentUsersPaginated(
 
   // Filtrar localmente si hay búsqueda (para búsquedas simples)
   if (searchQuery) {
-    const q = searchQuery.toLowerCase().trim();
+    const q = normalizeSearchText(searchQuery);
     students = students.filter(
       (s) =>
-        s.name.toLowerCase().includes(q) ||
-        s.email.toLowerCase().includes(q) ||
-        (s.program ?? "").toLowerCase().includes(q)
+        normalizeSearchText(s.name).includes(q) ||
+        normalizeSearchText(s.email).includes(q) ||
+        normalizeSearchText(s.program ?? "").includes(q)
     );
   }
 
