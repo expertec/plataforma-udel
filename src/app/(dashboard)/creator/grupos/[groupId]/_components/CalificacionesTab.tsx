@@ -3015,6 +3015,10 @@ export function CalificacionesTab({
       rows.forEach((row, index) => {
         const rowY = tableTop + tableHeaderHeight + index * rowHeight + 10;
         const rowFill = index % 2 === 0 ? "#ffffff" : "#f8fafc";
+        const exportedFinalGrade =
+          typeof row.closure?.finalGrade === "number" && Number.isFinite(row.closure.finalGrade)
+            ? row.closure.finalGrade
+            : null;
         ctx.fillStyle = rowFill;
         ctx.fillRect(marginX + 10, rowY, contentWidth - 20, rowHeight);
 
@@ -3037,7 +3041,11 @@ export function CalificacionesTab({
         ctx.textAlign = "center";
         ctx.fillText(formatGradeValue(row.autoGrade), columns.auto.x + columns.auto.width / 2, rowY + 48);
         ctx.fillStyle = "#0f172a";
-        ctx.fillText(formatGradeValue(row.finalGrade), columns.final.x + columns.final.width / 2, rowY + 48);
+        ctx.fillText(
+          formatGradeValue(exportedFinalGrade),
+          columns.final.x + columns.final.width / 2,
+          rowY + 48,
+        );
         ctx.fillStyle = "#475569";
         ctx.fillText(
           `${row.pendingUngradedCount}/${row.totalEvaluable}`,
