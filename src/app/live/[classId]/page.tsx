@@ -482,7 +482,7 @@ function LiveRoomConference({
   const [activeReactions, setActiveReactions] = useState<LiveReactionEvent[]>([]);
   const processedSignalIdsRef = useRef<string[]>([]);
   const previousParticipantsCountRef = useRef(0);
-  const canPublishCamera = viewerRole === "teacher";
+  const canPublishCamera = viewerRole === "teacher" || viewerRole === "student";
   const canShareScreen = viewerRole === "teacher";
 
   const localParticipant = useMemo(
@@ -1964,10 +1964,10 @@ export default function LiveClassRoomPage() {
         serverUrl={livekitUrl}
         connect={true}
         options={liveKitRoomOptions}
-        // Teachers reach the room only after passing the device test, so we
-        // auto-publish the devices they selected there. Students never publish.
-        audio={asRole === "teacher" ? Boolean(teacherChoices?.audioEnabled) : false}
-        video={asRole === "teacher" ? Boolean(teacherChoices?.videoEnabled) : false}
+        // Teachers auto-publish the devices they selected in preflight.
+        // Students manage mic/camera manually with the in-room toggles.
+        audio={asRole === "teacher" ? Boolean(teacherChoices?.audioEnabled) : undefined}
+        video={asRole === "teacher" ? Boolean(teacherChoices?.videoEnabled) : undefined}
         onError={(liveError) => {
           console.error("LiveKit error", liveError);
           setLivekitError("No se pudo conectar a la sala. Revisa internet y permisos del navegador.");

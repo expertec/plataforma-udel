@@ -525,7 +525,7 @@ export async function createJoinToken(params: {
           TrackSource.SCREEN_SHARE,
           TrackSource.SCREEN_SHARE_AUDIO,
         ]
-      : [TrackSource.MICROPHONE],
+      : [TrackSource.CAMERA, TrackSource.MICROPHONE],
     canSubscribe: true,
     canPublishData: true,
   });

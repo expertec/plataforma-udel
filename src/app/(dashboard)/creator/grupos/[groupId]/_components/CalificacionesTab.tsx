@@ -15,6 +15,7 @@ import {
   writeBatch,
 } from "firebase/firestore";
 import toast from "react-hot-toast";
+import { Download } from "lucide-react";
 import { jsPDF } from "jspdf";
 import { db } from "@/lib/firebase/firestore";
 import { auth } from "@/lib/firebase/client";
@@ -300,6 +301,79 @@ const formatDateTime = (value?: Date | null) => {
   }).format(value);
 };
 
+const formatGradeValue = (value?: number | null) =>
+  typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "—";
+
+const drawRoundRect = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+) => {
+  ctx.beginPath();
+  if (typeof ctx.roundRect === "function") {
+    ctx.roundRect(x, y, width, height, radius);
+    return;
+  }
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + width - r, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+  ctx.lineTo(x + width, y + height - r);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+  ctx.lineTo(x + r, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+};
+
+const wrapTextLines = (
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+  maxLines: number,
+) => {
+  const normalized = text.replace(/\s+/g, " ").trim() || "Sin nombre";
+  const words = normalized.split(" ");
+  const lines: string[] = [];
+  let current = "";
+
+  words.forEach((word) => {
+    const candidate = current ? `${current} ${word}` : word;
+    if (ctx.measureText(candidate).width <= maxWidth) {
+      current = candidate;
+      return;
+    }
+
+    if (current) {
+      lines.push(current);
+    }
+    current = word;
+  });
+
+  if (current) {
+    lines.push(current);
+  }
+
+  if (lines.length <= maxLines) {
+    return lines;
+  }
+
+  const trimmed = lines.slice(0, maxLines);
+  let last = trimmed[maxLines - 1];
+  while (last.length > 0 && ctx.measureText(`${last}…`).width > maxWidth) {
+    last = last.slice(0, -1);
+  }
+  trimmed[maxLines - 1] = `${last || "…"}`;
+  if (!trimmed[maxLines - 1].endsWith("…")) {
+    trimmed[maxLines - 1] = `${trimmed[maxLines - 1]}…`;
+  }
+  return trimmed;
+};
+
 const taskTypeLabel = (classType: Task["classType"]) => {
   if (classType === "quiz") return "Quiz";
   if (classType === "forum") return "Foro";
@@ -359,6 +433,7 @@ export function CalificacionesTab({
   const [extraConceptModalDrafts, setExtraConceptModalDrafts] = useState<ExtraConceptDraft[]>([]);
   const [extraConceptModalError, setExtraConceptModalError] = useState<string | null>(null);
   const [savingExtraConceptModal, setSavingExtraConceptModal] = useState(false);
+  const [exportingGradesImage, setExportingGradesImage] = useState(false);
   const [activeExtraConceptDropdownId, setActiveExtraConceptDropdownId] = useState<string | null>(null);
   const [signatureModalContext, setSignatureModalContext] = useState<SignatureModalContext | null>(null);
   const [signerNameInput, setSignerNameInput] = useState("");
@@ -2848,6 +2923,177 @@ export function CalificacionesTab({
     }
   };
 
+  const courseExtraConceptsResolution = resolveExtraConceptsForCourse();
+  const courseExtraConceptColumns = courseExtraConceptsResolution.concepts;
+
+  const downloadGradesSummaryImage = useCallback(async () => {
+    if (!selectedCourseId || !selectedCourse) {
+      toast.error("Selecciona una materia para descargar la imagen.");
+      return;
+    }
+    if (rows.length === 0) {
+      toast.error("No hay alumnos para exportar.");
+      return;
+    }
+
+    setExportingGradesImage(true);
+    try {
+      const canvas = document.createElement("canvas");
+      const width = 1080;
+      const marginX = 42;
+      const contentWidth = width - marginX * 2;
+      const headerHeight = 154;
+      const tableHeaderHeight = 54;
+      const rowHeight = 88;
+      const tableContainerHeight = tableHeaderHeight + rows.length * rowHeight + 26;
+      const height = headerHeight + tableContainerHeight + 36;
+
+      canvas.width = width;
+      canvas.height = height;
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("No se pudo crear el lienzo");
+
+      ctx.fillStyle = "#f1f5f9";
+      ctx.fillRect(0, 0, width, height);
+
+      const headerGradient = ctx.createLinearGradient(0, 0, width, headerHeight);
+      headerGradient.addColorStop(0, "#5d1115");
+      headerGradient.addColorStop(0.55, "#7b241d");
+      headerGradient.addColorStop(1, "#8f2d1c");
+      ctx.fillStyle = headerGradient;
+      ctx.fillRect(0, 0, width, headerHeight);
+
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "700 40px Arial, sans-serif";
+      ctx.fillText("Resumen de calificaciones", marginX, 72);
+
+      ctx.font = "500 20px Arial, sans-serif";
+      ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
+      const subtitleLines = wrapTextLines(ctx, selectedCourse.courseName, contentWidth, 2);
+      subtitleLines.forEach((line, index) => {
+        ctx.fillText(line, marginX, 110 + index * 28);
+      });
+
+      const tableTop = headerHeight - 2;
+      ctx.fillStyle = "#ffffff";
+      drawRoundRect(ctx, marginX, tableTop, contentWidth, tableContainerHeight, 28);
+      ctx.fill();
+
+      const tableInnerWidth = contentWidth - 36;
+      const studentWidth = Math.floor(tableInnerWidth * 0.48);
+      const autoWidth = Math.floor(tableInnerWidth * 0.11);
+      const finalWidth = Math.floor(tableInnerWidth * 0.11);
+      const pendingWidth = Math.floor(tableInnerWidth * 0.14);
+      const statusWidth =
+        tableInnerWidth - studentWidth - autoWidth - finalWidth - pendingWidth;
+      const studentX = marginX + 18;
+      const autoX = studentX + studentWidth;
+      const finalX = autoX + autoWidth;
+      const pendingX = finalX + finalWidth;
+      const statusX = pendingX + pendingWidth;
+      const columns = {
+        student: { x: studentX, width: studentWidth },
+        auto: { x: autoX, width: autoWidth },
+        final: { x: finalX, width: finalWidth },
+        pending: { x: pendingX, width: pendingWidth },
+        status: { x: statusX, width: statusWidth },
+      };
+
+      ctx.fillStyle = "#f8fafc";
+      drawRoundRect(ctx, marginX + 10, tableTop + 10, contentWidth - 20, tableHeaderHeight, 18);
+      ctx.fill();
+
+      ctx.font = "700 16px Arial, sans-serif";
+      ctx.fillStyle = "#475569";
+      ctx.fillText("Alumno", columns.student.x, tableTop + 44);
+      ctx.fillText("Auto", columns.auto.x, tableTop + 44);
+      ctx.fillText("Final", columns.final.x, tableTop + 44);
+      ctx.fillText("Pendientes", columns.pending.x, tableTop + 44);
+      ctx.fillText("Estado", columns.status.x, tableTop + 44);
+
+      rows.forEach((row, index) => {
+        const rowY = tableTop + tableHeaderHeight + index * rowHeight + 10;
+        const rowFill = index % 2 === 0 ? "#ffffff" : "#f8fafc";
+        ctx.fillStyle = rowFill;
+        ctx.fillRect(marginX + 10, rowY, contentWidth - 20, rowHeight);
+
+        ctx.strokeStyle = "#e2e8f0";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(marginX + 10, rowY + rowHeight);
+        ctx.lineTo(marginX + contentWidth - 10, rowY + rowHeight);
+        ctx.stroke();
+
+        ctx.fillStyle = "#0f172a";
+        ctx.font = "600 18px Arial, sans-serif";
+        const studentLines = wrapTextLines(ctx, row.studentName || "Sin nombre", columns.student.width - 20, 2);
+        studentLines.forEach((line, lineIndex) => {
+          ctx.fillText(line, columns.student.x, rowY + 32 + lineIndex * 22);
+        });
+
+        ctx.font = "600 18px Arial, sans-serif";
+        ctx.fillStyle = "#1d4ed8";
+        ctx.textAlign = "center";
+        ctx.fillText(formatGradeValue(row.autoGrade), columns.auto.x + columns.auto.width / 2, rowY + 48);
+        ctx.fillStyle = "#0f172a";
+        ctx.fillText(formatGradeValue(row.finalGrade), columns.final.x + columns.final.width / 2, rowY + 48);
+        ctx.fillStyle = "#475569";
+        ctx.fillText(
+          `${row.pendingUngradedCount}/${row.totalEvaluable}`,
+          columns.pending.x + columns.pending.width / 2,
+          rowY + 48,
+        );
+
+        const statusLabel = row.closure?.status === "closed" ? "Cerrada" : "Abierta";
+        const statusFill = row.closure?.status === "closed" ? "#dcfce7" : "#fef3c7";
+        const statusText = row.closure?.status === "closed" ? "#166534" : "#b45309";
+        const pillWidth = Math.max(118, ctx.measureText(statusLabel).width + 28);
+        const pillX = columns.status.x + (columns.status.width - pillWidth) / 2;
+        ctx.fillStyle = statusFill;
+        drawRoundRect(ctx, pillX, rowY + 28, pillWidth, 32, 16);
+        ctx.fill();
+        ctx.fillStyle = statusText;
+        ctx.font = "700 15px Arial, sans-serif";
+        ctx.fillText(statusLabel, columns.status.x + columns.status.width / 2, rowY + 50);
+        ctx.textAlign = "left";
+      });
+
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(
+          (result) => {
+            if (result) {
+              resolve(result);
+              return;
+            }
+            reject(new Error("No se pudo generar la imagen"));
+          },
+          "image/jpeg",
+          0.95,
+        );
+      });
+
+      const fileName = `calificaciones-${selectedCourse.courseName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "materia"}-${new Date()
+        .toISOString()
+        .slice(0, 10)}.jpg`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast.success("Imagen descargada.");
+    } catch (error) {
+      console.error("No se pudo generar la imagen de calificaciones:", error);
+      toast.error("No se pudo descargar la imagen.");
+    } finally {
+      setExportingGradesImage(false);
+    }
+  }, [rows, selectedCourse, selectedCourseId]);
+
   if (!courses.length) {
     return (
       <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
@@ -2863,9 +3109,6 @@ export function CalificacionesTab({
       </div>
     );
   }
-
-  const courseExtraConceptsResolution = resolveExtraConceptsForCourse();
-  const courseExtraConceptColumns = courseExtraConceptsResolution.concepts;
 
   const tableColumnsCount =
     6 +
@@ -2976,6 +3219,15 @@ export function CalificacionesTab({
               </option>
             ))}
           </select>
+          <button
+            type="button"
+            onClick={downloadGradesSummaryImage}
+            disabled={exportingGradesImage || rows.length === 0}
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+          >
+            <Download size={14} />
+            <span>{exportingGradesImage ? "Generando..." : "Descargar imagen"}</span>
+          </button>
           <button
             type="button"
             onClick={openExtraConceptModal}
