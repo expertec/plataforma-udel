@@ -820,6 +820,7 @@ export default function AlumnosPage() {
 
   const isAdmin = isAdminTeacherRole(userRole);
   const isCoordinator = isCampusCoordinatorRole(userRole);
+  const canOpenStudentActionMenu = isAdmin || isCoordinator;
   const hasCoordinatorPlantel = !isCoordinator || coordinatorPlantelId.length > 0;
   const canViewRiskReport = isAdmin || (isCoordinator && hasCoordinatorPlantel);
   const canViewAllStudents = isAdmin || isCoordinator;
@@ -1788,7 +1789,7 @@ export default function AlumnosPage() {
                               {s.estado || "Activo"}
                             </td>
                             <td className="px-4 py-3">
-                              {isAdminTeacherRole(userRole) ? (
+                              {canOpenStudentActionMenu ? (
                                 <div className="relative flex justify-end">
                                   <button
                                     type="button"
@@ -1803,16 +1804,6 @@ export default function AlumnosPage() {
                                   >
                                     Acciones
                                     <MoreVertical size={14} />
-                                  </button>
-                                </div>
-                              ) : isCoordinator ? (
-                                <div className="flex justify-end">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleOpenGradesModal(s)}
-                                    className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700 transition hover:bg-blue-100"
-                                  >
-                                    Calificaciones
                                   </button>
                                 </div>
                               ) : (
@@ -1857,16 +1848,18 @@ export default function AlumnosPage() {
                 style={{ top: openActionMenu.top, left: openActionMenu.left }}
                 onClick={(event) => event.stopPropagation()}
               >
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpenActionMenu(null);
-                    handleOpenEditProfile(actionMenuStudent);
-                  }}
-                  className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                >
-                  Editar
-                </button>
+                {isAdmin ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpenActionMenu(null);
+                      handleOpenEditProfile(actionMenuStudent);
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    Editar
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => {
@@ -1886,29 +1879,33 @@ export default function AlumnosPage() {
                   }}
                   className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-purple-700 hover:bg-purple-50"
                 >
-                  Tareas
+                  Entregas
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpenActionMenu(null);
-                    handleOpenChangePassword(actionMenuStudent);
-                  }}
-                  className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
-                >
-                  Contraseña
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpenActionMenu(null);
-                    handleDeleteStudent(actionMenuStudent);
-                  }}
-                  disabled={deletingStudentId === actionMenuStudent.id}
-                  className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {deletingStudentId === actionMenuStudent.id ? "Archivando..." : "Dar de baja"}
-                </button>
+                {isAdmin ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenActionMenu(null);
+                        handleOpenChangePassword(actionMenuStudent);
+                      }}
+                      className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+                    >
+                      Contraseña
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenActionMenu(null);
+                        handleDeleteStudent(actionMenuStudent);
+                      }}
+                      disabled={deletingStudentId === actionMenuStudent.id}
+                      className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {deletingStudentId === actionMenuStudent.id ? "Archivando..." : "Dar de baja"}
+                    </button>
+                  </>
+                ) : null}
               </div>
             </div>,
             document.body,

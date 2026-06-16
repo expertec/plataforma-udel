@@ -1,14 +1,17 @@
 import {
   AccessToken,
+  AudioCodec,
   EgressClient,
   EgressStatus,
   EncodedFileOutput,
+  EncodingOptions,
   EncodingOptionsPreset,
   GCPUpload,
   RoomServiceClient,
   TrackSource,
   SegmentedFileOutput,
   SegmentedFileProtocol,
+  VideoCodec,
   WebhookReceiver,
 } from "livekit-server-sdk";
 import type { EgressInfo, ParticipantInfo, TrackInfo } from "livekit-server-sdk";
@@ -557,14 +560,46 @@ function resolveRoomCompositeLayout(): "grid" | "speaker" {
   return layout === "grid" ? "grid" : "speaker";
 }
 
-function resolveRoomCompositeEncodingPreset(): EncodingOptionsPreset {
+function resolveRoomCompositeEncodingPreset(): EncodingOptionsPreset | EncodingOptions {
   const rawPreset = (process.env.LIVEKIT_RECORDING_ENCODING_PRESET ?? "h264_720p_15")
     .trim()
     .toLowerCase();
 
-  if (rawPreset === "h264_720p_30" || rawPreset === "h264_720p_15") {
-    return EncodingOptionsPreset.H264_720P_30;
+  if (rawPreset === "h264_720p_15") {
+    return new EncodingOptions({
+      width: 1280,
+      height: 720,
+      framerate: 15,
+      videoCodec: VideoCodec.H264_MAIN,
+      videoBitrate: 1800,
+      audioCodec: AudioCodec.OPUS,
+      audioBitrate: 96,
+      keyFrameInterval: 4,
+    });
   }
+
+  if (rawPreset === "h264_720p_60") {
+    return EncodingOptionsPreset.H264_720P_60;
+  }
+  if (rawPreset === "h264_1080p_30") {
+    return EncodingOptionsPreset.H264_1080P_30;
+  }
+  if (rawPreset === "h264_1080p_60") {
+    return EncodingOptionsPreset.H264_1080P_60;
+  }
+  if (rawPreset === "portrait_h264_720p_30") {
+    return EncodingOptionsPreset.PORTRAIT_H264_720P_30;
+  }
+  if (rawPreset === "portrait_h264_720p_60") {
+    return EncodingOptionsPreset.PORTRAIT_H264_720P_60;
+  }
+  if (rawPreset === "portrait_h264_1080p_30") {
+    return EncodingOptionsPreset.PORTRAIT_H264_1080P_30;
+  }
+  if (rawPreset === "portrait_h264_1080p_60") {
+    return EncodingOptionsPreset.PORTRAIT_H264_1080P_60;
+  }
+
   return EncodingOptionsPreset.H264_720P_30;
 }
 

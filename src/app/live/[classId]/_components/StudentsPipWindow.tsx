@@ -59,8 +59,9 @@ function PipTileView({ tile }: { tile: ParticipantsPipTile }) {
     <div
       style={{
         position: "relative",
-        flex: "1 1 45%",
-        minWidth: 120,
+        width: "100%",
+        minWidth: 0,
+        minHeight: 110,
         aspectRatio: "16 / 9",
         background: "#1e293b",
         borderRadius: 8,
@@ -122,13 +123,14 @@ function PipContent({ tiles }: { tiles: ParticipantsPipTile[] }) {
   return (
     <div
       style={{
-        display: "flex",
-        flexWrap: "wrap",
+        display: "grid",
+        gridTemplateColumns: "minmax(0, 1fr)",
         gap: 6,
         padding: 6,
-        alignContent: "flex-start",
         boxSizing: "border-box",
-        minHeight: "100vh",
+        minHeight: "100%",
+        alignContent: "start",
+        overflowY: "auto",
       }}
     >
       {tiles.length === 0 ? (
@@ -165,20 +167,34 @@ export function useStudentsPip(tiles: ParticipantsPipTile[]) {
     });
   }, []);
 
-  const open = useCallback(async () => {
-    const dpip = getDocumentPip();
-    if (!dpip) return;
-    try {
-      // Must be invoked synchronously within the click gesture to keep activation.
-      const win = await dpip.requestWindow({ width: 360, height: 320 });
-      win.document.body.style.margin = "0";
-      win.document.body.style.background = "#0f172a";
-      win.addEventListener("pagehide", () => setPipWindow(null), { once: true });
-      setPipWindow(win);
-    } catch (error) {
-      console.error("No se pudo abrir la ventana flotante de alumnos", error);
-    }
-  }, []);
+  const open = useCallback(
+    async (options?: { suppressNotAllowedError?: boolean }) => {
+      const dpip = getDocumentPip();
+      if (!dpip) return;
+      try {
+        // Must be invoked synchronously within the click gesture to keep activation.
+        const win = await dpip.requestWindow({ width: 240, height: 360 });
+        win.document.body.style.margin = "0";
+        win.document.body.style.background = "#0f172a";
+        win.document.body.style.height = "100vh";
+        win.document.body.style.overflow = "hidden";
+        win.addEventListener("pagehide", () => setPipWindow(null), { once: true });
+        setPipWindow(win);
+        return win;
+      } catch (error) {
+        if (
+          options?.suppressNotAllowedError &&
+          error instanceof DOMException &&
+          error.name === "NotAllowedError"
+        ) {
+          return null;
+        }
+        console.error("No se pudo abrir la ventana flotante de alumnos", error);
+        return null;
+      }
+    },
+    [],
+  );
 
   const toggle = useCallback(() => {
     if (pipWindow) {
@@ -201,6 +217,8 @@ export function useStudentsPip(tiles: ParticipantsPipTile[]) {
   return {
     supported: getDocumentPip() !== null,
     active: pipWindow !== null,
+    open,
+    close,
     toggle,
     portal,
   };

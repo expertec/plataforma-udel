@@ -106,6 +106,9 @@ export function StudentGradesModal({
         const normalizedScopeGroupIds = Array.from(
           new Set(scopeGroupIds.map((groupId) => groupId.trim()).filter((groupId) => groupId.length > 0)),
         );
+        const normalizedScopePlantelId = scopePlantelId.trim();
+        const isScopedAccess =
+          normalizedScopeGroupIds.length > 0 || normalizedScopePlantelId.length > 0;
         let enrollmentPermissionDenied = false;
         let enrollmentDocs:
           | Array<Awaited<ReturnType<typeof getDoc>>>
@@ -127,15 +130,15 @@ export function StudentGradesModal({
             }
             return result.value.exists() ? [result.value] : [];
           });
+        } else if (normalizedScopePlantelId) {
+          enrollmentDocs = [];
         } else {
           try {
             enrollmentDocs = (
               await getDocs(
                 query(
                   collection(db, "studentEnrollments"),
-                  ...(scopePlantelId
-                    ? [where("studentId", "==", studentId), where("plantelId", "==", scopePlantelId)]
-                    : [where("studentId", "==", studentId)]),
+                  where("studentId", "==", studentId),
                 ),
               )
             ).docs;
@@ -217,6 +220,30 @@ export function StudentGradesModal({
             });
           });
         });
+
+        if (groupIds.size === 0 && normalizedScopeGroupIds.length > 0) {
+          normalizedScopeGroupIds.forEach((groupId) => groupIds.add(groupId));
+        }
+
+        if (groupIds.size === 0 && normalizedScopePlantelId) {
+          const scopedGroupsSnap = await getDocs(
+            query(collection(db, "groups"), where("plantelId", "==", normalizedScopePlantelId)),
+          );
+          scopedGroupsSnap.docs.forEach((groupDoc) => {
+            const groupId = groupDoc.id.trim();
+            if (!groupId) return;
+            groupIds.add(groupId);
+            const data = groupDoc.data() as { groupName?: unknown; courseName?: unknown };
+            const groupName =
+              typeof data.groupName === "string" && data.groupName.trim().length > 0
+                ? data.groupName.trim()
+                : "Sin grupo";
+            enrollmentGroupNames.set(groupId, groupName);
+            if (typeof data.courseName === "string" && data.courseName.trim().length > 0) {
+              enrollmentCourseFallbackByGroup.set(groupId, data.courseName.trim());
+            }
+          });
+        }
 
         type SubmissionAgg = {
           id: string;
@@ -359,7 +386,7 @@ export function StudentGradesModal({
 
         if (!active) return;
         setRows(nextRows);
-        if (enrollmentPermissionDenied || skippedGroupsByPermission > 0) {
+        if (!isScopedAccess && (enrollmentPermissionDenied || skippedGroupsByPermission > 0)) {
           toast.error("Algunas materias no pudieron cargarse por permisos de lectura.");
         }
       } catch (err) {

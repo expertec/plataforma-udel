@@ -3,8 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Submission, deleteSubmission } from "@/lib/firebase/submissions-service";
-import { collection, collectionGroup, query, where, getDocs, orderBy } from "firebase/firestore";
-import { db } from "@/lib/firebase/firestore";
+import { auth } from "@/lib/firebase/client";
 import toast from "react-hot-toast";
 
 type Props = {
@@ -23,15 +22,38 @@ type SubmissionWithGroup = Submission & {
   groupName?: string;
 };
 
-type GroupMapEntry = {
+type StudentSubmissionHistoryItem = {
+  id: string;
+  groupId: string;
   groupName: string;
-  courseNameMap: Map<string, string>;
+  classId: string;
+  classDocId?: string;
+  courseId?: string;
+  courseTitle?: string;
+  lessonId?: string;
+  lessonTitle?: string;
+  className: string;
+  classType: string;
+  studentId: string;
+  studentName: string;
+  submittedAtMs?: number;
+  fileUrl?: string;
+  audioUrl?: string;
+  content?: string;
+  status: string;
+  grade?: number;
+  feedback?: string;
+  gradedAtMs?: number;
+  gradedById?: string;
+  gradedByName?: string;
 };
 
-const parseTimestamp = (value: unknown): Date | null => {
-  if (!value || typeof value !== "object") return null;
-  const maybeTimestamp = value as { toDate?: () => Date };
-  return typeof maybeTimestamp.toDate === "function" ? maybeTimestamp.toDate() : null;
+type StudentSubmissionHistoryResponse = {
+  success?: boolean;
+  error?: string;
+  data?: {
+    submissions?: StudentSubmissionHistoryItem[];
+  };
 };
 
 const normalizeStatus = (value: unknown): "pending" | "graded" | "late" => {
@@ -39,81 +61,40 @@ const normalizeStatus = (value: unknown): "pending" | "graded" | "late" => {
   return "pending";
 };
 
-async function buildGroupsMap(
-  groupIds: string[],
-  requiredPlantelId?: string,
-): Promise<Map<string, GroupMapEntry>> {
-  const groupsMap = new Map<string, GroupMapEntry>();
-  if (groupIds.length === 0) return groupsMap;
-
-  for (let i = 0; i < groupIds.length; i += 30) {
-    const batch = groupIds.slice(i, i + 30);
-    const groupsQuery = query(collection(db, "groups"), where("__name__", "in", batch));
-    const groupsSnap = await getDocs(groupsQuery);
-    groupsSnap.docs.forEach((groupDoc) => {
-      const groupData = groupDoc.data() as Record<string, unknown>;
-      const groupPlantelId =
-        typeof groupData.plantelId === "string" ? groupData.plantelId.trim() : "";
-      if (requiredPlantelId && groupPlantelId !== requiredPlantelId) return;
-      const courseNameMap = new Map<string, string>();
-      const coursesArray = Array.isArray(groupData.courses) ? groupData.courses : [];
-      coursesArray.forEach((course) => {
-        if (!course || typeof course !== "object") return;
-        const c = course as { courseId?: unknown; courseName?: unknown };
-        if (typeof c.courseId === "string" && c.courseId.trim()) {
-          courseNameMap.set(
-            c.courseId.trim(),
-            typeof c.courseName === "string" ? c.courseName : "",
-          );
-        }
-      });
-      if (
-        typeof groupData.courseId === "string" &&
-        groupData.courseId.trim() &&
-        typeof groupData.courseName === "string"
-      ) {
-        courseNameMap.set(groupData.courseId.trim(), groupData.courseName);
-      }
-      groupsMap.set(groupDoc.id, {
-        groupName: typeof groupData.groupName === "string" && groupData.groupName.trim()
-          ? groupData.groupName
-          : "Sin nombre",
-        courseNameMap,
-      });
-    });
-  }
-
-  return groupsMap;
-}
-
-function mapSubmissionDoc(
-  submissionId: string,
-  groupId: string,
-  groupName: string,
-  data: Record<string, unknown>,
+function mapSubmissionPayload(
+  submission: StudentSubmissionHistoryItem,
 ): SubmissionWithGroup {
   return {
-    id: submissionId,
-    groupId,
-    groupName,
-    classId: typeof data.classId === "string" ? data.classId : "",
-    classDocId: typeof data.classDocId === "string" ? data.classDocId : undefined,
-    courseId: typeof data.courseId === "string" ? data.courseId : undefined,
-    courseTitle: typeof data.courseTitle === "string" ? data.courseTitle : undefined,
-    className: typeof data.className === "string" ? data.className : "",
-    classType: typeof data.classType === "string" ? data.classType : "",
-    studentId: typeof data.studentId === "string" ? data.studentId : "",
-    studentName: typeof data.studentName === "string" ? data.studentName : "",
-    submittedAt: parseTimestamp(data.submittedAt),
-    fileUrl: typeof data.fileUrl === "string" ? data.fileUrl : "",
-    audioUrl: typeof data.audioUrl === "string" ? data.audioUrl : "",
-    content: typeof data.content === "string" ? data.content : "",
-    status: normalizeStatus(data.status),
-    grade: typeof data.grade === "number" && Number.isFinite(data.grade) ? data.grade : undefined,
-    feedback: typeof data.feedback === "string" ? data.feedback : "",
-    gradedAt: parseTimestamp(data.gradedAt),
-    gradedById: typeof data.gradedById === "string" ? data.gradedById : undefined,
-    gradedByName: typeof data.gradedByName === "string" ? data.gradedByName : undefined,
+    id: submission.id,
+    groupId: submission.groupId,
+    groupName: submission.groupName,
+    classId: submission.classId ?? "",
+    classDocId: submission.classDocId,
+    courseId: submission.courseId,
+    courseTitle: submission.courseTitle,
+    className: submission.className ?? "",
+    classType: submission.classType ?? "",
+    studentId: submission.studentId ?? "",
+    studentName: submission.studentName ?? "",
+    submittedAt:
+      typeof submission.submittedAtMs === "number" && Number.isFinite(submission.submittedAtMs)
+        ? new Date(submission.submittedAtMs)
+        : null,
+    fileUrl: submission.fileUrl ?? "",
+    audioUrl: submission.audioUrl ?? "",
+    content: submission.content ?? "",
+    status: normalizeStatus(submission.status),
+    grade:
+      typeof submission.grade === "number" && Number.isFinite(submission.grade)
+        ? submission.grade
+        : undefined,
+    feedback: submission.feedback ?? "",
+    gradedAt:
+      typeof submission.gradedAtMs === "number" && Number.isFinite(submission.gradedAtMs)
+        ? new Date(submission.gradedAtMs)
+        : null,
+    gradedById: submission.gradedById,
+    gradedByName: submission.gradedByName,
   };
 }
 
@@ -121,8 +102,8 @@ export function StudentAllSubmissionsModal({
   studentId,
   studentName,
   studentEmail,
-  scopePlantelId = "",
-  scopeGroupIds = [],
+  scopePlantelId: _scopePlantelId = "",
+  scopeGroupIds: _scopeGroupIds = [],
   readOnly = false,
   isOpen,
   onClose,
@@ -142,169 +123,26 @@ export function StudentAllSubmissionsModal({
     const load = async () => {
       setLoading(true);
       try {
-        const allSubmissions: SubmissionWithGroup[] = [];
-        let groupsMap = new Map<string, { groupName: string; courseNameMap: Map<string, string> }>();
-
-        if (readOnly && scopePlantelId) {
-          const normalizedScopeGroupIds = Array.from(
-            new Set(scopeGroupIds.map((groupId) => groupId.trim()).filter((groupId) => groupId.length > 0)),
-          );
-          const groupIds =
-            normalizedScopeGroupIds.length > 0
-              ? normalizedScopeGroupIds
-              : Array.from(
-                  new Set(
-                    (
-                      await getDocs(
-                        query(
-                          collection(db, "studentEnrollments"),
-                          where("studentId", "==", studentId),
-                          where("plantelId", "==", scopePlantelId),
-                        ),
-                      )
-                    ).docs
-                      .map((docSnap) => {
-                        const enrollmentData = docSnap.data() as Record<string, unknown>;
-                        return typeof enrollmentData.groupId === "string" ? enrollmentData.groupId : "";
-                      })
-                      .filter((groupId): groupId is string => groupId.length > 0),
-                  ),
-                );
-          groupsMap = await buildGroupsMap(
-            groupIds,
-            normalizedScopeGroupIds.length > 0 ? undefined : scopePlantelId,
-          );
-
-          await Promise.all(
-            Array.from(groupsMap.entries()).map(async ([groupId, groupInfo]) => {
-              const submissionsQuery = query(
-                collection(db, "groups", groupId, "submissions"),
-                where("studentId", "==", studentId),
-              );
-              const submissionsSnap = await getDocs(submissionsQuery);
-              submissionsSnap.docs.forEach((submissionDoc) => {
-                allSubmissions.push(
-                  mapSubmissionDoc(
-                    submissionDoc.id,
-                    groupId,
-                    groupInfo.groupName,
-                    submissionDoc.data() as Record<string, unknown>,
-                  ),
-                );
-              });
-            }),
-          );
-        } else {
-          const submissionsQuery = query(
-            collectionGroup(db, "submissions"),
-            where("studentId", "==", studentId),
-            orderBy("submittedAt", "desc"),
-          );
-          const submissionsSnap = await getDocs(submissionsQuery);
-          const groupIds = Array.from(
-            new Set(
-              submissionsSnap.docs
-                .map((docSnap) => {
-                  const pathParts = docSnap.ref.path.split("/");
-                  return pathParts[0] === "groups" && pathParts[1] ? pathParts[1] : "";
-                })
-                .filter((groupId): groupId is string => groupId.length > 0),
-            ),
-          );
-          groupsMap = await buildGroupsMap(groupIds);
-
-          submissionsSnap.docs.forEach((submissionDoc) => {
-            const pathParts = submissionDoc.ref.path.split("/");
-            const groupId = pathParts[1] ?? "";
-            if (!groupId) return;
-            const groupInfo = groupsMap.get(groupId);
-            allSubmissions.push(
-              mapSubmissionDoc(
-                submissionDoc.id,
-                groupId,
-                groupInfo?.groupName ?? "Sin nombre",
-                submissionDoc.data() as Record<string, unknown>,
-              ),
-            );
-          });
+        const currentUser = auth.currentUser;
+        if (!currentUser) {
+          throw new Error("No hay sesión activa para consultar entregas");
         }
 
-        // 4. Consultar foros usando collectionGroup
-        try {
-          const forumsQuery = query(
-            collectionGroup(db, "forums"),
-            where("authorId", "==", studentId)
-          );
-          const forumsSnap = await getDocs(forumsQuery);
-
-          // Usar Set para evitar duplicados de foros
-          const seenForumIds = new Set<string>();
-          forumsSnap.docs.forEach((forumDoc) => {
-            const uniqueForumKey = forumDoc.ref.path;
-            if (seenForumIds.has(uniqueForumKey)) return;
-            seenForumIds.add(uniqueForumKey);
-
-            const forumData = forumDoc.data();
-            const pathParts = forumDoc.ref.path.split("/");
-            const courseId = pathParts[1] ?? "";
-            const lessonId = pathParts[3] ?? "";
-            const classId = pathParts[5] ?? "";
-
-            // Buscar el grupo que tiene este curso
-            let groupId = "";
-            let groupName = "Sin nombre";
-            let courseTitle = "";
-            for (const [gId, gInfo] of groupsMap.entries()) {
-              if (gInfo.courseNameMap.has(courseId)) {
-                groupId = gId;
-                groupName = gInfo.groupName;
-                courseTitle = gInfo.courseNameMap.get(courseId) ?? "";
-                break;
-              }
-            }
-            if (!groupId) return;
-
-            allSubmissions.push({
-              id: `forum-${courseId}-${lessonId}-${classId}-${forumDoc.id}`,
-              groupId,
-              groupName,
-              classId,
-              classDocId: classId,
-              courseId,
-              courseTitle,
-              className: forumData.classTitle ?? "Foro",
-              classType: "forum",
-              studentId: forumData.authorId ?? "",
-              studentName: forumData.authorName ?? "",
-              submittedAt: forumData.createdAt?.toDate?.() ?? null,
-              fileUrl: forumData.mediaUrl ?? "",
-              audioUrl: "",
-              content: forumData.text ?? "",
-              status:
-                forumData.status === "graded" || typeof forumData.grade === "number"
-                  ? "graded"
-                  : "pending",
-              grade:
-                typeof forumData.grade === "number" && Number.isFinite(forumData.grade)
-                  ? forumData.grade
-                  : undefined,
-              feedback: typeof forumData.feedback === "string" ? forumData.feedback : "",
-              gradedAt: forumData.gradedAt?.toDate?.() ?? null,
-              gradedById: typeof forumData.gradedById === "string" ? forumData.gradedById : undefined,
-              gradedByName: typeof forumData.gradedByName === "string" ? forumData.gradedByName : undefined,
-            });
-          });
-        } catch (forumErr) {
-          console.error("Error cargando foros:", forumErr);
-        }
-
-        // Ordenar por fecha de entrega (más reciente primero)
-        allSubmissions.sort((a, b) => {
-          if (!a.submittedAt) return 1;
-          if (!b.submittedAt) return -1;
-          return b.submittedAt.getTime() - a.submittedAt.getTime();
+        const token = await currentUser.getIdToken();
+        const response = await fetch(`/api/students/${encodeURIComponent(studentId)}/submissions`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          cache: "no-store",
         });
 
+        const payload = (await response.json().catch(() => ({}))) as StudentSubmissionHistoryResponse;
+        if (!response.ok || payload.success !== true) {
+          throw new Error(payload.error || "No se pudieron cargar las tareas");
+        }
+
+        const allSubmissions = (payload.data?.submissions ?? []).map(mapSubmissionPayload);
         setSubmissions(allSubmissions);
       } catch (err) {
         console.error("Error cargando submissions:", err);
@@ -314,7 +152,7 @@ export function StudentAllSubmissionsModal({
       }
     };
     load();
-  }, [isOpen, readOnly, scopeGroupIds, scopePlantelId, studentId]);
+  }, [isOpen, studentId]);
 
   function normalizeSubmissionType(value: string) {
     const normalized = (value || "").toLowerCase().trim();

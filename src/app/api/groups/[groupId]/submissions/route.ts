@@ -24,6 +24,7 @@ type SubmissionPayload = {
   content?: string;
   status: string;
   grade?: number;
+  answers?: unknown[];
   feedback?: string;
   gradedAtMs?: number;
   gradedById?: string;
@@ -208,6 +209,7 @@ export async function GET(request: NextRequest, context: { params?: { groupId?: 
         content: asTrimmedString(data.content) || undefined,
         status: asTrimmedString(data.status) || "pending",
         grade: typeof data.grade === "number" && Number.isFinite(data.grade) ? data.grade : undefined,
+        answers: Array.isArray(data.answers) ? data.answers : undefined,
         feedback: asTrimmedString(data.feedback) || undefined,
         gradedAtMs: toMillis(data.gradedAt),
         gradedById: asTrimmedString(data.gradedById) || undefined,

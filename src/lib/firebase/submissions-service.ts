@@ -75,6 +75,7 @@ type SubmissionsApiResponse = {
       content?: string;
       status: string;
       grade?: number;
+      answers?: SubmissionAnswer[];
       feedback?: string;
       gradedAtMs?: number;
       gradedById?: string;
@@ -267,6 +268,7 @@ export async function getAllSubmissions(groupId: string): Promise<Submission[]> 
         ? (item.status as SubmissionStatus)
         : "pending",
       grade: item.grade,
+      answers: Array.isArray(item.answers) ? item.answers : undefined,
       feedback: item.feedback ?? "",
       gradedAt:
         typeof item.gradedAtMs === "number" && Number.isFinite(item.gradedAtMs)

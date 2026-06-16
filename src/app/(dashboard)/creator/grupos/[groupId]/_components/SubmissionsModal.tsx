@@ -37,6 +37,11 @@ type QuizAnswer = {
 
 const EMPTY_QUIZ_ANSWERS: QuizAnswer[] = [];
 
+type RecoverableQuizAnswer = Pick<
+  QuizAnswer,
+  "questionId" | "question" | "selectedOptionId" | "selectedOptionText"
+>;
+
 const normalizeQuizPointValue = (value: unknown): number => {
   const parsed =
     typeof value === "number"
@@ -55,11 +60,142 @@ const formatQuizPoints = (value: number) => {
   return normalized.toFixed(2).replace(/\.?0+$/, "");
 };
 
+const toComparableText = (value: unknown) =>
+  typeof value === "string"
+    ? value
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase()
+    : "";
+
 const isLegacyQuizPercentGrade = (grade: number, quizPointsMax: number): boolean =>
   quizPointsMax > 0 && grade > quizPointsMax && grade <= 100;
 
 const convertLegacyQuizPercentToPoints = (grade: number, quizPointsMax: number): number =>
   roundQuizPoints((grade / 100) * quizPointsMax);
+
+type QuizQuestionShape = {
+  id: string;
+  prompt: string;
+  pointValue: number;
+  options: Array<{ id: string; text: string; isCorrect?: boolean }>;
+};
+
+const resolveQuizAnswerQuestion = (
+  answer: Pick<RecoverableQuizAnswer, "questionId" | "question">,
+  answerIndex: number,
+  questions: QuizQuestionShape[],
+  questionById: Map<string, QuizQuestionShape>,
+  questionByPrompt: Map<string, QuizQuestionShape>,
+) => {
+  const byId = questionById.get(answer.questionId);
+  if (byId) return byId;
+
+  const byPrompt = questionByPrompt.get(toComparableText(answer.question));
+  if (byPrompt) return byPrompt;
+
+  return questions[answerIndex] ?? null;
+};
+
+const resolveQuizAnswerOption = (
+  question: QuizQuestionShape | null,
+  answer: Pick<RecoverableQuizAnswer, "selectedOptionId" | "selectedOptionText">,
+) => {
+  if (!question) return null;
+  const byId = question.options.find((option) => option.id === answer.selectedOptionId);
+  if (byId) return byId;
+
+  const answerText = toComparableText(answer.selectedOptionText);
+  if (!answerText) return null;
+
+  return (
+    question.options.find((option) => toComparableText(option.text) === answerText) ??
+    null
+  );
+};
+
+const recoverQuizGradeFromAnswers = (
+  answers: RecoverableQuizAnswer[],
+  questions: QuizQuestionShape[],
+) => {
+  const questionById = new Map(questions.map((question) => [question.id, question] as const));
+  const questionByPrompt = new Map(
+    questions
+      .map((question) => [toComparableText(question.prompt), question] as const)
+      .filter(([prompt]) => prompt.length > 0),
+  );
+
+  let matchedQuestions = 0;
+  let correctCount = 0;
+  let earnedPoints = 0;
+
+  answers.forEach((answer, answerIndex) => {
+    const question = resolveQuizAnswerQuestion(
+      answer,
+      answerIndex,
+      questions,
+      questionById,
+      questionByPrompt,
+    );
+    if (!question) return;
+    matchedQuestions += 1;
+
+    const selectedOption = resolveQuizAnswerOption(question, answer);
+    if (selectedOption?.isCorrect) {
+      correctCount += 1;
+      earnedPoints += normalizeQuizPointValue(question.pointValue);
+    }
+  });
+
+  return {
+    matchedQuestions,
+    correctCount,
+    earnedPoints: roundQuizPoints(earnedPoints),
+  };
+};
+
+const getRecoveredQuizPointsFromSubmission = (
+  submission: Pick<Submission, "answers"> | null | undefined,
+  questions: QuizQuestionShape[],
+) => {
+  if (!submission || !Array.isArray(submission.answers) || submission.answers.length === 0) return null;
+  const recovered = recoverQuizGradeFromAnswers(
+    submission.answers as RecoverableQuizAnswer[],
+    questions,
+  );
+  return recovered.matchedQuestions > 0 ? recovered.earnedPoints : null;
+};
+
+const mapAnswersByResolvedQuestionId = (
+  answers: RecoverableQuizAnswer[],
+  questions: QuizQuestionShape[],
+) => {
+  const questionById = new Map(questions.map((question) => [question.id, question] as const));
+  const questionByPrompt = new Map(
+    questions
+      .map((question) => [toComparableText(question.prompt), question] as const)
+      .filter(([prompt]) => prompt.length > 0),
+  );
+  const answerByQuestionId = new Map<string, RecoverableQuizAnswer>();
+
+  answers.forEach((answer, answerIndex) => {
+    const question = resolveQuizAnswerQuestion(
+      answer,
+      answerIndex,
+      questions,
+      questionById,
+      questionByPrompt,
+    );
+    if (!question) return;
+    if (!answerByQuestionId.has(question.id)) {
+      answerByQuestionId.set(question.id, answer);
+    }
+  });
+
+  return answerByQuestionId;
+};
 
 type QuizDetailModalProps = {
   submission: Submission & { answers?: QuizAnswer[] };
@@ -76,9 +212,9 @@ type QuizDetailModalProps = {
 function QuizDetailModal({ submission, questions, onClose, onGrade }: QuizDetailModalProps) {
   const answers = submission.answers ?? EMPTY_QUIZ_ANSWERS;
   const existingGrade = submission.grade;
-  const questionById = useMemo(
-    () => new Map(questions.map((question) => [question.id, question] as const)),
-    [questions],
+  const answersByQuestionId = useMemo(
+    () => mapAnswersByResolvedQuestionId(answers, questions),
+    [answers, questions],
   );
 
   // Si ya tiene calificación, es autocalificado - mostrar preguntas con respuestas
@@ -112,33 +248,11 @@ function QuizDetailModal({ submission, questions, onClose, onGrade }: QuizDetail
   };
 
   const recoveredQuizGrade = useMemo(() => {
-    let matchedQuestions = 0;
-    let earnedPoints = 0;
-
-    answers.forEach((answer) => {
-      const question = questionById.get(answer.questionId);
-      if (!question) return;
-      matchedQuestions += 1;
-      const selectedOption = question.options.find((option) => option.id === answer.selectedOptionId);
-      if (selectedOption?.isCorrect) {
-        earnedPoints += normalizeQuizPointValue(question.pointValue);
-      }
-    });
-
-    return {
-      matchedQuestions,
-      earnedPoints: roundQuizPoints(earnedPoints),
-    };
-  }, [answers, questionById]);
+    return recoverQuizGradeFromAnswers(answers, questions);
+  }, [answers, questions]);
 
   // Calcular respuestas correctas para quizzes autocalificados
-  const correctCount = isAutoGraded
-    ? answers.filter((a) => {
-        const q = questionById.get(a.questionId);
-        const opt = q?.options?.find((o) => o.id === a.selectedOptionId);
-        return opt?.isCorrect === true;
-      }).length
-    : 0;
+  const correctCount = isAutoGraded ? recoveredQuizGrade.correctCount : 0;
   const totalQuestionPoints = roundQuizPoints(
     questions.reduce((sum, question) => sum + normalizeQuizPointValue(question.pointValue), 0),
   );
@@ -241,8 +355,8 @@ function QuizDetailModal({ submission, questions, onClose, onGrade }: QuizDetail
 
               <div className="space-y-3">
                 {questions.map((q, idx) => {
-                  const answer = answers.find((a) => a.questionId === q.id);
-                  const selectedOpt = q.options?.find((o) => o.id === answer?.selectedOptionId);
+                  const answer = answersByQuestionId.get(q.id);
+                  const selectedOpt = answer ? resolveQuizAnswerOption(q, answer) : null;
                   const correctOpt = q.options?.find((o) => o.isCorrect === true);
                   const isCorrect = selectedOpt?.isCorrect === true;
                   const hasCorrectness = q.options?.some((o) => typeof o.isCorrect === "boolean");
@@ -897,6 +1011,7 @@ export function SubmissionsModal({
   }>({ open: false, studentId: "", studentName: "" });
   const [inlineGrades, setInlineGrades] = useState<Record<string, string>>({});
   const [savingInlineGrades, setSavingInlineGrades] = useState<Set<string>>(new Set());
+  const [normalizingQuizGrades, setNormalizingQuizGrades] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1105,11 +1220,24 @@ export function SubmissionsModal({
       })()
     : 100;
   const inlineGradeMax = isForumClass ? 5 : isQuizClass ? quizInlineGradeMax : 100;
-  const getQuizGradeRatio = (grade: number) => {
-    if (isLegacyQuizPercentGrade(grade, quizInlineGradeMax)) {
+  const getRecoveredQuizPoints = (submission?: Submission | null) => {
+    return getRecoveredQuizPointsFromSubmission(submission, quizQuestions);
+  };
+  const getCorrectedLegacyQuizPoints = (submission?: Submission | null) => {
+    if (!submission || typeof submission.grade !== "number") return null;
+    if (!isLegacyQuizPercentGrade(submission.grade, quizInlineGradeMax)) {
+      return null;
+    }
+    const recoveredPoints = getRecoveredQuizPoints(submission);
+    if (recoveredPoints !== null) return recoveredPoints;
+    return convertLegacyQuizPercentToPoints(submission.grade, quizInlineGradeMax);
+  };
+  const getQuizGradeRatio = (grade: number, submission?: Submission | null) => {
+    const correctedLegacyGrade = getCorrectedLegacyQuizPoints(submission);
+    if (correctedLegacyGrade != null) {
       return Math.max(
         0,
-        Math.min(convertLegacyQuizPercentToPoints(grade, quizInlineGradeMax) / quizInlineGradeMax, 1),
+        Math.min(correctedLegacyGrade / quizInlineGradeMax, 1),
       );
     }
     if (quizInlineGradeMax > 0 && grade <= quizInlineGradeMax) {
@@ -1119,20 +1247,106 @@ export function SubmissionsModal({
     if (quizInlineGradeMax > 0) return Math.max(0, Math.min(grade / quizInlineGradeMax, 1));
     return 0;
   };
-  const getQuizGradeBadgeClass = (grade: number) => {
-    const ratio = getQuizGradeRatio(grade);
+  const getEffectiveQuizGrade = (submission?: Submission | null) => {
+    if (!submission) return null;
+    const recoveredGrade = getRecoveredQuizPoints(submission);
+    if (recoveredGrade != null && typeof submission.grade === "number") {
+      if (Math.abs(submission.grade - recoveredGrade) > 0.001) {
+        return recoveredGrade;
+      }
+    }
+    if (typeof submission.grade === "number") return submission.grade;
+    return recoveredGrade;
+  };
+  const getQuizGradeBadgeClass = (grade: number, submission?: Submission | null) => {
+    const ratio = getQuizGradeRatio(grade, submission);
     if (ratio >= 0.8) return "bg-emerald-100 text-emerald-700";
     if (ratio >= 0.6) return "bg-amber-100 text-amber-700";
     return "bg-red-100 text-red-700";
   };
-  const formatQuizGradeLabel = (grade: number) =>
+  const formatQuizGradeLabel = (grade: number, submission?: Submission | null) =>
     isLegacyQuizPercentGrade(grade, quizInlineGradeMax)
       ? `${formatQuizPoints(grade)}% → ${formatQuizPoints(
-          convertLegacyQuizPercentToPoints(grade, quizInlineGradeMax),
+          getCorrectedLegacyQuizPoints(submission) ?? convertLegacyQuizPercentToPoints(grade, quizInlineGradeMax),
         )}/${formatQuizPoints(quizInlineGradeMax)}`
       : quizQuestions.length > 0 && quizInlineGradeMax > 0 && grade <= quizInlineGradeMax
         ? `${formatQuizPoints(grade)}/${formatQuizPoints(quizInlineGradeMax)}`
         : `${formatQuizPoints(grade)}`;
+
+  useEffect(() => {
+    if (!isOpen || !isQuizClass || readOnly || quizQuestions.length === 0 || normalizingQuizGrades) {
+      return;
+    }
+
+    const recoverGradeForNormalization = (submission?: Submission | null) =>
+      getRecoveredQuizPointsFromSubmission(submission, quizQuestions);
+
+    const mismatchedSubmissions = rows
+      .map((row) => row.submission)
+      .filter((submission): submission is Submission => Boolean(submission && typeof submission.grade === "number"))
+      .map((submission) => {
+        const recoveredGrade = recoverGradeForNormalization(submission);
+        if (recoveredGrade == null) return null;
+        if (Math.abs((submission.grade ?? 0) - recoveredGrade) <= 0.001) return null;
+        return { submission, recoveredGrade };
+      })
+      .filter((entry): entry is { submission: Submission; recoveredGrade: number } => entry !== null);
+
+    if (mismatchedSubmissions.length === 0) return;
+
+    let cancelled = false;
+
+    const normalizeGrades = async () => {
+      setNormalizingQuizGrades(true);
+      try {
+        const gradedById = auth.currentUser?.uid ?? "";
+        const gradedByName = auth.currentUser?.displayName ?? "Profesor";
+
+        for (const entry of mismatchedSubmissions) {
+          await gradeSubmission(groupId, entry.submission.id, entry.recoveredGrade, entry.submission.feedback ?? "", {
+            gradedById,
+            gradedByName,
+          });
+        }
+
+        if (cancelled) return;
+
+        setRows((prev) =>
+          prev.map((row) => {
+            const mismatch = mismatchedSubmissions.find((entry) => entry.submission.id === row.submission?.id);
+            if (!mismatch || !row.submission) return row;
+            return {
+              ...row,
+              submission: {
+                ...row.submission,
+                grade: mismatch.recoveredGrade,
+                status: "graded",
+                gradedAt: row.submission.gradedAt ?? new Date(),
+                gradedById: row.submission.gradedById || gradedById || undefined,
+                gradedByName: row.submission.gradedByName || gradedByName || undefined,
+              },
+            };
+          }),
+        );
+        toast.success(`Se corrigieron ${mismatchedSubmissions.length} calificación(es) de quiz.`);
+      } catch (error) {
+        console.error("No se pudieron normalizar las calificaciones del quiz:", error);
+        if (!cancelled) {
+          toast.error("No se pudieron corregir automáticamente algunas calificaciones del quiz.");
+        }
+      } finally {
+        if (!cancelled) {
+          setNormalizingQuizGrades(false);
+        }
+      }
+    };
+
+    void normalizeGrades();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [groupId, isOpen, isQuizClass, normalizingQuizGrades, quizQuestions, readOnly, rows]);
 
   const parseInlineGrade = (raw: string): number | null => {
     const normalized = raw.trim().replace(",", ".");
@@ -1394,6 +1608,7 @@ export function SubmissionsModal({
                 ) : null}
                 {filteredRows.map((row) => {
                   const sub = row.submission;
+                  const effectiveQuizGrade = isQuizClass ? getEffectiveQuizGrade(sub) : null;
                   const canCreateManualSubmission =
                     !readOnly && isInPerson && !isForumClass && !isQuizClass && !sub;
                   const manualInlineKey = canCreateManualSubmission ? `manual:${row.student.id}` : null;
@@ -1533,11 +1748,11 @@ export function SubmissionsModal({
                       ) : isQuizClass ? (
                           <>
                             <td className="px-3 py-2">
-                              {sub?.grade != null ? (
+                              {effectiveQuizGrade != null ? (
                                 <span className={`rounded-full px-2 py-1 text-xs font-semibold ${
-                                  getQuizGradeBadgeClass(sub.grade)
+                                  getQuizGradeBadgeClass(effectiveQuizGrade, sub)
                                 }`}>
-                                  {formatQuizGradeLabel(sub.grade)}
+                                  {formatQuizGradeLabel(effectiveQuizGrade, sub)}
                                 </span>
                               ) : sub && !readOnly ? (
                                 <input
@@ -1592,8 +1807,12 @@ export function SubmissionsModal({
                                           open: true,
                                           submission: {
                                             ...sub,
+                                            grade: getEffectiveQuizGrade({
+                                              ...sub,
+                                              answers: data?.answers ?? sub.answers,
+                                            }) ?? sub.grade,
                                             content: data?.content ?? sub.content,
-                                            answers: data?.answers ?? [],
+                                            answers: data?.answers ?? sub.answers ?? [],
                                           },
                                         });
                                       } catch (err) {

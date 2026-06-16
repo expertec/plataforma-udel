@@ -13,8 +13,11 @@ import {
   MediaDeviceMenu,
   ParticipantTile,
   RoomAudioRenderer,
+  ScreenShareIcon,
+  ScreenShareStopIcon,
   StartAudio,
   TrackToggle,
+  useTrackToggle,
   useChat,
   useConnectionState,
   useDataChannel,
@@ -475,13 +478,13 @@ function LiveRoomConference({
     unreadMessages: 0,
     showSettings: false,
   });
-  const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [raisedHands, setRaisedHands] = useState<Record<string, RaisedHandEntry>>({});
   const [handRaised, setHandRaised] = useState(false);
   const [showReactionBar, setShowReactionBar] = useState(false);
   const [activeReactions, setActiveReactions] = useState<LiveReactionEvent[]>([]);
   const processedSignalIdsRef = useRef<string[]>([]);
   const previousParticipantsCountRef = useRef(0);
+  const autoStudentsPipRef = useRef(false);
   const canPublishCamera = viewerRole === "teacher" || viewerRole === "student";
   const canShareScreen = viewerRole === "teacher";
 
@@ -506,6 +509,11 @@ function LiveRoomConference({
   const canPublishSignalPackets =
     connectionState === ConnectionState.Connected &&
     localParticipantPermissions?.canPublishData !== false;
+
+  const screenShareToggle = useTrackToggle({
+    source: Track.Source.ScreenShare,
+    captureOptions: { audio: true, selfBrowserSurface: "include" },
+  });
 
   const remoteCameraPipTiles = useMemo<ParticipantsPipTile[]>(() => {
     const seen = new Set<string>();
@@ -746,6 +754,58 @@ function LiveRoomConference({
     }
   }, [handRaised, localParticipantId, participants.length, resendRaisedHandPresence]);
 
+  useEffect(() => {
+    if (screenShareToggle.pending) return;
+    if (screenShareToggle.enabled) return;
+    if (!autoStudentsPipRef.current) return;
+    autoStudentsPipRef.current = false;
+    if (!studentsPip.active) return;
+    studentsPip.close();
+  }, [screenShareToggle.enabled, screenShareToggle.pending, studentsPip.active, studentsPip.close]);
+
+  const handleScreenShareToggle = useCallback(async () => {
+    if (screenShareToggle.pending) return;
+
+    if (screenShareToggle.enabled) {
+      if (autoStudentsPipRef.current) {
+        autoStudentsPipRef.current = false;
+        studentsPip.close();
+      }
+      await screenShareToggle.toggle(false);
+      return;
+    }
+
+    const shouldAutoOpenStudentsPip = studentsPip.supported && !studentsPip.active;
+    autoStudentsPipRef.current = shouldAutoOpenStudentsPip;
+    const openPromise =
+      shouldAutoOpenStudentsPip
+        ? studentsPip.open({ suppressNotAllowedError: true })
+        : null;
+
+    try {
+      await screenShareToggle.toggle(true);
+      if (openPromise) {
+        await openPromise;
+      }
+    } catch (error) {
+      autoStudentsPipRef.current = false;
+      if (openPromise) {
+        const openedWindow = await openPromise;
+        openedWindow?.close();
+        studentsPip.close();
+      }
+      console.error("No se pudo alternar el compartir pantalla", error);
+    }
+  }, [
+    screenShareToggle.enabled,
+    screenShareToggle.pending,
+    screenShareToggle.toggle,
+    studentsPip.active,
+    studentsPip.close,
+    studentsPip.open,
+    studentsPip.supported,
+  ]);
+
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       {raisedHandsList.length > 0 ? (
@@ -850,29 +910,19 @@ function LiveRoomConference({
                   </div>
                 ) : null}
                 {canShareScreen ? (
-                  <TrackToggle
-                    source={Track.Source.ScreenShare}
-                    captureOptions={{ audio: true, selfBrowserSurface: "include" }}
-                    showIcon={true}
-                    onChange={(enabled) => {
-                      setIsScreenSharing(enabled);
-                    }}
-                  >
-                    {isScreenSharing ? "Detener pantalla" : "Compartir pantalla"}
-                  </TrackToggle>
-                ) : null}
-                {canShareScreen && studentsPip.supported ? (
                   <button
                     type="button"
-                    onClick={studentsPip.toggle}
-                    title="Abre una ventana flotante con los alumnos que permanece visible mientras compartes tu pantalla en otra aplicación."
-                    className={`rounded-lg border px-3 py-2 text-sm font-semibold transition ${
-                      studentsPip.active
-                        ? "border-sky-500 bg-sky-600 text-white hover:bg-sky-500"
-                        : "border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800"
-                    }`}
+                    aria-pressed={screenShareToggle.enabled}
+                    data-lk-source={Track.Source.ScreenShare}
+                    data-lk-enabled={screenShareToggle.enabled}
+                    disabled={screenShareToggle.pending}
+                    onClick={() => {
+                      void handleScreenShareToggle();
+                    }}
+                    className={screenShareToggle.buttonProps.className}
                   >
-                    {studentsPip.active ? "Cerrar ventana de alumnos" : "Ver alumnos (flotante)"}
+                    {screenShareToggle.enabled ? <ScreenShareStopIcon /> : <ScreenShareIcon />}
+                    {screenShareToggle.enabled ? "Detener pantalla" : "Compartir pantalla"}
                   </button>
                 ) : null}
                 <button
