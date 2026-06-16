@@ -9,6 +9,7 @@ import {
   createSubmission,
   getSubmissionsByClass,
   Submission,
+  SubmissionAnswer,
   deleteSubmission,
   gradeSubmission,
   shouldPreferIncomingSubmission,
@@ -41,6 +42,25 @@ type RecoverableQuizAnswer = Pick<
   QuizAnswer,
   "questionId" | "question" | "selectedOptionId" | "selectedOptionText"
 >;
+
+const normalizeQuizAnswers = (
+  answers: SubmissionAnswer[] | QuizAnswer[] | undefined,
+): QuizAnswer[] => {
+  if (!Array.isArray(answers) || answers.length === 0) return [];
+  return answers.map((answer) => ({
+    questionId: typeof answer.questionId === "string" ? answer.questionId : "",
+    question: typeof answer.question === "string" ? answer.question : "",
+    questionPointValue:
+      typeof answer.questionPointValue === "number" && Number.isFinite(answer.questionPointValue)
+        ? answer.questionPointValue
+        : undefined,
+    selectedOptionId:
+      typeof answer.selectedOptionId === "string" ? answer.selectedOptionId : "",
+    selectedOptionText:
+      typeof answer.selectedOptionText === "string" ? answer.selectedOptionText : "",
+    isCorrect: typeof answer.isCorrect === "boolean" ? answer.isCorrect : undefined,
+  }));
+};
 
 const normalizeQuizPointValue = (value: unknown): number => {
   const parsed =
@@ -1801,18 +1821,21 @@ export function SubmissionsModal({
                                         const subDoc = await getDoc(doc(db, "groups", groupId, "submissions", sub.id));
                                         const data = subDoc.data() as {
                                           content?: string;
-                                          answers?: QuizAnswer[];
+                                          answers?: SubmissionAnswer[] | QuizAnswer[];
                                         } | undefined;
+                                        const normalizedAnswers = normalizeQuizAnswers(
+                                          data?.answers ?? sub.answers,
+                                        );
                                         setQuizDetailModal({
                                           open: true,
                                           submission: {
                                             ...sub,
                                             grade: getEffectiveQuizGrade({
                                               ...sub,
-                                              answers: data?.answers ?? sub.answers,
+                                              answers: normalizedAnswers,
                                             }) ?? sub.grade,
                                             content: data?.content ?? sub.content,
-                                            answers: data?.answers ?? sub.answers ?? [],
+                                            answers: normalizedAnswers,
                                           },
                                         });
                                       } catch (err) {
