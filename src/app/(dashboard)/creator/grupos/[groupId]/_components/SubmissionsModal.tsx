@@ -999,7 +999,7 @@ const filterSubmissionsForClass = (
     courseId?: string;
     lessonId?: string;
     className: string;
-    classType: string;
+    classType?: string;
   },
 ) =>
   submissions.filter((submission) => getSubmissionClassMatchScore(submission, target) > 0);
