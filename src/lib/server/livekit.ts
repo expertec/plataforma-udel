@@ -1,6 +1,7 @@
 import {
   AccessToken,
   AudioCodec,
+  DataPacket_Kind,
   EgressClient,
   EgressStatus,
   EncodedFileOutput,
@@ -37,6 +38,7 @@ let cachedRoomServiceClient: RoomServiceClient | null = null;
 let cachedEgressClient: EgressClient | null = null;
 let cachedWebhookReceiver: WebhookReceiver | null = null;
 const LIVEKIT_TRACK_SOURCE_MICROPHONE = 2; // TrackSource.MICROPHONE
+const LIVE_SIGNAL_TOPIC = "udx.live.signal"; // Must match the client data-channel topic.
 const DEFAULT_RECORDING_START_MAX_ATTEMPTS = 1;
 const DEFAULT_RECORDING_MAX_RETRY_COUNT = 1;
 const RECORDING_START_RETRY_BASE_DELAY_MS = 1500;
@@ -73,6 +75,13 @@ export type LiveMuteParticipantResult = {
   totalMicrophoneTracks: number;
   mutedTrackSids: string[];
   alreadyMutedTrackSids: string[];
+};
+
+export type LiveUnmuteParticipantResult = {
+  participantIdentity: string;
+  totalMicrophoneTracks: number;
+  unmutedTrackSids: string[];
+  alreadyUnmutedTrackSids: string[];
 };
 
 export type LiveMuteAllParticipantsResult = {
@@ -443,6 +452,70 @@ export async function muteLiveKitParticipantMicrophones(params: {
     totalMicrophoneTracks: microphoneTracks.length,
     mutedTrackSids: unmutedTracks.map((track) => track.sid),
     alreadyMutedTrackSids: alreadyMutedTracks.map((track) => track.sid),
+  };
+}
+
+export async function unmuteLiveKitParticipantMicrophones(params: {
+  roomName: string;
+  participantIdentity: string;
+}): Promise<LiveUnmuteParticipantResult> {
+  const normalizedRoomName = params.roomName.trim();
+  const normalizedIdentity = params.participantIdentity.trim();
+  if (!normalizedRoomName) {
+    throw new Error("roomName es requerido");
+  }
+  if (!normalizedIdentity) {
+    throw new Error("participantIdentity es requerido");
+  }
+
+  const client = getRoomServiceClient();
+  const participant = await client.getParticipant(normalizedRoomName, normalizedIdentity);
+  const microphoneTracks = participant.tracks.filter(isMicrophoneTrack);
+  const mutedTracks = microphoneTracks.filter((track) => track.muted);
+  const alreadyUnmutedTracks = microphoneTracks.filter((track) => !track.muted);
+
+  // Best-effort server-side unmute. Many LiveKit deployments disable "remote
+  // unmute" for privacy (error: "remote unmute not enabled"), so we don't let a
+  // failure here abort the request — we always fall back to asking the
+  // participant's own client to re-enable the microphone, which is allowed.
+  for (const track of mutedTracks) {
+    try {
+      await client.mutePublishedTrack(normalizedRoomName, normalizedIdentity, track.sid, false);
+    } catch (error) {
+      console.warn(
+        "[livekit] unmute remoto no disponible, se usará señal al cliente",
+        error,
+      );
+    }
+  }
+
+  // Tell the participant's client to enable its microphone. A participant can
+  // always control their own track, so this works even when remote unmute is off.
+  try {
+    const payload = {
+      type: "mic-control",
+      action: "unmute",
+      eventId: `mic-${normalizedIdentity}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      targetId: normalizedIdentity,
+      senderId: "host",
+      senderName: "Profesor",
+      timestamp: Date.now(),
+    };
+    await client.sendData(
+      normalizedRoomName,
+      new TextEncoder().encode(JSON.stringify(payload)),
+      DataPacket_Kind.RELIABLE,
+      { destinationIdentities: [normalizedIdentity], topic: LIVE_SIGNAL_TOPIC },
+    );
+  } catch (error) {
+    console.warn("[livekit] no se pudo enviar la señal de unmute al cliente", error);
+  }
+
+  return {
+    participantIdentity: normalizedIdentity,
+    totalMicrophoneTracks: microphoneTracks.length,
+    unmutedTrackSids: mutedTracks.map((track) => track.sid),
+    alreadyUnmutedTrackSids: alreadyUnmutedTracks.map((track) => track.sid),
   };
 }
 

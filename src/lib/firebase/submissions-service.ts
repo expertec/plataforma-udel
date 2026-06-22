@@ -96,6 +96,77 @@ export function getSubmissionSortTimestamp(
   return submission.submittedAt?.getTime() ?? submission.gradedAt?.getTime() ?? 0;
 }
 
+type SubmissionClassMatchTarget = {
+  classId: string;
+  courseId?: string;
+  lessonId?: string;
+  className?: string;
+  classType?: string;
+};
+
+const normalizeComparableText = (value: string): string =>
+  value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+const normalizeSubmissionClassType = (value: string): string => {
+  const normalized = normalizeComparableText(value);
+  if (["quiz", "quizz", "cuestionario"].includes(normalized)) return "quiz";
+  if (["forum", "foro", "post", "discussion"].includes(normalized)) return "forum";
+  if (["assignment", "tarea", "homework"].includes(normalized)) return "assignment";
+  return normalized;
+};
+
+/**
+ * Matches a submission to a class using the stable doc id first and, for legacy data,
+ * a stricter metadata fallback (course, lesson, title, type).
+ */
+export function getSubmissionClassMatchScore(
+  submission: Pick<Submission, "classId" | "classDocId" | "courseId" | "lessonId" | "className" | "classType">,
+  target: SubmissionClassMatchTarget,
+): number {
+  const targetClassId = normalizeComparableText(target.classId);
+  if (!targetClassId) return 0;
+
+  const submissionClassId = normalizeComparableText(submission.classDocId ?? submission.classId);
+  if (submissionClassId && submissionClassId === targetClassId) {
+    return 3;
+  }
+
+  const targetCourseId = normalizeComparableText(target.courseId ?? "");
+  const submissionCourseId = normalizeComparableText(submission.courseId ?? "");
+  if (targetCourseId && submissionCourseId && targetCourseId !== submissionCourseId) {
+    return 0;
+  }
+
+  const targetLessonId = normalizeComparableText(target.lessonId ?? "");
+  const submissionLessonId = normalizeComparableText(submission.lessonId ?? "");
+  if (targetLessonId && submissionLessonId && targetLessonId !== submissionLessonId) {
+    return 0;
+  }
+
+  const targetClassName = normalizeComparableText(target.className ?? "");
+  const submissionClassName = normalizeComparableText(submission.className ?? "");
+  if (!targetClassName || !submissionClassName || targetClassName !== submissionClassName) {
+    return 0;
+  }
+
+  const targetType = normalizeSubmissionClassType(target.classType ?? "");
+  const submissionType = normalizeSubmissionClassType(submission.classType);
+  if (targetType && submissionType && targetType !== submissionType) {
+    return 0;
+  }
+
+  if (!targetCourseId && !targetLessonId) {
+    return 0;
+  }
+
+  return targetCourseId && targetLessonId ? 2 : 1;
+}
+
 /**
  * Decide si la entrega `incoming` debe reemplazar a `current` para una misma
  * actividad/alumno. Se prioriza la entrega más reciente; en empate de fecha,

@@ -128,7 +128,8 @@ function PipContent({ tiles }: { tiles: ParticipantsPipTile[] }) {
         gap: 6,
         padding: 6,
         boxSizing: "border-box",
-        minHeight: "100%",
+        height: "100%",
+        maxHeight: "100%",
         alignContent: "start",
         overflowY: "auto",
       }}

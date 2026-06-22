@@ -42,3 +42,100 @@ body {
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
+/* ---- Sala de clase en vivo: botones tipo Zoom/Teams ---- */
+
+/* Botón de chat (componente ChatToggle de LiveKit) */
+button.live-chat-toggle {
+  position: relative;
+  display: flex;
+  height: 3rem;
+  width: 3rem;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.1);
+  color: #f1f5f9;
+  transition: background 0.15s ease;
+}
+
+button.live-chat-toggle:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+button.live-chat-toggle[aria-pressed="true"],
+button.live-chat-toggle[data-lk-active="true"] {
+  background: #0284c7;
+  color: #fff;
+}
+
+.live-chat-toggle__badge {
+  position: absolute;
+  top: -0.25rem;
+  right: -0.25rem;
+  display: flex;
+  height: 1rem;
+  min-width: 1rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.25rem;
+  border-radius: 9999px;
+  background: #f43f5e;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+}
+
+/* Botón/flecha del selector de dispositivos (MediaDeviceMenu de LiveKit).
+   La flecha es el pseudo-elemento ::after de LiveKit; no se debe ocultar. */
+.live-device-menu {
+  display: flex;
+  align-items: center;
+}
+
+.live-device-menu .lk-button,
+.live-device-menu .lk-button:not(:disabled):hover,
+.live-device-menu .lk-button:focus,
+.live-device-menu .lk-button:focus-visible,
+.live-device-menu .lk-button:active {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 2.25rem;
+  width: 1.5rem;
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  border-radius: 0.6rem;
+  background-color: transparent;
+  color: #ffffff;
+  transition: background-color 0.15s ease;
+}
+
+.live-device-menu .lk-button:not(:disabled):hover {
+  background-color: rgba(255, 255, 255, 0.18);
+}
+
+/* La flecha la dibuja LiveKit con ::after; solo la centramos. */
+.live-device-menu .lk-button::after {
+  margin-left: 0;
+}
+
+/* Etiqueta de pantalla compartida: LiveKit concatena el texto hardcodeado en
+   inglés "'s screen" DENTRO del mismo span del nombre, así que no se puede
+   separar. Ocultamos el contenido del span (font-size: 0) y lo reconstruimos en
+   español con el nombre real, que LiveKit expone en data-lk-participant-name. */
+[data-lk-source="screen_share"] .lk-participant-name {
+  font-size: 0;
+}
+
+[data-lk-source="screen_share"] .lk-participant-name::after {
+  content: "Pantalla de " attr(data-lk-participant-name);
+  font-size: 0.8125rem;
+}

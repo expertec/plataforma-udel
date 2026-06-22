@@ -9,6 +9,7 @@ import {
   listLiveKitRoomParticipants,
   muteAllLiveKitParticipantMicrophones,
   muteLiveKitParticipantMicrophones,
+  unmuteLiveKitParticipantMicrophones,
 } from "@/lib/server/livekit";
 
 export const runtime = "nodejs";
@@ -171,6 +172,43 @@ export async function POST(
       }
     }
 
+    if (action === "unmute_participant") {
+      const participantIdentity = asTrimmedString(body.participantIdentity);
+      if (!participantIdentity) {
+        return NextResponse.json(
+          { success: false, error: "participantIdentity es requerido" },
+          { status: 400 },
+        );
+      }
+
+      try {
+        const result = await unmuteLiveKitParticipantMicrophones({
+          roomName,
+          participantIdentity,
+        });
+        return NextResponse.json(
+          {
+            success: true,
+            data: {
+              action: "unmute_participant",
+              classId: access.classContext.classId,
+              roomName,
+              result,
+            },
+          },
+          { status: 200 },
+        );
+      } catch (error) {
+        if (!isLiveKitNotFoundError(error)) {
+          throw error;
+        }
+        return NextResponse.json(
+          { success: false, error: "La sala o el participante no están disponibles." },
+          { status: 409 },
+        );
+      }
+    }
+
     if (action === "mute_all") {
       const includeTeacherParticipants = asBoolean(body.includeTeacherParticipants, false);
       const excludeSelf = asBoolean(body.excludeSelf, true);
@@ -204,7 +242,10 @@ export async function POST(
     }
 
     return NextResponse.json(
-      { success: false, error: "Acción inválida. Usa mute_participant o mute_all." },
+      {
+        success: false,
+        error: "Acción inválida. Usa mute_participant, unmute_participant o mute_all.",
+      },
       { status: 400 },
     );
   } catch (error: unknown) {

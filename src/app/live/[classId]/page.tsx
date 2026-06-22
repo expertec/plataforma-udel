@@ -13,10 +13,7 @@ import {
   MediaDeviceMenu,
   ParticipantTile,
   RoomAudioRenderer,
-  ScreenShareIcon,
-  ScreenShareStopIcon,
   StartAudio,
-  TrackToggle,
   useTrackToggle,
   useChat,
   useConnectionState,
@@ -41,6 +38,27 @@ import {
 } from "livekit-client";
 import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Circle,
+  Eye,
+  Hand,
+  Loader2,
+  LogOut,
+  MessageSquare,
+  Mic,
+  MicOff,
+  MonitorUp,
+  MonitorX,
+  PhoneOff,
+  Radio,
+  Send,
+  Smile,
+  Square,
+  Users,
+  Video,
+  VideoOff,
+  X,
+} from "lucide-react";
 import { LoginCard } from "@/components/auth/LoginCard";
 import { auth } from "@/lib/firebase/client";
 import { formatEsMxDateTime } from "@/lib/utils/date-format";
@@ -128,6 +146,8 @@ type LiveParticipantsActionResponse = {
       totalMicrophoneTracks?: number;
       mutedTrackSids?: string[];
       alreadyMutedTrackSids?: string[];
+      unmutedTrackSids?: string[];
+      alreadyUnmutedTrackSids?: string[];
       targetedParticipants?: number;
       mutedParticipants?: number;
       mutedMicrophoneTracks?: number;
@@ -149,6 +169,15 @@ type LiveSignalPayload =
       type: "hand";
       eventId: string;
       raised: boolean;
+      senderId: string;
+      senderName: string;
+      timestamp: number;
+    }
+  | {
+      type: "mic-control";
+      eventId: string;
+      action: "unmute";
+      targetId: string;
       senderId: string;
       senderName: string;
       timestamp: number;
@@ -210,6 +239,13 @@ function isLiveSignalPayload(value: unknown): value is LiveSignalPayload {
   }
   if (data.type === "hand") {
     return typeof data.raised === "boolean";
+  }
+  if (data.type === "mic-control") {
+    return (
+      data.action === "unmute" &&
+      typeof data.targetId === "string" &&
+      data.targetId.trim().length > 0
+    );
   }
   return false;
 }
@@ -344,6 +380,108 @@ function LiveChromeRecommendationBanner({
   );
 }
 
+function LiveBarButton({
+  label,
+  icon,
+  onClick,
+  active = false,
+  danger = false,
+  disabled = false,
+  badge,
+  ariaControls,
+  ariaExpanded,
+  ariaPressed,
+  title,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  onClick?: () => void;
+  active?: boolean;
+  danger?: boolean;
+  disabled?: boolean;
+  badge?: number;
+  ariaControls?: string;
+  ariaExpanded?: boolean;
+  ariaPressed?: boolean;
+  title?: string;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        title={title ?? label}
+        aria-label={label}
+        aria-controls={ariaControls}
+        aria-expanded={ariaExpanded}
+        aria-pressed={ariaPressed}
+        className={`relative flex h-12 w-12 items-center justify-center rounded-2xl transition disabled:cursor-not-allowed disabled:opacity-40 ${
+          danger
+            ? "bg-rose-600 text-white shadow-lg shadow-rose-900/30 hover:bg-rose-500"
+            : active
+              ? "bg-sky-600 text-white shadow-lg shadow-sky-900/30 hover:bg-sky-500"
+              : "bg-white/10 text-slate-100 hover:bg-white/20"
+        }`}
+      >
+        {icon}
+        {badge ? (
+          <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-bold leading-none text-white">
+            {badge > 9 ? "9+" : badge}
+          </span>
+        ) : null}
+      </button>
+      <span className="text-[10px] font-medium text-slate-300">{label}</span>
+    </div>
+  );
+}
+
+function LiveDeviceControl({
+  label,
+  kind,
+  enabled,
+  pending,
+  onToggle,
+  onIcon,
+  offIcon,
+}: {
+  label: string;
+  kind: MediaDeviceKind;
+  enabled: boolean;
+  pending: boolean;
+  onToggle: () => void;
+  onIcon: React.ReactNode;
+  offIcon: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <div
+        className={`relative flex items-center rounded-2xl transition ${
+          enabled
+            ? "bg-white/10 hover:bg-white/20"
+            : "bg-rose-600 shadow-lg shadow-rose-900/30 hover:bg-rose-500"
+        }`}
+      >
+        <button
+          type="button"
+          disabled={pending}
+          onClick={onToggle}
+          title={enabled ? `Desactivar ${label.toLowerCase()}` : `Activar ${label.toLowerCase()}`}
+          aria-label={label}
+          aria-pressed={enabled}
+          className="flex h-12 w-12 items-center justify-center rounded-2xl text-white transition disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {enabled ? onIcon : offIcon}
+        </button>
+        <div className="live-device-menu pr-1">
+          <MediaDeviceMenu kind={kind} />
+        </div>
+      </div>
+      <span className="text-[10px] font-medium text-slate-300">{label}</span>
+    </div>
+  );
+}
+
 function LiveRoomChatPanel({ visible }: { visible: boolean }) {
   const listRef = useRef<HTMLUListElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -393,53 +531,82 @@ function LiveRoomChatPanel({ visible }: { visible: boolean }) {
   }, [chatMessages, layoutContext]);
 
   return (
-    <div className="lk-chat" style={{ display: visible ? "grid" : "none" }}>
-      <div className="lk-chat-header">
-        Mensajes
-        <button type="button" onClick={closeChat} className="lk-button lk-close-button">
-          Cerrar
+    <div
+      className="h-full w-80 max-w-full shrink-0 flex-col border-l border-white/10 bg-slate-900/95 backdrop-blur"
+      style={{ display: visible ? "flex" : "none" }}
+    >
+      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <MessageSquare className="h-4 w-4 text-sky-400" />
+          <span className="text-sm font-semibold text-white">Mensajes</span>
+        </div>
+        <button
+          type="button"
+          onClick={closeChat}
+          aria-label="Cerrar chat"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-white/10 hover:text-white"
+        >
+          <X className="h-4 w-4" />
         </button>
       </div>
-      <ul className="lk-list lk-chat-messages" ref={listRef}>
-        {chatMessages.map((message, index, allMessages) => {
-          const previous = index >= 1 ? allMessages[index - 1] : null;
-          const sameSender = Boolean(
-            previous &&
-              previous.from?.identity === message.from?.identity &&
-              previous.from?.isLocal === message.from?.isLocal,
-          );
-          const showTime =
-            !previous ||
-            message.timestamp - previous.timestamp >= 60_000 ||
-            Boolean(message.editTimestamp);
-          const senderName = message.from?.isLocal
-            ? "Tú"
-            : (message.from?.name ?? message.from?.identity ?? "Participante");
-          return (
-            <li
-              key={message.id ?? `${message.timestamp}-${index}`}
-              className="lk-chat-entry"
-              data-lk-message-origin={message.from?.isLocal ? "local" : "remote"}
-            >
-              {(!sameSender || showTime) && (
-                <span className="lk-meta-data">
-                  {!sameSender ? <strong className="lk-participant-name">{senderName}</strong> : null}
-                  {showTime ? (
-                    <span className="lk-timestamp">
-                      {message.editTimestamp ? "editado " : ""}
-                      {formatChatHour(message.timestamp)}
-                    </span>
-                  ) : null}
-                </span>
-              )}
-              <span className="lk-message-body">{message.message}</span>
-            </li>
-          );
-        })}
+      <ul ref={listRef} className="flex-1 space-y-3 overflow-y-auto px-3 py-4">
+        {chatMessages.length === 0 ? (
+          <li className="flex h-full flex-col items-center justify-center gap-2 text-center text-slate-500">
+            <MessageSquare className="h-8 w-8 opacity-40" />
+            <span className="text-xs">Aún no hay mensajes.<br />Sé el primero en escribir.</span>
+          </li>
+        ) : (
+          chatMessages.map((message, index, allMessages) => {
+            const previous = index >= 1 ? allMessages[index - 1] : null;
+            const isLocal = Boolean(message.from?.isLocal);
+            const sameSender = Boolean(
+              previous &&
+                previous.from?.identity === message.from?.identity &&
+                previous.from?.isLocal === message.from?.isLocal,
+            );
+            const showTime =
+              !previous ||
+              message.timestamp - previous.timestamp >= 60_000 ||
+              Boolean(message.editTimestamp);
+            const senderName = isLocal
+              ? "Tú"
+              : (message.from?.name?.trim() || "Participante");
+            return (
+              <li
+                key={message.id ?? `${message.timestamp}-${index}`}
+                className={`flex flex-col ${isLocal ? "items-end" : "items-start"}`}
+              >
+                {!sameSender && !isLocal ? (
+                  <span className="mb-0.5 px-1 text-[11px] font-semibold text-sky-300">
+                    {senderName}
+                  </span>
+                ) : null}
+                <div
+                  className={`max-w-[85%] px-3 py-2 text-sm shadow-sm ${
+                    isLocal
+                      ? "rounded-2xl rounded-br-sm bg-sky-600 text-white"
+                      : "rounded-2xl rounded-bl-sm bg-white/10 text-slate-100"
+                  }`}
+                >
+                  <span className="whitespace-pre-wrap break-words">{message.message}</span>
+                </div>
+                {showTime ? (
+                  <span className="mt-0.5 px-1 text-[10px] text-slate-500">
+                    {message.editTimestamp ? "editado · " : ""}
+                    {formatChatHour(message.timestamp)}
+                  </span>
+                ) : null}
+              </li>
+            );
+          })
+        )}
       </ul>
-      <form className="lk-chat-form" onSubmit={handleSubmit}>
+      <form
+        className="flex items-center gap-2 border-t border-white/10 p-3"
+        onSubmit={handleSubmit}
+      >
         <input
-          className="lk-form-control lk-chat-form-input"
+          className="min-w-0 flex-1 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-white placeholder:text-slate-500 focus:border-sky-500 focus:outline-none disabled:opacity-50"
           disabled={isSending}
           ref={inputRef}
           type="text"
@@ -448,8 +615,13 @@ function LiveRoomChatPanel({ visible }: { visible: boolean }) {
           onKeyDown={(event) => event.stopPropagation()}
           onKeyUp={(event) => event.stopPropagation()}
         />
-        <button type="submit" className="lk-button lk-chat-form-button" disabled={isSending}>
-          Enviar
+        <button
+          type="submit"
+          aria-label="Enviar mensaje"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-sky-600 text-white transition hover:bg-sky-500 disabled:opacity-50"
+          disabled={isSending}
+        >
+          <Send className="h-4 w-4" />
         </button>
       </form>
     </div>
@@ -481,6 +653,7 @@ function LiveRoomConference({
   const [raisedHands, setRaisedHands] = useState<Record<string, RaisedHandEntry>>({});
   const [handRaised, setHandRaised] = useState(false);
   const [showReactionBar, setShowReactionBar] = useState(false);
+  const [showOnlyActiveCameras, setShowOnlyActiveCameras] = useState(false);
   const [activeReactions, setActiveReactions] = useState<LiveReactionEvent[]>([]);
   const processedSignalIdsRef = useRef<string[]>([]);
   const previousParticipantsCountRef = useRef(0);
@@ -509,6 +682,9 @@ function LiveRoomConference({
   const canPublishSignalPackets =
     connectionState === ConnectionState.Connected &&
     localParticipantPermissions?.canPublishData !== false;
+
+  const micToggle = useTrackToggle({ source: Track.Source.Microphone });
+  const cameraToggle = useTrackToggle({ source: Track.Source.Camera });
 
   const screenShareToggle = useTrackToggle({
     source: Track.Source.ScreenShare,
@@ -559,16 +735,42 @@ function LiveRoomConference({
 
   const focusTrack = screenShareTrack ?? teacherCameraTrack ?? null;
 
-  const nonFocusedTracks = useMemo(() => {
-    if (!focusTrack) return tracks;
-    const focusedTrackKey = `track:${focusTrack.publication.trackSid}`;
+  // When "solo cámaras activas" is enabled we keep screen shares and camera
+  // tracks that are actually publishing video (not muted/off), and drop the
+  // placeholder tiles of participants whose camera is off.
+  const visibleTracks = useMemo(() => {
+    if (!showOnlyActiveCameras) return tracks;
     return tracks.filter((track) => {
+      if (track.source === Track.Source.ScreenShare) return true;
+      return (
+        isTrackReference(track) &&
+        track.source === Track.Source.Camera &&
+        !track.publication.isMuted
+      );
+    });
+  }, [showOnlyActiveCameras, tracks]);
+
+  const hasVisibleTracks = visibleTracks.length > 0;
+
+  // While filtering, only keep a focused tile if it's a screen share or a camera
+  // that's actually on — otherwise a muted teacher camera would still take over.
+  const effectiveFocusTrack = useMemo(() => {
+    if (!showOnlyActiveCameras) return focusTrack;
+    if (!focusTrack) return null;
+    if (focusTrack.source === Track.Source.ScreenShare) return focusTrack;
+    return !focusTrack.publication.isMuted ? focusTrack : null;
+  }, [focusTrack, showOnlyActiveCameras]);
+
+  const nonFocusedTracks = useMemo(() => {
+    if (!effectiveFocusTrack) return visibleTracks;
+    const focusedTrackKey = `track:${effectiveFocusTrack.publication.trackSid}`;
+    return visibleTracks.filter((track) => {
       const trackKey = isTrackReference(track)
         ? `track:${track.publication.trackSid}`
         : `placeholder:${track.participant.identity}:${track.source}`;
       return trackKey !== focusedTrackKey;
     });
-  }, [focusTrack, tracks]);
+  }, [effectiveFocusTrack, visibleTracks]);
 
   const rememberSignalId = useCallback((eventId: string): boolean => {
     const normalized = eventId.trim();
@@ -639,12 +841,25 @@ function LiveRoomConference({
         }
         if (parsed.type === "hand") {
           applyRaisedHand(parsed);
+          return;
+        }
+        if (parsed.type === "mic-control") {
+          // The teacher asked us (this client) to re-enable our own microphone.
+          // A participant can always control their own track, so this works even
+          // when the server has remote unmute disabled.
+          if (
+            parsed.action === "unmute" &&
+            parsed.targetId === localParticipantId &&
+            !micToggle.enabled
+          ) {
+            void micToggle.toggle(true);
+          }
         }
       } catch {
         // ignore malformed or non-JSON payloads
       }
     },
-    [applyRaisedHand, applyReaction, rememberSignalId],
+    [applyRaisedHand, applyReaction, localParticipantId, micToggle, rememberSignalId],
   );
 
   const { send: sendSignal } = useDataChannel(LIVE_SIGNAL_TOPIC, handleSignalMessage);
@@ -809,13 +1024,14 @@ function LiveRoomConference({
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       {raisedHandsList.length > 0 ? (
-        <div className="pointer-events-none absolute left-3 top-3 z-20 flex max-w-[70vw] flex-wrap gap-2">
+        <div className="pointer-events-none absolute left-3 top-20 z-20 flex max-w-[70vw] flex-wrap gap-2">
           {raisedHandsList.map((entry) => (
             <span
               key={entry.senderId}
-              className="pointer-events-auto rounded-full border border-amber-300/60 bg-amber-500/80 px-3 py-1 text-xs font-semibold text-amber-950 shadow"
+              className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-amber-300/60 bg-amber-500/90 px-3 py-1 text-xs font-semibold text-amber-950 shadow-lg"
             >
-              ✋ {entry.senderName}
+              <Hand className="h-3.5 w-3.5" />
+              {entry.senderName}
             </span>
           ))}
         </div>
@@ -836,9 +1052,9 @@ function LiveRoomConference({
         <div className="pointer-events-none absolute bottom-20 left-1/2 z-20 flex w-full -translate-x-1/2 justify-center px-3">
           <div
             id="live-reactions-panel"
-            className="pointer-events-auto max-w-[calc(100vw-1.5rem)] rounded-2xl border border-slate-700 bg-slate-900/90 px-3 py-2 shadow-xl backdrop-blur"
+            className="pointer-events-auto max-w-[calc(100vw-1.5rem)] rounded-full border border-white/10 bg-slate-900/95 px-3 py-2 shadow-2xl backdrop-blur"
           >
-            <div className="flex flex-wrap items-center justify-center gap-2">
+            <div className="flex flex-wrap items-center justify-center gap-1.5">
               {LIVE_REACTIONS.map((emoji) => (
                 <button
                   key={emoji}
@@ -846,24 +1062,13 @@ function LiveRoomConference({
                   onClick={() => {
                     void sendReaction(emoji);
                   }}
-                  className="rounded-full bg-slate-800 px-2 py-1 text-lg leading-none hover:bg-slate-700"
+                  className="flex h-10 w-10 items-center justify-center rounded-full text-xl leading-none transition hover:scale-125 hover:bg-white/10"
                   title={`Enviar reacción ${emoji}`}
                   aria-label={`Enviar reacción ${emoji}`}
                 >
                   {emoji}
                 </button>
               ))}
-              <button
-                type="button"
-                onClick={toggleHandRaised}
-                className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                  handRaised
-                    ? "bg-amber-500 text-amber-950 hover:bg-amber-400"
-                    : "bg-sky-600 text-white hover:bg-sky-500"
-                }`}
-              >
-                {handRaised ? "Bajar mano" : "Levantar mano"}
-              </button>
             </div>
           </div>
         </div>
@@ -872,9 +1077,14 @@ function LiveRoomConference({
         <div className="flex min-h-0 flex-1">
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="lk-video-conference-inner min-h-0 flex-1">
-              {!focusTrack ? (
+              {showOnlyActiveCameras && !hasVisibleTracks ? (
+                <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-2 text-center text-slate-400">
+                  <VideoOff className="h-8 w-8 opacity-50" />
+                  <p className="text-sm">No hay cámaras encendidas en este momento.</p>
+                </div>
+              ) : !effectiveFocusTrack ? (
                 <div className="lk-grid-layout-wrapper min-h-0 flex-1">
-                  <GridLayout tracks={tracks} className="h-full">
+                  <GridLayout tracks={visibleTracks} className="h-full">
                     <ParticipantTile />
                   </GridLayout>
                 </div>
@@ -884,71 +1094,97 @@ function LiveRoomConference({
                     <CarouselLayout tracks={nonFocusedTracks}>
                       <ParticipantTile />
                     </CarouselLayout>
-                    <FocusLayout trackRef={focusTrack} />
+                    <FocusLayout trackRef={effectiveFocusTrack} />
                   </FocusLayoutContainer>
                 </div>
               )}
             </div>
-            <div className="border-t border-slate-800 bg-slate-950/80 px-2 py-2">
-              <div className="lk-control-bar">
-                <div className="lk-button-group">
-                  <TrackToggle source={Track.Source.Microphone} showIcon={true}>
-                    Micrófono
-                  </TrackToggle>
-                  <div className="lk-button-group-menu">
-                    <MediaDeviceMenu kind="audioinput" />
-                  </div>
-                </div>
+            <div className="border-t border-white/5 bg-slate-950/90 px-3 py-2.5 backdrop-blur">
+              <div className="flex flex-wrap items-start justify-center gap-2 sm:gap-3">
+                <LiveDeviceControl
+                  label="Micrófono"
+                  kind="audioinput"
+                  enabled={micToggle.enabled}
+                  pending={micToggle.pending}
+                  onToggle={() => {
+                    void micToggle.toggle();
+                  }}
+                  onIcon={<Mic className="h-5 w-5" />}
+                  offIcon={<MicOff className="h-5 w-5" />}
+                />
                 {canPublishCamera ? (
-                  <div className="lk-button-group">
-                    <TrackToggle source={Track.Source.Camera} showIcon={true}>
-                      Cámara
-                    </TrackToggle>
-                    <div className="lk-button-group-menu">
-                      <MediaDeviceMenu kind="videoinput" />
-                    </div>
-                  </div>
+                  <LiveDeviceControl
+                    label="Cámara"
+                    kind="videoinput"
+                    enabled={cameraToggle.enabled}
+                    pending={cameraToggle.pending}
+                    onToggle={() => {
+                      void cameraToggle.toggle();
+                    }}
+                    onIcon={<Video className="h-5 w-5" />}
+                    offIcon={<VideoOff className="h-5 w-5" />}
+                  />
                 ) : null}
                 {canShareScreen ? (
-                  <button
-                    type="button"
-                    aria-pressed={screenShareToggle.enabled}
-                    data-lk-source={Track.Source.ScreenShare}
-                    data-lk-enabled={screenShareToggle.enabled}
+                  <LiveBarButton
+                    label={screenShareToggle.enabled ? "Detener" : "Pantalla"}
+                    active={screenShareToggle.enabled}
                     disabled={screenShareToggle.pending}
+                    ariaPressed={screenShareToggle.enabled}
                     onClick={() => {
                       void handleScreenShareToggle();
                     }}
-                    className={screenShareToggle.buttonProps.className}
-                  >
-                    {screenShareToggle.enabled ? <ScreenShareStopIcon /> : <ScreenShareIcon />}
-                    {screenShareToggle.enabled ? "Detener pantalla" : "Compartir pantalla"}
-                  </button>
+                    icon={
+                      screenShareToggle.enabled ? (
+                        <MonitorX className="h-5 w-5" />
+                      ) : (
+                        <MonitorUp className="h-5 w-5" />
+                      )
+                    }
+                  />
                 ) : null}
-                <button
-                  type="button"
+                <LiveBarButton
+                  label="Reacciones"
+                  icon={<Smile className="h-5 w-5" />}
+                  active={showReactionBar}
+                  ariaControls="live-reactions-panel"
+                  ariaExpanded={showReactionBar}
                   onClick={() => {
                     setShowReactionBar((current) => !current);
                   }}
-                  aria-controls="live-reactions-panel"
-                  aria-expanded={showReactionBar}
-                  className={`rounded-lg border px-3 py-2 text-sm font-semibold transition ${
-                    handRaised
-                      ? "border-amber-400 bg-amber-500 text-amber-950 hover:bg-amber-400"
-                      : showReactionBar
-                        ? "border-sky-500 bg-sky-600 text-white hover:bg-sky-500"
-                        : "border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800"
-                  }`}
-                >
-                  {showReactionBar
-                    ? "Ocultar reacciones"
-                    : handRaised
-                      ? "Reacciones + mano arriba"
-                      : "Reacciones"}
-                </button>
-                <ChatToggle>
-                  Mensajes
-                </ChatToggle>
+                />
+                <LiveBarButton
+                  label={handRaised ? "Bajar mano" : "Mano"}
+                  icon={<Hand className="h-5 w-5" />}
+                  active={handRaised}
+                  ariaPressed={handRaised}
+                  onClick={toggleHandRaised}
+                />
+                <LiveBarButton
+                  label={showOnlyActiveCameras ? "Ver todos" : "Solo cámaras"}
+                  icon={<Eye className="h-5 w-5" />}
+                  active={showOnlyActiveCameras}
+                  ariaPressed={showOnlyActiveCameras}
+                  title={
+                    showOnlyActiveCameras
+                      ? "Mostrar a todos los participantes"
+                      : "Mostrar solo participantes con cámara encendida"
+                  }
+                  onClick={() => {
+                    setShowOnlyActiveCameras((current) => !current);
+                  }}
+                />
+                <div className="flex flex-col items-center gap-1">
+                  <ChatToggle className="live-chat-toggle">
+                    <MessageSquare className="h-5 w-5" />
+                    {widgetState.unreadMessages ? (
+                      <span className="live-chat-toggle__badge">
+                        {widgetState.unreadMessages > 9 ? "9+" : widgetState.unreadMessages}
+                      </span>
+                    ) : null}
+                  </ChatToggle>
+                  <span className="text-[10px] font-medium text-slate-300">Chat</span>
+                </div>
               </div>
             </div>
           </div>
@@ -1294,9 +1530,9 @@ export default function LiveClassRoomPage() {
   const [participants, setParticipants] = useState<LiveRoomParticipantSummary[]>([]);
   const [mutingAll, setMutingAll] = useState(false);
   const [mutingParticipantId, setMutingParticipantId] = useState<string | null>(null);
+  const [unmutingParticipantId, setUnmutingParticipantId] = useState<string | null>(null);
   const [moderationMessage, setModerationMessage] = useState<string | null>(null);
   const [recordingStatus, setRecordingStatus] = useState<LiveRecordingControlStatus>("idle");
-  const [recordingEgressId, setRecordingEgressId] = useState<string | null>(null);
   const [recordingErrorMessage, setRecordingErrorMessage] = useState<string | null>(null);
   const [recordingActionLoading, setRecordingActionLoading] = useState<"start" | "stop" | null>(
     null,
@@ -1349,7 +1585,6 @@ export default function LiveClassRoomPage() {
 
   const applyRecordingControlResult = useCallback((result: LiveRecordingControlResult | null | undefined) => {
     setRecordingStatus(asRecordingControlStatus(result?.recordingStatus));
-    setRecordingEgressId(result?.egressId ?? null);
     setRecordingErrorMessage(result?.errorMessage?.trim() || null);
   }, []);
 
@@ -1638,7 +1873,7 @@ export default function LiveClassRoomPage() {
             ? "Grabación manual iniciada."
             : payload.data.egressStopRequested === false
               ? "No había egress activo para detener."
-              : "Solicitud de cierre de grabación enviada.",
+              : "Grabación detenida. Se procesará en segundo plano y quedará disponible en la plataforma.",
         );
       } catch (recordingError) {
         setRecordingStatusNotice(
@@ -1655,40 +1890,50 @@ export default function LiveClassRoomPage() {
     [applyRecordingControlResult, asRole, classId, liveSessionStatus, recordingEndpoint, user],
   );
 
-  const fetchParticipants = useCallback(async () => {
-    if (!classId || !user || asRole !== "teacher") return;
-    if (liveSessionStatus !== "live") return;
+  const fetchParticipants = useCallback(
+    async (options?: { silent?: boolean }) => {
+      if (!classId || !user || asRole !== "teacher") return;
+      if (liveSessionStatus !== "live") return;
 
-    setParticipantsLoading(true);
-    setParticipantsError(null);
-    try {
-      const idToken = await user.getIdToken();
-      const response = await fetch(participantsEndpoint, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${idToken}`,
-        },
-      });
-      const payload = (await response.json().catch(() => null)) as LiveParticipantsResponse | null;
-      if (!response.ok || !payload?.success || !payload.data) {
-        throw new Error(payload?.error || "No se pudo consultar participantes");
+      const silent = options?.silent === true;
+      if (!silent) {
+        setParticipantsLoading(true);
+        setParticipantsError(null);
       }
+      try {
+        const idToken = await user.getIdToken();
+        const response = await fetch(participantsEndpoint, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${idToken}`,
+          },
+        });
+        const payload = (await response.json().catch(() => null)) as LiveParticipantsResponse | null;
+        if (!response.ok || !payload?.success || !payload.data) {
+          throw new Error(payload?.error || "No se pudo consultar participantes");
+        }
 
-      setParticipants(payload.data.participants ?? []);
-      if (payload.data.roomName) {
-        setRoomName(payload.data.roomName);
+        setParticipants(payload.data.participants ?? []);
+        if (payload.data.roomName) {
+          setRoomName(payload.data.roomName);
+        }
+      } catch (participantsFetchError) {
+        console.error("No se pudo consultar participantes de la sala", participantsFetchError);
+        if (!silent) {
+          setParticipantsError(
+            participantsFetchError instanceof Error
+              ? participantsFetchError.message
+              : "No se pudo consultar participantes",
+          );
+        }
+      } finally {
+        if (!silent) {
+          setParticipantsLoading(false);
+        }
       }
-    } catch (participantsFetchError) {
-      console.error("No se pudo consultar participantes de la sala", participantsFetchError);
-      setParticipantsError(
-        participantsFetchError instanceof Error
-          ? participantsFetchError.message
-          : "No se pudo consultar participantes",
-      );
-    } finally {
-      setParticipantsLoading(false);
-    }
-  }, [asRole, classId, liveSessionStatus, participantsEndpoint, user]);
+    },
+    [asRole, classId, liveSessionStatus, participantsEndpoint, user],
+  );
 
   const submitParticipantsAction = useCallback(
     async (actionPayload: Record<string, unknown>) => {
@@ -1747,6 +1992,39 @@ export default function LiveClassRoomPage() {
         );
       } finally {
         setMutingParticipantId(null);
+      }
+    },
+    [fetchParticipants, submitParticipantsAction],
+  );
+
+  const unmuteParticipant = useCallback(
+    async (participantIdentity: string) => {
+      if (!participantIdentity) return;
+      setParticipantsError(null);
+      setModerationMessage(null);
+      setUnmutingParticipantId(participantIdentity);
+      try {
+        const result = await submitParticipantsAction({
+          action: "unmute_participant",
+          participantIdentity,
+        });
+        const unmutedCount = result?.unmutedTrackSids?.length ?? 0;
+        const totalMicTracks = result?.totalMicrophoneTracks ?? 0;
+        setModerationMessage(
+          unmutedCount > 0
+            ? `Micrófono(s) reactivado(s): ${unmutedCount}.`
+            : totalMicTracks > 0
+              ? "Ese participante ya tenía el micrófono activo."
+              : "Ese participante no tiene micrófono publicado.",
+        );
+        await fetchParticipants();
+      } catch (unmuteError) {
+        console.error("No se pudo reactivar participante", unmuteError);
+        setParticipantsError(
+          unmuteError instanceof Error ? unmuteError.message : "No se pudo reactivar participante",
+        );
+      } finally {
+        setUnmutingParticipantId(null);
       }
     },
     [fetchParticipants, submitParticipantsAction],
@@ -1820,6 +2098,12 @@ export default function LiveClassRoomPage() {
     if (liveSessionStatus !== "live") return;
     if (!token || !livekitUrl) return;
     void fetchParticipants();
+    // Keep the moderation list in sync in near real-time while the panel is open
+    // so mic state reflects participants muting/unmuting themselves.
+    const timer = window.setInterval(() => {
+      void fetchParticipants({ silent: true });
+    }, 3000);
+    return () => window.clearInterval(timer);
   }, [asRole, fetchParticipants, liveSessionStatus, livekitUrl, showModerationPanel, token]);
 
   useEffect(() => {
@@ -1861,7 +2145,13 @@ export default function LiveClassRoomPage() {
     return () => window.clearTimeout(timeout);
   }, [recordingStatusNotice]);
 
-  const recordingStatusText = RECORDING_STATUS_LABEL[recordingStatus];
+  // An active recording reports "recording"; "processing" almost always means it
+  // has already stopped and is finalizing in the background. Showing an indefinite
+  // "Procesando" makes the teacher wait needlessly, so we surface "Detenido".
+  const recordingStoppedDisplay = recordingStatus === "processing";
+  const recordingStatusText = recordingStoppedDisplay
+    ? "Detenido"
+    : RECORDING_STATUS_LABEL[recordingStatus];
   const isSessionLive = liveSessionStatus === "live";
   const canManageClass = asRole === "teacher" && isSessionLive;
   const canStartRecording =
@@ -2056,47 +2346,81 @@ export default function LiveClassRoomPage() {
       >
         <LiveRoomConference viewerRole={asRole} />
       </LiveKitRoom>
-      <div className="pointer-events-none fixed left-0 right-0 top-0 flex justify-between p-3">
-        <div className="flex items-center gap-2">
-          <span className="pointer-events-auto rounded-full bg-black/70 px-3 py-1 text-xs font-semibold text-white">
-            {classTitle}
+      <div className="pointer-events-none fixed left-0 right-0 top-0 flex flex-wrap items-start justify-between gap-2 p-3">
+        <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-white/10 bg-black/60 py-1.5 pl-2 pr-3 shadow-lg backdrop-blur">
+          <span className="flex items-center gap-1.5 rounded-full bg-rose-600 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-white">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white/80" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-white" />
+            </span>
+            En vivo
           </span>
           <span
-            className="pointer-events-auto rounded-full bg-black/70 px-3 py-1 text-xs font-semibold text-white"
-            title={roomName ?? undefined}
+            className="max-w-[40vw] truncate text-sm font-semibold text-white"
+            title={roomName ?? classTitle}
           >
-            Sala en vivo
+            {classTitle}
           </span>
-        </div>
-        <div className="pointer-events-auto flex items-center gap-2">
-          {canManageClass ? (
-            <span className="rounded-full bg-black/70 px-3 py-1 text-xs font-semibold text-white">
-              Grabación: {recordingStatusText}
+          {canManageClass && recordingStatus !== "idle" ? (
+            <span
+              className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                recordingStatus === "recording"
+                  ? "bg-rose-500/20 text-rose-200"
+                  : recordingStatus === "failed"
+                    ? "bg-red-500/20 text-red-200"
+                    : "bg-white/10 text-slate-200"
+              }`}
+            >
+              <Radio className="h-3 w-3" />
+              {recordingStatusText}
             </span>
           ) : null}
-          {canManageClass ? (
+        </div>
+        <div className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-white/10 bg-black/60 px-1.5 py-1.5 shadow-lg backdrop-blur">
+          {canManageClass && recordingStatus !== "recording" && recordingStatus !== "processing" ? (
             <button
               type="button"
               disabled={!canStartRecording}
               onClick={() => {
                 void controlRecording("start");
               }}
-              className="rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
+              title="Iniciar grabación"
+              className="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20 disabled:opacity-50"
             >
-              {recordingActionLoading === "start" ? "Iniciando..." : "Iniciar grabación"}
+              {recordingActionLoading === "start" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Circle className="h-4 w-4 fill-rose-500 text-rose-500" />
+              )}
+              <span className="hidden sm:inline">Grabar</span>
             </button>
           ) : null}
-          {canManageClass ? (
+          {canManageClass && recordingStatus === "recording" ? (
             <button
               type="button"
               disabled={!canStopRecording}
               onClick={() => {
                 void controlRecording("stop");
               }}
-              className="rounded-full bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
+              title="Detener grabación"
+              className="flex items-center gap-1.5 rounded-full bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-rose-500 disabled:opacity-50"
             >
-              {recordingActionLoading === "stop" ? "Deteniendo..." : "Detener grabación"}
+              {recordingActionLoading === "stop" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Square className="h-4 w-4 fill-current" />
+              )}
+              <span className="hidden sm:inline">Detener</span>
             </button>
+          ) : null}
+          {canManageClass && recordingStoppedDisplay ? (
+            <span
+              title="Grabación detenida. Se procesa en segundo plano y quedará disponible en la plataforma."
+              className="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-slate-200"
+            >
+              <Square className="h-4 w-4 fill-current text-slate-300" />
+              <span className="hidden sm:inline">Detenido</span>
+            </span>
           ) : null}
           {canManageClass ? (
             <button
@@ -2104,9 +2428,15 @@ export default function LiveClassRoomPage() {
               onClick={() => {
                 setShowModerationPanel((current) => !current);
               }}
-              className="rounded-full bg-sky-600 px-3 py-1 text-xs font-semibold text-white hover:bg-sky-500"
+              title="Moderar audio"
+              className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                showModerationPanel
+                  ? "bg-sky-600 text-white hover:bg-sky-500"
+                  : "bg-white/10 text-white hover:bg-white/20"
+              }`}
             >
-              {showModerationPanel ? "Cerrar moderación" : "Moderar audio"}
+              <Users className="h-4 w-4" />
+              <span className="hidden sm:inline">Moderar</span>
             </button>
           ) : null}
           {canManageClass ? (
@@ -2114,27 +2444,30 @@ export default function LiveClassRoomPage() {
               type="button"
               disabled={endingSession}
               onClick={requestEndSessionConfirmation}
-              className="rounded-full bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-500 disabled:opacity-60"
+              title="Terminar sesión"
+              className="flex items-center gap-1.5 rounded-full bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-amber-500 disabled:opacity-60"
             >
-              {endingSession ? "Terminando..." : "Terminar sesión"}
+              <PhoneOff className="h-4 w-4" />
+              <span className="hidden sm:inline">
+                {endingSession ? "Terminando..." : "Terminar"}
+              </span>
             </button>
           ) : null}
-          <button
-            type="button"
-            onClick={leaveRoom}
-            className="rounded-full bg-red-600 px-3 py-1 text-xs font-semibold text-white hover:bg-red-500"
-          >
-            Salir
-          </button>
+          {asRole !== "teacher" ? (
+            <button
+              type="button"
+              onClick={leaveRoom}
+              title="Salir de la sala"
+              className="flex items-center gap-1.5 rounded-full bg-red-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-red-500"
+            >
+              <LogOut className="h-4 w-4" />
+              <span className="hidden sm:inline">Salir</span>
+            </button>
+          ) : null}
         </div>
       </div>
       {canManageClass ? (
-        <div className="pointer-events-none fixed left-3 top-14 z-20 flex flex-col gap-1">
-          {recordingEgressId ? (
-            <span className="pointer-events-auto rounded-full bg-black/70 px-3 py-1 text-[11px] font-semibold text-slate-100">
-              Egress: {recordingEgressId}
-            </span>
-          ) : null}
+        <div className="pointer-events-none fixed bottom-28 left-3 z-20 flex flex-col items-start gap-1">
           {recordingErrorMessage ? (
             <span className="pointer-events-auto rounded-full bg-red-600/90 px-3 py-1 text-[11px] font-semibold text-white">
               Error grabación: {recordingErrorMessage}
@@ -2242,10 +2575,16 @@ export default function LiveClassRoomPage() {
                 participants.map((participant) => {
                   const isSelfParticipant = participant.identity === user.uid;
                   const isTeacherParticipant = isTeacherLikeLiveRole(participant.role);
-                  const canMuteParticipant =
-                    !isSelfParticipant &&
-                    !isTeacherParticipant &&
-                    participant.microphone.unmuted > 0;
+                  const isModeratable = !isSelfParticipant && !isTeacherParticipant;
+                  const hasMic = participant.microphone.total > 0;
+                  const isMicLive = participant.microphone.unmuted > 0;
+                  const isMutingThis = mutingParticipantId === participant.identity;
+                  const isUnmutingThis = unmutingParticipantId === participant.identity;
+                  const actionsBusy =
+                    participantsLoading ||
+                    mutingAll ||
+                    mutingParticipantId !== null ||
+                    unmutingParticipantId !== null;
                   return (
                     <div key={participant.identity} className="border-b border-slate-800 px-3 py-3">
                       <div className="flex items-start justify-between gap-2">
@@ -2254,35 +2593,53 @@ export default function LiveClassRoomPage() {
                             {participant.name}
                             {isSelfParticipant ? " (tú)" : ""}
                           </p>
-                          <p className="truncate text-[11px] text-slate-400">{participant.identity}</p>
                         </div>
                         <span className="rounded bg-slate-700 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-200">
                           {isTeacherParticipant ? "Anfitrión" : "Participante"}
                         </span>
                       </div>
                       <div className="mt-2 flex items-center justify-between gap-2">
-                        <p className="text-xs text-slate-200">
-                          Micrófonos: {participant.microphone.unmuted} abiertos de {participant.microphone.total}
+                        <p className="flex items-center gap-1.5 text-xs">
+                          {isMicLive ? (
+                            <>
+                              <Mic className="h-3.5 w-3.5 text-emerald-400" />
+                              <span className="text-emerald-300">Micrófono activo</span>
+                            </>
+                          ) : hasMic ? (
+                            <>
+                              <MicOff className="h-3.5 w-3.5 text-rose-400" />
+                              <span className="text-rose-300">Silenciado</span>
+                            </>
+                          ) : (
+                            <>
+                              <MicOff className="h-3.5 w-3.5 text-slate-500" />
+                              <span className="text-slate-400">Sin micrófono</span>
+                            </>
+                          )}
                         </p>
-                        <button
-                          type="button"
-                          disabled={
-                            !canMuteParticipant ||
-                            participantsLoading ||
-                            mutingAll ||
-                            mutingParticipantId !== null
-                          }
-                          onClick={() => {
-                            void muteParticipant(participant.identity);
-                          }}
-                          className="rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-900 hover:bg-white disabled:opacity-50"
-                        >
-                          {mutingParticipantId === participant.identity
-                            ? "Silenciando..."
-                            : participant.microphone.unmuted > 0
-                              ? "Silenciar"
-                              : "Silenciado"}
-                        </button>
+                        {isModeratable && isMicLive ? (
+                          <button
+                            type="button"
+                            disabled={actionsBusy}
+                            onClick={() => {
+                              void muteParticipant(participant.identity);
+                            }}
+                            className="rounded-md bg-rose-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-50"
+                          >
+                            {isMutingThis ? "Silenciando..." : "Silenciar"}
+                          </button>
+                        ) : isModeratable && hasMic ? (
+                          <button
+                            type="button"
+                            disabled={actionsBusy}
+                            onClick={() => {
+                              void unmuteParticipant(participant.identity);
+                            }}
+                            className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+                          >
+                            {isUnmutingThis ? "Activando..." : "Activar"}
+                          </button>
+                        ) : null}
                       </div>
                     </div>
                   );

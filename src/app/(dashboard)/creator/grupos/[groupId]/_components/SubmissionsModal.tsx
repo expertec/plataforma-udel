@@ -7,7 +7,8 @@ import { db } from "@/lib/firebase/firestore";
 import { auth } from "@/lib/firebase/client";
 import {
   createSubmission,
-  getSubmissionsByClass,
+  getAllSubmissions,
+  getSubmissionClassMatchScore,
   Submission,
   SubmissionAnswer,
   deleteSubmission,
@@ -991,6 +992,18 @@ const selectBestSubmissionByStudent = (submissions: Submission[]): Map<string, S
   return bestByStudent;
 };
 
+const filterSubmissionsForClass = (
+  submissions: Submission[],
+  target: {
+    classId: string;
+    courseId?: string;
+    lessonId?: string;
+    className: string;
+    classType: string;
+  },
+) =>
+  submissions.filter((submission) => getSubmissionClassMatchScore(submission, target) > 0);
+
 export function SubmissionsModal({
   groupId,
   classId,
@@ -1047,6 +1060,7 @@ export function SubmissionsModal({
           };
         });
 
+        const allSubmissions = await getAllSubmissions(groupId);
         let submissions: Submission[] = [];
         if (classType === "forum" && courseId && lessonId) {
           const forumPosts = await getForumPosts(courseId, lessonId, classId);
@@ -1076,9 +1090,13 @@ export function SubmissionsModal({
             };
           });
         } else {
-          submissions = (await getSubmissionsByClass(groupId, classId)).filter(
-            (s) => !courseId || !s.courseId || s.courseId === courseId,
-          );
+          submissions = filterSubmissionsForClass(allSubmissions, {
+            classId,
+            courseId,
+            lessonId,
+            className,
+            classType,
+          });
         }
         const bestByStudent = selectBestSubmissionByStudent(submissions);
         const rows: Row[] = students.map((s) => ({
@@ -1216,9 +1234,13 @@ export function SubmissionsModal({
       return;
     }
 
-    const submissions = (await getSubmissionsByClass(groupId, classId)).filter(
-      (s) => !courseId || !s.courseId || s.courseId === courseId,
-    );
+    const submissions = filterSubmissionsForClass(await getAllSubmissions(groupId), {
+      classId,
+      courseId,
+      lessonId,
+      className,
+      classType,
+    });
     const bestByStudent = selectBestSubmissionByStudent(submissions);
     setRows((prev) =>
       prev.map((r) => ({

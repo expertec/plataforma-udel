@@ -7,6 +7,7 @@ import toast from "react-hot-toast";
 import {
   getAllSubmissions,
   hasNumericSubmissionGrade,
+  getSubmissionClassMatchScore,
   Submission,
   shouldPreferIncomingSubmission,
 } from "@/lib/firebase/submissions-service";
@@ -138,6 +139,17 @@ export function EntregasTab({
     classType: string;
   } | null>(null);
 
+  const matchSubmissionsToClass = (
+    submissions: Submission[],
+    target: {
+      classId: string;
+      courseId: string;
+      lessonId: string;
+      className: string;
+      classType: string;
+    },
+  ) => submissions.filter((submission) => getSubmissionClassMatchScore(submission, target) > 0);
+
   useEffect(() => {
     const load = async () => {
       setLoading(true);
@@ -261,11 +273,13 @@ export function EntregasTab({
 
         const rows: AssignmentRow[] = [];
         for (const cls of allClasses) {
-          const submissions = mergedSubs.filter(
-            (s) =>
-              (s.classDocId ?? s.classId) === cls.classId &&
-              (!s.courseId || s.courseId === cls.courseId),
-          );
+          const submissions = matchSubmissionsToClass(mergedSubs, {
+            classId: cls.classId,
+            courseId: cls.courseId,
+            lessonId: cls.lessonId,
+            className: cls.title,
+            classType: cls.classType,
+          });
           const graded = submissions.filter((s) => typeof s.grade === "number");
           const avgGrade =
             graded.length > 0 ? graded.reduce((sum, s) => sum + (s.grade ?? 0), 0) / graded.length : null;
