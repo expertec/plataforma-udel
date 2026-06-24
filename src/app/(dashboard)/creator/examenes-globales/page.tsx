@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Pencil, Plus, Search, X } from "lucide-react";
 import toast from "react-hot-toast";
 import { onAuthStateChanged } from "firebase/auth";
 import { type DocumentSnapshot } from "firebase/firestore";
@@ -106,6 +107,9 @@ export default function GlobalExamsPage() {
   const searchStudentTokenRef = useRef(0);
 
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
+  const [templateSearch, setTemplateSearch] = useState("");
+  const [showTemplateForm, setShowTemplateForm] = useState(false);
+  const [assignmentSearch, setAssignmentSearch] = useState("");
   const [templateTitle, setTemplateTitle] = useState("");
   const [templateDescription, setTemplateDescription] = useState("");
   const [templateCourseId, setTemplateCourseId] = useState("");
@@ -114,6 +118,7 @@ export default function GlobalExamsPage() {
   const [templateQuestions, setTemplateQuestions] = useState<QuestionFormState[]>(createInitialQuestions);
   const [savingTemplate, setSavingTemplate] = useState(false);
 
+  const [showAssignmentForm, setShowAssignmentForm] = useState(false);
   const [assignmentTemplateId, setAssignmentTemplateId] = useState("");
   const [assignmentStudentId, setAssignmentStudentId] = useState("");
   const [assignmentGroupId, setAssignmentGroupId] = useState("");
@@ -175,6 +180,41 @@ export default function GlobalExamsPage() {
       .slice(0, 8);
   }, [courses, templateCourseSearch]);
 
+  const filteredTemplates = useMemo(() => {
+    const query = normalizeSearchText(templateSearch);
+    if (!query) return templates;
+    return templates.filter((template) => {
+      const haystack = normalizeSearchText(
+        [
+          template.title,
+          template.courseName,
+          template.description,
+          getGlobalExamTemplateStatusLabel(template.status),
+        ].join(" "),
+      );
+      return haystack.includes(query);
+    });
+  }, [templates, templateSearch]);
+
+  const filteredAssignments = useMemo(() => {
+    const query = normalizeSearchText(assignmentSearch);
+    if (!query) return assignments;
+    return assignments.filter((assignment) => {
+      const haystack = normalizeSearchText(
+        [
+          assignment.studentName,
+          assignment.studentEmail,
+          assignment.courseName,
+          assignment.groupName,
+          assignment.templateTitle,
+          assignment.plantelName,
+          getGlobalExamStatusLabel(assignment.status),
+        ].join(" "),
+      );
+      return haystack.includes(query);
+    });
+  }, [assignments, assignmentSearch]);
+
   const canCreateTemplates = isAdmin;
 
   const persistSelectedStudent = (student: StudentUser) => {
@@ -194,6 +234,17 @@ export default function GlobalExamsPage() {
     setTemplateCourseSearch("");
     setTemplateStatus("draft");
     setTemplateQuestions(createInitialQuestions());
+  };
+
+  const openNewTemplateForm = () => {
+    resetTemplateForm();
+    setShowTemplateForm(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const closeTemplateForm = () => {
+    resetTemplateForm();
+    setShowTemplateForm(false);
   };
 
   const loadAllData = async (role: UserRole | null) => {
@@ -365,6 +416,18 @@ export default function GlobalExamsPage() {
     };
   }, [assignmentStudentId, assignmentTemplateId]);
 
+  useEffect(() => {
+    if (!showTemplateForm && !showAssignmentForm) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowTemplateForm(false);
+        setShowAssignmentForm(false);
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [showTemplateForm, showAssignmentForm]);
+
   const handleTemplateCourseSearchChange = (value: string) => {
     setTemplateCourseSearch(value);
     const normalized = value.trim().toLowerCase();
@@ -452,6 +515,7 @@ export default function GlobalExamsPage() {
       });
       toast.success(editingTemplateId ? "Plantilla actualizada" : "Plantilla creada");
       resetTemplateForm();
+      setShowTemplateForm(false);
       setActiveTab("templates");
     } catch (error) {
       console.error(error);
@@ -470,6 +534,7 @@ export default function GlobalExamsPage() {
     setTemplateStatus(template.status);
     setTemplateQuestions(cloneTemplateQuestions(template.questions));
     setActiveTab("templates");
+    setShowTemplateForm(true);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -511,6 +576,7 @@ export default function GlobalExamsPage() {
       setAssignmentEnableNow(false);
       setCandidateEnrollments([]);
       toast.success("Asignacion creada");
+      setShowAssignmentForm(false);
       setActiveTab("assignments");
     } catch (error) {
       console.error(error);
@@ -518,6 +584,26 @@ export default function GlobalExamsPage() {
     } finally {
       setSavingAssignment(false);
     }
+  };
+
+  const resetAssignmentForm = () => {
+    setAssignmentStudentId("");
+    setAssignmentTemplateId("");
+    setAssignmentGroupId("");
+    setAssignmentReason("failed_course");
+    setAssignmentEnableNow(false);
+    setCandidateEnrollments([]);
+    setStudentSearch("");
+  };
+
+  const openAssignmentForm = () => {
+    resetAssignmentForm();
+    setShowAssignmentForm(true);
+  };
+
+  const closeAssignmentForm = () => {
+    resetAssignmentForm();
+    setShowAssignmentForm(false);
   };
 
   const handleToggleAssignment = async (assignment: GlobalExamAssignmentRecord, enabled: boolean) => {
@@ -632,25 +718,66 @@ export default function GlobalExamsPage() {
         ) : null}
 
         {!loadingData && activeTab === "templates" ? (
-          <div className="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(340px,0.95fr)]">
-            <section className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Configuracion</p>
-                  <h2 className="text-xl font-semibold text-slate-900">
-                    {editingTemplateId ? "Editar plantilla" : "Nueva plantilla"}
-                  </h2>
-                </div>
-                {editingTemplateId ? (
+          <div className="space-y-5">
+            <section className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+              <div className="relative w-full sm:max-w-md">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  value={templateSearch}
+                  onChange={(event) => setTemplateSearch(event.target.value)}
+                  placeholder="Buscar plantilla por nombre, materia o estado..."
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2.5 pl-9 text-sm outline-none transition focus:border-blue-500"
+                />
+                {templateSearch ? (
                   <button
                     type="button"
-                    onClick={resetTemplateForm}
-                    className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:border-slate-300"
+                    onClick={() => setTemplateSearch("")}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                    aria-label="Limpiar busqueda"
                   >
-                    Cancelar edicion
+                    <X className="h-4 w-4" />
                   </button>
                 ) : null}
               </div>
+              {canCreateTemplates && !showTemplateForm ? (
+                <button
+                  type="button"
+                  onClick={openNewTemplateForm}
+                  className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800"
+                >
+                  <Plus className="h-4 w-4" />
+                  Nueva plantilla
+                </button>
+              ) : null}
+            </section>
+
+            {!canCreateTemplates ? (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                Como coordinacion puedes consultar plantillas publicadas, pero la creacion y edicion
+                quedan reservadas a adminTeacher y superAdminTeacher.
+              </div>
+            ) : null}
+
+            {showTemplateForm && canCreateTemplates ? (
+            <div className="fixed inset-0 z-50 flex justify-center overflow-y-auto bg-slate-900/50 p-4 backdrop-blur-sm">
+              <div className="relative my-6 h-fit w-full max-w-4xl rounded-2xl bg-white shadow-2xl">
+                <div className="sticky top-0 z-10 flex items-center justify-between gap-3 rounded-t-2xl border-b border-slate-200 bg-white px-5 py-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Configuracion</p>
+                    <h2 className="text-xl font-semibold text-slate-900">
+                      {editingTemplateId ? "Editar plantilla" : "Nueva plantilla"}
+                    </h2>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeTemplateForm}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:border-slate-300"
+                  >
+                    <X className="h-4 w-4" />
+                    Cerrar
+                  </button>
+                </div>
+                <div className="space-y-5 p-5">
 
               {canCreateTemplates ? (
                 <form className="space-y-5" onSubmit={handleSubmitTemplate}>
@@ -854,30 +981,43 @@ export default function GlobalExamsPage() {
                         : "Crear plantilla"}
                   </button>
                 </form>
-              ) : (
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-                  Como coordinacion puedes consultar plantillas publicadas, pero la creacion y edicion
-                  quedan reservadas a adminTeacher y superAdminTeacher.
+              ) : null}
                 </div>
-              )}
-            </section>
+              </div>
+            </div>
+            ) : null}
 
             <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-              <div>
-                <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Catalogo</p>
-                <h2 className="text-xl font-semibold text-slate-900">Plantillas registradas</h2>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Catalogo</p>
+                  <h2 className="text-xl font-semibold text-slate-900">Plantillas registradas</h2>
+                </div>
+                <span className="shrink-0 rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                  {templateSearch
+                    ? `${filteredTemplates.length} de ${templates.length}`
+                    : `${templates.length} total`}
+                </span>
               </div>
 
               {templates.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
                   Aun no existen plantillas de examen global.
                 </div>
+              ) : filteredTemplates.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
+                  No hay plantillas que coincidan con tu busqueda.
+                </div>
               ) : (
-                <div className="space-y-3">
-                  {templates.map((template) => (
+                <div className="grid gap-3 lg:grid-cols-2">
+                  {filteredTemplates.map((template) => (
                     <article
                       key={template.id}
-                      className="rounded-2xl border border-slate-200 bg-slate-50 p-4"
+                      className={`rounded-2xl border bg-slate-50 p-4 transition ${
+                        editingTemplateId === template.id
+                          ? "border-blue-300 ring-2 ring-blue-100"
+                          : "border-slate-200"
+                      }`}
                     >
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
@@ -897,8 +1037,9 @@ export default function GlobalExamsPage() {
                             <button
                               type="button"
                               onClick={() => handleEditTemplate(template)}
-                              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700"
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-blue-300 hover:text-blue-700"
                             >
+                              <Pencil className="h-3.5 w-3.5" />
                               Editar
                             </button>
                             <button
@@ -923,17 +1064,59 @@ export default function GlobalExamsPage() {
         ) : null}
 
         {!loadingData && activeTab === "assignments" ? (
-          <div className="grid gap-6 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
-            <section className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-              <div>
-                <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Alumno puntual</p>
-                <h2 className="text-xl font-semibold text-slate-900">Nueva asignacion</h2>
-                <p className="text-sm text-slate-600">
-                  El examen solo quedara disponible para el alumno y grupo elegidos.
-                </p>
+          <div className="space-y-5">
+            <section className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+              <div className="relative w-full sm:max-w-md">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  value={assignmentSearch}
+                  onChange={(event) => setAssignmentSearch(event.target.value)}
+                  placeholder="Buscar por alumno, materia, grupo o plantilla..."
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2.5 pl-9 text-sm outline-none transition focus:border-blue-500"
+                />
+                {assignmentSearch ? (
+                  <button
+                    type="button"
+                    onClick={() => setAssignmentSearch("")}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                    aria-label="Limpiar busqueda"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                ) : null}
               </div>
+              <button
+                type="button"
+                onClick={openAssignmentForm}
+                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800"
+              >
+                <Plus className="h-4 w-4" />
+                Nueva asignacion
+              </button>
+            </section>
 
-              <form className="space-y-4" onSubmit={handleSubmitAssignment}>
+            {showAssignmentForm ? (
+            <div className="fixed inset-0 z-50 flex justify-center overflow-y-auto bg-slate-900/50 p-4 backdrop-blur-sm">
+              <div className="relative my-6 h-fit w-full max-w-2xl rounded-2xl bg-white shadow-2xl">
+                <div className="sticky top-0 z-10 flex items-center justify-between gap-3 rounded-t-2xl border-b border-slate-200 bg-white px-5 py-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Alumno puntual</p>
+                    <h2 className="text-xl font-semibold text-slate-900">Nueva asignacion</h2>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeAssignmentForm}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:border-slate-300"
+                  >
+                    <X className="h-4 w-4" />
+                    Cerrar
+                  </button>
+                </div>
+                <div className="p-5">
+                  <p className="mb-4 text-sm text-slate-600">
+                    El examen solo quedara disponible para el alumno y grupo elegidos.
+                  </p>
+                  <form className="space-y-4" onSubmit={handleSubmitAssignment}>
                 <label className="space-y-2 text-sm">
                   <span className="font-medium text-slate-700">Plantilla publicada</span>
                   <select
@@ -1117,21 +1300,35 @@ export default function GlobalExamsPage() {
                   {savingAssignment ? "Guardando..." : "Crear asignacion"}
                 </button>
               </form>
-            </section>
+                </div>
+              </div>
+            </div>
+            ) : null}
 
             <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-              <div>
-                <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Operacion</p>
-                <h2 className="text-xl font-semibold text-slate-900">Asignaciones existentes</h2>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Operacion</p>
+                  <h2 className="text-xl font-semibold text-slate-900">Asignaciones existentes</h2>
+                </div>
+                <span className="shrink-0 rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                  {assignmentSearch
+                    ? `${filteredAssignments.length} de ${assignments.length}`
+                    : `${assignments.length} total`}
+                </span>
               </div>
 
               {assignments.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
                   Aun no existen asignaciones para examen global.
                 </div>
+              ) : filteredAssignments.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
+                  No hay asignaciones que coincidan con tu busqueda.
+                </div>
               ) : (
                 <div className="space-y-3">
-                  {assignments.map((assignment) => {
+                  {filteredAssignments.map((assignment) => {
                     const canToggle =
                       assignment.status === "draft" ||
                       assignment.status === "enabled" ||
