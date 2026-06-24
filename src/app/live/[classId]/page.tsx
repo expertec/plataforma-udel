@@ -39,17 +39,22 @@ import {
 import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Check,
+  ChevronUp,
   Circle,
   Eye,
   Hand,
+  LayoutGrid,
   Loader2,
   LogOut,
+  Maximize,
   MessageSquare,
   Mic,
   MicOff,
   MonitorUp,
   MonitorX,
   PhoneOff,
+  Presentation,
   Radio,
   Send,
   Smile,
@@ -202,6 +207,29 @@ type LiveBrowserInfo = {
   label: string;
   isRecommendedChrome: boolean;
 };
+
+const LIVE_VIEW_MODES = [
+  {
+    id: "speaker",
+    label: "Orador",
+    description: "Un participante destacado con miniaturas",
+    icon: Presentation,
+  },
+  {
+    id: "gallery",
+    label: "Galería",
+    description: "Todos en cuadrícula por igual",
+    icon: LayoutGrid,
+  },
+  {
+    id: "focus",
+    label: "Pantalla completa",
+    description: "Solo el destacado, sin miniaturas",
+    icon: Maximize,
+  },
+] as const;
+
+type LiveViewMode = (typeof LIVE_VIEW_MODES)[number]["id"];
 
 const LIVE_SIGNAL_TOPIC = "udx.live.signal";
 const LIVE_REACTION_TTL_MS = 4500;
@@ -416,7 +444,7 @@ function LiveBarButton({
         aria-controls={ariaControls}
         aria-expanded={ariaExpanded}
         aria-pressed={ariaPressed}
-        className={`relative flex h-12 w-12 items-center justify-center rounded-2xl transition disabled:cursor-not-allowed disabled:opacity-40 ${
+        className={`relative flex h-10 w-10 items-center justify-center rounded-xl transition disabled:cursor-not-allowed disabled:opacity-40 [&_svg]:h-[18px] [&_svg]:w-[18px] sm:h-12 sm:w-12 sm:rounded-2xl sm:[&_svg]:h-5 sm:[&_svg]:w-5 ${
           danger
             ? "bg-rose-600 text-white shadow-lg shadow-rose-900/30 hover:bg-rose-500"
             : active
@@ -431,7 +459,7 @@ function LiveBarButton({
           </span>
         ) : null}
       </button>
-      <span className="text-[10px] font-medium text-slate-300">{label}</span>
+      <span className="text-[9px] font-medium text-slate-300 sm:text-[10px]">{label}</span>
     </div>
   );
 }
@@ -456,7 +484,7 @@ function LiveDeviceControl({
   return (
     <div className="flex flex-col items-center gap-1">
       <div
-        className={`relative flex items-center rounded-2xl transition ${
+        className={`relative flex items-center rounded-xl transition sm:rounded-2xl ${
           enabled
             ? "bg-white/10 hover:bg-white/20"
             : "bg-rose-600 shadow-lg shadow-rose-900/30 hover:bg-rose-500"
@@ -469,7 +497,7 @@ function LiveDeviceControl({
           title={enabled ? `Desactivar ${label.toLowerCase()}` : `Activar ${label.toLowerCase()}`}
           aria-label={label}
           aria-pressed={enabled}
-          className="flex h-12 w-12 items-center justify-center rounded-2xl text-white transition disabled:cursor-not-allowed disabled:opacity-40"
+          className="flex h-10 w-10 items-center justify-center rounded-xl text-white transition disabled:cursor-not-allowed disabled:opacity-40 [&_svg]:h-[18px] [&_svg]:w-[18px] sm:h-12 sm:w-12 sm:rounded-2xl sm:[&_svg]:h-5 sm:[&_svg]:w-5"
         >
           {enabled ? onIcon : offIcon}
         </button>
@@ -477,7 +505,7 @@ function LiveDeviceControl({
           <MediaDeviceMenu kind={kind} />
         </div>
       </div>
-      <span className="text-[10px] font-medium text-slate-300">{label}</span>
+      <span className="text-[9px] font-medium text-slate-300 sm:text-[10px]">{label}</span>
     </div>
   );
 }
@@ -630,8 +658,12 @@ function LiveRoomChatPanel({ visible }: { visible: boolean }) {
 
 function LiveRoomConference({
   viewerRole,
+  leftSlot,
+  rightSlot,
 }: {
   viewerRole: "teacher" | "student" | null;
+  leftSlot?: React.ReactNode;
+  rightSlot?: React.ReactNode;
 }) {
   const participants = useParticipants();
   const connectionState = useConnectionState();
@@ -654,6 +686,9 @@ function LiveRoomConference({
   const [handRaised, setHandRaised] = useState(false);
   const [showReactionBar, setShowReactionBar] = useState(false);
   const [showOnlyActiveCameras, setShowOnlyActiveCameras] = useState(false);
+  const [viewMode, setViewMode] = useState<LiveViewMode>("speaker");
+  const [showViewMenu, setShowViewMenu] = useState(false);
+  const viewMenuRef = useRef<HTMLDivElement>(null);
   const [activeReactions, setActiveReactions] = useState<LiveReactionEvent[]>([]);
   const processedSignalIdsRef = useRef<string[]>([]);
   const previousParticipantsCountRef = useRef(0);
@@ -733,7 +768,13 @@ function LiveRoomConference({
     return subscribed ?? teacherCameraTracks[0] ?? null;
   }, [tracks]);
 
-  const focusTrack = screenShareTrack ?? teacherCameraTrack ?? null;
+  // Speaker view focuses on the teacher (or screen share); gallery view shows
+  // everyone in an even grid, only forcing a focused tile for screen shares so
+  // shared content is never hidden.
+  const focusTrack =
+    viewMode === "gallery"
+      ? (screenShareTrack ?? null)
+      : (screenShareTrack ?? teacherCameraTrack ?? null);
 
   // When "solo cámaras activas" is enabled we keep screen shares and camera
   // tracks that are actually publishing video (not muted/off), and drop the
@@ -960,6 +1001,17 @@ function LiveRoomConference({
   }, []);
 
   useEffect(() => {
+    if (!showViewMenu) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!viewMenuRef.current?.contains(event.target as Node)) {
+        setShowViewMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [showViewMenu]);
+
+  useEffect(() => {
     const currentCount = participants.length;
     const previousCount = previousParticipantsCountRef.current;
     previousParticipantsCountRef.current = currentCount;
@@ -1082,6 +1134,10 @@ function LiveRoomConference({
                   <VideoOff className="h-8 w-8 opacity-50" />
                   <p className="text-sm">No hay cámaras encendidas en este momento.</p>
                 </div>
+              ) : viewMode === "focus" && effectiveFocusTrack ? (
+                <div className="lk-focus-layout-wrapper min-h-0 flex-1">
+                  <FocusLayout trackRef={effectiveFocusTrack} className="h-full" />
+                </div>
               ) : !effectiveFocusTrack ? (
                 <div className="lk-grid-layout-wrapper min-h-0 flex-1">
                   <GridLayout tracks={visibleTracks} className="h-full">
@@ -1099,8 +1155,10 @@ function LiveRoomConference({
                 </div>
               )}
             </div>
-            <div className="border-t border-white/5 bg-slate-950/90 px-3 py-2.5 backdrop-blur">
-              <div className="flex flex-wrap items-start justify-center gap-2 sm:gap-3">
+            <div className="border-t border-white/5 bg-slate-950/90 px-2 py-2 backdrop-blur sm:px-3 sm:py-2.5">
+              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1 sm:gap-2">
+                <div className="flex min-w-0 items-center justify-start">{leftSlot}</div>
+                <div className="flex flex-wrap items-start justify-center gap-1.5 sm:gap-3">
                 <LiveDeviceControl
                   label="Micrófono"
                   kind="audioinput"
@@ -1160,6 +1218,76 @@ function LiveRoomConference({
                   ariaPressed={handRaised}
                   onClick={toggleHandRaised}
                 />
+                {(() => {
+                  const activeMode =
+                    LIVE_VIEW_MODES.find((mode) => mode.id === viewMode) ?? LIVE_VIEW_MODES[0];
+                  const ActiveIcon = activeMode.icon;
+                  return (
+                    <div className="relative flex flex-col items-center gap-1" ref={viewMenuRef}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowViewMenu((current) => !current);
+                        }}
+                        aria-haspopup="menu"
+                        aria-expanded={showViewMenu}
+                        title="Cambiar vista"
+                        className={`flex h-10 items-center justify-center gap-1 rounded-xl px-2.5 transition sm:h-12 sm:rounded-2xl sm:px-3 ${
+                          showViewMenu
+                            ? "bg-sky-600 text-white"
+                            : "bg-white/10 text-slate-100 hover:bg-white/20"
+                        }`}
+                      >
+                        <ActiveIcon className="h-[18px] w-[18px] sm:h-5 sm:w-5" />
+                        <ChevronUp
+                          className={`h-3 w-3 transition-transform sm:h-3.5 sm:w-3.5 ${
+                            showViewMenu ? "" : "rotate-180"
+                          }`}
+                        />
+                      </button>
+                      <span className="text-[9px] font-medium text-slate-300 sm:text-[10px]">
+                        {activeMode.label}
+                      </span>
+                      {showViewMenu ? (
+                        <div
+                          role="menu"
+                          className="absolute bottom-full left-1/2 z-30 mb-2 w-60 -translate-x-1/2 rounded-xl border border-white/10 bg-slate-900/95 p-1 shadow-2xl backdrop-blur"
+                        >
+                          {LIVE_VIEW_MODES.map((mode) => {
+                            const ModeIcon = mode.icon;
+                            const isActiveMode = mode.id === viewMode;
+                            return (
+                              <button
+                                key={mode.id}
+                                type="button"
+                                role="menuitemradio"
+                                aria-checked={isActiveMode}
+                                onClick={() => {
+                                  setViewMode(mode.id);
+                                  setShowViewMenu(false);
+                                }}
+                                className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition ${
+                                  isActiveMode
+                                    ? "bg-sky-600 text-white"
+                                    : "text-slate-100 hover:bg-white/10"
+                                }`}
+                              >
+                                <ModeIcon className="h-4 w-4 shrink-0" />
+                                <span className="flex-1">
+                                  <span className="block text-sm font-medium">{mode.label}</span>
+                                  <span className="block text-[11px] opacity-70">
+                                    {mode.description}
+                                  </span>
+                                </span>
+                                {isActiveMode ? <Check className="h-4 w-4 shrink-0" /> : null}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })()}
                 <LiveBarButton
                   label={showOnlyActiveCameras ? "Ver todos" : "Solo cámaras"}
                   icon={<Eye className="h-5 w-5" />}
@@ -1183,8 +1311,10 @@ function LiveRoomConference({
                       </span>
                     ) : null}
                   </ChatToggle>
-                  <span className="text-[10px] font-medium text-slate-300">Chat</span>
+                  <span className="text-[9px] font-medium text-slate-300 sm:text-[10px]">Chat</span>
                 </div>
+                </div>
+                <div className="flex min-w-0 items-center justify-end">{rightSlot}</div>
               </div>
             </div>
           </div>
@@ -2278,6 +2408,128 @@ export default function LiveClassRoomPage() {
     );
   }
 
+  const bottomLeftSlot = (
+    <div className="flex items-center gap-2">
+      <span className="flex shrink-0 items-center gap-1.5 rounded-full bg-rose-600 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-white">
+        <span className="relative flex h-2 w-2">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white/80" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-white" />
+        </span>
+        En vivo
+      </span>
+      <span
+        className="hidden max-w-[18vw] truncate text-sm font-semibold text-white md:block"
+        title={roomName ?? classTitle}
+      >
+        {classTitle}
+      </span>
+      {canManageClass && recordingStatus !== "idle" ? (
+        <span
+          className={`hidden items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold lg:flex ${
+            recordingStatus === "recording"
+              ? "bg-rose-500/20 text-rose-200"
+              : recordingStatus === "failed"
+                ? "bg-red-500/20 text-red-200"
+                : "bg-white/10 text-slate-200"
+          }`}
+        >
+          <Radio className="h-3 w-3" />
+          {recordingStatusText}
+        </span>
+      ) : null}
+    </div>
+  );
+
+  const bottomRightSlot = (
+    <div className="flex items-center gap-1.5">
+      {canManageClass && recordingStatus !== "recording" && recordingStatus !== "processing" ? (
+        <button
+          type="button"
+          disabled={!canStartRecording}
+          onClick={() => {
+            void controlRecording("start");
+          }}
+          title="Iniciar grabación"
+          className="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20 disabled:opacity-50"
+        >
+          {recordingActionLoading === "start" ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Circle className="h-4 w-4 fill-rose-500 text-rose-500" />
+          )}
+          <span className="hidden sm:inline">Grabar</span>
+        </button>
+      ) : null}
+      {canManageClass && recordingStatus === "recording" ? (
+        <button
+          type="button"
+          disabled={!canStopRecording}
+          onClick={() => {
+            void controlRecording("stop");
+          }}
+          title="Detener grabación"
+          className="flex items-center gap-1.5 rounded-full bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-rose-500 disabled:opacity-50"
+        >
+          {recordingActionLoading === "stop" ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Square className="h-4 w-4 fill-current" />
+          )}
+          <span className="hidden sm:inline">Detener</span>
+        </button>
+      ) : null}
+      {canManageClass && recordingStoppedDisplay ? (
+        <span
+          title="Grabación detenida. Se procesa en segundo plano y quedará disponible en la plataforma."
+          className="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-slate-200"
+        >
+          <Square className="h-4 w-4 fill-current text-slate-300" />
+          <span className="hidden sm:inline">Detenido</span>
+        </span>
+      ) : null}
+      {canManageClass ? (
+        <button
+          type="button"
+          onClick={() => {
+            setShowModerationPanel((current) => !current);
+          }}
+          title="Moderar audio"
+          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+            showModerationPanel
+              ? "bg-sky-600 text-white hover:bg-sky-500"
+              : "bg-white/10 text-white hover:bg-white/20"
+          }`}
+        >
+          <Users className="h-4 w-4" />
+          <span className="hidden sm:inline">Moderar</span>
+        </button>
+      ) : null}
+      {canManageClass ? (
+        <button
+          type="button"
+          disabled={endingSession}
+          onClick={requestEndSessionConfirmation}
+          title="Terminar sesión"
+          className="flex items-center gap-1.5 rounded-full bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-amber-500 disabled:opacity-60"
+        >
+          <PhoneOff className="h-4 w-4" />
+          <span className="hidden sm:inline">{endingSession ? "Terminando..." : "Terminar"}</span>
+        </button>
+      ) : null}
+      {asRole !== "teacher" ? (
+        <button
+          type="button"
+          onClick={leaveRoom}
+          title="Salir de la sala"
+          className="flex items-center gap-1.5 rounded-full bg-red-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-red-500"
+        >
+          <LogOut className="h-4 w-4" />
+          <span className="hidden sm:inline">Salir</span>
+        </button>
+      ) : null}
+    </div>
+  );
+
   return (
     <div className="h-screen w-full bg-slate-950">
       {livekitError || shouldShowChromeRecommendation ? (
@@ -2344,128 +2596,12 @@ export default function LiveClassRoomPage() {
         data-lk-theme="default"
         className="h-full w-full"
       >
-        <LiveRoomConference viewerRole={asRole} />
+        <LiveRoomConference
+          viewerRole={asRole}
+          leftSlot={bottomLeftSlot}
+          rightSlot={bottomRightSlot}
+        />
       </LiveKitRoom>
-      <div className="pointer-events-none fixed left-0 right-0 top-0 flex flex-wrap items-start justify-between gap-2 p-3">
-        <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-white/10 bg-black/60 py-1.5 pl-2 pr-3 shadow-lg backdrop-blur">
-          <span className="flex items-center gap-1.5 rounded-full bg-rose-600 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-white">
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white/80" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-white" />
-            </span>
-            En vivo
-          </span>
-          <span
-            className="max-w-[40vw] truncate text-sm font-semibold text-white"
-            title={roomName ?? classTitle}
-          >
-            {classTitle}
-          </span>
-          {canManageClass && recordingStatus !== "idle" ? (
-            <span
-              className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                recordingStatus === "recording"
-                  ? "bg-rose-500/20 text-rose-200"
-                  : recordingStatus === "failed"
-                    ? "bg-red-500/20 text-red-200"
-                    : "bg-white/10 text-slate-200"
-              }`}
-            >
-              <Radio className="h-3 w-3" />
-              {recordingStatusText}
-            </span>
-          ) : null}
-        </div>
-        <div className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-white/10 bg-black/60 px-1.5 py-1.5 shadow-lg backdrop-blur">
-          {canManageClass && recordingStatus !== "recording" && recordingStatus !== "processing" ? (
-            <button
-              type="button"
-              disabled={!canStartRecording}
-              onClick={() => {
-                void controlRecording("start");
-              }}
-              title="Iniciar grabación"
-              className="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20 disabled:opacity-50"
-            >
-              {recordingActionLoading === "start" ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Circle className="h-4 w-4 fill-rose-500 text-rose-500" />
-              )}
-              <span className="hidden sm:inline">Grabar</span>
-            </button>
-          ) : null}
-          {canManageClass && recordingStatus === "recording" ? (
-            <button
-              type="button"
-              disabled={!canStopRecording}
-              onClick={() => {
-                void controlRecording("stop");
-              }}
-              title="Detener grabación"
-              className="flex items-center gap-1.5 rounded-full bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-rose-500 disabled:opacity-50"
-            >
-              {recordingActionLoading === "stop" ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Square className="h-4 w-4 fill-current" />
-              )}
-              <span className="hidden sm:inline">Detener</span>
-            </button>
-          ) : null}
-          {canManageClass && recordingStoppedDisplay ? (
-            <span
-              title="Grabación detenida. Se procesa en segundo plano y quedará disponible en la plataforma."
-              className="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-slate-200"
-            >
-              <Square className="h-4 w-4 fill-current text-slate-300" />
-              <span className="hidden sm:inline">Detenido</span>
-            </span>
-          ) : null}
-          {canManageClass ? (
-            <button
-              type="button"
-              onClick={() => {
-                setShowModerationPanel((current) => !current);
-              }}
-              title="Moderar audio"
-              className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition ${
-                showModerationPanel
-                  ? "bg-sky-600 text-white hover:bg-sky-500"
-                  : "bg-white/10 text-white hover:bg-white/20"
-              }`}
-            >
-              <Users className="h-4 w-4" />
-              <span className="hidden sm:inline">Moderar</span>
-            </button>
-          ) : null}
-          {canManageClass ? (
-            <button
-              type="button"
-              disabled={endingSession}
-              onClick={requestEndSessionConfirmation}
-              title="Terminar sesión"
-              className="flex items-center gap-1.5 rounded-full bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-amber-500 disabled:opacity-60"
-            >
-              <PhoneOff className="h-4 w-4" />
-              <span className="hidden sm:inline">
-                {endingSession ? "Terminando..." : "Terminar"}
-              </span>
-            </button>
-          ) : null}
-          {asRole !== "teacher" ? (
-            <button
-              type="button"
-              onClick={leaveRoom}
-              title="Salir de la sala"
-              className="flex items-center gap-1.5 rounded-full bg-red-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-red-500"
-            >
-              <LogOut className="h-4 w-4" />
-              <span className="hidden sm:inline">Salir</span>
-            </button>
-          ) : null}
-        </div>
-      </div>
       {canManageClass ? (
         <div className="pointer-events-none fixed bottom-28 left-3 z-20 flex flex-col items-start gap-1">
           {recordingErrorMessage ? (
