@@ -553,6 +553,13 @@ type ForumThreadModalProps = {
   currentUserId: string;
   currentUserName: string;
   readOnly?: boolean;
+  onGradeSaved?: (params: {
+    studentId: string;
+    grade: number;
+    feedback: string;
+    gradedById?: string;
+    gradedByName?: string;
+  }) => void;
   onClose: () => void;
 };
 
@@ -565,6 +572,7 @@ function ForumThreadModal({
   currentUserId,
   currentUserName,
   readOnly = false,
+  onGradeSaved,
   onClose,
 }: ForumThreadModalProps) {
   const [posts, setPosts] = useState<ForumPost[]>([]);
@@ -574,6 +582,9 @@ function ForumThreadModal({
   const [loading, setLoading] = useState(true);
   const [replyText, setReplyText] = useState<Record<string, string>>({});
   const [sendingReply, setSendingReply] = useState<string | null>(null);
+  const [postGradeInputs, setPostGradeInputs] = useState<Record<string, string>>({});
+  const [postFeedbackInputs, setPostFeedbackInputs] = useState<Record<string, string>>({});
+  const [savingGrades, setSavingGrades] = useState<Set<string>>(new Set());
 
   const notifyForumReply = async (postId: string, replyId: string) => {
     try {
@@ -619,6 +630,18 @@ function ForumThreadModal({
       try {
         const forumPosts = await getForumPosts(courseId, lessonId, classId);
         setPosts(forumPosts);
+        setPostGradeInputs(
+          forumPosts.reduce<Record<string, string>>((acc, post) => {
+            acc[post.id] = typeof post.grade === "number" ? String(post.grade) : "";
+            return acc;
+          }, {}),
+        );
+        setPostFeedbackInputs(
+          forumPosts.reduce<Record<string, string>>((acc, post) => {
+            acc[post.id] = post.feedback ?? "";
+            return acc;
+          }, {}),
+        );
         // Expandir automáticamente el post del estudiante destacado
         if (highlightStudentId) {
           setExpandedPosts(new Set([highlightStudentId]));
@@ -708,6 +731,74 @@ function ForumThreadModal({
     }
   };
 
+  const parseForumGrade = (raw: string): number | null => {
+    const normalized = raw.trim().replace(",", ".");
+    if (!normalized) return null;
+    const parsed = Number(normalized);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 5) return null;
+    return parsed;
+  };
+
+  const handleSavePostGrade = async (postId: string) => {
+    if (readOnly) return;
+    const rawGrade = postGradeInputs[postId] ?? "";
+    const grade = parseForumGrade(rawGrade);
+    if (grade === null) {
+      toast.error("La calificación del foro debe estar entre 0 y 5.");
+      return;
+    }
+
+    setSavingGrades((prev) => new Set(prev).add(postId));
+    try {
+      const feedback = (postFeedbackInputs[postId] ?? "").trim();
+      await gradeForumPost({
+        courseId,
+        lessonId,
+        classId,
+        studentId: postId,
+        grade,
+        feedback,
+        gradedById: currentUserId,
+        gradedByName: currentUserName,
+      });
+
+      setPosts((prev) =>
+        prev.map((post) =>
+          post.id === postId
+            ? {
+                ...post,
+                grade,
+                feedback,
+                status: "graded",
+                gradedAt: new Date(),
+                gradedById: currentUserId || post.gradedById,
+                gradedByName: currentUserName || post.gradedByName,
+              }
+            : post,
+        ),
+      );
+      setPostGradeInputs((prev) => ({ ...prev, [postId]: String(grade) }));
+      setPostFeedbackInputs((prev) => ({ ...prev, [postId]: feedback }));
+      onGradeSaved?.({
+        studentId: postId,
+        grade,
+        feedback,
+        gradedById: currentUserId || undefined,
+        gradedByName: currentUserName || undefined,
+      });
+      toast.success("Calificación guardada correctamente");
+    } catch (err) {
+      console.error("Error guardando calificación del foro:", err);
+      toast.error("No se pudo guardar la calificación del foro");
+    } finally {
+      setSavingGrades((prev) => {
+        const next = new Set(prev);
+        next.delete(postId);
+        return next;
+      });
+    }
+  };
+
   const formatDate = (date: Date) => {
     return date.toLocaleString("es-MX", {
       day: "2-digit",
@@ -757,6 +848,17 @@ function ForumThreadModal({
               const isExpanded = expandedPosts.has(post.id);
               const postReplies = replies[post.id] ?? [];
               const isLoadingReplies = loadingReplies.has(post.id);
+              const postGradeInput = postGradeInputs[post.id] ?? "";
+              const parsedPostGrade = parseForumGrade(postGradeInput);
+              const hasPostGradeValue = postGradeInput.trim().length > 0;
+              const currentPostGrade = typeof post.grade === "number" ? post.grade : null;
+              const isSavingGrade = savingGrades.has(post.id);
+              const invalidPostGrade = hasPostGradeValue && parsedPostGrade === null;
+              const canSavePostGrade =
+                !readOnly &&
+                parsedPostGrade !== null &&
+                (currentPostGrade == null || Math.abs(currentPostGrade - parsedPostGrade) > 0.001 || (post.feedback ?? "") !== (postFeedbackInputs[post.id] ?? "").trim()) &&
+                !isSavingGrade;
 
               return (
                 <div
@@ -843,6 +945,93 @@ function ForumThreadModal({
                         )}
                       </div>
                     )}
+                  </div>
+
+                  <div className={`px-4 pb-3 ${isHighlighted ? "bg-blue-50/30" : "bg-white"}`}>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                        <div className="space-y-1">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            Calificación del aporte
+                          </p>
+                          {typeof post.grade === "number" ? (
+                            <div className="space-y-1">
+                              <span
+                                className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${
+                                  post.grade >= 4
+                                    ? "bg-emerald-100 text-emerald-700"
+                                    : post.grade >= 3
+                                    ? "bg-amber-100 text-amber-700"
+                                    : "bg-red-100 text-red-700"
+                                }`}
+                              >
+                                {post.grade}/5
+                              </span>
+                              {post.gradedAt ? (
+                                <p className="text-[11px] text-slate-500">
+                                  Evaluó: {post.gradedByName || "Docente"} · {formatDate(post.gradedAt)}
+                                </p>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <p className="text-sm text-slate-500">Pendiente</p>
+                          )}
+                        </div>
+
+                        {!readOnly ? (
+                          <div className="grid gap-2 lg:min-w-[420px] lg:grid-cols-[110px_minmax(0,1fr)_auto]">
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={postGradeInput}
+                              onChange={(event) =>
+                                setPostGradeInputs((prev) => ({ ...prev, [post.id]: event.target.value }))
+                              }
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter" && canSavePostGrade) {
+                                  event.preventDefault();
+                                  void handleSavePostGrade(post.id);
+                                }
+                              }}
+                              placeholder="0-5"
+                              disabled={isSavingGrade}
+                              className={`rounded-lg border px-3 py-2 text-sm ${
+                                invalidPostGrade ? "border-red-400" : "border-slate-300"
+                              }`}
+                            />
+                            <input
+                              type="text"
+                              value={postFeedbackInputs[post.id] ?? ""}
+                              onChange={(event) =>
+                                setPostFeedbackInputs((prev) => ({ ...prev, [post.id]: event.target.value }))
+                              }
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter" && canSavePostGrade) {
+                                  event.preventDefault();
+                                  void handleSavePostGrade(post.id);
+                                }
+                              }}
+                              placeholder="Retroalimentación opcional"
+                              disabled={isSavingGrade}
+                              className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                            />
+                            <button
+                              type="button"
+                              disabled={!canSavePostGrade}
+                              onClick={() => void handleSavePostGrade(post.id)}
+                              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {isSavingGrade ? "Guardando..." : currentPostGrade == null ? "Calificar" : "Actualizar"}
+                            </button>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-500">Vista de solo lectura.</p>
+                        )}
+                      </div>
+                      {invalidPostGrade ? (
+                        <p className="mt-2 text-xs text-red-600">Usa una calificación entre 0 y 5.</p>
+                      ) : null}
+                    </div>
                   </div>
 
                   {/* Botón para ver/ocultar respuestas */}
@@ -1004,6 +1193,14 @@ const filterSubmissionsForClass = (
 ) =>
   submissions.filter((submission) => getSubmissionClassMatchScore(submission, target) > 0);
 
+const inferAudioUrlFromMedia = (mediaUrl: string, format?: string) => {
+  if (!mediaUrl) return "";
+  if (format === "audio") return mediaUrl;
+  return /\.(mp3|wav|wave|m4a|aac|ogg|oga|opus|flac|weba|webm)(?:$|[?#])/i.test(mediaUrl)
+    ? mediaUrl
+    : "";
+};
+
 export function SubmissionsModal({
   groupId,
   classId,
@@ -1066,6 +1263,8 @@ export function SubmissionsModal({
           const forumPosts = await getForumPosts(courseId, lessonId, classId);
           submissions = forumPosts.map((post) => {
             const authorId = (post.authorId ?? "").trim() || post.id;
+            const mediaUrl = post.mediaUrl ?? "";
+            const audioUrl = inferAudioUrlFromMedia(mediaUrl, post.format);
             return {
               id: post.id,
               classId,
@@ -1076,7 +1275,8 @@ export function SubmissionsModal({
               studentId: authorId,
               studentName: post.authorName ?? "",
               submittedAt: post.createdAt ?? null,
-              fileUrl: post.mediaUrl ?? "",
+              fileUrl: mediaUrl,
+              audioUrl,
               content: post.text ?? "",
               status:
                 post.status === "graded" || typeof post.grade === "number"
@@ -1201,6 +1401,8 @@ export function SubmissionsModal({
       const forumPosts = await getForumPosts(courseId, lessonId, classId);
       const forumSubmissions: Submission[] = forumPosts.map((post) => {
         const authorId = (post.authorId ?? "").trim() || post.id;
+        const mediaUrl = post.mediaUrl ?? "";
+        const audioUrl = inferAudioUrlFromMedia(mediaUrl, post.format);
         return {
           id: post.id,
           classId,
@@ -1211,7 +1413,8 @@ export function SubmissionsModal({
           studentId: authorId,
           studentName: post.authorName ?? "",
           submittedAt: post.createdAt ?? null,
-          fileUrl: post.mediaUrl ?? "",
+          fileUrl: mediaUrl,
+          audioUrl,
           content: post.text ?? "",
           status:
             post.status === "graded" || typeof post.grade === "number"
@@ -2103,6 +2306,28 @@ export function SubmissionsModal({
           currentUserId={auth.currentUser?.uid ?? ""}
           currentUserName={auth.currentUser?.displayName ?? "Profesor"}
           readOnly={readOnly}
+          onGradeSaved={({ studentId, grade, feedback, gradedById, gradedByName }) => {
+            setRows((prev) =>
+              prev.map((row) =>
+                row.student.id === studentId
+                  ? {
+                      ...row,
+                      submission: row.submission
+                        ? {
+                            ...row.submission,
+                            grade,
+                            feedback,
+                            status: "graded",
+                            gradedAt: new Date(),
+                            gradedById,
+                            gradedByName,
+                          }
+                        : row.submission,
+                    }
+                  : row,
+              ),
+            );
+          }}
           onClose={() => setForumThreadModal({ open: false, studentId: "", studentName: "" })}
         />
       ) : null}

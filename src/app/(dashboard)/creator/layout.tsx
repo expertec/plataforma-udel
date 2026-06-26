@@ -117,6 +117,9 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
       { href: "/creator/cursos", label: "Cursos" },
       { href: "/creator/grupos", label: "Grupos" },
     ];
+    if (userRole === "teacher") {
+      items.push({ href: "/creator/mis-clases-en-vivo", label: "Mis Clases en Vivo" });
+    }
     if (isAdminTeacherRole(userRole)) {
       items.push({ href: "/creator/clases-en-vivo", label: "Clases en vivo" });
     }

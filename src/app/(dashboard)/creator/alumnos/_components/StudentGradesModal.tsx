@@ -75,6 +75,45 @@ const buildRowKey = (groupId: string, groupName: string, courseId: string, cours
   return `${g}::${c}`;
 };
 
+const buildGroupCourseKey = (groupId: string, courseId: string) =>
+  `${groupId.trim()}::${courseId.trim()}`;
+
+const getCourseNameFromGroupData = (groupData: {
+  courseId?: unknown;
+  courseName?: unknown;
+  courses?: unknown;
+}) => {
+  const courseNameById = new Map<string, string>();
+
+  if (Array.isArray(groupData.courses)) {
+    groupData.courses.forEach((course) => {
+      if (!course || typeof course !== "object") return;
+      const courseId =
+        typeof (course as { courseId?: unknown }).courseId === "string"
+          ? (course as { courseId: string }).courseId.trim()
+          : "";
+      if (!courseId) return;
+      const courseName =
+        typeof (course as { courseName?: unknown }).courseName === "string"
+          ? (course as { courseName: string }).courseName.trim()
+          : "";
+      if (courseName) {
+        courseNameById.set(courseId, courseName);
+      }
+    });
+  }
+
+  const legacyCourseId =
+    typeof groupData.courseId === "string" ? groupData.courseId.trim() : "";
+  const legacyCourseName =
+    typeof groupData.courseName === "string" ? groupData.courseName.trim() : "";
+  if (legacyCourseId && legacyCourseName && !courseNameById.has(legacyCourseId)) {
+    courseNameById.set(legacyCourseId, legacyCourseName);
+  }
+
+  return courseNameById;
+};
+
 const getRowTs = (row: GradeRow): number =>
   Math.max(row.closedAt?.getTime() ?? 0, row.updatedAt?.getTime() ?? 0);
 
@@ -155,13 +194,59 @@ export function StudentGradesModal({
         const closureRows = new Map<string, GradeRow>();
         const enrollmentGroupNames = new Map<string, string>();
         const enrollmentCourseFallbackByGroup = new Map<string, string>();
+        const groupCourseNameByKey = new Map<string, string>();
         const groupIds = new Set<string>();
+        const enrollmentSources: Array<{
+          groupId: string;
+          groupName: string;
+          fallbackCourseName: string;
+          closures: Record<string, unknown>;
+        }> = [];
 
         const upsertClosureRow = (row: GradeRow) => {
           const previous = closureRows.get(row.id);
           if (!previous || getRowTs(row) >= getRowTs(previous)) {
             closureRows.set(row.id, row);
           }
+        };
+
+        const registerGroupCourses = (
+          groupId: string,
+          groupData: {
+            courseId?: unknown;
+            courseName?: unknown;
+            courses?: unknown;
+          },
+        ) => {
+          const normalizedGroupId = groupId.trim();
+          if (!normalizedGroupId) return;
+          const courseNameById = getCourseNameFromGroupData(groupData);
+          courseNameById.forEach((courseName, courseId) => {
+            const key = buildGroupCourseKey(normalizedGroupId, courseId);
+            if (!groupCourseNameByKey.has(key) && courseName) {
+              groupCourseNameByKey.set(key, courseName);
+            }
+          });
+        };
+
+        const resolveCourseName = (
+          groupId: string,
+          courseId: string,
+          ...candidates: Array<string | null | undefined>
+        ) => {
+          const normalizedGroupId = groupId.trim();
+          const normalizedCourseId = courseId.trim();
+          const groupCourseName = normalizedCourseId
+            ? groupCourseNameByKey.get(buildGroupCourseKey(normalizedGroupId, normalizedCourseId)) ?? ""
+            : "";
+
+          for (const candidate of [groupCourseName, ...candidates]) {
+            if (typeof candidate !== "string") continue;
+            const normalizedCandidate = candidate.trim();
+            if (normalizedCandidate) return normalizedCandidate;
+          }
+
+          return normalizedCourseId || "Sin materia";
         };
 
         enrollmentDocs.forEach((docSnap) => {
@@ -182,42 +267,11 @@ export function StudentGradesModal({
             }
           }
 
-          const closures = (data.courseClosures ?? {}) as Record<string, unknown>;
-          Object.entries(closures).forEach(([courseIdRaw, closureRaw]) => {
-            const closure = closureRaw as CourseClosure;
-            if (!closure || typeof closure !== "object") return;
-
-            const courseId = courseIdRaw.trim();
-            const closureCourseNameRaw = (closure as { courseName?: unknown }).courseName;
-            const closureCourseName =
-              typeof closureCourseNameRaw === "string" ? closureCourseNameRaw.trim() : "";
-            const courseName =
-              closureCourseName ||
-              fallbackCourseName ||
-              courseId ||
-              "Sin materia";
-            const finalGrade = toNumberOrNull(closure.finalGrade);
-            const autoGrade = toNumberOrNull(closure.autoGrade);
-            const closedAt = toDateOrNull(closure.closedAt);
-            const updatedAt = toDateOrNull(closure.updatedAt);
-            const key = buildRowKey(groupId, groupName, courseId, courseName);
-
-            upsertClosureRow({
-              id: key,
-              groupId,
-              courseId,
-              groupName,
-              courseName,
-              status: closure.status === "closed" ? "closed" : "open",
-              finalGrade,
-              autoGrade,
-              pendingUngradedCount:
-                typeof closure.pendingUngradedCount === "number"
-                  ? closure.pendingUngradedCount
-                  : null,
-              closedAt,
-              updatedAt,
-            });
+          enrollmentSources.push({
+            groupId,
+            groupName,
+            fallbackCourseName,
+            closures: (data.courseClosures ?? {}) as Record<string, unknown>,
           });
         });
 
@@ -242,8 +296,84 @@ export function StudentGradesModal({
             if (typeof data.courseName === "string" && data.courseName.trim().length > 0) {
               enrollmentCourseFallbackByGroup.set(groupId, data.courseName.trim());
             }
+            registerGroupCourses(groupId, groupDoc.data());
           });
         }
+
+        const groupIdsToLoad = Array.from(
+          new Set([...Array.from(groupIds), ...normalizedScopeGroupIds]),
+        );
+        if (groupIdsToLoad.length > 0) {
+          const groupDocs = await Promise.allSettled(
+            groupIdsToLoad.map((groupId) => getDoc(doc(db, "groups", groupId))),
+          );
+          groupDocs.forEach((result, index) => {
+            const groupId = groupIdsToLoad[index];
+            if (result.status === "rejected") {
+              if (isPermissionDeniedError(result.reason)) return;
+              throw result.reason;
+            }
+            if (!result.value.exists()) return;
+            const data = result.value.data() as {
+              groupName?: unknown;
+              courseName?: unknown;
+              courseId?: unknown;
+              courses?: unknown;
+            };
+            const groupName =
+              typeof data.groupName === "string" && data.groupName.trim().length > 0
+                ? data.groupName.trim()
+                : "";
+            if (groupName) {
+              enrollmentGroupNames.set(groupId, groupName);
+            }
+            if (typeof data.courseName === "string" && data.courseName.trim().length > 0) {
+              enrollmentCourseFallbackByGroup.set(groupId, data.courseName.trim());
+            }
+            registerGroupCourses(groupId, data);
+          });
+        }
+
+        enrollmentSources.forEach(({ groupId, groupName, fallbackCourseName, closures }) => {
+          Object.entries(closures).forEach(([courseIdRaw, closureRaw]) => {
+            const closure = closureRaw as CourseClosure;
+            if (!closure || typeof closure !== "object") return;
+
+            const courseId = courseIdRaw.trim();
+            const closureCourseNameRaw = (closure as { courseName?: unknown }).courseName;
+            const closureCourseName =
+              typeof closureCourseNameRaw === "string" ? closureCourseNameRaw.trim() : "";
+            const courseName = resolveCourseName(
+              groupId,
+              courseId,
+              closureCourseName,
+              fallbackCourseName,
+            );
+            const finalGrade = toNumberOrNull(closure.finalGrade);
+            const autoGrade = toNumberOrNull(closure.autoGrade);
+            const closedAt = toDateOrNull(closure.closedAt);
+            const updatedAt = toDateOrNull(closure.updatedAt);
+            const resolvedGroupName = enrollmentGroupNames.get(groupId) ?? groupName;
+            const key = buildRowKey(groupId, resolvedGroupName, courseId, courseName);
+
+            upsertClosureRow({
+              id: key,
+              groupId,
+              courseId,
+              groupName: resolvedGroupName,
+              courseName,
+              status: closure.status === "closed" ? "closed" : "open",
+              finalGrade,
+              autoGrade,
+              pendingUngradedCount:
+                typeof closure.pendingUngradedCount === "number"
+                  ? closure.pendingUngradedCount
+                  : null,
+              closedAt,
+              updatedAt,
+            });
+          });
+        });
 
         type SubmissionAgg = {
           id: string;
@@ -305,10 +435,12 @@ export function StudentGradesModal({
             };
             const courseId = (data.courseId ?? "").trim();
             const courseTitle = (data.courseTitle ?? "").trim();
-            const courseName =
-              courseTitle ||
-              (courseId ? courseId : fallbackCourseName) ||
-              "Sin materia";
+            const courseName = resolveCourseName(
+              groupId,
+              courseId,
+              courseTitle,
+              fallbackCourseName,
+            );
             const key = buildRowKey(groupId, groupName, courseId, courseName);
 
             const current =

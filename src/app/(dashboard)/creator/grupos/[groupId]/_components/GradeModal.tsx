@@ -22,6 +22,19 @@ export function GradeModal({ submission, readonly, onClose, onSave }: GradeModal
   const isContentUrl =
     typeof submission.content === "string" &&
     /^https?:\/\//i.test(submission.content.trim());
+  const normalizedFileUrl = (submission.fileUrl ?? "").trim();
+  const normalizedAudioUrl = (submission.audioUrl ?? "").trim();
+  const inferredAudioUrl = (() => {
+    if (normalizedAudioUrl) return normalizedAudioUrl;
+    if (!normalizedFileUrl) return "";
+    const audioPattern = /\.(mp3|wav|wave|m4a|aac|ogg|oga|opus|flac|weba|webm)(?:$|[?#])/i;
+    return audioPattern.test(normalizedFileUrl) ? normalizedFileUrl : "";
+  })();
+  const inferredVideoUrl = (() => {
+    if (!normalizedFileUrl) return "";
+    const videoPattern = /\.(mp4|mov|m4v|webm|ogv|avi|mkv)(?:$|[?#])/i;
+    return !inferredAudioUrl && videoPattern.test(normalizedFileUrl) ? normalizedFileUrl : "";
+  })();
 
   useEffect(() => {
     setGrade(submission.grade ?? undefined);
@@ -53,7 +66,39 @@ export function GradeModal({ submission, readonly, onClose, onSave }: GradeModal
           </div>
           <div className="space-y-1">
             <p className="text-xs text-slate-500">Archivo</p>
-            {submission.fileUrl ? (
+            {inferredAudioUrl ? (
+              <div className="space-y-2">
+                <audio
+                  controls
+                  src={inferredAudioUrl}
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 p-1"
+                />
+                <a
+                  href={inferredAudioUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-blue-600 hover:underline break-all"
+                >
+                  Abrir audio
+                </a>
+              </div>
+            ) : inferredVideoUrl ? (
+              <div className="space-y-2">
+                <video
+                  controls
+                  src={inferredVideoUrl}
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50"
+                />
+                <a
+                  href={inferredVideoUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-blue-600 hover:underline break-all"
+                >
+                  Abrir video
+                </a>
+              </div>
+            ) : submission.fileUrl ? (
               <a
                 href={submission.fileUrl}
                 target="_blank"
@@ -66,7 +111,7 @@ export function GradeModal({ submission, readonly, onClose, onSave }: GradeModal
               <p className="text-slate-500">Sin archivo</p>
             )}
           </div>
-          {submission.audioUrl ? (
+          {submission.audioUrl && !inferredAudioUrl ? (
             <div className="space-y-1">
               <p className="text-xs text-slate-500">Audio adjunto</p>
               <audio
