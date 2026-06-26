@@ -20,7 +20,7 @@ export default function TeacherOwnLiveClassesPage() {
   }, []);
 
   return (
-    <RoleGate allowedRole="teacher">
+    <RoleGate allowedRole={["teacher", "adminTeacher", "superAdminTeacher"]}>
       <TeacherLiveClassesView currentUser={currentUser} authReady={authReady} />
     </RoleGate>
   );

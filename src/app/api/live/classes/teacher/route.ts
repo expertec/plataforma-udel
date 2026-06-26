@@ -6,7 +6,7 @@ import { createLiveSessionForClass, normalizeLiveSession } from "@/lib/live-clas
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type TeacherRole = "teacher";
+type TeacherRole = "teacher" | "adminTeacher" | "superAdminTeacher";
 
 type TeacherLiveStatus =
   | "scheduled"
@@ -43,7 +43,7 @@ function extractBearerToken(authorizationHeader: string | null): string | null {
 }
 
 function asTeacherRole(value: unknown): TeacherRole | null {
-  if (value === "teacher") {
+  if (value === "teacher" || value === "adminTeacher" || value === "superAdminTeacher") {
     return value;
   }
   return null;

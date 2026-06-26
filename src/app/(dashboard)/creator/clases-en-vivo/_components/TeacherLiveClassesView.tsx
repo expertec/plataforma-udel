@@ -183,6 +183,9 @@ export function TeacherLiveClassesView({
   const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [recordingLoadingClassId, setRecordingLoadingClassId] = useState<string | null>(null);
+  const [detailsItem, setDetailsItem] = useState<TeacherLiveClassItem | null>(null);
+  const [groupSearch, setGroupSearch] = useState("");
+  const [groupResultsOpen, setGroupResultsOpen] = useState(false);
   const [form, setForm] = useState<ScheduleFormState>(() => getInitialForm([]));
 
   const fetchTeacherLiveClasses = useCallback(async () => {
@@ -233,10 +236,27 @@ export function TeacherLiveClassesView({
     [form.groupId, scheduleGroups],
   );
 
+  const selectedGroupName = selectedGroup?.groupName ?? "";
+
   const selectedGroupCourses = useMemo(
     () => selectedGroup?.courses ?? [],
     [selectedGroup],
   );
+
+  const filteredScheduleGroups = useMemo(() => {
+    const query = groupSearch.trim().toLowerCase();
+    if (!query) return scheduleGroups;
+
+    return scheduleGroups.filter((group) => {
+      const haystack = [
+        group.groupName,
+        ...group.courses.map((course) => course.courseName),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [groupSearch, scheduleGroups]);
 
   useEffect(() => {
     if (!selectedGroup) return;
@@ -285,9 +305,24 @@ export function TeacherLiveClassesView({
   );
 
   const openScheduleModal = useCallback(() => {
-    setForm(getInitialForm(scheduleGroups));
+    const nextForm = getInitialForm(scheduleGroups);
+    const nextGroup =
+      scheduleGroups.find((group) => group.groupId === nextForm.groupId) ?? null;
+    setForm(nextForm);
+    setGroupSearch(nextGroup?.groupName ?? "");
+    setGroupResultsOpen(false);
     setScheduleModalOpen(true);
   }, [scheduleGroups]);
+
+  const handleSelectGroup = useCallback((group: ScheduleGroupOption) => {
+    setForm((current) => ({
+      ...current,
+      groupId: group.groupId,
+      courseId: group.courses[0]?.courseId ?? "",
+    }));
+    setGroupSearch(group.groupName);
+    setGroupResultsOpen(false);
+  }, []);
 
   const handleScheduleClass = useCallback(async () => {
     if (!currentUser) return;
@@ -426,7 +461,7 @@ export function TeacherLiveClassesView({
               <p className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">
                 Profesor
               </p>
-              <h1 className="mt-2 text-2xl font-semibold text-slate-900">Clases en vivo</h1>
+              <h1 className="mt-2 text-2xl font-semibold text-slate-900">Mis Clases en Vivo</h1>
               <p className="mt-2 max-w-3xl text-sm text-slate-600">
                 Revisa tus sesiones live, su estado actual y programa nuevas clases sin entrar al
                 creador del curso.
@@ -504,94 +539,73 @@ export function TeacherLiveClassesView({
             </p>
           </div>
 
-          <div className="mt-5 space-y-4">
-            {filteredItems.map((item) => (
-              <div
-                key={`${item.classId}-${item.lessonId}`}
-                className="rounded-2xl border border-slate-200 bg-slate-50 p-5"
-              >
-                <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="text-lg font-semibold text-slate-900">{item.title}</h2>
+          <div className="mt-5 overflow-x-auto">
+            <table className="min-w-full divide-y divide-slate-200 text-sm">
+              <thead>
+                <tr className="text-left text-slate-500">
+                  <th className="px-3 py-3 font-medium">Título</th>
+                  <th className="px-3 py-3 font-medium">Inicio</th>
+                  <th className="px-3 py-3 font-medium">Estado</th>
+                  <th className="px-3 py-3 font-medium">Grabación</th>
+                  <th className="px-3 py-3 font-medium text-right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredItems.map((item) => (
+                  <tr key={`${item.classId}-${item.lessonId}`} className="align-top text-slate-700">
+                    <td className="px-3 py-4">
+                      <div className="font-semibold text-slate-900">{item.title}</div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        {item.courseTitle} · {item.linkedGroupName || "Grupo no vinculado"}
+                      </div>
+                    </td>
+                    <td className="px-3 py-4 text-sm text-slate-600">
+                      {item.scheduledStartAt
+                        ? formatEsMxDateTime(item.scheduledStartAt, { timeZone: item.timezone })
+                        : "N/D"}
+                    </td>
+                    <td className="px-3 py-4">
                       <span
                         className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${STATUS_CLASSNAMES[item.liveStatus]}`}
                       >
                         {STATUS_LABELS[item.liveStatus]}
                       </span>
-                    </div>
-                    <p className="mt-1 text-sm text-slate-600">
-                      {item.courseTitle} · {item.linkedGroupName || "Grupo no vinculado"}
-                    </p>
-                    <div className="mt-3 grid gap-3 text-sm text-slate-600 sm:grid-cols-2 xl:grid-cols-4">
-                      <div>
-                        <span className="font-medium text-slate-800">Inicio:</span>{" "}
-                        {item.scheduledStartAt
-                          ? formatEsMxDateTime(item.scheduledStartAt, { timeZone: item.timezone })
-                          : "N/D"}
+                    </td>
+                    <td className="px-3 py-4 text-sm text-slate-600">
+                      {item.recordingGenerated ? "Disponible" : "Pendiente"}
+                    </td>
+                    <td className="px-3 py-4">
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setDetailsItem(item)}
+                          className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          Info
+                        </button>
+                        <Link
+                          href={buildLiveHref(item)}
+                          className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                        >
+                          Entrar
+                        </Link>
+                        <button
+                          type="button"
+                          onClick={() => void openRecording(item)}
+                          disabled={
+                            recordingLoadingClassId === item.classId ||
+                            (!item.recordingGenerated && item.liveStatus !== "ready")
+                          }
+                          className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-white disabled:opacity-60"
+                        >
+                          {recordingLoadingClassId === item.classId ? "Abriendo..." : "Grabación"}
+                        </button>
                       </div>
-                      <div>
-                        <span className="font-medium text-slate-800">Fin:</span>{" "}
-                        {item.scheduledEndAt
-                          ? formatEsMxDateTime(item.scheduledEndAt, { timeZone: item.timezone })
-                          : "N/D"}
-                      </div>
-                      <div>
-                        <span className="font-medium text-slate-800">Grabación:</span>{" "}
-                        {item.recordingGenerated ? "Disponible" : STATUS_LABELS[item.liveStatus]}
-                      </div>
-                      <div>
-                        <span className="font-medium text-slate-800">Duración:</span>{" "}
-                        {formatDuration(item.durationSec)}
-                      </div>
-                    </div>
-                    <div className="mt-3 grid gap-2 text-xs text-slate-500 sm:grid-cols-2 xl:grid-cols-3">
-                      <div>Lección: {item.lessonTitle}</div>
-                      <div>Sala: {item.roomName || "Pendiente"}</div>
-                      <div>
-                        Última actividad:{" "}
-                        {item.lastRelevantAt
-                          ? formatEsMxDateTime(item.lastRelevantAt, { timeZone: item.timezone })
-                          : "N/D"}
-                      </div>
-                      {item.playbackReadyAt ? (
-                        <div>
-                          Grabación lista:{" "}
-                          {formatEsMxDateTime(item.playbackReadyAt, { timeZone: item.timezone })}
-                        </div>
-                      ) : null}
-                      {item.sharedGroupNames.length > 1 ? (
-                        <div className="sm:col-span-2 xl:col-span-3">
-                          Materia compartida con: {item.sharedGroupNames.join(", ")}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2 xl:justify-end">
-                    <Link
-                      href={buildLiveHref(item)}
-                      className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-                    >
-                      Entrar
-                    </Link>
-                    <button
-                      type="button"
-                      onClick={() => void openRecording(item)}
-                      disabled={
-                        recordingLoadingClassId === item.classId ||
-                        (!item.recordingGenerated && item.liveStatus !== "ready")
-                      }
-                      className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-white disabled:opacity-60"
-                    >
-                      {recordingLoadingClassId === item.classId
-                        ? "Abriendo..."
-                        : "Ver grabación"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
 
             {!loading && filteredItems.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-10 text-center text-sm text-slate-500">
@@ -614,19 +628,45 @@ export function TeacherLiveClassesView({
             <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <label className="mb-2 block text-sm font-medium text-slate-700">Grupo</label>
-                <select
-                  value={form.groupId}
-                  onChange={(event) =>
-                    setForm((current) => ({ ...current, groupId: event.target.value }))
-                  }
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-500"
-                >
-                  {scheduleGroups.map((group) => (
-                    <option key={group.groupId} value={group.groupId}>
-                      {group.groupName}
-                    </option>
-                  ))}
-                </select>
+                <div className="relative">
+                  <input
+                    type="search"
+                    value={groupSearch}
+                    onFocus={() => setGroupResultsOpen(true)}
+                    onChange={(event) => {
+                      setGroupSearch(event.target.value);
+                      setGroupResultsOpen(true);
+                      if (event.target.value.trim() !== selectedGroupName) {
+                        setForm((current) => ({ ...current, groupId: "", courseId: "" }));
+                      }
+                    }}
+                    placeholder="Buscar grupo..."
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-500"
+                  />
+                  {groupResultsOpen ? (
+                    <div className="absolute z-20 mt-2 max-h-56 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-2 shadow-lg">
+                      {filteredScheduleGroups.length > 0 ? (
+                        filteredScheduleGroups.map((group) => (
+                          <button
+                            key={group.groupId}
+                            type="button"
+                            onClick={() => handleSelectGroup(group)}
+                            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                          >
+                            <div className="font-medium text-slate-900">{group.groupName}</div>
+                            <div className="text-xs text-slate-500">
+                              {group.courses.map((course) => course.courseName || "Materia").join(", ")}
+                            </div>
+                          </button>
+                        ))
+                      ) : (
+                        <div className="px-3 py-2 text-sm text-slate-500">
+                          No se encontraron grupos.
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
               </div>
 
               <div>
@@ -735,6 +775,125 @@ export function TeacherLiveClassesView({
               </button>
             </div>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={detailsItem !== null} onOpenChange={(open) => (!open ? setDetailsItem(null) : null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Detalle de clase en vivo</DialogTitle>
+          </DialogHeader>
+
+          {detailsItem ? (
+            <div className="space-y-5">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-xl font-semibold text-slate-900">{detailsItem.title}</h3>
+                  <span
+                    className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${STATUS_CLASSNAMES[detailsItem.liveStatus]}`}
+                  >
+                    {STATUS_LABELS[detailsItem.liveStatus]}
+                  </span>
+                </div>
+                <p className="mt-1 text-sm text-slate-600">
+                  {detailsItem.courseTitle} · {detailsItem.linkedGroupName || "Grupo no vinculado"}
+                </p>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Inicio</div>
+                  <div className="mt-1 text-sm text-slate-800">
+                    {detailsItem.scheduledStartAt
+                      ? formatEsMxDateTime(detailsItem.scheduledStartAt, {
+                          timeZone: detailsItem.timezone,
+                        })
+                      : "N/D"}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Cierre</div>
+                  <div className="mt-1 text-sm text-slate-800">
+                    {detailsItem.scheduledEndAt
+                      ? formatEsMxDateTime(detailsItem.scheduledEndAt, {
+                          timeZone: detailsItem.timezone,
+                        })
+                      : "N/D"}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Grabación</div>
+                  <div className="mt-1 text-sm text-slate-800">
+                    {detailsItem.recordingGenerated ? "Disponible" : "Pendiente"}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Duración</div>
+                  <div className="mt-1 text-sm text-slate-800">
+                    {formatDuration(detailsItem.durationSec)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-3 text-sm text-slate-600 sm:grid-cols-2">
+                <div>
+                  <span className="font-medium text-slate-900">Lección:</span> {detailsItem.lessonTitle}
+                </div>
+                <div>
+                  <span className="font-medium text-slate-900">Sala:</span> {detailsItem.roomName || "Pendiente"}
+                </div>
+                <div>
+                  <span className="font-medium text-slate-900">Última actividad:</span>{" "}
+                  {detailsItem.lastRelevantAt
+                    ? formatEsMxDateTime(detailsItem.lastRelevantAt, {
+                        timeZone: detailsItem.timezone,
+                      })
+                    : "N/D"}
+                </div>
+                <div>
+                  <span className="font-medium text-slate-900">Zona horaria:</span> {detailsItem.timezone}
+                </div>
+                <div>
+                  <span className="font-medium text-slate-900">Estado de sesión:</span>{" "}
+                  {detailsItem.sessionStatus || "N/D"}
+                </div>
+                <div>
+                  <span className="font-medium text-slate-900">Estado de grabación:</span>{" "}
+                  {detailsItem.recordingStatus || "N/D"}
+                </div>
+                {detailsItem.playbackReadyAt ? (
+                  <div className="sm:col-span-2">
+                    <span className="font-medium text-slate-900">Grabación lista:</span>{" "}
+                    {formatEsMxDateTime(detailsItem.playbackReadyAt, {
+                      timeZone: detailsItem.timezone,
+                    })}
+                  </div>
+                ) : null}
+                {detailsItem.sharedGroupNames.length > 1 ? (
+                  <div className="sm:col-span-2">
+                    <span className="font-medium text-slate-900">Materia compartida con:</span>{" "}
+                    {detailsItem.sharedGroupNames.join(", ")}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setDetailsItem(null)}
+                  className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Cerrar
+                </button>
+                <Link
+                  href={buildLiveHref(detailsItem)}
+                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                >
+                  Entrar
+                </Link>
+              </div>
+            </div>
+          ) : null}
         </DialogContent>
       </Dialog>
     </>
