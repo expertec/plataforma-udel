@@ -351,6 +351,22 @@ service cloud.firestore {
         ) ||
         isMentorOfCourse(courseId);
     }
+    // Autoridad docente sobre una materia tolerante a roles no normalizados:
+    // ser el teacherId del curso o estar en mentorIds ya prueba que el usuario es
+    // el docente/mentor de esa materia (lo asignan admins), por lo que NO exigimos
+    // isTeacherLike(). Evita bloquear a cuentas con rol legacy al calificar, igual
+    // que ya se hace con el docente asignado al grupo.
+    function isCourseTeacherOrMentorTolerant(courseId) {
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      let courseData = isSignedIn() && courseId is string && courseId.size() > 0 && exists(coursePath)
+        ? get(coursePath).data
+        : null;
+      return courseData != null &&
+        (
+          (courseData.teacherId is string && courseData.teacherId == request.auth.uid) ||
+          (courseData.mentorIds is list && request.auth.uid in courseData.mentorIds)
+        );
+    }
     // Permite a mentores ajustar únicamente el contador de lecciones del curso.
     function canMentorAdjustLessonsCount(courseId) {
       let currentLessonsCount = resource.data.lessonsCount is int ? resource.data.lessonsCount : 0;
@@ -484,7 +500,8 @@ service cloud.firestore {
             allow update: if isOwnUngradedForumPost(postId) ||
               canUpdateRepliesCountOnly() ||
               isAdmin() ||
-              canManageCourse(courseId);
+              canManageCourse(courseId) ||
+              isCourseTeacherOrMentorTolerant(courseId);
             // Delete: profesor/admin del curso o el autor del post.
             allow delete: if isOwnUngradedForumPost(postId) ||
               isAdmin() ||
@@ -593,12 +610,21 @@ service cloud.firestore {
         );
         // Permitir crear submission si el usuario está autenticado y es el estudiante del submission
         // Ya no verificamos isGroupStudent o isEnrolledInGroup porque con múltiples grupos esto falla
-        allow create: if isAdmin() || (
+        allow create: if isAdmin() || isAdminTeacher() || (
           isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
           (
             isTeacherAssignedToGroup(/databases/$(database)/documents/groups/$(groupId)) ||
             request.resource.data.studentId == request.auth.uid
+          )
+        ) || (
+          // Grupos con varias materias: el titular de la materia (o su mentor)
+          // puede crear/calificar entregas de esa materia aunque no sea el
+          // teacherId del grupo. Igual que en update y en la calificación de foro.
+          request.resource.data.courseId is string &&
+          (
+            canManageCourse(request.resource.data.courseId) ||
+            isCourseTeacherOrMentorTolerant(request.resource.data.courseId)
           )
         ) || (
           isSignedIn() &&
@@ -623,7 +649,10 @@ service cloud.firestore {
           // teacherId del grupo. Igual que la calificación de foro.
           "courseId" in resource.data &&
           resource.data.courseId is string &&
-          canManageCourse(resource.data.courseId)
+          (
+            canManageCourse(resource.data.courseId) ||
+            isCourseTeacherOrMentorTolerant(resource.data.courseId)
+          )
         );
       }
 
@@ -828,5 +857,5 @@ service cloud.firestore {
     match /{document=**} {
       allow read, write: if false;
     }
-
+  }
 }

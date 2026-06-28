@@ -231,23 +231,33 @@ export async function createSubmission(
 
   const courseId = (data.courseId ?? "").trim();
   if (courseId && data.studentId) {
+    // La verificación de cierre de curso es una validación suave: el titular de la
+    // materia (que no es el teacherId del grupo) no tiene permiso para leer el
+    // enrollment, por lo que un error de permisos aquí NO debe bloquear la captura
+    // de calificaciones. Solo bloqueamos si efectivamente leemos un cierre "closed".
     let enrollmentData: Record<string, unknown> | null = null;
-    const canonicalEnrollmentRef = doc(db, "studentEnrollments", `${groupId}_${data.studentId}`);
-    const canonicalEnrollmentSnap = await getDoc(canonicalEnrollmentRef);
-    if (canonicalEnrollmentSnap.exists()) {
-      enrollmentData = canonicalEnrollmentSnap.data() as Record<string, unknown>;
-    } else {
-      const enrollmentSnap = await getDocs(
-        query(
-          collection(db, "studentEnrollments"),
-          where("groupId", "==", groupId),
-          where("studentId", "==", data.studentId),
-          limit(1),
-        ),
-      );
-      if (!enrollmentSnap.empty) {
-        enrollmentData = enrollmentSnap.docs[0].data() as Record<string, unknown>;
+    try {
+      const canonicalEnrollmentRef = doc(db, "studentEnrollments", `${groupId}_${data.studentId}`);
+      const canonicalEnrollmentSnap = await getDoc(canonicalEnrollmentRef);
+      if (canonicalEnrollmentSnap.exists()) {
+        enrollmentData = canonicalEnrollmentSnap.data() as Record<string, unknown>;
+      } else {
+        const enrollmentSnap = await getDocs(
+          query(
+            collection(db, "studentEnrollments"),
+            where("groupId", "==", groupId),
+            where("studentId", "==", data.studentId),
+            limit(1),
+          ),
+        );
+        if (!enrollmentSnap.empty) {
+          enrollmentData = enrollmentSnap.docs[0].data() as Record<string, unknown>;
+        }
       }
+    } catch (err) {
+      // Sin permiso para leer el enrollment: omitimos la validación de cierre.
+      console.warn("No se pudo verificar el cierre de curso del alumno:", err);
+      enrollmentData = null;
     }
 
     if (enrollmentData) {
