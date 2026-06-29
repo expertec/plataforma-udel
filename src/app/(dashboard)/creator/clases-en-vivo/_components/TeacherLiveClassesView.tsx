@@ -2,8 +2,10 @@
 
 import Link from "next/link";
 import { type User } from "firebase/auth";
+import { collection, getDocs } from "firebase/firestore";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
+import { db } from "@/lib/firebase/firestore";
 import {
   Dialog,
   DialogContent,
@@ -90,10 +92,16 @@ type TeacherLiveClassesViewProps = {
 type ScheduleFormState = {
   groupId: string;
   courseId: string;
+  lessonId: string;
   title: string;
   scheduledStartAtLocal: string;
   scheduledEndAtLocal: string;
   timezone: string;
+};
+
+type LessonOption = {
+  lessonId: string;
+  lessonTitle: string;
 };
 
 const DEFAULT_TIMEZONE = "America/Monterrey";
@@ -163,6 +171,7 @@ function getInitialForm(groups: ScheduleGroupOption[]): ScheduleFormState {
   return {
     groupId: firstGroup?.groupId ?? "",
     courseId: firstCourse?.courseId ?? "",
+    lessonId: "",
     title: "Clase en vivo",
     scheduledStartAtLocal: defaultRange.start,
     scheduledEndAtLocal: defaultRange.end,
@@ -187,6 +196,8 @@ export function TeacherLiveClassesView({
   const [groupSearch, setGroupSearch] = useState("");
   const [groupResultsOpen, setGroupResultsOpen] = useState(false);
   const [form, setForm] = useState<ScheduleFormState>(() => getInitialForm([]));
+  const [lessonOptions, setLessonOptions] = useState<LessonOption[]>([]);
+  const [lessonsLoading, setLessonsLoading] = useState(false);
 
   const fetchTeacherLiveClasses = useCallback(async () => {
     if (!currentUser) return;
@@ -319,15 +330,74 @@ export function TeacherLiveClassesView({
       ...current,
       groupId: group.groupId,
       courseId: group.courses[0]?.courseId ?? "",
+      lessonId: "",
     }));
     setGroupSearch(group.groupName);
     setGroupResultsOpen(false);
   }, []);
 
+  // Carga las lecciones de la materia seleccionada para elegir dónde va el en vivo.
+  useEffect(() => {
+    if (!scheduleModalOpen || !form.courseId) {
+      setLessonOptions([]);
+      return;
+    }
+    const courseId = form.courseId;
+    let active = true;
+    setLessonsLoading(true);
+    (async () => {
+      try {
+        const snap = await getDocs(collection(db, "courses", courseId, "lessons"));
+        if (!active) return;
+        const options: LessonOption[] = snap.docs
+          .map((lessonDoc) => {
+            const data = lessonDoc.data() as { title?: unknown; order?: unknown; lessonNumber?: unknown };
+            const orderValue =
+              typeof data.order === "number"
+                ? data.order
+                : typeof data.lessonNumber === "number"
+                ? data.lessonNumber
+                : Number.MAX_SAFE_INTEGER;
+            const lessonTitle =
+              typeof data.title === "string" && data.title.trim().length > 0
+                ? data.title.trim()
+                : "Lección";
+            return { lessonId: lessonDoc.id, lessonTitle, order: orderValue };
+          })
+          .sort((a, b) => a.order - b.order)
+          .map(({ lessonId, lessonTitle }) => ({ lessonId, lessonTitle }));
+
+        setLessonOptions(options);
+        setForm((current) => {
+          if (current.courseId !== courseId) return current;
+          const stillValid = options.some((option) => option.lessonId === current.lessonId);
+          if (stillValid) return current;
+          const liveDefault = options.find(
+            (option) => option.lessonTitle.trim().toLowerCase() === "clases en vivo",
+          );
+          return { ...current, lessonId: liveDefault?.lessonId ?? options[0]?.lessonId ?? "" };
+        });
+      } catch (error) {
+        if (!active) return;
+        console.error("No se pudieron cargar las lecciones de la materia:", error);
+        setLessonOptions([]);
+      } finally {
+        if (active) setLessonsLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [scheduleModalOpen, form.courseId]);
+
   const handleScheduleClass = useCallback(async () => {
     if (!currentUser) return;
     if (!form.groupId || !form.courseId || !form.title.trim() || !form.scheduledStartAtLocal.trim()) {
       toast.error("Completa grupo, materia, título e inicio.");
+      return;
+    }
+    if (!form.lessonId) {
+      toast.error("Selecciona la lección donde irá la clase en vivo.");
       return;
     }
 
@@ -360,6 +430,7 @@ export function TeacherLiveClassesView({
         body: JSON.stringify({
           groupId: form.groupId,
           courseId: form.courseId,
+          lessonId: form.lessonId,
           title: form.title.trim(),
           scheduledStartAt,
           scheduledEndAt,
@@ -436,6 +507,23 @@ export function TeacherLiveClassesView({
     [currentUser],
   );
 
+  const copyLiveLink = useCallback(async (item: TeacherLiveClassItem) => {
+    const href = buildLiveHref(item);
+    const absoluteUrl =
+      typeof window !== "undefined" ? `${window.location.origin}${href}` : href;
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(absoluteUrl);
+      } else {
+        throw new Error("clipboard-unavailable");
+      }
+      toast.success("Enlace copiado");
+    } catch {
+      // Fallback para navegadores/contextos sin permiso de portapapeles.
+      window.prompt("Copia el enlace de la clase en vivo:", absoluteUrl);
+    }
+  }, []);
+
   if (!authReady) {
     return (
       <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">
@@ -461,7 +549,7 @@ export function TeacherLiveClassesView({
               <p className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">
                 Profesor
               </p>
-              <h1 className="mt-2 text-2xl font-semibold text-slate-900">Mis Clases en Vivo</h1>
+              <h1 className="mt-2 text-2xl font-semibold text-slate-900">Clases En Vivo</h1>
               <p className="mt-2 max-w-3xl text-sm text-slate-600">
                 Revisa tus sesiones live, su estado actual y programa nuevas clases sin entrar al
                 creador del curso.
@@ -591,6 +679,13 @@ export function TeacherLiveClassesView({
                         </Link>
                         <button
                           type="button"
+                          onClick={() => void copyLiveLink(item)}
+                          className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          Copiar enlace
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => void openRecording(item)}
                           disabled={
                             recordingLoadingClassId === item.classId ||
@@ -620,8 +715,16 @@ export function TeacherLiveClassesView({
 
       <Dialog open={scheduleModalOpen} onOpenChange={setScheduleModalOpen}>
         <DialogContent className="max-w-2xl">
-          <DialogHeader>
+          <DialogHeader className="flex items-start justify-between gap-4">
             <DialogTitle>Programar clase en vivo</DialogTitle>
+            <button
+              type="button"
+              onClick={() => setScheduleModalOpen(false)}
+              aria-label="Cerrar"
+              className="-mr-1 -mt-1 rounded-lg p-1.5 text-2xl leading-none text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            >
+              ×
+            </button>
           </DialogHeader>
 
           <div className="space-y-4">
@@ -674,7 +777,11 @@ export function TeacherLiveClassesView({
                 <select
                   value={form.courseId}
                   onChange={(event) =>
-                    setForm((current) => ({ ...current, courseId: event.target.value }))
+                    setForm((current) => ({
+                      ...current,
+                      courseId: event.target.value,
+                      lessonId: "",
+                    }))
                   }
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-500"
                 >
@@ -685,6 +792,33 @@ export function TeacherLiveClassesView({
                   ))}
                 </select>
               </div>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">Lección</label>
+              <select
+                value={form.lessonId}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, lessonId: event.target.value }))
+                }
+                disabled={lessonsLoading || lessonOptions.length === 0}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-500 disabled:bg-slate-50 disabled:text-slate-400"
+              >
+                {lessonsLoading ? (
+                  <option value="">Cargando lecciones...</option>
+                ) : lessonOptions.length === 0 ? (
+                  <option value="">No hay lecciones en esta materia</option>
+                ) : (
+                  lessonOptions.map((lesson) => (
+                    <option key={lesson.lessonId} value={lesson.lessonId}>
+                      {lesson.lessonTitle}
+                    </option>
+                  ))
+                )}
+              </select>
+              <p className="mt-1 text-xs text-slate-500">
+                La clase en vivo se creará dentro de esta lección.
+              </p>
             </div>
 
             <div>

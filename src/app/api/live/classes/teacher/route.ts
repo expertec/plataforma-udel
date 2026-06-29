@@ -19,6 +19,7 @@ type TeacherLiveStatus =
 type ScheduleLiveClassBody = {
   groupId?: unknown;
   courseId?: unknown;
+  lessonId?: unknown;
   title?: unknown;
   scheduledStartAt?: unknown;
   scheduledEndAt?: unknown;
@@ -427,6 +428,7 @@ export async function POST(request: NextRequest) {
     const body = (await request.json()) as ScheduleLiveClassBody;
     const groupId = asTrimmedString(body?.groupId);
     const courseId = asTrimmedString(body?.courseId);
+    const requestedLessonId = asTrimmedString(body?.lessonId);
     const title = asTrimmedString(body?.title);
     const scheduledStartAt = asTrimmedString(body?.scheduledStartAt);
     const scheduledEndAt = asTrimmedString(body?.scheduledEndAt);
@@ -466,13 +468,36 @@ export async function POST(request: NextRequest) {
     const courseRef = db.collection("courses").doc(courseId);
     const lessonsSnap = await courseRef.collection("lessons").orderBy("order", "asc").get();
 
-    const liveLesson = lessonsSnap.docs.find((lessonDoc) => {
-      const lessonData = (lessonDoc.data() ?? {}) as Record<string, unknown>;
-      return normalizeComparableText(asTrimmedString(lessonData.title)) === "clases en vivo";
-    });
+    // Si el profesor eligió una lección específica, la usamos (validando que exista
+    // en la materia). Si no, caemos al comportamiento previo: la lección "Clases en vivo".
+    let lessonRef: (typeof lessonsSnap.docs)[number]["ref"] | null = null;
+    let lessonId = "";
 
-    let lessonRef = liveLesson?.ref ?? null;
-    let lessonId = liveLesson?.id ?? "";
+    if (requestedLessonId) {
+      // Búsqueda directa (no vía lessonsSnap) porque ese query usa orderBy('order')
+      // y excluiría lecciones sin ese campo, dando un falso 404.
+      const requestedLessonSnap = await courseRef
+        .collection("lessons")
+        .doc(requestedLessonId)
+        .get();
+      if (!requestedLessonSnap.exists) {
+        throw new RouteAccessError(404, "La lección seleccionada no existe en la materia");
+      }
+      lessonRef = requestedLessonSnap.ref;
+      lessonId = requestedLessonSnap.id;
+    }
+
+    const liveLesson = lessonRef
+      ? null
+      : lessonsSnap.docs.find((lessonDoc) => {
+          const lessonData = (lessonDoc.data() ?? {}) as Record<string, unknown>;
+          return normalizeComparableText(asTrimmedString(lessonData.title)) === "clases en vivo";
+        });
+
+    if (!lessonRef) {
+      lessonRef = liveLesson?.ref ?? null;
+      lessonId = liveLesson?.id ?? "";
+    }
 
     if (!lessonRef) {
       const maxLessonNumber = lessonsSnap.docs.reduce((acc, lessonDoc) => {
