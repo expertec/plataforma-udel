@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminFirestore } from "@/lib/firebase/admin";
-import type { GlobalExamAssignmentReason } from "@/lib/global-exams/types";
+import { GLOBAL_EXAM_MAX_ATTEMPTS, type GlobalExamAssignmentReason } from "@/lib/global-exams/types";
 import {
   getGlobalExamAssignments,
   ensureGlobalExamStudyEnrollment,
@@ -240,7 +240,8 @@ export async function POST(request: NextRequest) {
       reason,
       enabled: requestedEnabled,
       status: requestedEnabled ? "enabled" : "draft",
-      attemptsAllowed: template.maxAttempts,
+      // Un solo intento por habilitacion; el adminTeacher puede conceder mas reabriendo.
+      attemptsAllowed: GLOBAL_EXAM_MAX_ATTEMPTS,
       attemptsUsed: 0,
       passScore: template.passScore,
       latestScore: null,

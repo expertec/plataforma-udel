@@ -611,6 +611,13 @@ service cloud.firestore {
         // Permitir crear submission si el usuario está autenticado y es el estudiante del submission
         // Ya no verificamos isGroupStudent o isEnrolledInGroup porque con múltiples grupos esto falla
         allow create: if isAdmin() || isAdminTeacher() || (
+          // El alumno crea su propia entrega: se evalúa primero para no tocar
+          // request.resource.data.courseId (que puede no venir en quizzes/tareas)
+          // y evitar que un acceso a campo inexistente invalide toda la regla.
+          isSignedIn() &&
+          "studentId" in request.resource.data &&
+          request.resource.data.studentId == request.auth.uid
+        ) || (
           isTeacherLike() &&
           exists(/databases/$(database)/documents/groups/$(groupId)) &&
           (
@@ -621,14 +628,12 @@ service cloud.firestore {
           // Grupos con varias materias: el titular de la materia (o su mentor)
           // puede crear/calificar entregas de esa materia aunque no sea el
           // teacherId del grupo. Igual que en update y en la calificación de foro.
+          "courseId" in request.resource.data &&
           request.resource.data.courseId is string &&
           (
             canManageCourse(request.resource.data.courseId) ||
             isCourseTeacherOrMentorTolerant(request.resource.data.courseId)
           )
-        ) || (
-          isSignedIn() &&
-          request.resource.data.studentId == request.auth.uid
         );
         // Estudiante puede eliminar/actualizar su propia entrega si NO está calificada
         // Se evalúa primero para evitar llamadas innecesarias a get()
@@ -715,6 +720,31 @@ service cloud.firestore {
         allow write: if exists(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)) &&
           canReadEnrollmentData(get(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)).data);
       }
+    }
+
+    /* studentEnrollmentsArchive: historial de inscripciones conservado al remover a un
+       alumno de un grupo (cambio de grupo/modalidad). Solo lectura para staff/alumno;
+       se crea desde el cliente al archivar. Inmutable una vez creado. */
+    match /studentEnrollmentsArchive/{archiveId} {
+      allow read: if isAdmin() || isAdminTeacher() ||
+        (
+          isSignedIn() &&
+          resource.data.studentId is string &&
+          resource.data.studentId == request.auth.uid
+        ) ||
+        (
+          isCampusCoordinator() &&
+          resource.data.plantelId is string &&
+          userHasPlantelId(resource.data.plantelId)
+        );
+      // Quien puede eliminar la inscripción viva (canAccessEnrollmentGroup) también
+      // puede archivarla: así el batch de removeStudentFromGroup no falla para un
+      // docente asignado al grupo, no solo para admin/coordinación.
+      allow create: if isAdmin() || isAdminTeacher() || (
+        request.resource.data.groupId is string &&
+        canAccessEnrollmentGroup(request.resource.data.groupId)
+      );
+      allow update, delete: if false;
     }
 
     /* evaluaciones de clase */

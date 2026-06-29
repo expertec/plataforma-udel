@@ -66,11 +66,14 @@ export async function PATCH(
     }
 
     const requestedEnabled = body.enabled === true;
-    if (requestedEnabled && (assignment.status === "passed" || assignment.status === "failed")) {
+    // Un examen aprobado queda concluido y no se reabre (evita sobrescribir la
+    // calificacion aprobatoria en kardex). Un examen reprobado SI puede rehabilitarse:
+    // cada rehabilitacion otorga un intento adicional.
+    if (requestedEnabled && assignment.status === "passed") {
       return NextResponse.json(
         {
           success: false,
-          error: "La asignacion ya fue concluida; no puede volver a habilitarse",
+          error: "La asignacion ya fue aprobada; no puede volver a habilitarse",
         },
         { status: 400 },
       );
@@ -87,6 +90,8 @@ export async function PATCH(
       updatedAt: now,
     };
     if (requestedEnabled) {
+      // Cada habilitacion concede exactamente un intento mas a partir de los ya usados.
+      updatePayload.attemptsAllowed = assignment.attemptsUsed + 1;
       updatePayload.paymentVerifiedAt = now;
       updatePayload.enabledAt = now;
       updatePayload.enabledById = access.uid;

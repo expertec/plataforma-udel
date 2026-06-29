@@ -1041,10 +1041,33 @@ export async function removeStudentFromGroup(groupId: string, studentId: string)
     studentsCount: increment(-1),
     updatedAt: serverTimestamp(),
   });
+
+  // Antes de borrar la inscripción activa, archivamos una copia para conservar el
+  // historial de calificaciones (courseClosures) del alumno aunque cambie de grupo.
+  // La inscripción viva SÍ se elimina (el feed y el acceso del alumno se comportan
+  // igual que antes); el Kardex lee además studentEnrollmentsArchive.
+  const archivedAt = serverTimestamp();
+  const processedEnrollmentIds = new Set<string>();
+  const archiveAndDeleteEnrollment = (enrollmentId: string, data: DocumentData | null) => {
+    if (!enrollmentId || processedEnrollmentIds.has(enrollmentId)) return;
+    processedEnrollmentIds.add(enrollmentId);
+    if (data) {
+      batch.set(doc(db, "studentEnrollmentsArchive", enrollmentId), {
+        ...data,
+        studentId,
+        groupId: typeof data.groupId === "string" && data.groupId.trim() ? data.groupId : groupId,
+        archived: true,
+        archivedAt,
+        archivedFromGroupId: groupId,
+      });
+    }
+    batch.delete(doc(db, "studentEnrollments", enrollmentId));
+  };
+
   const primaryEnrollmentId = `${groupId}_${studentId}`;
-  const enrollmentRef = doc(db, "studentEnrollments", primaryEnrollmentId);
-  const enrollmentIds = new Set<string>([primaryEnrollmentId]);
-  batch.delete(enrollmentRef);
+  const primarySnap = await getDoc(doc(db, "studentEnrollments", primaryEnrollmentId));
+  archiveAndDeleteEnrollment(primaryEnrollmentId, primarySnap.exists() ? primarySnap.data() : null);
+
   const enrollmentsQuery = query(
     collection(db, "studentEnrollments"),
     where("studentId", "==", studentId),
@@ -1052,9 +1075,7 @@ export async function removeStudentFromGroup(groupId: string, studentId: string)
   );
   const enrollmentsSnap = await getDocs(enrollmentsQuery);
   enrollmentsSnap.docs.forEach((docSnap) => {
-    if (enrollmentIds.has(docSnap.id)) return;
-    enrollmentIds.add(docSnap.id);
-    batch.delete(doc(db, "studentEnrollments", docSnap.id));
+    archiveAndDeleteEnrollment(docSnap.id, docSnap.data());
   });
   await batch.commit();
   await syncStudentPlantelAccess([studentId]);

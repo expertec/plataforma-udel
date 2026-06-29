@@ -1,7 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
+import {
+  collection,
+  collectionGroup,
+  doc,
+  getDoc,
+  getDocs,
+  orderBy,
+  query,
+  where,
+} from "firebase/firestore";
 import toast from "react-hot-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { db } from "@/lib/firebase/firestore";
@@ -249,20 +258,21 @@ export function StudentGradesModal({
           return normalizedCourseId || "Sin materia";
         };
 
-        enrollmentDocs.forEach((docSnap) => {
-          const data = docSnap.data() as {
-            groupId?: string;
-            groupName?: string;
-            courseName?: string;
-            courseClosures?: Record<string, unknown>;
-          };
+        const ingestEnrollmentData = (data: {
+          groupId?: string;
+          groupName?: string;
+          courseName?: string;
+          courseClosures?: Record<string, unknown>;
+        }) => {
           const groupId = (data.groupId ?? "").trim();
           const groupName = (data.groupName ?? "").trim() || "Sin grupo";
           const fallbackCourseName = (data.courseName ?? "").trim();
           if (groupId) {
             groupIds.add(groupId);
-            enrollmentGroupNames.set(groupId, groupName);
-            if (fallbackCourseName) {
+            if (!enrollmentGroupNames.has(groupId)) {
+              enrollmentGroupNames.set(groupId, groupName);
+            }
+            if (fallbackCourseName && !enrollmentCourseFallbackByGroup.has(groupId)) {
               enrollmentCourseFallbackByGroup.set(groupId, fallbackCourseName);
             }
           }
@@ -273,6 +283,61 @@ export function StudentGradesModal({
             fallbackCourseName,
             closures: (data.courseClosures ?? {}) as Record<string, unknown>,
           });
+        };
+
+        enrollmentDocs.forEach((docSnap) => {
+          ingestEnrollmentData(
+            docSnap.data() as {
+              groupId?: string;
+              groupName?: string;
+              courseName?: string;
+              courseClosures?: Record<string, unknown>;
+            },
+          );
+        });
+
+        // Historial archivado: inscripciones de grupos anteriores conservadas al
+        // remover al alumno (cambio de grupo/modalidad). Mantiene el Kardex completo.
+        let archiveDocs: Array<{ data: () => unknown }> = [];
+        try {
+          if (normalizedScopeGroupIds.length > 0) {
+            archiveDocs = (
+              await Promise.allSettled(
+                normalizedScopeGroupIds.map((groupId) =>
+                  getDoc(doc(db, "studentEnrollmentsArchive", `${groupId}_${studentId}`)),
+                ),
+              )
+            ).flatMap((result) => {
+              if (result.status === "rejected") {
+                if (isPermissionDeniedError(result.reason)) return [];
+                throw result.reason;
+              }
+              return result.value.exists() ? [result.value] : [];
+            });
+          } else if (!normalizedScopePlantelId) {
+            archiveDocs = (
+              await getDocs(
+                query(
+                  collection(db, "studentEnrollmentsArchive"),
+                  where("studentId", "==", studentId),
+                ),
+              )
+            ).docs;
+          }
+        } catch (error) {
+          if (!isPermissionDeniedError(error)) throw error;
+          archiveDocs = [];
+        }
+
+        archiveDocs.forEach((docSnap) => {
+          ingestEnrollmentData(
+            docSnap.data() as {
+              groupId?: string;
+              groupName?: string;
+              courseName?: string;
+              courseClosures?: Record<string, unknown>;
+            },
+          );
         });
 
         if (groupIds.size === 0 && normalizedScopeGroupIds.length > 0) {
@@ -298,6 +363,48 @@ export function StudentGradesModal({
             }
             registerGroupCourses(groupId, groupDoc.data());
           });
+        }
+
+        // Recuperación de historial: descubre grupos donde el alumno tiene entregas
+        // aunque su inscripción ya no exista (p. ej. cambió de grupo antes de que se
+        // archivaran las inscripciones). Las entregas NO se borran al remover al alumno.
+        // Solo admin/adminTeacher pueden hacer collectionGroup de submissions (ver reglas);
+        // para otros roles/alcances se ignora silenciosamente.
+        const groupIdsBeforeDiscovery = Array.from(groupIds);
+        if (!isScopedAccess) {
+          try {
+            // Usamos orderBy('submittedAt') para reutilizar el índice compuesto
+            // (studentId ASC, submittedAt DESC) que ya usa el reporte de riesgo de
+            // deserción, en vez de exigir un índice de campo único COLLECTION_GROUP.
+            const studentSubmissionsCg = await getDocs(
+              query(
+                collectionGroup(db, "submissions"),
+                where("studentId", "==", studentId),
+                orderBy("submittedAt", "desc"),
+              ),
+            );
+            const discoveredFromSubmissions: string[] = [];
+            studentSubmissionsCg.docs.forEach((submissionDoc) => {
+              const discoveredGroupId = submissionDoc.ref.parent.parent?.id?.trim();
+              if (discoveredGroupId) {
+                discoveredFromSubmissions.push(discoveredGroupId);
+                groupIds.add(discoveredGroupId);
+              }
+            });
+            console.log("[Kardex][debug] studentId", studentId, {
+              isScopedAccess,
+              liveEnrollments: enrollmentDocs.length,
+              archiveDocs: archiveDocs.length,
+              groupsBeforeDiscovery: groupIdsBeforeDiscovery,
+              submissionsFound: studentSubmissionsCg.size,
+              groupsFromSubmissions: Array.from(new Set(discoveredFromSubmissions)),
+              groupsAfterDiscovery: Array.from(groupIds),
+            });
+          } catch (error) {
+            // Best-effort: si falta permiso o un índice de collectionGroup, no rompemos
+            // el Kardex; simplemente no se recuperan grupos históricos por entregas.
+            console.warn("[Kardex][debug] No se pudo descubrir grupos históricos por entregas:", error);
+          }
         }
 
         const groupIdsToLoad = Array.from(
@@ -515,6 +622,15 @@ export function StudentGradesModal({
         const nextRows = Array.from(mergedRows.values()).sort(
           (a, b) => getRowTs(b) - getRowTs(a),
         );
+
+        console.log("[Kardex][debug] filas finales", nextRows.length, nextRows.map((r) => ({
+          grupo: r.groupName,
+          groupId: r.groupId,
+          materia: r.courseName,
+          estado: r.status,
+          final: r.finalGrade,
+          auto: r.autoGrade,
+        })));
 
         if (!active) return;
         setRows(nextRows);

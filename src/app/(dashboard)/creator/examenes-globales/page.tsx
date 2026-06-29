@@ -1332,7 +1332,9 @@ export default function GlobalExamsPage() {
                     const canToggle =
                       assignment.status === "draft" ||
                       assignment.status === "enabled" ||
-                      assignment.status === "disabled";
+                      assignment.status === "disabled" ||
+                      // Reprobado: el adminTeacher puede rehabilitar para conceder otro intento.
+                      assignment.status === "failed";
 
                     return (
                       <article

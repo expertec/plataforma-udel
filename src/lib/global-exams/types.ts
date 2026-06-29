@@ -1,7 +1,10 @@
 export const GLOBAL_EXAM_MIN_QUESTIONS = 1;
 export const GLOBAL_EXAM_MAX_QUESTIONS = 25;
 export const GLOBAL_EXAM_PASS_SCORE = 70;
-export const GLOBAL_EXAM_MAX_ATTEMPTS = 2;
+// Cada habilitación otorga un único intento. Si el alumno lo usa (apruebe o repruebe)
+// queda bloqueado hasta que un adminTeacher vuelva a habilitar el examen, lo que
+// concede exactamente un intento adicional.
+export const GLOBAL_EXAM_MAX_ATTEMPTS = 1;
 export const GLOBAL_EXAM_OPTION_COUNT = 4;
 
 export type GlobalExamTemplateStatus = "draft" | "published";
