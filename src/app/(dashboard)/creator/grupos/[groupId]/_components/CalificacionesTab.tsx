@@ -107,6 +107,7 @@ type CourseConceptsResolution = {
 
 type CourseClosureState = {
   status?: "open" | "closed";
+  courseName?: string;
   finalGrade?: number;
   autoGrade?: number | null;
   campusTasksGrade?: number | null;
@@ -2200,6 +2201,7 @@ export function CalificacionesTab({
       const previousClosure = row.closure ?? null;
       const closurePayload: CourseClosureState = {
         status: "closed",
+        courseName: selectedCourseName,
         finalGrade,
         autoGrade: row.autoGrade,
         campusTasksGrade: campusGrades.campusTasksGrade,
@@ -2229,6 +2231,7 @@ export function CalificacionesTab({
           courseClosures: {
             [selectedCourseId]: {
               status: closurePayload.status,
+              courseName: selectedCourseName,
               finalGrade: closurePayload.finalGrade,
               autoGrade: closurePayload.autoGrade,
               campusTasksGrade: closurePayload.campusTasksGrade,
@@ -2287,6 +2290,7 @@ export function CalificacionesTab({
       const isClosed = previousClosure?.status === "closed";
       const payload: CourseClosureState = {
         status: isClosed ? "closed" : "open",
+        courseName: selectedCourseName,
         finalGrade,
         autoGrade: row.autoGrade,
         campusTasksGrade: campusGrades.campusTasksGrade,
@@ -2319,6 +2323,7 @@ export function CalificacionesTab({
           courseClosures: {
             [selectedCourseId]: {
               status: payload.status,
+              courseName: selectedCourseName,
               finalGrade: payload.finalGrade,
               autoGrade: payload.autoGrade,
               campusTasksGrade: payload.campusTasksGrade,
@@ -2411,6 +2416,7 @@ export function CalificacionesTab({
       const isClosed = previousClosure?.status === "closed";
       const payload: CourseClosureState = {
         status: isClosed ? "closed" : "open",
+        courseName: selectedCourseName,
         finalGrade,
         autoGrade: row.autoGrade,
         campusTasksGrade: campusGrades.campusTasksGrade,
@@ -2443,6 +2449,7 @@ export function CalificacionesTab({
           courseClosures: {
             [selectedCourseId]: {
               status: payload.status,
+              courseName: selectedCourseName,
               finalGrade: payload.finalGrade,
               autoGrade: payload.autoGrade,
               campusTasksGrade: payload.campusTasksGrade,
@@ -2543,6 +2550,7 @@ export function CalificacionesTab({
         const notifiedAt = new Date();
         const notifiedPayload: CourseClosureState = {
           ...payload,
+          courseName: selectedCourseName,
           lastFinalGradeNotifiedAt: notifiedAt,
           lastFinalGradeNotifiedBy: currentUserId,
           lastFinalGradeNotifiedValue: finalGrade,
@@ -2555,10 +2563,11 @@ export function CalificacionesTab({
             studentId: row.studentId,
             studentName: row.studentName,
             groupId,
-            courseClosures: {
-              [selectedCourseId]: {
-                status: notifiedPayload.status,
-                finalGrade: notifiedPayload.finalGrade,
+              courseClosures: {
+                [selectedCourseId]: {
+                  status: notifiedPayload.status,
+                  courseName: selectedCourseName,
+                  finalGrade: notifiedPayload.finalGrade,
                 autoGrade: notifiedPayload.autoGrade,
                 campusTasksGrade: notifiedPayload.campusTasksGrade,
                 campusFinalExamGrade: notifiedPayload.campusFinalExamGrade,
@@ -2621,9 +2630,11 @@ export function CalificacionesTab({
 
     setProcessingStudentId(row.studentId);
     try {
+      const selectedCourseName = selectedCourse?.courseName ?? "Materia";
       const previous = row.closure ?? null;
       const reopenPayload: CourseClosureState = {
         status: "open",
+        courseName: selectedCourseName,
         finalGrade: previous?.finalGrade,
         autoGrade: previous?.autoGrade ?? row.autoGrade,
         campusTasksGrade: previous?.campusTasksGrade ?? null,
@@ -2656,6 +2667,7 @@ export function CalificacionesTab({
           courseClosures: {
             [selectedCourseId]: {
               status: reopenPayload.status,
+              courseName: selectedCourseName,
               finalGrade: reopenPayload.finalGrade ?? null,
               autoGrade: reopenPayload.autoGrade ?? null,
               campusTasksGrade: reopenPayload.campusTasksGrade ?? null,
@@ -2798,6 +2810,7 @@ export function CalificacionesTab({
               courseClosures: {
                 [selectedCourseId]: {
                   status: "closed",
+                  courseName: selectedCourseName,
                   finalGrade,
                   autoGrade: row.autoGrade,
                   campusTasksGrade: campusGrades.campusTasksGrade,
@@ -2837,6 +2850,7 @@ export function CalificacionesTab({
               ...current.courseClosures,
               [selectedCourseId]: {
                 status: "closed",
+                courseName: selectedCourseName,
                 finalGrade,
                 autoGrade: row.autoGrade,
                 campusTasksGrade: campusGrades.campusTasksGrade,

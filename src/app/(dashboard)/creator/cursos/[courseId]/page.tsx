@@ -1090,7 +1090,7 @@ export default function CourseBuilderPage() {
         <div className="flex items-center justify-between">
           <button
             onClick={() => router.push("/creator/cursos")}
-            className="text-sm text-blue-600 hover:underline"
+            className="text-sm font-medium text-[#6e2d2d] hover:underline"
           >
             ← Volver a cursos
           </button>
@@ -1098,7 +1098,7 @@ export default function CourseBuilderPage() {
             <button
               type="button"
               onClick={handleOpenStudentPreview}
-              className="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+              className="rounded-full border border-[#d9b1a1] px-3 py-1.5 text-xs font-semibold text-[#6e2d2d] transition hover:bg-[#fff7f7]"
             >
               Vista previa alumno
             </button>
@@ -1133,8 +1133,8 @@ export default function CourseBuilderPage() {
             onClick={() => setActiveTab(tab.key as typeof activeTab)}
             className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
               activeTab === tab.key
-                ? "bg-blue-600 text-white shadow-sm"
-                : "bg-white text-slate-700 border border-slate-200 hover:bg-slate-50"
+                ? "bg-[#6e2d2d] text-white shadow-sm"
+                : "border border-[#d9b1a1] bg-white text-[#6e2d2d] hover:bg-[#fff7f7]"
             }`}
           >
             {tab.label}

@@ -594,7 +594,9 @@ export async function getAllGroups(maxResults?: number): Promise<Group[]> {
     constraints.push(limit(maxResults));
   }
   const snap = await getDocs(query(ref, ...constraints));
-  return snap.docs.map((docSnap) => toGroup(docSnap.id, docSnap.data()));
+  return snap.docs
+    .filter((docSnap) => docSnap.data()?.isProbe !== true)
+    .map((docSnap) => toGroup(docSnap.id, docSnap.data()));
 }
 
 const sortGroupsByCreatedAtDesc = (groups: Group[]): Group[] =>

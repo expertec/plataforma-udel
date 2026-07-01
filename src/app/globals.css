@@ -25,6 +25,193 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+.creator-shell {
+  --creator-bg: #f7f0eb;
+  --creator-surface: #fffaf7;
+  --creator-surface-muted: #f2e2da;
+  --creator-border: #d5b0a3;
+  --creator-border-strong: #b67a68;
+  --creator-text: #321717;
+  --creator-text-soft: #754848;
+  --creator-brand: #6e2d2d;
+  --creator-brand-deep: #551b22;
+  --creator-brand-strong: #8a1f28;
+  background:
+    radial-gradient(circle at top left, rgba(110, 45, 45, 0.08), transparent 24rem),
+    linear-gradient(180deg, #fffdfc 0%, #f8efeb 100%);
+  color: var(--creator-text);
+}
+
+.creator-shell .creator-panel {
+  background: linear-gradient(180deg, rgba(255, 250, 247, 0.96), rgba(250, 242, 236, 0.98));
+  border: 1px solid rgba(181, 122, 104, 0.24);
+  box-shadow: 0 24px 60px rgba(85, 27, 34, 0.08);
+}
+
+.creator-shell .creator-card {
+  background: linear-gradient(180deg, rgba(255, 251, 248, 0.96), rgba(252, 244, 239, 0.96));
+  border-color: rgba(181, 122, 104, 0.24);
+  box-shadow: 0 16px 40px rgba(85, 27, 34, 0.06);
+}
+
+.creator-shell .creator-card-muted {
+  background: linear-gradient(180deg, rgba(110, 45, 45, 0.08), rgba(255, 255, 255, 0.92));
+  border-color: rgba(181, 122, 104, 0.28);
+}
+
+.creator-shell .creator-sidebar {
+  background:
+    linear-gradient(180deg, rgba(85, 27, 34, 0.97), rgba(110, 45, 45, 0.98)),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.06), transparent 50%);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 10px 0 40px rgba(58, 17, 25, 0.28);
+}
+
+.creator-shell .creator-kpi {
+  background:
+    linear-gradient(145deg, rgba(255, 249, 245, 0.96), rgba(249, 236, 228, 0.92)),
+    radial-gradient(circle at top right, rgba(110, 45, 45, 0.08), transparent 9rem);
+  border-color: rgba(181, 122, 104, 0.24);
+}
+
+.creator-shell .creator-kpi-brand {
+  background:
+    linear-gradient(145deg, rgba(110, 45, 45, 0.96), rgba(85, 27, 34, 0.98)),
+    radial-gradient(circle at top right, rgba(255, 255, 255, 0.08), transparent 9rem);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.creator-shell .creator-pill {
+  background: rgba(110, 45, 45, 0.08);
+  color: var(--creator-brand-deep);
+  border: 1px solid rgba(181, 122, 104, 0.28);
+}
+
+.creator-shell .creator-accent-link,
+.creator-shell .text-blue-500,
+.creator-shell .text-blue-600,
+.creator-shell .text-blue-700,
+.creator-shell .text-blue-800,
+.creator-shell .text-blue-900,
+.creator-shell .text-indigo-600,
+.creator-shell .text-sky-700,
+.creator-shell .text-sky-800,
+.creator-shell .text-indigo-700 {
+  color: var(--creator-brand);
+}
+
+.creator-shell .hover\:text-blue-500:hover,
+.creator-shell .hover\:text-blue-700:hover,
+.creator-shell .hover\:text-blue-600:hover,
+.creator-shell .hover\:text-sky-700:hover,
+.creator-shell .hover\:text-sky-800:hover,
+.creator-shell .hover\:text-indigo-700:hover {
+  color: var(--creator-brand-deep);
+}
+
+.creator-shell .bg-blue-100,
+.creator-shell .bg-blue-100\/30,
+.creator-shell .bg-blue-100\/50,
+.creator-shell .bg-blue-50,
+.creator-shell .bg-blue-50\/30,
+.creator-shell .bg-blue-50\/50 {
+  background-color: rgba(110, 45, 45, 0.08);
+}
+
+.creator-shell .bg-indigo-100,
+.creator-shell .bg-sky-50,
+.creator-shell .bg-sky-100 {
+  background-color: rgba(110, 45, 45, 0.08);
+}
+
+.creator-shell .border-blue-100,
+.creator-shell .border-blue-200,
+.creator-shell .border-blue-300,
+.creator-shell .border-blue-400,
+.creator-shell .border-blue-500 {
+  border-color: rgba(181, 122, 104, 0.42);
+}
+
+.creator-shell .border-indigo-200,
+.creator-shell .border-sky-200 {
+  border-color: rgba(181, 122, 104, 0.42);
+}
+
+.creator-shell .border-l-blue-400,
+.creator-shell .border-l-blue-500 {
+  border-left-color: var(--creator-brand);
+}
+
+.creator-shell .focus\:border-blue-500:focus,
+.creator-shell .focus\:border-blue-400:focus {
+  border-color: var(--creator-brand);
+}
+
+.creator-shell .focus\:ring-blue-500:focus,
+.creator-shell .focus\:ring-blue-100:focus,
+.creator-shell .focus\:ring-blue-400:focus {
+  --tw-ring-color: rgba(110, 45, 45, 0.18);
+}
+
+.creator-shell .ring-blue-200,
+.creator-shell .ring-blue-300 {
+  --tw-ring-color: rgba(110, 45, 45, 0.14);
+}
+
+.creator-shell .bg-blue-500,
+.creator-shell .bg-blue-500\/70,
+.creator-shell .bg-blue-600,
+.creator-shell .bg-indigo-600,
+.creator-shell .bg-indigo-700,
+.creator-shell .bg-sky-500 {
+  background-color: var(--creator-brand);
+}
+
+.creator-shell .hover\:bg-blue-100:hover,
+.creator-shell .hover\:bg-blue-500:hover,
+.creator-shell .hover\:bg-blue-600:hover,
+.creator-shell .hover\:bg-indigo-700:hover,
+.creator-shell .hover\:bg-indigo-500:hover,
+.creator-shell .hover\:bg-sky-100:hover {
+  background-color: var(--creator-brand-deep);
+}
+
+.creator-shell .from-blue-500,
+.creator-shell .via-blue-500,
+.creator-shell .to-blue-600,
+.creator-shell .from-indigo-500,
+.creator-shell .via-indigo-600,
+.creator-shell .to-indigo-700,
+.creator-shell .to-indigo-600 {
+  --tw-gradient-from: var(--creator-brand) var(--tw-gradient-from-position);
+  --tw-gradient-to: rgb(110 45 45 / 0) var(--tw-gradient-to-position);
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+}
+
+.creator-shell .creator-tabs-list {
+  background: rgba(110, 45, 45, 0.08);
+  border: 1px solid rgba(181, 122, 104, 0.2);
+}
+
+.creator-shell .creator-tabs-trigger[data-state="active"] {
+  background: linear-gradient(180deg, rgba(255, 251, 248, 1), rgba(250, 236, 228, 1));
+  color: var(--creator-brand-deep);
+  box-shadow: 0 10px 24px rgba(85, 27, 34, 0.08);
+}
+
+.creator-shell .creator-tabs-trigger[data-state="inactive"] {
+  color: var(--creator-text-soft);
+}
+
+.creator-shell .creator-tabs-trigger[data-state="inactive"]:hover {
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--creator-brand);
+}
+
+.creator-shell .accent-blue-500 {
+  accent-color: var(--creator-brand);
+}
+
 /* Scroll snap configuration for smooth carousel experience */
 html {
   scroll-behavior: smooth;

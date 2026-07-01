@@ -87,6 +87,8 @@ const buildRowKey = (groupId: string, groupName: string, courseId: string, cours
 const buildGroupCourseKey = (groupId: string, courseId: string) =>
   `${groupId.trim()}::${courseId.trim()}`;
 
+const looksLikeFirestoreId = (value: string) => /^[A-Za-z0-9_-]{16,}$/.test(value.trim());
+
 const getCourseNameFromGroupData = (groupData: {
   courseId?: unknown;
   courseName?: unknown;
@@ -204,6 +206,7 @@ export function StudentGradesModal({
         const enrollmentGroupNames = new Map<string, string>();
         const enrollmentCourseFallbackByGroup = new Map<string, string>();
         const groupCourseNameByKey = new Map<string, string>();
+        const courseTitleById = new Map<string, string>();
         const groupIds = new Set<string>();
         const enrollmentSources: Array<{
           groupId: string;
@@ -248,14 +251,48 @@ export function StudentGradesModal({
           const groupCourseName = normalizedCourseId
             ? groupCourseNameByKey.get(buildGroupCourseKey(normalizedGroupId, normalizedCourseId)) ?? ""
             : "";
+          const courseTitle = normalizedCourseId
+            ? courseTitleById.get(normalizedCourseId) ?? ""
+            : "";
 
-          for (const candidate of [groupCourseName, ...candidates]) {
+          for (const candidate of [groupCourseName, courseTitle, ...candidates]) {
             if (typeof candidate !== "string") continue;
             const normalizedCandidate = candidate.trim();
             if (normalizedCandidate) return normalizedCandidate;
           }
 
-          return normalizedCourseId || "Sin materia";
+          if (normalizedCourseId) {
+            return looksLikeFirestoreId(normalizedCourseId)
+              ? "Materia archivada"
+              : normalizedCourseId;
+          }
+
+          return "Sin materia";
+        };
+
+        const needsCourseLookup = (
+          groupId: string,
+          courseId: string,
+          ...candidates: Array<string | null | undefined>
+        ) => {
+          const normalizedGroupId = groupId.trim();
+          const normalizedCourseId = courseId.trim();
+          if (!normalizedCourseId) return false;
+
+          const groupCourseName = groupCourseNameByKey.get(
+            buildGroupCourseKey(normalizedGroupId, normalizedCourseId),
+          );
+          if (typeof groupCourseName === "string" && groupCourseName.trim().length > 0) {
+            return false;
+          }
+
+          for (const candidate of candidates) {
+            if (typeof candidate === "string" && candidate.trim().length > 0) {
+              return false;
+            }
+          }
+
+          return !courseTitleById.has(normalizedCourseId);
         };
 
         const ingestEnrollmentData = (data: {
@@ -521,16 +558,135 @@ export function StudentGradesModal({
           }),
         );
 
+        const courseIdsToLookup = new Set<string>();
+
+        enrollmentSources.forEach(({ groupId, fallbackCourseName, closures }) => {
+          Object.entries(closures).forEach(([courseIdRaw, closureRaw]) => {
+            const closure = closureRaw as CourseClosure & { courseName?: unknown };
+            if (!closure || typeof closure !== "object") return;
+            const courseId = courseIdRaw.trim();
+            const closureCourseName =
+              typeof closure.courseName === "string" ? closure.courseName.trim() : "";
+            if (needsCourseLookup(groupId, courseId, closureCourseName, fallbackCourseName)) {
+              courseIdsToLookup.add(courseId);
+            }
+          });
+        });
+
         let skippedGroupsByPermission = 0;
-        submissionsByGroupResults.forEach((result) => {
+        const submissionsByGroupValues = submissionsByGroupResults.flatMap((result) => {
           if (result.status === "rejected") {
             if (isPermissionDeniedError(result.reason)) {
               skippedGroupsByPermission += 1;
-              return;
+              return [];
             }
             throw result.reason;
           }
-          const { groupId, groupName, fallbackCourseName, docs } = result.value;
+          return [result.value];
+        });
+
+        submissionsByGroupValues.forEach(({ groupId, fallbackCourseName, docs }) => {
+          docs.forEach((submissionDoc) => {
+            const data = submissionDoc.data() as {
+              courseId?: string;
+              courseTitle?: string;
+            };
+            const courseId = (data.courseId ?? "").trim();
+            const courseTitle = (data.courseTitle ?? "").trim();
+            if (needsCourseLookup(groupId, courseId, courseTitle, fallbackCourseName)) {
+              courseIdsToLookup.add(courseId);
+            }
+          });
+        });
+
+        if (courseIdsToLookup.size > 0) {
+          const courseIdsToLookupList = Array.from(courseIdsToLookup);
+          const courseDocResults = await Promise.allSettled(
+            courseIdsToLookupList.map((courseId) => getDoc(doc(db, "courses", courseId))),
+          );
+          courseDocResults.forEach((result, index) => {
+            const courseId = courseIdsToLookupList[index];
+            if (result.status === "rejected") {
+              if (isPermissionDeniedError(result.reason)) return;
+              throw result.reason;
+            }
+            if (!result.value.exists()) return;
+            const data = result.value.data() as { title?: unknown; courseName?: unknown };
+            const title =
+              typeof data.title === "string" && data.title.trim().length > 0
+                ? data.title.trim()
+                : typeof data.courseName === "string" && data.courseName.trim().length > 0
+                  ? data.courseName.trim()
+                  : "";
+            if (title) {
+              courseTitleById.set(courseId, title);
+            }
+          });
+
+          const unresolvedCourseIds = courseIdsToLookupList.filter(
+            (courseId) => !courseTitleById.has(courseId),
+          );
+
+          if (unresolvedCourseIds.length > 0) {
+            const groupLookups = await Promise.allSettled(
+              unresolvedCourseIds.map(async (courseId) => {
+                const directGroupsQuery = query(
+                  collection(db, "groups"),
+                  where("courseId", "==", courseId),
+                );
+                const arrayGroupsQuery = query(
+                  collection(db, "groups"),
+                  where("courseIds", "array-contains", courseId),
+                );
+
+                const [directSnap, arraySnap] = await Promise.allSettled([
+                  getDocs(directGroupsQuery),
+                  getDocs(arrayGroupsQuery),
+                ]);
+
+                const docs = [
+                  ...(directSnap.status === "fulfilled" ? directSnap.value.docs : []),
+                  ...(arraySnap.status === "fulfilled" ? arraySnap.value.docs : []),
+                ];
+
+                for (const groupDoc of docs) {
+                  const groupData = groupDoc.data() as {
+                    courseId?: unknown;
+                    courseName?: unknown;
+                    courses?: unknown;
+                  };
+                  const courseNameById = getCourseNameFromGroupData(groupData);
+                  const resolvedName = courseNameById.get(courseId)?.trim() ?? "";
+                  if (resolvedName) {
+                    return { courseId, courseName: resolvedName };
+                  }
+                  const legacyCourseId =
+                    typeof groupData.courseId === "string" ? groupData.courseId.trim() : "";
+                  const legacyCourseName =
+                    typeof groupData.courseName === "string" ? groupData.courseName.trim() : "";
+                  if (legacyCourseId === courseId && legacyCourseName) {
+                    return { courseId, courseName: legacyCourseName };
+                  }
+                }
+
+                return { courseId, courseName: "" };
+              }),
+            );
+
+            groupLookups.forEach((result) => {
+              if (result.status === "rejected") {
+                if (isPermissionDeniedError(result.reason)) return;
+                throw result.reason;
+              }
+              const resolvedName = result.value.courseName.trim();
+              if (resolvedName) {
+                courseTitleById.set(result.value.courseId, resolvedName);
+              }
+            });
+          }
+        }
+
+        submissionsByGroupValues.forEach(({ groupId, groupName, fallbackCourseName, docs }) => {
           docs.forEach((submissionDoc) => {
             const data = submissionDoc.data() as {
               courseId?: string;

@@ -137,6 +137,9 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
       items.push({ href: "/creator/profesores", label: "Profesores" });
     }
     if (isAdminTeacherRole(userRole)) {
+      items.push({ href: "/creator/diagnostico-permisos", label: "Diagnóstico de permisos" });
+    }
+    if (isAdminTeacherRole(userRole)) {
       items.push({ href: "/creator/programas", label: "Programas" });
     }
     if (canAccessConvenios) {
@@ -159,33 +162,32 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
       ]}
     >
       <TeacherDataProvider>
-      <div className="flex min-h-screen w-full bg-slate-100 text-slate-900">
+      <div className="creator-shell flex min-h-screen w-full">
         {/* Sidebar */}
         <aside
-          className={`fixed inset-y-0 left-0 z-20 w-64 shrink-0 border-r border-slate-200 bg-white px-4 py-6 transition transform ${
+          className={`creator-sidebar fixed inset-y-0 left-0 z-20 w-72 shrink-0 border-r px-4 py-6 text-white transition transform ${
             open ? "translate-x-0" : "-translate-x-full"
           }`}
         >
-          <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-200 text-lg font-bold text-slate-800">
-              {avatarLetter || "M"}
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-[0.3em] text-slate-500">
-                Panel
-              </p>
-              <p className="text-sm text-slate-700">{roleLabel}</p>
-            </div>
+          <div className="flex items-center justify-center py-2">
+            <Image
+              src="/university-logo.jpg"
+              alt="Logo UDEL Universidad"
+              width={48}
+              height={48}
+              className="h-12 w-12 object-cover"
+              priority
+            />
           </div>
-          <nav className="mt-6 space-y-1">
+          <nav className="mt-6 space-y-1.5">
             {navItems.map((item) => (
               <Link
                 key={item.href}
                 href={item.href}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
+                className={`group flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-medium transition ${
                   isActive(item.href)
-                    ? "bg-slate-200 text-slate-900"
-                    : "text-slate-700 hover:bg-slate-100"
+                    ? "bg-white/12 text-white shadow-lg shadow-black/10"
+                    : "text-white/75 hover:bg-white/8 hover:text-white"
                 }`}
                 onClick={() => {
                   if (window.innerWidth < 1024) {
@@ -193,7 +195,13 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
                   }
                 }}
               >
-                <span className="h-2 w-2 rounded-full bg-slate-400" />
+                <span
+                  className={`h-2.5 w-2.5 rounded-full transition ${
+                    isActive(item.href)
+                      ? "bg-white shadow-[0_0_0_4px_rgba(255,255,255,0.14)]"
+                      : "bg-white/30 group-hover:bg-white"
+                  }`}
+                />
                 {item.label}
               </Link>
             ))}
@@ -205,31 +213,36 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
           <button
             type="button"
             aria-label="Cerrar menú"
-            className="fixed inset-0 z-10 bg-black/40 lg:hidden"
+            className="fixed inset-0 z-10 bg-[#2b1116]/55 backdrop-blur-[2px] lg:hidden"
             onClick={() => setOpen(false)}
           />
         ) : null}
 
-        <main className={`flex-1 overflow-auto px-4 py-6 sm:px-6 ${open ? "lg:pl-72 lg:pr-8" : "lg:px-8"}`}>
-          <div className="mb-4 flex items-center gap-4 border-b border-slate-200 pb-4">
+        <main className={`flex-1 overflow-auto px-4 py-6 sm:px-6 ${open ? "lg:pl-80 lg:pr-8" : "lg:px-8"}`}>
+          <div className="creator-panel mb-4 flex items-center gap-4 rounded-[1.75rem] px-4 py-4 sm:px-5">
             <button
               type="button"
-              className="flex h-12 w-12 items-center justify-center rounded-xl border-2 border-blue-500 bg-white text-blue-600 shadow-sm transition hover:shadow-md"
+              className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[#b67a68]/35 bg-[#fffaf7] text-[#6e2d2d] shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
               onClick={() => setOpen((prev) => !prev)}
               aria-label={open ? "Ocultar menú" : "Abrir menú"}
             >
               <Menu size={22} strokeWidth={2.2} />
             </button>
 
-            <div className="flex flex-1 justify-end">
+            <div className="hidden min-w-0 flex-1 lg:block">
+              <p className="text-xs uppercase tracking-[0.35em] text-[#8c5e57]">Universidad de Liderazgo Integral</p>
+              <p className="truncate text-lg font-semibold text-[#551b22]">Panel institucional para maestros</p>
+            </div>
+
+            <div className="flex flex-1 justify-end lg:flex-none">
               <div className="relative flex items-center gap-3" ref={userMenuRef}>
                 <button
                   type="button"
-                  className="flex items-center gap-3 rounded-full border border-slate-200 bg-white px-2 py-1 pr-3 text-left shadow-sm transition hover:border-blue-200"
+                  className="flex items-center gap-3 rounded-full border border-[#d9b1a1] bg-[#fffaf7] px-2 py-1 pr-3 text-left shadow-sm transition hover:border-[#b67a68]"
                   onClick={() => setUserMenuOpen((prev) => !prev)}
                   aria-label="Abrir menú de usuario"
                 >
-                  <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-slate-50">
+                  <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full border border-[#d9b1a1] bg-[#f3e3db]">
                     {currentUser?.photoURL ? (
                       <Image
                         src={currentUser.photoURL}
@@ -240,28 +253,29 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
                         unoptimized
                       />
                     ) : (
-                      <span className="text-base font-semibold text-slate-800">
+                      <span className="text-base font-semibold text-[#551b22]">
                         {avatarLetter || "P"}
                       </span>
                     )}
                   </div>
                   <div className="hidden sm:block">
-                    <p className="text-xs font-semibold text-slate-700">{displayName}</p>
+                    <p className="text-xs font-semibold text-[#551b22]">{displayName}</p>
+                    <p className="text-[11px] uppercase tracking-[0.28em] text-[#9f6e61]">{roleLabel}</p>
                   </div>
-                  <ChevronDown size={16} className="text-slate-600" />
+                  <ChevronDown size={16} className="text-[#7b4c49]" />
                 </button>
                 {userMenuOpen ? (
-                  <div className="absolute right-0 top-16 w-52 rounded-lg border border-slate-200 bg-white p-2 text-sm shadow-lg">
+                  <div className="absolute right-0 top-16 w-52 rounded-2xl border border-[#d9b1a1] bg-[#fffaf7] p-2 text-sm shadow-[0_20px_40px_rgba(85,27,34,0.12)]">
                     <Link
                       href="/creator/perfil"
-                      className="flex items-center gap-2 rounded-md px-3 py-2 text-slate-800 hover:bg-slate-100"
+                      className="flex items-center gap-2 rounded-xl px-3 py-2 text-[#551b22] hover:bg-[#f3e3db]"
                       onClick={() => setUserMenuOpen(false)}
                     >
                       Ver perfil
                     </Link>
                     <button
                       type="button"
-                      className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-slate-800 hover:bg-slate-100"
+                      className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[#551b22] hover:bg-[#f3e3db]"
                       onClick={handleSignOut}
                     >
                       Cerrar sesión
@@ -271,7 +285,7 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
               </div>
             </div>
           </div>
-          <div className="min-h-[calc(100vh-48px)] rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+          <div className="creator-panel min-h-[calc(100vh-48px)] rounded-[2rem] p-4 sm:p-6">
             {children}
           </div>
         </main>

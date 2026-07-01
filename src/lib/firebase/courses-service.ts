@@ -161,7 +161,9 @@ export async function getCourses(teacherId?: string, maxResults?: number): Promi
     }
     const q = query(coursesRef, ...constraints);
     const snap = await getDocs(q);
-    return snap.docs.map((doc) => {
+    return snap.docs
+      .filter((doc) => doc.data()?.isProbe !== true)
+      .map((doc) => {
       const data = doc.data();
       return {
         id: doc.id,

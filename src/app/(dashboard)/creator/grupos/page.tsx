@@ -565,7 +565,7 @@ function GroupCard({
           <div className="flex items-center gap-2">
             <p className="text-base font-semibold text-slate-900">{group.groupName}</p>
             {isMentor ? (
-              <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
+              <span className="inline-flex items-center rounded-full bg-[#f3e3db] px-2 py-0.5 text-[11px] font-semibold text-[#6e2d2d]">
                 Mentor
               </span>
             ) : null}
@@ -580,7 +580,7 @@ function GroupCard({
             className={`mt-1 inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${
               group.isInPerson === true
                 ? "bg-emerald-100 text-emerald-700"
-                : "bg-blue-100 text-blue-700"
+                : "bg-[#f3e3db] text-[#6e2d2d]"
             }`}
           >
             {group.isInPerson === true ? "Presencial" : "En línea"}
@@ -605,7 +605,7 @@ function GroupCard({
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <Link
           href={`/creator/grupos/${group.id}`}
-          className="inline-flex items-center rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-blue-600 hover:border-blue-400"
+          className="inline-flex items-center rounded-lg border border-[#d9b1a1] bg-white px-3 py-2 text-sm font-medium text-[#6e2d2d] transition hover:border-[#b67a68] hover:bg-[#fff7f7]"
         >
           Gestionar grupo
         </Link>

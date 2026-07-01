@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { MoreHorizontal } from "lucide-react";
 import { type User } from "firebase/auth";
 import { collection, getDocs } from "firebase/firestore";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { db } from "@/lib/firebase/firestore";
 import {
@@ -116,12 +117,12 @@ const STATUS_LABELS: Record<TeacherLiveStatus, string> = {
 };
 
 const STATUS_CLASSNAMES: Record<TeacherLiveStatus, string> = {
-  scheduled: "bg-blue-100 text-blue-700",
-  live: "bg-emerald-100 text-emerald-700",
-  processing: "bg-amber-100 text-amber-700",
-  ready: "bg-teal-100 text-teal-700",
+  scheduled: "bg-[#f3e3db] text-[#6e2d2d]",
+  live: "bg-[#6e2d2d] text-white",
+  processing: "bg-[#efe1de] text-[#7a3232]",
+  ready: "bg-[#ead7d2] text-[#551b22]",
   failed: "bg-rose-100 text-rose-700",
-  finalized: "bg-slate-200 text-slate-700",
+  finalized: "bg-[#f6ece8] text-[#754848]",
 };
 
 function buildDefaultScheduleRange(timeZone: string) {
@@ -193,11 +194,13 @@ export function TeacherLiveClassesView({
   const [submitting, setSubmitting] = useState(false);
   const [recordingLoadingClassId, setRecordingLoadingClassId] = useState<string | null>(null);
   const [detailsItem, setDetailsItem] = useState<TeacherLiveClassItem | null>(null);
+  const [openActionsClassId, setOpenActionsClassId] = useState<string | null>(null);
   const [groupSearch, setGroupSearch] = useState("");
   const [groupResultsOpen, setGroupResultsOpen] = useState(false);
   const [form, setForm] = useState<ScheduleFormState>(() => getInitialForm([]));
   const [lessonOptions, setLessonOptions] = useState<LessonOption[]>([]);
   const [lessonsLoading, setLessonsLoading] = useState(false);
+  const actionsMenuRef = useRef<HTMLDivElement | null>(null);
 
   const fetchTeacherLiveClasses = useCallback(async () => {
     if (!currentUser) return;
@@ -241,6 +244,17 @@ export function TeacherLiveClassesView({
     if (!authReady || !currentUser) return;
     void fetchTeacherLiveClasses();
   }, [authReady, currentUser, fetchTeacherLiveClasses]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (!openActionsClassId) return;
+      if (actionsMenuRef.current?.contains(event.target as Node)) return;
+      setOpenActionsClassId(null);
+    };
+
+    window.addEventListener("mousedown", handleClickOutside);
+    return () => window.removeEventListener("mousedown", handleClickOutside);
+  }, [openActionsClassId]);
 
   const selectedGroup = useMemo(
     () => scheduleGroups.find((group) => group.groupId === form.groupId) ?? null,
@@ -526,7 +540,7 @@ export function TeacherLiveClassesView({
 
   if (!authReady) {
     return (
-      <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">
+      <div className="creator-card rounded-xl border p-6 text-sm text-[#754848] shadow-sm">
         Cargando clases en vivo...
       </div>
     );
@@ -534,7 +548,7 @@ export function TeacherLiveClassesView({
 
   if (!currentUser) {
     return (
-      <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">
+      <div className="creator-card rounded-xl border p-6 text-sm text-[#754848] shadow-sm">
         No se pudo validar la sesión del profesor.
       </div>
     );
@@ -543,14 +557,14 @@ export function TeacherLiveClassesView({
   return (
     <>
       <div className="space-y-6">
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="creator-card-muted rounded-2xl border p-6 shadow-sm">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">
+              <p className="text-xs font-semibold uppercase tracking-[0.25em] text-[#9f6e61]">
                 Profesor
               </p>
-              <h1 className="mt-2 text-2xl font-semibold text-slate-900">Clases En Vivo</h1>
-              <p className="mt-2 max-w-3xl text-sm text-slate-600">
+              <h1 className="mt-2 text-2xl font-semibold text-[#551b22]">Clases En Vivo</h1>
+              <p className="mt-2 max-w-3xl text-sm text-[#754848]">
                 Revisa tus sesiones live, su estado actual y programa nuevas clases sin entrar al
                 creador del curso.
               </p>
@@ -560,7 +574,7 @@ export function TeacherLiveClassesView({
                 type="button"
                 onClick={() => void fetchTeacherLiveClasses()}
                 disabled={loading}
-                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                className="rounded-lg border border-[#d9b1a1] bg-white px-4 py-2 text-sm font-semibold text-[#6e2d2d] transition hover:bg-[#fff7f7] disabled:opacity-60"
               >
                 {loading ? "Actualizando..." : "Refrescar"}
               </button>
@@ -568,7 +582,7 @@ export function TeacherLiveClassesView({
                 type="button"
                 onClick={openScheduleModal}
                 disabled={scheduleGroups.length === 0}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-60"
+                className="rounded-lg bg-[#6e2d2d] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#551b22] disabled:opacity-60"
               >
                 Programar clase
               </button>
@@ -577,28 +591,28 @@ export function TeacherLiveClassesView({
         </div>
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-sm text-slate-500">Tus clases live</p>
-            <p className="mt-2 text-3xl font-semibold text-slate-900">{summary.total}</p>
-            <p className="mt-1 text-xs text-slate-500">
+          <div className="creator-card rounded-2xl border p-5 shadow-sm">
+            <p className="text-sm text-[#9f6e61]">Tus clases live</p>
+            <p className="mt-2 text-3xl font-semibold text-[#551b22]">{summary.total}</p>
+            <p className="mt-1 text-xs text-[#9f6e61]">
               Última actualización: {fetchedAt ? formatEsMxDateTime(fetchedAt) : "N/D"}
             </p>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-sm text-slate-500">En vivo</p>
-            <p className="mt-2 text-3xl font-semibold text-emerald-700">{summary.live}</p>
+          <div className="creator-kpi-brand rounded-2xl border p-5 shadow-sm">
+            <p className="text-sm text-white/70">En vivo</p>
+            <p className="mt-2 text-3xl font-semibold text-white">{summary.live}</p>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-sm text-slate-500">Programadas</p>
-            <p className="mt-2 text-3xl font-semibold text-blue-700">{summary.scheduled}</p>
+          <div className="creator-kpi rounded-2xl border p-5 shadow-sm">
+            <p className="text-sm text-[#9f6e61]">Programadas</p>
+            <p className="mt-2 text-3xl font-semibold text-[#6e2d2d]">{summary.scheduled}</p>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-sm text-slate-500">Grabación lista</p>
-            <p className="mt-2 text-3xl font-semibold text-teal-700">{summary.ready}</p>
+          <div className="creator-kpi rounded-2xl border p-5 shadow-sm">
+            <p className="text-sm text-[#9f6e61]">Grabación lista</p>
+            <p className="mt-2 text-3xl font-semibold text-[#551b22]">{summary.ready}</p>
           </div>
         </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="creator-card rounded-2xl border p-5 shadow-sm">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex flex-1 flex-col gap-3 sm:flex-row">
               <input
@@ -606,12 +620,12 @@ export function TeacherLiveClassesView({
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="Buscar por clase, grupo o materia..."
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-500"
+                className="w-full rounded-lg border border-[#d9b1a1] bg-white px-3 py-2 text-sm text-[#551b22] outline-none transition placeholder:text-[#a48484] focus:border-[#6e2d2d] focus:ring-2 focus:ring-[#6e2d2d]/10"
               />
               <select
                 value={statusFilter}
                 onChange={(event) => setStatusFilter(event.target.value as "all" | TeacherLiveStatus)}
-                className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-500"
+                className="rounded-lg border border-[#d9b1a1] bg-white px-3 py-2 text-sm text-[#551b22] outline-none transition focus:border-[#6e2d2d] focus:ring-2 focus:ring-[#6e2d2d]/10"
               >
                 <option value="all">Todos los estados</option>
                 <option value="scheduled">Programada</option>
@@ -622,32 +636,32 @@ export function TeacherLiveClassesView({
                 <option value="failed">Con error</option>
               </select>
             </div>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-[#9f6e61]">
               Solo se muestran clases live creadas por ti.
             </p>
           </div>
 
           <div className="mt-5 overflow-x-auto">
-            <table className="min-w-full divide-y divide-slate-200 text-sm">
+            <table className="min-w-full divide-y divide-[#ead7d2] text-sm">
               <thead>
-                <tr className="text-left text-slate-500">
+                <tr className="text-left text-[#8c5e57]">
                   <th className="px-3 py-3 font-medium">Título</th>
                   <th className="px-3 py-3 font-medium">Inicio</th>
                   <th className="px-3 py-3 font-medium">Estado</th>
                   <th className="px-3 py-3 font-medium">Grabación</th>
-                  <th className="px-3 py-3 font-medium text-right">Acciones</th>
+                  <th className="px-3 py-3 font-medium text-right">Menú</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="divide-y divide-[#f1e5df]">
                 {filteredItems.map((item) => (
-                  <tr key={`${item.classId}-${item.lessonId}`} className="align-top text-slate-700">
+                  <tr key={`${item.classId}-${item.lessonId}`} className="align-top text-[#754848]">
                     <td className="px-3 py-4">
-                      <div className="font-semibold text-slate-900">{item.title}</div>
-                      <div className="mt-1 text-xs text-slate-500">
+                      <div className="font-semibold text-[#551b22]">{item.title}</div>
+                      <div className="mt-1 text-xs text-[#8c5e57]">
                         {item.courseTitle} · {item.linkedGroupName || "Grupo no vinculado"}
                       </div>
                     </td>
-                    <td className="px-3 py-4 text-sm text-slate-600">
+                    <td className="px-3 py-4 text-sm text-[#754848]">
                       {item.scheduledStartAt
                         ? formatEsMxDateTime(item.scheduledStartAt, { timeZone: item.timezone })
                         : "N/D"}
@@ -659,42 +673,73 @@ export function TeacherLiveClassesView({
                         {STATUS_LABELS[item.liveStatus]}
                       </span>
                     </td>
-                    <td className="px-3 py-4 text-sm text-slate-600">
+                    <td className="px-3 py-4 text-sm text-[#754848]">
                       {item.recordingGenerated ? "Disponible" : "Pendiente"}
                     </td>
                     <td className="px-3 py-4">
-                      <div className="flex flex-wrap justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setDetailsItem(item)}
-                          className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                      <div className="flex justify-end">
+                        <div
+                          className="relative"
+                          ref={openActionsClassId === item.classId ? actionsMenuRef : null}
                         >
-                          Info
-                        </button>
-                        <Link
-                          href={buildLiveHref(item)}
-                          className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-                        >
-                          Entrar
-                        </Link>
-                        <button
-                          type="button"
-                          onClick={() => void copyLiveLink(item)}
-                          className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-                        >
-                          Copiar enlace
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void openRecording(item)}
-                          disabled={
-                            recordingLoadingClassId === item.classId ||
-                            (!item.recordingGenerated && item.liveStatus !== "ready")
-                          }
-                          className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-white disabled:opacity-60"
-                        >
-                          {recordingLoadingClassId === item.classId ? "Abriendo..." : "Grabación"}
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setOpenActionsClassId((current) =>
+                                current === item.classId ? null : item.classId,
+                              )
+                            }
+                            className="inline-flex items-center gap-2 rounded-lg border border-[#d9b1a1] bg-white px-3 py-2 text-sm font-semibold text-[#6e2d2d] transition hover:bg-[#fff7f7]"
+                          >
+                            Acciones
+                            <MoreHorizontal size={16} />
+                          </button>
+                          {openActionsClassId === item.classId ? (
+                            <div className="absolute right-0 top-12 z-20 w-52 rounded-2xl border border-[#d9b1a1] bg-[#fffaf7] p-2 shadow-[0_20px_40px_rgba(85,27,34,0.12)]">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDetailsItem(item);
+                                  setOpenActionsClassId(null);
+                                }}
+                                className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm font-medium text-[#551b22] hover:bg-[#f3e3db]"
+                              >
+                                Info
+                              </button>
+                              <Link
+                                href={buildLiveHref(item)}
+                                className="flex rounded-xl px-3 py-2 text-sm font-semibold text-[#551b22] hover:bg-[#f3e3db]"
+                                onClick={() => setOpenActionsClassId(null)}
+                              >
+                                Entrar
+                              </Link>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOpenActionsClassId(null);
+                                  void copyLiveLink(item);
+                                }}
+                                className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm font-medium text-[#551b22] hover:bg-[#f3e3db]"
+                              >
+                                Copiar enlace
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOpenActionsClassId(null);
+                                  void openRecording(item);
+                                }}
+                                disabled={
+                                  recordingLoadingClassId === item.classId ||
+                                  (!item.recordingGenerated && item.liveStatus !== "ready")
+                                }
+                                className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm font-medium text-[#551b22] hover:bg-[#f3e3db] disabled:cursor-not-allowed disabled:text-[#b99a90] disabled:hover:bg-transparent"
+                              >
+                                {recordingLoadingClassId === item.classId ? "Abriendo..." : "Grabación"}
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
                     </td>
                   </tr>
@@ -703,7 +748,7 @@ export function TeacherLiveClassesView({
             </table>
 
             {!loading && filteredItems.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-10 text-center text-sm text-slate-500">
+              <div className="mt-4 rounded-2xl border border-dashed border-[#d9b1a1] bg-[#fff7f7] p-10 text-center text-sm text-[#8c5e57]">
                 {items.length === 0
                   ? "Aún no tienes clases en vivo programadas."
                   : "No hay resultados con el filtro actual."}
@@ -716,12 +761,12 @@ export function TeacherLiveClassesView({
       <Dialog open={scheduleModalOpen} onOpenChange={setScheduleModalOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader className="flex items-start justify-between gap-4">
-            <DialogTitle>Programar clase en vivo</DialogTitle>
+            <DialogTitle className="text-[#551b22]">Programar clase en vivo</DialogTitle>
             <button
               type="button"
               onClick={() => setScheduleModalOpen(false)}
               aria-label="Cerrar"
-              className="-mr-1 -mt-1 rounded-lg p-1.5 text-2xl leading-none text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              className="-mr-1 -mt-1 rounded-lg p-1.5 text-2xl leading-none text-[#a48484] hover:bg-[#f3e3db] hover:text-[#6e2d2d]"
             >
               ×
             </button>
@@ -730,7 +775,7 @@ export function TeacherLiveClassesView({
           <div className="space-y-4">
             <div className="grid gap-4 md:grid-cols-2">
               <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">Grupo</label>
+                <label className="mb-2 block text-sm font-medium text-[#6e2d2d]">Grupo</label>
                 <div className="relative">
                   <input
                     type="search"
@@ -744,26 +789,26 @@ export function TeacherLiveClassesView({
                       }
                     }}
                     placeholder="Buscar grupo..."
-                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-500"
+                    className="w-full rounded-lg border border-[#d9b1a1] px-3 py-2 text-sm text-[#551b22] outline-none transition placeholder:text-[#a48484] focus:border-[#6e2d2d] focus:ring-2 focus:ring-[#6e2d2d]/10"
                   />
                   {groupResultsOpen ? (
-                    <div className="absolute z-20 mt-2 max-h-56 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-2 shadow-lg">
+                    <div className="absolute z-20 mt-2 max-h-56 w-full overflow-y-auto rounded-xl border border-[#d9b1a1] bg-[#fffaf7] p-2 shadow-lg">
                       {filteredScheduleGroups.length > 0 ? (
                         filteredScheduleGroups.map((group) => (
                           <button
                             key={group.groupId}
                             type="button"
                             onClick={() => handleSelectGroup(group)}
-                            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-[#754848] hover:bg-[#f3e3db]"
                           >
-                            <div className="font-medium text-slate-900">{group.groupName}</div>
-                            <div className="text-xs text-slate-500">
+                            <div className="font-medium text-[#551b22]">{group.groupName}</div>
+                            <div className="text-xs text-[#8c5e57]">
                               {group.courses.map((course) => course.courseName || "Materia").join(", ")}
                             </div>
                           </button>
                         ))
                       ) : (
-                        <div className="px-3 py-2 text-sm text-slate-500">
+                        <div className="px-3 py-2 text-sm text-[#8c5e57]">
                           No se encontraron grupos.
                         </div>
                       )}
@@ -773,7 +818,7 @@ export function TeacherLiveClassesView({
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">Materia</label>
+                <label className="mb-2 block text-sm font-medium text-[#6e2d2d]">Materia</label>
                 <select
                   value={form.courseId}
                   onChange={(event) =>
@@ -783,7 +828,7 @@ export function TeacherLiveClassesView({
                       lessonId: "",
                     }))
                   }
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-500"
+                  className="w-full rounded-lg border border-[#d9b1a1] px-3 py-2 text-sm text-[#551b22] outline-none transition focus:border-[#6e2d2d] focus:ring-2 focus:ring-[#6e2d2d]/10"
                 >
                   {selectedGroupCourses.map((course) => (
                     <option key={course.courseId} value={course.courseId}>
@@ -795,14 +840,14 @@ export function TeacherLiveClassesView({
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">Lección</label>
+              <label className="mb-2 block text-sm font-medium text-[#6e2d2d]">Lección</label>
               <select
                 value={form.lessonId}
                 onChange={(event) =>
                   setForm((current) => ({ ...current, lessonId: event.target.value }))
                 }
                 disabled={lessonsLoading || lessonOptions.length === 0}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-500 disabled:bg-slate-50 disabled:text-slate-400"
+                className="w-full rounded-lg border border-[#d9b1a1] px-3 py-2 text-sm text-[#551b22] outline-none transition focus:border-[#6e2d2d] focus:ring-2 focus:ring-[#6e2d2d]/10 disabled:bg-[#f7efeb] disabled:text-[#b99a90]"
               >
                 {lessonsLoading ? (
                   <option value="">Cargando lecciones...</option>
@@ -816,13 +861,13 @@ export function TeacherLiveClassesView({
                   ))
                 )}
               </select>
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-[#8c5e57]">
                 La clase en vivo se creará dentro de esta lección.
               </p>
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">Título</label>
+              <label className="mb-2 block text-sm font-medium text-[#6e2d2d]">Título</label>
               <input
                 type="text"
                 value={form.title}
@@ -830,13 +875,13 @@ export function TeacherLiveClassesView({
                   setForm((current) => ({ ...current, title: event.target.value }))
                 }
                 placeholder="Ej. Sesión de repaso semana 4"
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-500"
+                className="w-full rounded-lg border border-[#d9b1a1] px-3 py-2 text-sm text-[#551b22] outline-none transition placeholder:text-[#a48484] focus:border-[#6e2d2d] focus:ring-2 focus:ring-[#6e2d2d]/10"
               />
             </div>
 
             <div className="grid gap-4 md:grid-cols-2">
               <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">
+                <label className="mb-2 block text-sm font-medium text-[#6e2d2d]">
                   Fecha y hora de inicio
                 </label>
                 <input
@@ -848,12 +893,12 @@ export function TeacherLiveClassesView({
                       scheduledStartAtLocal: event.target.value,
                     }))
                   }
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-500"
+                  className="w-full rounded-lg border border-[#d9b1a1] px-3 py-2 text-sm text-[#551b22] outline-none transition focus:border-[#6e2d2d] focus:ring-2 focus:ring-[#6e2d2d]/10"
                 />
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">
+                <label className="mb-2 block text-sm font-medium text-[#6e2d2d]">
                   Fecha y hora de cierre
                 </label>
                 <input
@@ -865,24 +910,24 @@ export function TeacherLiveClassesView({
                       scheduledEndAtLocal: event.target.value,
                     }))
                   }
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-500"
+                  className="w-full rounded-lg border border-[#d9b1a1] px-3 py-2 text-sm text-[#551b22] outline-none transition focus:border-[#6e2d2d] focus:ring-2 focus:ring-[#6e2d2d]/10"
                 />
               </div>
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">Zona horaria</label>
+              <label className="mb-2 block text-sm font-medium text-[#6e2d2d]">Zona horaria</label>
               <input
                 type="text"
                 value={form.timezone}
                 onChange={(event) =>
                   setForm((current) => ({ ...current, timezone: event.target.value.trim() }))
                 }
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-blue-500"
+                className="w-full rounded-lg border border-[#d9b1a1] px-3 py-2 text-sm text-[#551b22] outline-none transition focus:border-[#6e2d2d] focus:ring-2 focus:ring-[#6e2d2d]/10"
               />
             </div>
 
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            <div className="rounded-xl border border-[#d9b1a1] bg-[#fff7f7] p-4 text-sm text-[#754848]">
               La clase se crea dentro de la materia seleccionada y se vincula al grupo indicado.
               {selectedCourseGroupNames.length > 1 ? (
                 <span className="block pt-2">
@@ -895,7 +940,7 @@ export function TeacherLiveClassesView({
               <button
                 type="button"
                 onClick={() => setScheduleModalOpen(false)}
-                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                className="rounded-lg border border-[#d9b1a1] px-4 py-2 text-sm font-semibold text-[#6e2d2d] hover:bg-[#fff7f7]"
               >
                 Cerrar
               </button>
@@ -903,7 +948,7 @@ export function TeacherLiveClassesView({
                 type="button"
                 onClick={() => void handleScheduleClass()}
                 disabled={submitting || scheduleGroups.length === 0}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-60"
+                className="rounded-lg bg-[#6e2d2d] px-4 py-2 text-sm font-semibold text-white hover:bg-[#551b22] disabled:opacity-60"
               >
                 {submitting ? "Guardando..." : "Programar"}
               </button>
@@ -915,29 +960,29 @@ export function TeacherLiveClassesView({
       <Dialog open={detailsItem !== null} onOpenChange={(open) => (!open ? setDetailsItem(null) : null)}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
-            <DialogTitle>Detalle de clase en vivo</DialogTitle>
+            <DialogTitle className="text-[#551b22]">Detalle de clase en vivo</DialogTitle>
           </DialogHeader>
 
           {detailsItem ? (
             <div className="space-y-5">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="text-xl font-semibold text-slate-900">{detailsItem.title}</h3>
+                  <h3 className="text-xl font-semibold text-[#551b22]">{detailsItem.title}</h3>
                   <span
                     className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${STATUS_CLASSNAMES[detailsItem.liveStatus]}`}
                   >
                     {STATUS_LABELS[detailsItem.liveStatus]}
                   </span>
                 </div>
-                <p className="mt-1 text-sm text-slate-600">
+                <p className="mt-1 text-sm text-[#754848]">
                   {detailsItem.courseTitle} · {detailsItem.linkedGroupName || "Grupo no vinculado"}
                 </p>
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Inicio</div>
-                  <div className="mt-1 text-sm text-slate-800">
+                <div className="rounded-xl border border-[#ead7d2] bg-[#fff7f7] p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-[#9f6e61]">Inicio</div>
+                  <div className="mt-1 text-sm text-[#551b22]">
                     {detailsItem.scheduledStartAt
                       ? formatEsMxDateTime(detailsItem.scheduledStartAt, {
                           timeZone: detailsItem.timezone,
@@ -945,9 +990,9 @@ export function TeacherLiveClassesView({
                       : "N/D"}
                   </div>
                 </div>
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Cierre</div>
-                  <div className="mt-1 text-sm text-slate-800">
+                <div className="rounded-xl border border-[#ead7d2] bg-[#fff7f7] p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-[#9f6e61]">Cierre</div>
+                  <div className="mt-1 text-sm text-[#551b22]">
                     {detailsItem.scheduledEndAt
                       ? formatEsMxDateTime(detailsItem.scheduledEndAt, {
                           timeZone: detailsItem.timezone,
@@ -955,29 +1000,29 @@ export function TeacherLiveClassesView({
                       : "N/D"}
                   </div>
                 </div>
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Grabación</div>
-                  <div className="mt-1 text-sm text-slate-800">
+                <div className="rounded-xl border border-[#ead7d2] bg-[#fff7f7] p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-[#9f6e61]">Grabación</div>
+                  <div className="mt-1 text-sm text-[#551b22]">
                     {detailsItem.recordingGenerated ? "Disponible" : "Pendiente"}
                   </div>
                 </div>
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Duración</div>
-                  <div className="mt-1 text-sm text-slate-800">
+                <div className="rounded-xl border border-[#ead7d2] bg-[#fff7f7] p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-[#9f6e61]">Duración</div>
+                  <div className="mt-1 text-sm text-[#551b22]">
                     {formatDuration(detailsItem.durationSec)}
                   </div>
                 </div>
               </div>
 
-              <div className="grid gap-3 text-sm text-slate-600 sm:grid-cols-2">
+              <div className="grid gap-3 text-sm text-[#754848] sm:grid-cols-2">
                 <div>
-                  <span className="font-medium text-slate-900">Lección:</span> {detailsItem.lessonTitle}
+                  <span className="font-medium text-[#551b22]">Lección:</span> {detailsItem.lessonTitle}
                 </div>
                 <div>
-                  <span className="font-medium text-slate-900">Sala:</span> {detailsItem.roomName || "Pendiente"}
+                  <span className="font-medium text-[#551b22]">Sala:</span> {detailsItem.roomName || "Pendiente"}
                 </div>
                 <div>
-                  <span className="font-medium text-slate-900">Última actividad:</span>{" "}
+                  <span className="font-medium text-[#551b22]">Última actividad:</span>{" "}
                   {detailsItem.lastRelevantAt
                     ? formatEsMxDateTime(detailsItem.lastRelevantAt, {
                         timeZone: detailsItem.timezone,
@@ -985,19 +1030,19 @@ export function TeacherLiveClassesView({
                     : "N/D"}
                 </div>
                 <div>
-                  <span className="font-medium text-slate-900">Zona horaria:</span> {detailsItem.timezone}
+                  <span className="font-medium text-[#551b22]">Zona horaria:</span> {detailsItem.timezone}
                 </div>
                 <div>
-                  <span className="font-medium text-slate-900">Estado de sesión:</span>{" "}
+                  <span className="font-medium text-[#551b22]">Estado de sesión:</span>{" "}
                   {detailsItem.sessionStatus || "N/D"}
                 </div>
                 <div>
-                  <span className="font-medium text-slate-900">Estado de grabación:</span>{" "}
+                  <span className="font-medium text-[#551b22]">Estado de grabación:</span>{" "}
                   {detailsItem.recordingStatus || "N/D"}
                 </div>
                 {detailsItem.playbackReadyAt ? (
                   <div className="sm:col-span-2">
-                    <span className="font-medium text-slate-900">Grabación lista:</span>{" "}
+                    <span className="font-medium text-[#551b22]">Grabación lista:</span>{" "}
                     {formatEsMxDateTime(detailsItem.playbackReadyAt, {
                       timeZone: detailsItem.timezone,
                     })}
@@ -1005,7 +1050,7 @@ export function TeacherLiveClassesView({
                 ) : null}
                 {detailsItem.sharedGroupNames.length > 1 ? (
                   <div className="sm:col-span-2">
-                    <span className="font-medium text-slate-900">Materia compartida con:</span>{" "}
+                    <span className="font-medium text-[#551b22]">Materia compartida con:</span>{" "}
                     {detailsItem.sharedGroupNames.join(", ")}
                   </div>
                 ) : null}
@@ -1015,13 +1060,13 @@ export function TeacherLiveClassesView({
                 <button
                   type="button"
                   onClick={() => setDetailsItem(null)}
-                  className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                  className="rounded-lg border border-[#d9b1a1] px-4 py-2 text-sm font-semibold text-[#6e2d2d] hover:bg-[#fff7f7]"
                 >
                   Cerrar
                 </button>
                 <Link
                   href={buildLiveHref(detailsItem)}
-                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                  className="rounded-lg bg-[#6e2d2d] px-4 py-2 text-sm font-semibold text-white hover:bg-[#551b22]"
                 >
                   Entrar
                 </Link>

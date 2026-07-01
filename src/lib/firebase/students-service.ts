@@ -117,9 +117,11 @@ export async function getStudentUsersPaginated(
         plantelIds: Array.isArray(d.plantelIds) ? d.plantelIds : [],
         plantelNames: Array.isArray(d.plantelNames) ? d.plantelNames : [],
         role: d.role ?? null,
+        isProbe: d.isProbe === true,
       };
     })
     .filter((student) => {
+      if (student.isProbe) return false;
       if (student.role !== "student") return false;
       if (!isStudentStatusActive(student.estado)) return false;
       if (!normalizedPlantelId) return true;
@@ -169,6 +171,7 @@ export async function getStudentsCount(plantelId?: string): Promise<number> {
   const snapshot = await getDocs(q);
   return snapshot.docs.reduce((count, docSnap) => {
     const data = docSnap.data();
+    if (data.isProbe === true) return count;
     if (data.role !== "student") return count;
     if (!isStudentStatusActive(data.estado ?? data.status)) return count;
     return count + 1;

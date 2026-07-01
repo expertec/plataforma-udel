@@ -39,7 +39,7 @@ export function TabsList({
   return (
     <div
       className={cn(
-        "inline-flex items-center justify-center rounded-md bg-slate-100 p-1 text-sm font-medium text-slate-700",
+        "creator-tabs-list inline-flex items-center justify-center rounded-md bg-slate-100 p-1 text-sm font-medium text-slate-700",
         className,
       )}
     >
@@ -65,8 +65,9 @@ export function TabsTrigger({
     <button
       type="button"
       onClick={() => ctx.setValue(value)}
+      data-state={active ? "active" : "inactive"}
       className={cn(
-        "inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-2 text-sm font-semibold transition",
+        "creator-tabs-trigger inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-2 text-sm font-semibold transition",
         active
           ? "bg-white text-slate-900 shadow-sm"
           : "text-slate-600 hover:bg-white hover:text-slate-900",

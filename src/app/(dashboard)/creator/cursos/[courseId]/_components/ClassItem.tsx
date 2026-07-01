@@ -202,7 +202,7 @@ export function ClassItem({
             <button
               type="button"
               onClick={() => onJoinLiveClass?.(item)}
-              className="rounded-md bg-blue-600 px-2 py-1 text-xs font-semibold text-white hover:bg-blue-500"
+              className="rounded-md bg-[#6e2d2d] px-2 py-1 text-xs font-semibold text-white transition hover:bg-[#551b22]"
             >
               Entrar en vivo
             </button>
@@ -234,7 +234,7 @@ export function ClassItem({
         <button
           type="button"
           onClick={() => onOpenComments?.(item)}
-          className="rounded-md px-2 py-1 text-xs font-semibold text-blue-600 hover:bg-slate-100"
+          className="rounded-md px-2 py-1 text-xs font-semibold text-[#6e2d2d] transition hover:bg-[#fff7f7]"
         >
           Comentarios
         </button>
