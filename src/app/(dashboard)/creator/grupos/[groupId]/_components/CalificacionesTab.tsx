@@ -2282,6 +2282,7 @@ export function CalificacionesTab({
       return;
     }
     const { finalGrade, campusGrades, manualOverride, extraConcepts, extraPointsTotal } = finalResolution;
+    const selectedCourseName = selectedCourse?.courseName ?? "Materia";
 
     setProcessingStudentId(row.studentId);
     try {
@@ -2407,6 +2408,7 @@ export function CalificacionesTab({
       return;
     }
     const { finalGrade, campusGrades, manualOverride, extraConcepts, extraPointsTotal } = finalResolution;
+    const selectedCourseName = selectedCourse?.courseName ?? "Materia";
 
     setProcessingNotifyStudentId(row.studentId);
     let gradeSaved = false;
