@@ -122,6 +122,18 @@ type GlobalExamAssignmentsApiResponse = {
   data?: GlobalExamStudyAssignment[];
 };
 
+const FORUM_TEXT_PREVIEW_LIMIT = 120;
+
+const getForumTextPreview = (text: string, maxLength = FORUM_TEXT_PREVIEW_LIMIT) => {
+  if (text.length <= maxLength) return text;
+
+  const preview = text.slice(0, maxLength);
+  const lastWhitespaceIndex = preview.lastIndexOf(" ");
+  const truncateAt = lastWhitespaceIndex > maxLength * 0.6 ? lastWhitespaceIndex : maxLength;
+
+  return `${preview.slice(0, truncateAt).trimEnd()}...`;
+};
+
 const fetchGlobalExamStudyCourseKeys = async (user: User): Promise<Set<string>> => {
   try {
     const token = await user.getIdToken();
@@ -1370,6 +1382,7 @@ export default function StudentFeedPageClient() {
   const feedSectionHeightClass = hasLiveJoinBanner
     ? "h-[calc(100vh-3rem)] min-h-[calc(100vh-3rem)]"
     : "h-screen min-h-screen";
+  const sidePanelPositionClass = hasLiveJoinBanner ? "top-12 h-[calc(100vh-3rem)]" : "top-0 h-screen";
   const engagementTargetClasses = useMemo(() => {
     if (!visibleClasses.length) return [] as FeedClass[];
     const start = Math.max(0, activeIndex - HEAVY_CARD_RENDER_RADIUS);
@@ -3925,6 +3938,8 @@ export default function StudentFeedPageClient() {
     if (cls.type === "video" && cls.videoUrl) {
       const sanitizedDescription = cls.content && cls.id ? sanitizedContentMap[cls.id] ?? "" : "";
       const plainDescription = sanitizedDescription.replace(/<[^>]+>/g, "").trim();
+      const hasExpandableDescriptionMedia = /<img\b/i.test(sanitizedDescription);
+      const shouldShowDescriptionToggle = plainDescription.length > 120 || hasExpandableDescriptionMedia;
       return (
         <div className="relative w-full h-full flex items-center justify-center">
           <VideoPlayer
@@ -3999,7 +4014,7 @@ export default function StudentFeedPageClient() {
                       }}
                       dangerouslySetInnerHTML={{ __html: sanitizedDescription }}
                     />
-                    {plainDescription.length > 120 ? (
+                    {shouldShowDescriptionToggle ? (
                       <button
                         type="button"
                         className="mt-2 text-[11px] font-semibold text-blue-200 hover:text-blue-100"
@@ -4570,7 +4585,7 @@ export default function StudentFeedPageClient() {
           </button>
         </div>
       ) : null}
-      <header className={`fixed left-0 z-20 hidden w-64 flex-col border-r border-white/10 bg-neutral-900/80 p-4 lg:flex ${sidebarTopClass}`}>
+      <header className={`fixed left-0 z-20 hidden w-[19.2rem] flex-col border-r border-white/10 bg-neutral-900/80 p-4 lg:flex ${sidebarTopClass}`}>
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 space-y-1">
             <h1 className="text-xl font-bold">Mis clases</h1>
@@ -5037,6 +5052,7 @@ export default function StudentFeedPageClient() {
               classId={commentsClassId}
               comments={commentsMap[commentsClassId] ?? []}
               loading={loadingCommentsMap[commentsClassId] ?? false}
+              positionClass={sidePanelPositionClass}
               onClose={() => setCommentsOpen(false)}
               onAdd={(text, parentId) => {
                 if (previewMode) {
@@ -5113,6 +5129,7 @@ export default function StudentFeedPageClient() {
             <ForumPanel
               open={forumPanel.open}
               onClose={() => setForumPanel({ open: false, classId: undefined })}
+              positionClass={sidePanelPositionClass}
               classMeta={findClassById(forumPanel.classId ?? null)}
               requiredFormat={
                 (findClassById(forumPanel.classId ?? null)?.forumRequiredFormat as "text" | "audio" | "video") ?? "text"
@@ -5538,6 +5555,7 @@ export default function StudentFeedPageClient() {
                   <AssignmentPanel
                     classId={cls.id}
                     classTitle={cls.title}
+                    positionClass={sidePanelPositionClass}
                     templateUrl={cls.assignmentTemplateUrl}
                     assignmentSubmissionType={cls.assignmentSubmissionType === "audio" ? "audio" : "file"}
                     selectedFile={assignmentFileMap[cls.id] ?? null}
@@ -8052,11 +8070,12 @@ type CommentsPanelProps = {
   classId: string;
   comments: Array<CommentsPanelComment>;
   loading?: boolean;
+  positionClass?: string;
   onAdd: (text: string, parentId?: string | null) => void;
   onClose: () => void;
 };
 
-function CommentsPanel({ classId, comments, onAdd, onClose, loading = false }: CommentsPanelProps) {
+function CommentsPanel({ classId, comments, onAdd, onClose, loading = false, positionClass = "top-0 h-screen" }: CommentsPanelProps) {
   const [text, setText] = useState("");
   const [replyTo, setReplyTo] = useState<{ id: string; author: string } | null>(null);
   const commentsByParent = comments.reduce<Record<string, Array<typeof comments[number]>>>((acc, c) => {
@@ -8116,7 +8135,7 @@ function CommentsPanel({ classId, comments, onAdd, onClose, loading = false }: C
   };
 
   return (
-    <div className="fixed inset-y-0 right-0 z-40 w-full max-w-md bg-neutral-900/95 backdrop-blur-lg text-white shadow-2xl lg:top-0 lg:right-0 flex flex-col">
+    <div className={`fixed right-0 z-40 flex w-full max-w-md flex-col bg-neutral-900/95 text-white shadow-2xl backdrop-blur-lg ${positionClass}`}>
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
         <div>
           <p className="text-sm font-semibold">Comentarios</p>
@@ -8186,6 +8205,7 @@ function CommentsPanel({ classId, comments, onAdd, onClose, loading = false }: C
 type ForumPanelProps = {
   open: boolean;
   onClose: () => void;
+  positionClass?: string;
   classMeta: FeedClass | null;
   requiredFormat: "text" | "audio" | "video";
   studentName: string;
@@ -8197,6 +8217,7 @@ type ForumPanelProps = {
 function ForumPanel({
   open,
   onClose,
+  positionClass = "top-0 h-screen",
   classMeta,
   requiredFormat,
   studentName,
@@ -8211,6 +8232,7 @@ function ForumPanel({
   const [showReplies, setShowReplies] = useState<Record<string, boolean>>({});
   const [replyText, setReplyText] = useState<Record<string, string>>({});
   const [sendingReply, setSendingReply] = useState<Record<string, boolean>>({});
+  const [expandedPosts, setExpandedPosts] = useState<Record<string, boolean>>({});
   const [studentPost, setStudentPost] = useState<ForumPost | null>(null);
   const [deletingPost, setDeletingPost] = useState(false);
 
@@ -8298,6 +8320,13 @@ function ForumPanel({
     || studentPost?.gradedAt
     || typeof studentPost?.grade === "number"
   );
+
+  const toggleExpandedPost = (postId: string) => {
+    setExpandedPosts((prev) => ({
+      ...prev,
+      [postId]: !prev[postId],
+    }));
+  };
 
   const loadReplies = async (postId: string) => {
     if (!classMeta?.courseId || !classMeta.lessonId || !classMeta.classDocId) return;
@@ -8651,7 +8680,7 @@ function ForumPanel({
 
   return (
     <>
-      <div className="fixed inset-y-0 right-0 z-40 flex max-h-screen w-full max-w-md flex-col overflow-hidden bg-neutral-900/95 text-white shadow-2xl backdrop-blur-lg lg:right-0 lg:top-0">
+      <div className={`fixed right-0 z-40 flex w-full max-w-md flex-col overflow-hidden bg-neutral-900/95 text-white shadow-2xl backdrop-blur-lg ${positionClass}`}>
         <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
           <div>
             <p className="text-sm font-semibold">Foro Público</p>
@@ -8746,120 +8775,144 @@ function ForumPanel({
                 <p className="text-xs mt-2">Sé el primero en participar.</p>
               </div>
             ) : (
-              posts.map(post => (
-                <div key={post.id} className="rounded-2xl bg-white/5 border border-white/10 p-3 space-y-2">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <p className="text-sm font-semibold text-white">{post.authorName}</p>
-                      <p className="text-xs text-white/50">
-                        {post.createdAt.toLocaleDateString("es-MX", {
-                          day: "numeric",
-                          month: "short",
-                          hour: "2-digit",
-                          minute: "2-digit"
-                        })}
-                      </p>
-                    </div>
-                    <span className="text-xs px-2 py-1 rounded-full bg-white/10 text-white/70">
-                      {post.format === "text" ? "Texto" : post.format === "audio" ? "Audio" : "Video"}
-                    </span>
-                  </div>
+              posts.map((post) => {
+                const isTextPost = post.format === "text" && typeof post.text === "string" && post.text.trim().length > 0;
+                const isLongTextPost = isTextPost && post.text.trim().length > FORUM_TEXT_PREVIEW_LIMIT;
+                const isExpanded = !!expandedPosts[post.id];
+                const visibleText = post.text
+                  ? isLongTextPost && !isExpanded
+                    ? getForumTextPreview(post.text)
+                    : post.text
+                  : "";
 
-                  {post.text && (
-                    <p className="text-sm text-white/90 whitespace-pre-wrap">{post.text}</p>
-                  )}
-
-                  {post.mediaUrl && post.format === "audio" && (
-                    <div className="space-y-2">
-                      <audio controls src={post.mediaUrl} className="w-full" />
-                      <a
-                        href={post.mediaUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex text-xs font-medium text-blue-300 hover:underline"
-                      >
-                        Abrir archivo de audio
-                      </a>
-                    </div>
-                  )}
-
-                  {post.mediaUrl && post.format === "video" && (
-                    <div className="space-y-2">
-                      <video controls src={post.mediaUrl} className="w-full rounded-lg" />
-                      <a
-                        href={post.mediaUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex text-xs font-medium text-blue-300 hover:underline"
-                      >
-                        Abrir archivo de video
-                      </a>
-                    </div>
-                  )}
-
-                  <div className="flex items-center gap-3 pt-2 border-t border-white/10">
-                    <button
-                      type="button"
-                      onClick={() => toggleReplies(post.id)}
-                      className="text-xs text-blue-400 hover:text-blue-300 font-medium"
-                    >
-                      {showReplies[post.id] ? "Ocultar" : "Ver"} respuestas ({post.repliesCount || 0})
-                    </button>
-                  </div>
-
-                  {showReplies[post.id] && (
-                    <div className="space-y-2 pl-3 border-l-2 border-white/10 mt-2">
-                      <div className="space-y-2 pr-2">
-                        {replies[post.id]?.map(reply => (
-                          <div key={reply.id} className="bg-white/5 rounded-lg p-2">
-                            <div className="flex items-center gap-2 mb-1">
-                              <p className="text-xs font-semibold text-white/90">{reply.authorName}</p>
-                              {reply.role === "professor" && (
-                                <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500/30 text-amber-200">
-                                  Profesor
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-xs text-white/80 whitespace-pre-wrap">{reply.text}</p>
-                            <p className="text-xs text-white/40 mt-1">
-                              {reply.createdAt.toLocaleDateString("es-MX", {
-                                day: "numeric",
-                                month: "short",
-                                hour: "2-digit",
-                                minute: "2-digit"
-                              })}
-                            </p>
-                          </div>
-                        ))}
+                return (
+                  <div key={post.id} className="rounded-2xl bg-white/5 border border-white/10 p-3 space-y-2">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <p className="text-sm font-semibold text-white">{post.authorName}</p>
+                        <p className="text-xs text-white/50">
+                          {post.createdAt.toLocaleDateString("es-MX", {
+                            day: "numeric",
+                            month: "short",
+                            hour: "2-digit",
+                            minute: "2-digit"
+                          })}
+                        </p>
                       </div>
+                      <span className="text-xs px-2 py-1 rounded-full bg-white/10 text-white/70">
+                        {post.format === "text" ? "Texto" : post.format === "audio" ? "Audio" : "Video"}
+                      </span>
+                    </div>
 
-                      <div className="flex gap-2 mt-2">
-                        <input
-                          type="text"
-                          value={replyText[post.id] || ""}
-                          onChange={(e) => setReplyText(prev => ({ ...prev, [post.id]: e.target.value }))}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" && !e.shiftKey) {
-                              e.preventDefault();
-                              handleSendReply(post.id);
-                            }
-                          }}
-                          placeholder="Escribe una respuesta..."
-                          className="flex-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-xs text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => handleSendReply(post.id)}
-                          disabled={sendingReply[post.id]}
-                          className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 px-3 py-1.5 text-xs font-semibold text-white"
+                    {post.text && (
+                      <div className="space-y-1.5">
+                        <div className={isTextPost && !isExpanded ? "max-h-40 overflow-hidden" : undefined}>
+                          <p className="text-sm text-white/90 whitespace-pre-wrap">{visibleText}</p>
+                        </div>
+                        {isLongTextPost ? (
+                          <button
+                            type="button"
+                            onClick={() => toggleExpandedPost(post.id)}
+                            className="text-xs font-medium text-blue-300 hover:text-blue-200"
+                          >
+                            {isExpanded ? "Ver menos" : "Ver más"}
+                          </button>
+                        ) : null}
+                      </div>
+                    )}
+
+                    {post.mediaUrl && post.format === "audio" && (
+                      <div className="space-y-2">
+                        <audio controls src={post.mediaUrl} className="w-full" />
+                        <a
+                          href={post.mediaUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex text-xs font-medium text-blue-300 hover:underline"
                         >
-                          {sendingReply[post.id] ? "..." : "Enviar"}
-                        </button>
+                          Abrir archivo de audio
+                        </a>
                       </div>
+                    )}
+
+                    {post.mediaUrl && post.format === "video" && (
+                      <div className="space-y-2">
+                        <video controls src={post.mediaUrl} className="w-full rounded-lg" />
+                        <a
+                          href={post.mediaUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex text-xs font-medium text-blue-300 hover:underline"
+                        >
+                          Abrir archivo de video
+                        </a>
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-3 pt-2 border-t border-white/10">
+                      <button
+                        type="button"
+                        onClick={() => toggleReplies(post.id)}
+                        className="text-xs text-blue-400 hover:text-blue-300 font-medium"
+                      >
+                        {showReplies[post.id] ? "Ocultar" : "Ver"} respuestas ({post.repliesCount || 0})
+                      </button>
                     </div>
-                  )}
-                </div>
-              ))
+
+                    {showReplies[post.id] && (
+                      <div className="space-y-2 pl-3 border-l-2 border-white/10 mt-2">
+                        <div className="space-y-2 pr-2">
+                          {replies[post.id]?.map(reply => (
+                            <div key={reply.id} className="bg-white/5 rounded-lg p-2">
+                              <div className="flex items-center gap-2 mb-1">
+                                <p className="text-xs font-semibold text-white/90">{reply.authorName}</p>
+                                {reply.role === "professor" && (
+                                  <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500/30 text-amber-200">
+                                    Profesor
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-white/80 whitespace-pre-wrap">{reply.text}</p>
+                              <p className="text-xs text-white/40 mt-1">
+                                {reply.createdAt.toLocaleDateString("es-MX", {
+                                  day: "numeric",
+                                  month: "short",
+                                  hour: "2-digit",
+                                  minute: "2-digit"
+                                })}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="flex gap-2 mt-2">
+                          <input
+                            type="text"
+                            value={replyText[post.id] || ""}
+                            onChange={(e) => setReplyText(prev => ({ ...prev, [post.id]: e.target.value }))}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && !e.shiftKey) {
+                                e.preventDefault();
+                                handleSendReply(post.id);
+                              }
+                            }}
+                            placeholder="Escribe una respuesta..."
+                            className="flex-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-xs text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleSendReply(post.id)}
+                            disabled={sendingReply[post.id]}
+                            className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 px-3 py-1.5 text-xs font-semibold text-white"
+                          >
+                            {sendingReply[post.id] ? "..." : "Enviar"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
             )}
           </div>
           ) : (
@@ -9000,6 +9053,7 @@ function ForumPanel({
 type AssignmentPanelProps = {
   classId: string;
   classTitle?: string;
+  positionClass?: string;
   templateUrl?: string;
   assignmentSubmissionType?: "file" | "audio";
   onSubmit: () => void | Promise<void>;
@@ -9023,6 +9077,7 @@ type AssignmentPanelProps = {
 function AssignmentPanel({
   classId,
   classTitle,
+  positionClass = "top-0 h-screen",
   templateUrl,
   assignmentSubmissionType = "file",
   onSubmit,
@@ -9125,7 +9180,7 @@ function AssignmentPanel({
 
   return (
     <>
-      <div className="fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col bg-neutral-900/95 text-white shadow-2xl backdrop-blur-lg lg:right-0 lg:top-0">
+      <div className={`fixed right-0 z-40 flex w-full max-w-md flex-col bg-neutral-900/95 text-white shadow-2xl backdrop-blur-lg ${positionClass}`}>
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
         <div>
           <p className="text-sm font-semibold">Tarea</p>
