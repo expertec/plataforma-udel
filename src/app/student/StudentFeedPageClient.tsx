@@ -8716,7 +8716,6 @@ function ForumPanel({
                   <div className="space-y-2">
                     {(() => {
                       const forumGradeMax = normalizeForumPointValue(
-                        findClassById(classMeta.classDocId ?? classMeta.id)?.forumPointValue ??
                         classMeta.forumPointValue ??
                         DEFAULT_FORUM_POINT_VALUE,
                       );
