@@ -11,6 +11,7 @@ import {
   setDoc,
 } from "firebase/firestore";
 import { db } from "./firestore";
+import { normalizeForumPointValue } from "@/lib/forum-grading";
 
 const isValidDate = (value: Date): boolean => !Number.isNaN(value.getTime());
 
@@ -112,6 +113,19 @@ const normalizeOptionalString = (value: unknown): string | null => {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
 };
+
+export async function getForumPointValueForClass(
+  courseId: string,
+  lessonId: string,
+  classId: string,
+): Promise<number> {
+  const classRef = doc(db, "courses", courseId, "lessons", lessonId, "classes", classId);
+  const classSnap = await getDoc(classRef);
+  if (!classSnap.exists()) {
+    return normalizeForumPointValue(undefined);
+  }
+  return normalizeForumPointValue(classSnap.data().forumPointValue);
+}
 
 /**
  * Aportación principal del foro (post raíz de cada estudiante)
@@ -570,7 +584,8 @@ export async function gradeForumPost(params: {
   gradedByName?: string;
 }): Promise<void> {
   const { courseId, lessonId, classId, studentId, grade, feedback, gradedById, gradedByName } = params;
-  if (!Number.isFinite(grade) || grade < 0 || grade > 5) {
+  const maxGrade = await getForumPointValueForClass(courseId, lessonId, classId);
+  if (!Number.isFinite(grade) || grade < 0 || grade > maxGrade) {
     throw new Error("FORUM_GRADE_INVALID");
   }
 

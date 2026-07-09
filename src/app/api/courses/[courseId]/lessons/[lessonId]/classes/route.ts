@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 import { createLiveSessionForClass } from "@/lib/live-classes/types";
+import { DEFAULT_FORUM_POINT_VALUE, normalizeForumPointValue } from "@/lib/forum-grading";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,6 +34,7 @@ type CreateClassRequest = {
   showInStudentPlatform?: unknown;
   forumEnabled?: unknown;
   forumRequiredFormat?: unknown;
+  forumPointValue?: unknown;
   liveSession?: unknown;
 };
 
@@ -312,6 +314,9 @@ export async function POST(
     const forumRequiredFormat = forumEnabled
       ? normalizeForumRequiredFormat(body?.forumRequiredFormat)
       : null;
+    const forumPointValue = normalizeForumPointValue(
+      body?.forumPointValue ?? DEFAULT_FORUM_POINT_VALUE,
+    );
 
     const access = await canUserManageCourse({
       courseId: normalizedCourseId,
@@ -361,6 +366,7 @@ export async function POST(
       showInStudentPlatform,
       forumEnabled,
       forumRequiredFormat,
+      forumPointValue,
       liveSession,
       createdAt: FieldValue.serverTimestamp(),
     });

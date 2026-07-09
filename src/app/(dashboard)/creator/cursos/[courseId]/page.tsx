@@ -40,6 +40,7 @@ import {
 import { EntregasTab } from "@/app/(dashboard)/creator/grupos/[groupId]/_components/EntregasTab";
 import { getPrograms } from "@/lib/firebase/programs-service";
 import { normalizeLiveSession } from "@/lib/live-classes/types";
+import { normalizeForumPointValue } from "@/lib/forum-grading";
 import {
   saveStudentPreviewSnapshot,
   type StudentPreviewFeedItem,
@@ -367,6 +368,7 @@ export default function CourseBuilderPage() {
             showInStudentPlatform: d.showInStudentPlatform ?? true,
             forumEnabled: d.forumEnabled ?? false,
             forumRequiredFormat: d.forumRequiredFormat ?? null,
+            forumPointValue: normalizeForumPointValue(d.forumPointValue),
             liveSession: normalizeLiveSession(d.liveSession),
           };
         });
@@ -586,6 +588,7 @@ export default function CourseBuilderPage() {
           showInStudentPlatform: d.showInStudentPlatform ?? true,
           forumEnabled: d.forumEnabled ?? false,
           forumRequiredFormat: d.forumRequiredFormat ?? null,
+          forumPointValue: normalizeForumPointValue(d.forumPointValue),
           liveSession: normalizeLiveSession(d.liveSession),
         };
       });
@@ -635,6 +638,7 @@ export default function CourseBuilderPage() {
         likesCount: 0,
         forumEnabled: classItem.forumEnabled ?? false,
         forumRequiredFormat: classItem.forumRequiredFormat ?? null,
+        forumPointValue: classItem.forumPointValue,
         liveSession: normalizeLiveSession(classItem.liveSession),
       })),
     );

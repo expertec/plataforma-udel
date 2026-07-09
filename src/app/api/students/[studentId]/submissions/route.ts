@@ -124,6 +124,23 @@ function toMillis(value: unknown): number | undefined {
   return undefined;
 }
 
+function isFirestoreFailedPrecondition(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+
+  const code = "code" in error ? (error as { code?: unknown }).code : undefined;
+  if (code === 9 || code === "failed-precondition" || code === "FAILED_PRECONDITION") {
+    return true;
+  }
+
+  const message = "message" in error ? (error as { message?: unknown }).message : undefined;
+  return typeof message === "string" && message.toUpperCase().includes("FAILED_PRECONDITION");
+}
+
+function extractGroupIdFromDocPath(path: string): string {
+  const pathParts = path.split("/");
+  return pathParts[0] === "groups" ? pathParts[1] ?? "" : "";
+}
+
 function toGroupInfo(
   id: string,
   data: Record<string, unknown>,
@@ -281,10 +298,16 @@ async function getForumSubmissions(
 ): Promise<SubmissionPayload[]> {
   if (!studentId || groupsMap.size === 0) return [];
 
-  const forumsSnap = await getAdminFirestore()
-    .collectionGroup("forums")
-    .where("authorId", "==", studentId)
-    .get();
+  let forumsSnap: FirebaseFirestore.QuerySnapshot;
+  try {
+    forumsSnap = await getAdminFirestore()
+      .collectionGroup("forums")
+      .where("authorId", "==", studentId)
+      .get();
+  } catch (error) {
+    console.warn("No se pudieron cargar los foros del alumno; se omitirán del historial.", error);
+    return [];
+  }
 
   const results: SubmissionPayload[] = [];
   const seenPaths = new Set<string>();
@@ -373,26 +396,54 @@ export async function GET(
     let groupsMap = new Map<string, GroupInfo>();
 
     if (access.role === "adminTeacher" || access.role === "superAdminTeacher") {
-      const [submissionsSnap, enrolledGroupIds] = await Promise.all([
-        db.collectionGroup("submissions").where("studentId", "==", studentId).get(),
-        getStudentEnrollmentGroupIds(studentId),
-      ]);
+      const enrolledGroupIds = await getStudentEnrollmentGroupIds(studentId);
 
-      const submissionGroupIds = submissionsSnap.docs
-        .map((docSnap) => {
-          const pathParts = docSnap.ref.path.split("/");
-          return pathParts[0] === "groups" ? pathParts[1] ?? "" : "";
-        })
-        .filter(Boolean);
+      try {
+        const submissionsSnap = await db
+          .collectionGroup("submissions")
+          .where("studentId", "==", studentId)
+          .orderBy("submittedAt", "desc")
+          .get();
 
-      groupsMap = await getGroupsByIds([...submissionGroupIds, ...enrolledGroupIds]);
+        const submissionGroupIds = submissionsSnap.docs
+          .map((docSnap) => extractGroupIdFromDocPath(docSnap.ref.path))
+          .filter(Boolean);
 
-      submissionsSnap.docs.forEach((docSnap) => {
-        const pathParts = docSnap.ref.path.split("/");
-        const groupId = pathParts[1] ?? "";
-        if (!groupId) return;
-        allSubmissions.push(mapSubmissionDoc(docSnap, groupId, groupsMap.get(groupId)));
-      });
+        groupsMap = await getGroupsByIds([...submissionGroupIds, ...enrolledGroupIds]);
+
+        submissionsSnap.docs.forEach((docSnap) => {
+          const groupId = extractGroupIdFromDocPath(docSnap.ref.path);
+          if (!groupId) return;
+          allSubmissions.push(mapSubmissionDoc(docSnap, groupId, groupsMap.get(groupId)));
+        });
+      } catch (error) {
+        if (!isFirestoreFailedPrecondition(error)) {
+          throw error;
+        }
+
+        console.warn(
+          "La consulta collectionGroup de submissions no estuvo disponible; usando fallback por grupos inscritos.",
+          error,
+        );
+
+        groupsMap = await getGroupsByIds(enrolledGroupIds);
+
+        await Promise.all(
+          enrolledGroupIds.map(async (groupId) => {
+            const submissionsSnap = await db
+              .collection("groups")
+              .doc(groupId)
+              .collection("submissions")
+              .where("studentId", "==", studentId)
+              .orderBy("submittedAt", "desc")
+              .get();
+
+            submissionsSnap.docs.forEach((docSnap) => {
+              allSubmissions.push(mapSubmissionDoc(docSnap, groupId, groupsMap.get(groupId)));
+            });
+          }),
+        );
+      }
     } else {
       const scopeGroupsMap = await getCoordinatorScopeGroups(access.uid, access.plantelIds);
       if (scopeGroupsMap.size === 0) {

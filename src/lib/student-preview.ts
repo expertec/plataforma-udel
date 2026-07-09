@@ -1,4 +1,5 @@
 import { normalizeLiveSession, type LiveClassSession } from "@/lib/live-classes/types";
+import { normalizeForumPointValue } from "@/lib/forum-grading";
 
 export type StudentPreviewFeedItem = {
   id: string;
@@ -23,6 +24,7 @@ export type StudentPreviewFeedItem = {
   likesCount?: number;
   forumEnabled?: boolean;
   forumRequiredFormat?: "text" | "audio" | "video" | null;
+  forumPointValue?: number;
   liveSession?: LiveClassSession | null;
 };
 
@@ -104,6 +106,7 @@ const normalizePreviewFeedItem = (value: unknown): StudentPreviewFeedItem | null
     likesCount: toOptionalNumber(raw.likesCount),
     forumEnabled: toOptionalBoolean(raw.forumEnabled),
     forumRequiredFormat: normalizedForumRequiredFormat,
+    forumPointValue: normalizeForumPointValue(raw.forumPointValue),
     liveSession: normalizeLiveSession(raw.liveSession),
   };
 };

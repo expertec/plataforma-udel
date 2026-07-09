@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { type DocumentReference } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 import { mergeTeacherEditableLiveSession } from "@/lib/live-classes/types";
+import { normalizeForumPointValue } from "@/lib/forum-grading";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,6 +34,7 @@ type UpdateClassRequest = {
   showInStudentPlatform?: unknown;
   forumEnabled?: unknown;
   forumRequiredFormat?: unknown;
+  forumPointValue?: unknown;
   liveSession?: unknown;
 };
 
@@ -401,6 +403,9 @@ export async function PATCH(
     }
     if (hasOwn(body, "forumRequiredFormat")) {
       payload.forumRequiredFormat = normalizeForumRequiredFormat(body.forumRequiredFormat);
+    }
+    if (hasOwn(body, "forumPointValue")) {
+      payload.forumPointValue = normalizeForumPointValue(body.forumPointValue);
     }
     if (hasOwn(body, "liveSession")) {
       requestedLiveSession = body.liveSession;

@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Submission, deleteSubmission } from "@/lib/firebase/submissions-service";
 import { auth } from "@/lib/firebase/client";
 import toast from "react-hot-toast";
+import { X } from "lucide-react";
 
 type Props = {
   studentId: string;
@@ -381,6 +382,14 @@ export function StudentAllSubmissionsModal({
   return (
     <Dialog open={isOpen} onOpenChange={(open) => (!open ? onClose() : null)}>
       <DialogContent className="max-w-5xl max-h-[80vh] overflow-y-auto">
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-4 top-4 rounded-full p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700"
+          aria-label="Cerrar modal"
+        >
+          <X className="h-4 w-4" />
+        </button>
         <DialogHeader>
           <DialogTitle>
             Tareas de {studentName}

@@ -20,6 +20,7 @@ import { GradeModal } from "./GradeModal";
 import toast from "react-hot-toast";
 import {
   getForumPosts,
+  getForumPointValueForClass,
   getForumReplies,
   addForumReply,
   deleteStudentForumPostIfNotEvaluated,
@@ -27,6 +28,10 @@ import {
   type ForumPost,
   type ForumReply,
 } from "@/lib/firebase/forum-service";
+import {
+  DEFAULT_FORUM_POINT_VALUE,
+  formatForumPointValue,
+} from "@/lib/forum-grading";
 
 type QuizAnswer = {
   questionId: string;
@@ -585,6 +590,7 @@ function ForumThreadModal({
   const [postGradeInputs, setPostGradeInputs] = useState<Record<string, string>>({});
   const [postFeedbackInputs, setPostFeedbackInputs] = useState<Record<string, string>>({});
   const [savingGrades, setSavingGrades] = useState<Set<string>>(new Set());
+  const [forumPointValue, setForumPointValue] = useState(DEFAULT_FORUM_POINT_VALUE);
 
   const notifyForumReply = async (postId: string, replyId: string) => {
     try {
@@ -628,6 +634,8 @@ function ForumThreadModal({
     const loadPosts = async () => {
       setLoading(true);
       try {
+        const resolvedForumPointValue = await getForumPointValueForClass(courseId, lessonId, classId);
+        setForumPointValue(resolvedForumPointValue);
         const forumPosts = await getForumPosts(courseId, lessonId, classId);
         setPosts(forumPosts);
         setPostGradeInputs(
@@ -735,8 +743,18 @@ function ForumThreadModal({
     const normalized = raw.trim().replace(",", ".");
     if (!normalized) return null;
     const parsed = Number(normalized);
-    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 5) return null;
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > forumPointValue) return null;
     return parsed;
+  };
+
+  const formatForumGradeDisplay = (grade: number) =>
+    `${formatForumPointValue(grade)}/${formatForumPointValue(forumPointValue)}`;
+
+  const getForumGradeBadgeClass = (grade: number) => {
+    const ratio = forumPointValue > 0 ? grade / forumPointValue : 0;
+    if (ratio >= 0.8) return "bg-emerald-100 text-emerald-700";
+    if (ratio >= 0.6) return "bg-amber-100 text-amber-700";
+    return "bg-red-100 text-red-700";
   };
 
   const handleSavePostGrade = async (postId: string) => {
@@ -744,7 +762,9 @@ function ForumThreadModal({
     const rawGrade = postGradeInputs[postId] ?? "";
     const grade = parseForumGrade(rawGrade);
     if (grade === null) {
-      toast.error("La calificación del foro debe estar entre 0 y 5.");
+      toast.error(
+        `La calificación del foro debe estar entre 0 y ${formatForumPointValue(forumPointValue)}.`,
+      );
       return;
     }
 
@@ -957,15 +977,9 @@ function ForumThreadModal({
                           {typeof post.grade === "number" ? (
                             <div className="space-y-1">
                               <span
-                                className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${
-                                  post.grade >= 4
-                                    ? "bg-emerald-100 text-emerald-700"
-                                    : post.grade >= 3
-                                    ? "bg-amber-100 text-amber-700"
-                                    : "bg-red-100 text-red-700"
-                                }`}
+                                className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${getForumGradeBadgeClass(post.grade)}`}
                               >
-                                {post.grade}/5
+                                {formatForumGradeDisplay(post.grade)}
                               </span>
                               {post.gradedAt ? (
                                 <p className="text-[11px] text-slate-500">
@@ -993,7 +1007,7 @@ function ForumThreadModal({
                                   void handleSavePostGrade(post.id);
                                 }
                               }}
-                              placeholder="0-5"
+                              placeholder={`0-${formatForumPointValue(forumPointValue)}`}
                               disabled={isSavingGrade}
                               className={`rounded-lg border px-3 py-2 text-sm ${
                                 invalidPostGrade ? "border-red-400" : "border-slate-300"
@@ -1029,7 +1043,9 @@ function ForumThreadModal({
                         )}
                       </div>
                       {invalidPostGrade ? (
-                        <p className="mt-2 text-xs text-red-600">Usa una calificación entre 0 y 5.</p>
+                        <p className="mt-2 text-xs text-red-600">
+                          Usa una calificación entre 0 y {formatForumPointValue(forumPointValue)}.
+                        </p>
                       ) : null}
                     </div>
                   </div>
@@ -1219,6 +1235,7 @@ export function SubmissionsModal({
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const isQuizClass = classType === "quiz";
   const isForumClass = classType === "forum";
+  const [forumPointValue, setForumPointValue] = useState(DEFAULT_FORUM_POINT_VALUE);
   const [gradeModal, setGradeModal] = useState<{
     open: boolean;
     submission?: Submission;
@@ -1260,6 +1277,8 @@ export function SubmissionsModal({
         const allSubmissions = await getAllSubmissions(groupId);
         let submissions: Submission[] = [];
         if (classType === "forum" && courseId && lessonId) {
+          const resolvedForumPointValue = await getForumPointValueForClass(courseId, lessonId, classId);
+          setForumPointValue(resolvedForumPointValue);
           const forumPosts = await getForumPosts(courseId, lessonId, classId);
           submissions = forumPosts.map((post) => {
             const authorId = (post.authorId ?? "").trim() || post.id;
@@ -1272,6 +1291,7 @@ export function SubmissionsModal({
               courseId,
               className,
               classType: "forum",
+              forumPointValue: resolvedForumPointValue,
               studentId: authorId,
               studentName: post.authorName ?? "",
               submittedAt: post.createdAt ?? null,
@@ -1290,6 +1310,7 @@ export function SubmissionsModal({
             };
           });
         } else {
+          setForumPointValue(DEFAULT_FORUM_POINT_VALUE);
           submissions = filterSubmissionsForClass(allSubmissions, {
             classId,
             courseId,
@@ -1398,6 +1419,8 @@ export function SubmissionsModal({
 
   const refreshSubmissionsForTable = async () => {
     if (isForumClass && courseId && lessonId) {
+      const resolvedForumPointValue = await getForumPointValueForClass(courseId, lessonId, classId);
+      setForumPointValue(resolvedForumPointValue);
       const forumPosts = await getForumPosts(courseId, lessonId, classId);
       const forumSubmissions: Submission[] = forumPosts.map((post) => {
         const authorId = (post.authorId ?? "").trim() || post.id;
@@ -1410,6 +1433,7 @@ export function SubmissionsModal({
           courseId,
           className,
           classType: "forum",
+          forumPointValue: resolvedForumPointValue,
           studentId: authorId,
           studentName: post.authorName ?? "",
           submittedAt: post.createdAt ?? null,
@@ -1464,7 +1488,15 @@ export function SubmissionsModal({
         return quizQuestions.length > 0 ? totalPoints : 100;
       })()
     : 100;
-  const inlineGradeMax = isForumClass ? 5 : isQuizClass ? quizInlineGradeMax : 100;
+  const inlineGradeMax = isForumClass ? forumPointValue : isQuizClass ? quizInlineGradeMax : 100;
+  const formatInlineForumGradeDisplay = (grade: number) =>
+    `${formatForumPointValue(grade)}/${formatForumPointValue(forumPointValue)}`;
+  const getInlineForumGradeBadgeClass = (grade: number) => {
+    const ratio = forumPointValue > 0 ? grade / forumPointValue : 0;
+    if (ratio >= 0.8) return "bg-emerald-100 text-emerald-700";
+    if (ratio >= 0.6) return "bg-amber-100 text-amber-700";
+    return "bg-red-100 text-red-700";
+  };
   const getRecoveredQuizPoints = (submission?: Submission | null) => {
     return getRecoveredQuizPointsFromSubmission(submission, quizQuestions);
   };
@@ -1627,7 +1659,7 @@ export function SubmissionsModal({
     if (parsedGrade === null) {
       toast.error(
         isForumClass
-          ? "La calificación debe estar entre 0 y 5."
+          ? `La calificación debe estar entre 0 y ${formatForumPointValue(inlineGradeMax)}.`
           : isQuizClass
           ? `La calificación debe estar entre 0 y ${formatQuizPoints(inlineGradeMax)}.`
           : "La calificación debe estar entre 0 y 100.",
@@ -1903,11 +1935,9 @@ export function SubmissionsModal({
                           <td className="px-3 py-2 text-slate-600">
                             {sub?.grade != null ? (
                               <span className={`rounded-full px-2 py-1 text-xs font-semibold ${
-                                sub.grade >= 4 ? "bg-emerald-100 text-emerald-700" :
-                                sub.grade >= 3 ? "bg-amber-100 text-amber-700" :
-                                "bg-red-100 text-red-700"
+                                getInlineForumGradeBadgeClass(sub.grade)
                               }`}>
-                                {sub.grade}/5
+                                {formatInlineForumGradeDisplay(sub.grade)}
                               </span>
                             ) : sub && !readOnly ? (
                               <input
@@ -1923,7 +1953,7 @@ export function SubmissionsModal({
                                     void handleSaveInlineGrade(row);
                                   }
                                 }}
-                                placeholder="0-5"
+                                placeholder={`0-${formatForumPointValue(forumPointValue)}`}
                                 disabled={isInlineSaving}
                                 className={`w-20 rounded-lg border px-2 py-1 text-sm ${
                                   inlineGradeInvalid ? "border-red-400" : "border-slate-300"

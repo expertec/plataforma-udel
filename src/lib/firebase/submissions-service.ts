@@ -38,6 +38,7 @@ export type Submission = {
   lessonTitle?: string;
   className: string;
   classType: string;
+  forumPointValue?: number;
   studentId: string;
   studentName: string;
   submittedAt?: Date | null;
@@ -67,6 +68,7 @@ type SubmissionsApiResponse = {
       lessonTitle?: string;
       className: string;
       classType: string;
+      forumPointValue?: number;
       studentId: string;
       studentName: string;
       submittedAtMs?: number;

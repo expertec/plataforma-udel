@@ -25,6 +25,7 @@ import {
   normalizeLiveSession,
   type LiveClassSession,
 } from "@/lib/live-classes/types";
+import { DEFAULT_FORUM_POINT_VALUE, normalizeForumPointValue } from "@/lib/forum-grading";
 
 export type Course = {
   id: string;
@@ -458,6 +459,7 @@ export async function duplicateCourse(input: DuplicateCourseInput): Promise<stri
           showInStudentPlatform: normalizeShowInStudentPlatform(classItem.data.showInStudentPlatform),
           forumEnabled: Boolean(classItem.data.forumEnabled),
           forumRequiredFormat: normalizeForumRequiredFormat(classItem.data.forumRequiredFormat),
+          forumPointValue: normalizeForumPointValue(classItem.data.forumPointValue),
           likesCount: 0,
           createdAt: serverTimestamp(),
         },
@@ -875,6 +877,7 @@ export type ClassItem = {
   showInStudentPlatform?: ClassroomPlatformVisibility;
   forumEnabled?: boolean;
   forumRequiredFormat?: "text" | "audio" | "video" | null;
+  forumPointValue?: number;
   liveSession?: LiveClassSession | null;
 };
 
@@ -901,6 +904,7 @@ export async function getClasses(courseId: string, lessonId: string): Promise<Cl
       showInStudentPlatform: normalizeShowInStudentPlatform(data.showInStudentPlatform),
       forumEnabled: data.forumEnabled ?? false,
       forumRequiredFormat: data.forumRequiredFormat ?? null,
+      forumPointValue: normalizeForumPointValue(data.forumPointValue),
       liveSession: normalizeLiveSession(data.liveSession),
     };
   });
@@ -924,6 +928,7 @@ type CreateClassInput = {
   showInStudentPlatform?: ClassroomPlatformVisibility;
   forumEnabled?: boolean;
   forumRequiredFormat?: "text" | "audio" | "video" | null;
+  forumPointValue?: number;
   liveSession?: LiveClassSession | null;
 };
 
@@ -958,6 +963,7 @@ async function createClassViaApiFallback(input: CreateClassInput): Promise<strin
         showInStudentPlatform: input.showInStudentPlatform ?? true,
         forumEnabled: input.forumEnabled ?? false,
         forumRequiredFormat: input.forumRequiredFormat ?? null,
+        forumPointValue: normalizeForumPointValue(input.forumPointValue ?? DEFAULT_FORUM_POINT_VALUE),
         liveSession: input.type === "live" ? input.liveSession ?? null : null,
       }),
     },
@@ -1011,6 +1017,7 @@ export async function createClass(input: CreateClassInput): Promise<string> {
       showInStudentPlatform: input.showInStudentPlatform ?? true,
       forumEnabled: input.forumEnabled ?? false,
       forumRequiredFormat: input.forumRequiredFormat ?? null,
+      forumPointValue: normalizeForumPointValue(input.forumPointValue ?? DEFAULT_FORUM_POINT_VALUE),
       liveSession,
       createdAt: serverTimestamp(),
     });
@@ -1042,6 +1049,7 @@ type UpdateClassInput = {
   showInStudentPlatform?: ClassroomPlatformVisibility;
   forumEnabled?: boolean;
   forumRequiredFormat?: "text" | "audio" | "video" | null;
+  forumPointValue?: number;
   liveSession?: LiveClassSession | null;
 };
 
@@ -1145,6 +1153,8 @@ export async function updateClass(input: UpdateClassInput): Promise<void> {
     payload.showInStudentPlatform = input.showInStudentPlatform;
   if (input.forumEnabled !== undefined) payload.forumEnabled = input.forumEnabled;
   if (input.forumRequiredFormat !== undefined) payload.forumRequiredFormat = input.forumRequiredFormat;
+  if (input.forumPointValue !== undefined)
+    payload.forumPointValue = normalizeForumPointValue(input.forumPointValue);
 
   const nextType = input.type ?? currentType;
   if (nextType === "live") {

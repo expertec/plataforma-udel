@@ -68,6 +68,11 @@ import {
   type StudentPreviewFeedItem,
 } from "@/lib/student-preview";
 import {
+  DEFAULT_FORUM_POINT_VALUE,
+  formatForumPointValue,
+  normalizeForumPointValue,
+} from "@/lib/forum-grading";
+import {
   isForumAudioTranscodeCandidate,
   pickPreferredAudioRecordingMimeType,
   resolvePreferredContentTypeForMediaFile,
@@ -106,6 +111,7 @@ type FeedClass = {
   likesCount?: number;
   forumEnabled?: boolean;
   forumRequiredFormat?: "text" | "audio" | "video" | null;
+  forumPointValue?: number;
   liveSession?: LiveClassSession | null;
   studyOnly?: boolean;
 };
@@ -537,6 +543,7 @@ const mapPreviewFeedItemToFeedClass = (item: StudentPreviewFeedItem): FeedClass 
   likesCount: item.likesCount ?? 0,
   forumEnabled: item.forumEnabled ?? false,
   forumRequiredFormat: item.forumRequiredFormat ?? null,
+  forumPointValue: normalizeForumPointValue(item.forumPointValue),
   liveSession: normalizeLiveSession(item.liveSession),
 });
 
@@ -2320,6 +2327,7 @@ export default function StudentFeedPageClient() {
                 likesCount: c.likesCount ?? 0,
                 forumEnabled: c.forumEnabled ?? false,
                 forumRequiredFormat: c.forumRequiredFormat ?? null,
+                forumPointValue: normalizeForumPointValue(c.forumPointValue),
                 liveSession: normalizeLiveSession(c.liveSession),
               });
             });
@@ -2757,6 +2765,7 @@ export default function StudentFeedPageClient() {
                   likesCount: c.likesCount ?? 0,
                   forumEnabled: isStudyOnlyCourse ? false : (c.forumEnabled ?? false),
                   forumRequiredFormat: isStudyOnlyCourse ? null : (c.forumRequiredFormat ?? null),
+                  forumPointValue: normalizeForumPointValue(c.forumPointValue),
                   liveSession: normalizeLiveSession(c.liveSession),
                   studyOnly: isStudyOnlyCourse,
                 });
@@ -8705,24 +8714,39 @@ function ForumPanel({
                 </p>
                 {postEvaluated ? (
                   <div className="space-y-2">
+                    {(() => {
+                      const forumGradeMax = normalizeForumPointValue(
+                        findClassById(classMeta.classDocId ?? classMeta.id)?.forumPointValue ??
+                        classMeta.forumPointValue ??
+                        DEFAULT_FORUM_POINT_VALUE,
+                      );
+                      const forumGradeRatio =
+                        typeof studentPost?.grade === "number" && forumGradeMax > 0
+                          ? studentPost.grade / forumGradeMax
+                          : 0;
+                      const forumGradeBadgeClass =
+                        typeof studentPost?.grade === "number"
+                          ? forumGradeRatio >= 0.8
+                            ? "bg-emerald-500/20 text-emerald-300"
+                            : forumGradeRatio >= 0.6
+                              ? "bg-amber-500/20 text-amber-300"
+                              : "bg-red-500/20 text-red-300"
+                          : "bg-blue-500/20 text-blue-300";
+                      return (
+                        <>
                     <p className="text-xs text-amber-200">
                       Tu aporte ya fue evaluado. No puedes eliminarlo.
                     </p>
                     <div
-                      className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
-                        typeof studentPost?.grade === "number"
-                          ? studentPost.grade >= 4
-                            ? "bg-emerald-500/20 text-emerald-300"
-                            : studentPost.grade >= 3
-                              ? "bg-amber-500/20 text-amber-300"
-                              : "bg-red-500/20 text-red-300"
-                          : "bg-blue-500/20 text-blue-300"
-                      }`}
+                      className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${forumGradeBadgeClass}`}
                     >
                       {typeof studentPost?.grade === "number"
-                        ? `Tu calificación: ${studentPost.grade}/5`
+                        ? `Tu calificación: ${formatForumPointValue(studentPost.grade)}/${formatForumPointValue(forumGradeMax)}`
                         : "Aporte calificado"}
                     </div>
+                        </>
+                      );
+                    })()}
                     {typeof studentPost?.feedback === "string" && studentPost.feedback.trim().length > 0 ? (
                       <p className="text-xs text-white/80 whitespace-pre-wrap">
                         Retroalimentación: {studentPost.feedback}

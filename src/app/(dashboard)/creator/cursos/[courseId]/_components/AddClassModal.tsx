@@ -26,6 +26,12 @@ import {
   parseDateTimeLocalToIso,
   toDateTimeLocalInputValue,
 } from "@/lib/utils/date-format";
+import {
+  DEFAULT_FORUM_POINT_VALUE,
+  MAX_FORUM_POINT_VALUE,
+  formatForumPointValue,
+  parseForumPointValueInput,
+} from "@/lib/forum-grading";
 
 const classTypes = [
   {
@@ -100,6 +106,7 @@ type AddClassModalProps = {
       liveSession?: LiveClassSession | null;
       hasAssignment?: boolean;
       assignmentSubmissionType?: "file" | "audio";
+      forumPointValue?: number;
       isClassroomActivity?: boolean;
       showInStudentPlatform?: boolean;
     },
@@ -118,6 +125,7 @@ type AddClassModalProps = {
       liveSession?: LiveClassSession | null;
       hasAssignment?: boolean;
       assignmentSubmissionType?: "file" | "audio";
+      forumPointValue?: number;
       isClassroomActivity?: boolean;
       showInStudentPlatform?: boolean;
     },
@@ -165,6 +173,9 @@ export function AddClassModal({
   const [coverUploading, setCoverUploading] = useState(false);
   const [forumEnabled, setForumEnabled] = useState(false);
   const [forumFormat, setForumFormat] = useState<"text" | "audio" | "video">("text");
+  const [forumPointValueInput, setForumPointValueInput] = useState(
+    String(DEFAULT_FORUM_POINT_VALUE),
+  );
   const [liveScheduledStartAt, setLiveScheduledStartAt] = useState("");
   const [liveScheduledEndAt, setLiveScheduledEndAt] = useState("");
   const [liveTimezone, setLiveTimezone] = useState("America/Monterrey");
@@ -245,6 +256,9 @@ export function AddClassModal({
           ? initialData.forumRequiredFormat
           : "text",
       );
+      setForumPointValueInput(
+        formatForumPointValue(initialData.forumPointValue ?? DEFAULT_FORUM_POINT_VALUE),
+      );
       const currentLiveSession = normalizeLiveSession(initialData.liveSession);
       const currentLiveTimezone = currentLiveSession?.timezone || "America/Monterrey";
       setLiveScheduledStartAt(
@@ -322,6 +336,7 @@ export function AddClassModal({
       setVideoDescription("");
       setForumEnabled(false);
       setForumFormat("text");
+      setForumPointValueInput(String(DEFAULT_FORUM_POINT_VALUE));
       setLiveScheduledStartAt("");
       setLiveScheduledEndAt("");
       setLiveTimezone("America/Monterrey");
@@ -424,6 +439,11 @@ export function AddClassModal({
         return;
       }
     }
+    const normalizedForumPointValue = parseForumPointValueInput(forumPointValueInput);
+    if (forumEnabled && normalizedForumPointValue === null) {
+      toast.error(`El puntaje del foro debe estar entre 0 y ${MAX_FORUM_POINT_VALUE}`);
+      return;
+    }
     const coverImageUrls =
       type === "image"
         ? imageUrls
@@ -495,6 +515,7 @@ export function AddClassModal({
             hasAssignment && isClassroomActivity ? showInStudentPlatform : true,
           forumEnabled,
           forumRequiredFormat: forumEnabled ? forumFormat : null,
+          forumPointValue: normalizedForumPointValue ?? DEFAULT_FORUM_POINT_VALUE,
         });
       } else {
         savedClassId = await createClass({
@@ -522,6 +543,7 @@ export function AddClassModal({
             hasAssignment && isClassroomActivity ? showInStudentPlatform : true,
           forumEnabled,
           forumRequiredFormat: forumEnabled ? forumFormat : null,
+          forumPointValue: normalizedForumPointValue ?? DEFAULT_FORUM_POINT_VALUE,
         });
       }
       if (type === "quiz" && savedClassId) {
@@ -643,6 +665,7 @@ export function AddClassModal({
           liveSession: liveSessionPayload,
           hasAssignment,
           assignmentSubmissionType: hasAssignment ? assignmentSubmissionType : "file",
+          forumPointValue: normalizedForumPointValue ?? DEFAULT_FORUM_POINT_VALUE,
           isClassroomActivity: hasAssignment ? isClassroomActivity : false,
           showInStudentPlatform:
             hasAssignment && isClassroomActivity ? showInStudentPlatform : true,
@@ -655,6 +678,7 @@ export function AddClassModal({
           liveSession: liveSessionPayload,
           hasAssignment,
           assignmentSubmissionType: hasAssignment ? assignmentSubmissionType : "file",
+          forumPointValue: normalizedForumPointValue ?? DEFAULT_FORUM_POINT_VALUE,
           isClassroomActivity: hasAssignment ? isClassroomActivity : false,
           showInStudentPlatform:
             hasAssignment && isClassroomActivity ? showInStudentPlatform : true,
@@ -673,6 +697,7 @@ export function AddClassModal({
       setShowInStudentPlatform(true);
       setTemplateUrl("");
       setAssignmentSubmissionType("file");
+      setForumPointValueInput(String(DEFAULT_FORUM_POINT_VALUE));
       setLiveScheduledStartAt("");
       setLiveScheduledEndAt("");
       setLiveTimezone("America/Monterrey");
@@ -1193,6 +1218,19 @@ export function AddClassModal({
                     <option value="audio">Audio</option>
                     <option value="video">Video</option>
                   </select>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-slate-800">Puntos del foro</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={MAX_FORUM_POINT_VALUE}
+                    step="0.01"
+                    value={forumPointValueInput}
+                    onChange={(e) => setForumPointValueInput(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    placeholder={String(DEFAULT_FORUM_POINT_VALUE)}
+                  />
                 </div>
                 <p className="text-xs text-slate-600 sm:col-span-2">
                   El alumno deberá enviar al menos un aporte en este formato para desbloquear la siguiente clase.

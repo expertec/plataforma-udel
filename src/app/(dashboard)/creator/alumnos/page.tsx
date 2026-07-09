@@ -996,18 +996,23 @@ export default function AlumnosPage() {
   };
 
   const handleUpdateProfile = async () => {
-    if (!selectedStudent || !newEmail || !newName) {
+    const normalizedEmail = newEmail.trim().toLowerCase();
+    const normalizedName = newName.trim();
+    const normalizedPhone = newPhone.trim();
+    const normalizedProgram = newProgram.trim();
+
+    if (!selectedStudent || !normalizedEmail || !normalizedName) {
       toast.error("El nombre y el email son obligatorios");
       return;
     }
-    if (!newProgram) {
+    if (!normalizedProgram) {
       toast.error("Selecciona un programa");
       return;
     }
 
     // Validar formato de email
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(newEmail)) {
+    if (!emailRegex.test(normalizedEmail)) {
       toast.error("El email no tiene un formato válido");
       return;
     }
@@ -1020,10 +1025,10 @@ export default function AlumnosPage() {
         body: JSON.stringify({
           studentId: selectedStudent.id,
           currentEmail: selectedStudent.email,
-          newEmail: newEmail !== selectedStudent.email ? newEmail : undefined,
-          newName: newName !== selectedStudent.name ? newName : undefined,
-          newPhone: newPhone !== selectedStudent.phone ? newPhone : undefined,
-          newProgram: newProgram !== selectedStudent.program ? newProgram : undefined,
+          newEmail: normalizedEmail !== selectedStudent.email ? normalizedEmail : undefined,
+          newName: normalizedName !== selectedStudent.name ? normalizedName : undefined,
+          newPhone: normalizedPhone !== (selectedStudent.phone ?? "") ? normalizedPhone : undefined,
+          newProgram: normalizedProgram !== (selectedStudent.program ?? "") ? normalizedProgram : undefined,
         }),
       });
 
@@ -1035,10 +1040,17 @@ export default function AlumnosPage() {
 
       if (data.success) {
         const changes = [];
-        if (newName !== selectedStudent.name) changes.push("nombre");
-        if (newEmail !== selectedStudent.email) changes.push("email");
-        if (newPhone !== selectedStudent.phone) changes.push("teléfono");
-        if (newProgram !== selectedStudent.program) changes.push("programa");
+        if (normalizedName !== selectedStudent.name) changes.push("nombre");
+        if (normalizedEmail !== selectedStudent.email) changes.push("email");
+        if (normalizedPhone !== (selectedStudent.phone ?? "")) changes.push("teléfono");
+        if (normalizedProgram !== (selectedStudent.program ?? "")) changes.push("programa");
+
+        applyStudentPatch(selectedStudent.id, {
+          name: normalizedName,
+          email: normalizedEmail,
+          phone: normalizedPhone || null,
+          program: normalizedProgram,
+        });
 
         toast.success(
           changes.length > 0
@@ -2003,6 +2015,7 @@ export default function AlumnosPage() {
                     setNewEmail("");
                     setNewName("");
                     setNewPhone("");
+                    setNewProgram("");
                   }}
                   disabled={changingPassword}
                   className="flex-1 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"

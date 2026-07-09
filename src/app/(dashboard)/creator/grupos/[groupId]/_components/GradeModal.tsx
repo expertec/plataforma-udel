@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Submission } from "@/lib/firebase/submissions-service";
+import { formatForumPointValue, normalizeForumPointValue } from "@/lib/forum-grading";
 
 type GradeModalProps = {
   submission: Submission;
@@ -16,8 +17,8 @@ export function GradeModal({ submission, readonly, onClose, onSave }: GradeModal
   const [feedback, setFeedback] = useState(submission.feedback ?? "");
   const [saving, setSaving] = useState(false);
   const isForumSubmission = submission.classType === "forum";
-  const gradeMax = isForumSubmission ? 5 : 100;
-  const gradeLabel = `Calificación (0-${gradeMax})`;
+  const gradeMax = isForumSubmission ? normalizeForumPointValue(submission.forumPointValue) : 100;
+  const gradeLabel = `Calificación (0-${isForumSubmission ? formatForumPointValue(gradeMax) : gradeMax})`;
   const isGradeInvalid = grade == null || Number.isNaN(grade) || grade < 0 || grade > gradeMax;
   const isContentUrl =
     typeof submission.content === "string" &&
