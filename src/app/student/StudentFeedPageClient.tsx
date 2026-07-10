@@ -5908,7 +5908,7 @@ type VideoPlayerProps = {
   assignmentTemplateUrl?: string;
 };
 
-const VideoPlayer = React.memo(function VideoPlayer({
+export const VideoPlayer = React.memo(function VideoPlayer({
   id,
   src,
   isActive,
@@ -7139,7 +7139,7 @@ function formatTime(value: number) {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-function AudioPlayer({ src, title, onProgress, onComplete, coverUrl }: AudioPlayerProps) {
+export function AudioPlayer({ src, title, onProgress, onComplete, coverUrl }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -7458,7 +7458,7 @@ type QuizContentProps = {
   onQuizStateChange?: (state: { classId: string; answered: number; total: number; submitted: boolean; onSubmit?: () => Promise<void> } | null) => void;
 };
 
-function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, lessonTitle, courseClosed = false, enrollmentId, groupId, classTitle, studentName, studentId, isActive = true, onProgress, onQuizStateChange }: QuizContentProps) {
+export function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, lessonTitle, courseClosed = false, enrollmentId, groupId, classTitle, studentName, studentId, isActive = true, onProgress, onQuizStateChange }: QuizContentProps) {
   const [questions, setQuestions] = useState<
     Array<{
       id: string;
@@ -8223,7 +8223,7 @@ type ForumPanelProps = {
   onDeleted: () => void;
 };
 
-function ForumPanel({
+export function ForumPanel({
   open,
   onClose,
   positionClass = "top-0 h-screen",

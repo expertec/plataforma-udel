@@ -344,3 +344,85 @@ button.live-chat-toggle[data-lk-active="true"] {
   content: "Pantalla de " attr(data-lk-participant-name);
   font-size: 0.8125rem;
 }
+
+/* Interfaz alternativa de alumnos (/aula). Tema oscuro propio; no afecta al feed
+   clásico porque todo cuelga de la clase .aula-shell. */
+.aula-shell {
+  --aula-bg: #0d0f12;
+  --aula-surface: #16191d;
+  --aula-border: #2a2f36;
+  --aula-text: #f2f4f6;
+  --aula-text-muted: #98a1ac;
+  --aula-accent: #8a1f28;
+  --aula-accent-soft: #e3868f;
+
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/* El scrollbar está oculto globalmente; dentro del aula sí queremos verlo. */
+.aula-shell *::-webkit-scrollbar {
+  display: block;
+  width: 8px;
+  height: 8px;
+}
+
+.aula-shell *::-webkit-scrollbar-thumb {
+  background: var(--aula-border);
+  border-radius: 9999px;
+}
+
+.aula-shell * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--aula-border) transparent;
+}
+
+.aula-prose {
+  color: var(--aula-text);
+  line-height: 1.75;
+}
+
+.aula-prose p {
+  margin-bottom: 1rem;
+}
+
+.aula-prose h1,
+.aula-prose h2,
+.aula-prose h3,
+.aula-prose h4 {
+  font-weight: 600;
+  margin: 1.5rem 0 0.75rem;
+}
+
+.aula-prose ul,
+.aula-prose ol {
+  margin: 0 0 1rem 1.25rem;
+}
+
+.aula-prose ul {
+  list-style: disc;
+}
+
+.aula-prose ol {
+  list-style: decimal;
+}
+
+.aula-prose li {
+  margin-bottom: 0.5rem;
+}
+
+.aula-prose a {
+  color: var(--aula-accent-soft);
+  text-decoration: underline;
+}
+
+.aula-prose img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.75rem;
+}
+
+.aula-prose blockquote {
+  border-left: 3px solid var(--aula-accent);
+  padding-left: 1rem;
+  color: var(--aula-text-muted);
+}
