@@ -1,4 +1,4 @@
-import { collection, getDocs, query, where } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { trimSafeString } from "./gating";
 
@@ -72,6 +72,8 @@ export const loadKardex = async (
   ]);
 
   const rows = new Map<string, KardexRow>();
+  const rememberedCourseNames = new Map<string, string>();
+  const unresolvedCourseIds = new Set<string>();
 
   const upsert = (row: KardexRow) => {
     const previous = rows.get(row.id);
@@ -80,11 +82,27 @@ export const loadKardex = async (
     if (!previous || rowTimestamp(row) >= rowTimestamp(previous)) rows.set(row.id, row);
   };
 
-  const resolveCourseName = (courseId: string, fallback: string) => {
-    const fromTitles = trimSafeString(courseTitles[courseId]);
+  const rememberCourseName = (courseId: string, ...candidates: unknown[]) => {
+    const normalizedCourseId = courseId.trim();
+    if (!normalizedCourseId || rememberedCourseNames.has(normalizedCourseId)) return;
+    for (const candidate of candidates) {
+      const name = trimSafeString(candidate);
+      if (!name) continue;
+      rememberedCourseNames.set(normalizedCourseId, name);
+      return;
+    }
+  };
+
+  const resolveCourseName = (courseId: string, ...candidates: unknown[]) => {
+    const normalizedCourseId = courseId.trim();
+    const fromTitles = trimSafeString(courseTitles[normalizedCourseId]);
     if (fromTitles) return fromTitles;
-    const fromEnrollment = trimSafeString(fallback);
-    if (fromEnrollment) return fromEnrollment;
+    const remembered = trimSafeString(rememberedCourseNames.get(normalizedCourseId));
+    if (remembered) return remembered;
+    for (const candidate of candidates) {
+      const name = trimSafeString(candidate);
+      if (name) return name;
+    }
     if (!courseId) return "Sin materia";
     return looksLikeFirestoreId(courseId) ? "Materia archivada" : courseId;
   };
@@ -103,6 +121,11 @@ export const loadKardex = async (
       const courseId = courseIdKey.trim();
       if (!courseId) return;
       const closure = closureValue as Record<string, unknown>;
+      const closureCourseName = trimSafeString(closure.courseName);
+      rememberCourseName(courseId, closureCourseName, fallbackCourseName);
+      if (!courseTitles[courseId] && !rememberedCourseNames.has(courseId)) {
+        unresolvedCourseIds.add(courseId);
+      }
       const status = closure.status === "closed" ? "closed" : "open";
 
       upsert({
@@ -110,7 +133,7 @@ export const loadKardex = async (
         groupId,
         groupName,
         courseId,
-        courseName: resolveCourseName(courseId, fallbackCourseName),
+        courseName: resolveCourseName(courseId, closureCourseName, fallbackCourseName),
         status,
         finalGrade: toNumberOrNull(closure.finalGrade),
         autoGrade: toNumberOrNull(closure.autoGrade),
@@ -125,6 +148,10 @@ export const loadKardex = async (
     if (closureEntries.length === 0) {
       const courseId = trimSafeString(data.courseId);
       if (!courseId) return;
+      rememberCourseName(courseId, fallbackCourseName);
+      if (!courseTitles[courseId] && !rememberedCourseNames.has(courseId)) {
+        unresolvedCourseIds.add(courseId);
+      }
       const finalGrade = toNumberOrNull(data.finalGrade);
       upsert({
         id: rowKey(groupId, courseId),
@@ -145,6 +172,30 @@ export const loadKardex = async (
 
   archivedDocs.forEach((docSnap) => ingest(docSnap.data(), true));
   liveDocs.forEach((docSnap) => ingest(docSnap.data(), false));
+
+  if (unresolvedCourseIds.size > 0) {
+    const courseIds = Array.from(unresolvedCourseIds);
+    const courseDocResults = await Promise.allSettled(
+      courseIds.map((courseId) => getDoc(doc(db, "courses", courseId))),
+    );
+    courseDocResults.forEach((result, index) => {
+      const courseId = courseIds[index];
+      if (result.status === "rejected") {
+        console.warn(`No se pudo resolver el nombre del curso ${courseId} para el kardex:`, result.reason);
+        return;
+      }
+      if (!result.value.exists()) return;
+      const courseData = result.value.data() as { title?: unknown; courseName?: unknown };
+      rememberCourseName(courseId, courseData.title, courseData.courseName);
+    });
+  }
+
+  rows.forEach((row, key) => {
+    const resolvedName = resolveCourseName(row.courseId, row.courseName);
+    if (resolvedName !== row.courseName) {
+      rows.set(key, { ...row, courseName: resolvedName });
+    }
+  });
 
   return Array.from(rows.values()).sort((a, b) => {
     if (a.status !== b.status) return a.status === "closed" ? -1 : 1;

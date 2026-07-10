@@ -222,6 +222,32 @@ export function StudentGradesModal({
           }
         };
 
+        const rebuildResolvedRows = (rowsMap: Map<string, GradeRow>) => {
+          const rebuilt = new Map<string, GradeRow>();
+          rowsMap.forEach((row) => {
+            const resolvedGroupName = enrollmentGroupNames.get(row.groupId) ?? row.groupName;
+            const fallbackCourseName =
+              enrollmentCourseFallbackByGroup.get(row.groupId) ?? row.courseName;
+            const resolvedCourseName = resolveCourseName(
+              row.groupId,
+              row.courseId,
+              row.courseName,
+              fallbackCourseName,
+            );
+            const rebuiltRow = {
+              ...row,
+              id: buildRowKey(row.groupId, resolvedGroupName, row.courseId, resolvedCourseName),
+              groupName: resolvedGroupName,
+              courseName: resolvedCourseName,
+            };
+            const previous = rebuilt.get(rebuiltRow.id);
+            if (!previous || getRowTs(rebuiltRow) >= getRowTs(previous)) {
+              rebuilt.set(rebuiltRow.id, rebuiltRow);
+            }
+          });
+          return rebuilt;
+        };
+
         const registerGroupCourses = (
           groupId: string,
           groupData: {
@@ -738,6 +764,7 @@ export function StudentGradesModal({
           });
         });
 
+        const resolvedClosureRows = rebuildResolvedRows(closureRows);
         const mergedRows = new Map<string, GradeRow>();
 
         submissionAggByKey.forEach((agg) => {
@@ -756,7 +783,7 @@ export function StudentGradesModal({
           });
         });
 
-        closureRows.forEach((closureRow, key) => {
+        resolvedClosureRows.forEach((closureRow, key) => {
           const current = mergedRows.get(key);
           if (!current) {
             mergedRows.set(key, closureRow);
