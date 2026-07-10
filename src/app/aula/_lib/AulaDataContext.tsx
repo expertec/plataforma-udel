@@ -44,8 +44,20 @@ import type {
   ProgressSnapshot,
 } from "./types";
 
+/** Etapas reales del pipeline; alimentan la barra de progreso de la pantalla inicial. */
+export type LoadingStage = "auth" | "billing" | "contenido" | "foros" | "done";
+
+export const LOADING_STAGES: Record<LoadingStage, { percent: number; label: string }> = {
+  auth: { percent: 8, label: "Verificando tu sesión" },
+  billing: { percent: 30, label: "Validando tu inscripción" },
+  contenido: { percent: 65, label: "Cargando tus materias" },
+  foros: { percent: 90, label: "Sincronizando tu avance" },
+  done: { percent: 100, label: "Listo" },
+};
+
 type AulaDataValue = {
   loading: boolean;
+  loadingStage: LoadingStage;
   error: string | null;
   billingBlocked: BillingBlockedState | null;
   currentUser: User | null;
@@ -83,6 +95,7 @@ export function AulaDataProvider({ children }: { children: React.ReactNode }) {
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [authLoading, setAuthLoading] = useState(!auth.currentUser);
   const [loading, setLoading] = useState(true);
+  const [loadingStage, setLoadingStage] = useState<LoadingStage>("auth");
   const [error, setError] = useState<string | null>(null);
   const [billingBlocked, setBillingBlocked] = useState<BillingBlockedState | null>(null);
   const [feed, setFeed] = useState<StudentFeed | null>(null);
@@ -144,6 +157,7 @@ export function AulaDataProvider({ children }: { children: React.ReactNode }) {
         setLoading(false);
       } else {
         setLoading(true);
+        setLoadingStage("billing");
       }
 
       try {
@@ -172,6 +186,8 @@ export function AulaDataProvider({ children }: { children: React.ReactNode }) {
           return;
         }
 
+        setLoadingStage("contenido");
+
         // El progreso solo necesita los enrollmentIds, así que no espera al contenido.
         const [coursesResult, progressSnapshot] = await Promise.all([
           loadStudentCourses(currentUser, enrollments),
@@ -188,6 +204,7 @@ export function AulaDataProvider({ children }: { children: React.ReactNode }) {
         setProgress(progressSnapshot);
         progressRef.current = progressSnapshot;
         setFeed(coursesResult.feed);
+        setLoadingStage("foros");
 
         const forumStatuses = await loadForumStatuses(
           currentUser.uid,
@@ -195,6 +212,7 @@ export function AulaDataProvider({ children }: { children: React.ReactNode }) {
         );
         if (cancelled) return;
         setForumDone(forumStatuses);
+        setLoadingStage("done");
         saveCachedAula(currentUser.uid, {
           feed: coursesResult.feed,
           forumDone: forumStatuses,
@@ -317,6 +335,7 @@ export function AulaDataProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<AulaDataValue>(
     () => ({
       loading: loading || authLoading,
+      loadingStage: authLoading ? "auth" : loadingStage,
       error,
       billingBlocked,
       currentUser,
@@ -337,6 +356,7 @@ export function AulaDataProvider({ children }: { children: React.ReactNode }) {
     }),
     [
       loading,
+      loadingStage,
       authLoading,
       error,
       billingBlocked,

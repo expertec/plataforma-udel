@@ -3,8 +3,8 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Loader2, User } from "lucide-react";
-import { useAulaData } from "../_lib/AulaDataContext";
+import { Home, User } from "lucide-react";
+import { LOADING_STAGES, useAulaData } from "../_lib/AulaDataContext";
 import { BillingBlockedScreen } from "./BillingBlockedScreen";
 
 const railItems = [
@@ -95,15 +95,39 @@ function Rail() {
 }
 
 export function AulaShell({ children }: { children: React.ReactNode }) {
-  const { loading, error, billingBlocked } = useAulaData();
+  const { loading, loadingStage, error, billingBlocked } = useAulaData();
 
   if (billingBlocked) return <BillingBlockedScreen blocked={billingBlocked} />;
 
   if (loading) {
+    const { percent, label } = LOADING_STAGES[loadingStage];
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-3 text-[var(--aula-text-muted)]">
-        <Loader2 size={28} className="animate-spin" />
-        <p className="text-sm">Cargando tus clases…</p>
+      <div className="flex min-h-screen flex-col items-center justify-center gap-6 px-6">
+        <Image
+          src="/university-logo.jpg"
+          alt="UDEL Universidad"
+          width={88}
+          height={88}
+          priority
+          className="h-22 w-22 animate-pulse rounded-2xl object-cover"
+        />
+
+        <div className="w-full max-w-xs">
+          <div
+            role="progressbar"
+            aria-valuenow={percent}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label={label}
+            className="h-1.5 w-full overflow-hidden rounded-full bg-white/10"
+          >
+            <div
+              className="h-full rounded-full bg-[var(--aula-accent)] transition-[width] duration-500 ease-out"
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+          <p className="mt-3 text-center text-sm text-[var(--aula-text-muted)]">{percent}%</p>
+        </div>
       </div>
     );
   }
