@@ -1,6 +1,7 @@
 import { auth } from "@/lib/firebase/client";
 import type {
   GlobalExamAssignmentRecord,
+  GlobalExamAttemptCompletionReason,
   GlobalExamAttemptRecord,
   GlobalExamQuestion,
   GlobalExamTemplateRecord,
@@ -21,6 +22,11 @@ export type GlobalExamAttemptPayload = {
   >;
   questions: StudentVisibleGlobalExamQuestion[];
   attempts: GlobalExamAttemptRecord[];
+  session: {
+    durationMinutes: number;
+    startedAt: string;
+    deadlineAt: string;
+  };
 };
 
 async function getSessionToken(): Promise<string> {
@@ -33,6 +39,14 @@ async function getSessionToken(): Promise<string> {
 
 async function callApi<T>(input: string, init?: RequestInit): Promise<T> {
   const token = await getSessionToken();
+  return callApiWithToken<T>(input, token, init);
+}
+
+async function callApiWithToken<T>(
+  input: string,
+  token: string,
+  init?: RequestInit,
+): Promise<T> {
   const response = await fetch(input, {
     ...init,
     headers: {
@@ -165,6 +179,11 @@ export async function fetchGlobalExamAttemptPayload(
 export async function submitGlobalExamAttempt(
   assignmentId: string,
   answers: Record<string, string>,
+  options?: {
+    completionReason?: GlobalExamAttemptCompletionReason;
+    token?: string;
+    keepalive?: boolean;
+  },
 ): Promise<{
   attempt: {
     id: string;
@@ -180,6 +199,36 @@ export async function submitGlobalExamAttempt(
   bestScore: number | null;
   status: string;
 }> {
+  const payload = {
+    answers,
+    completionReason: options?.completionReason,
+  };
+
+  if (options?.token) {
+    return callApiWithToken<{
+      attempt: {
+        id: string;
+        attemptNumber: number;
+        score: number;
+        passed: boolean;
+        correctAnswers: number;
+        totalQuestions: number;
+      };
+      assignment: GlobalExamAssignmentRecord;
+      attemptsRemaining: number;
+      gradeSynced: boolean;
+      bestScore: number | null;
+      status: string;
+    }>(`/api/global-exams/assignments/${assignmentId}/attempt`, options.token, {
+      method: "POST",
+      keepalive: options.keepalive,
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+  }
+
   return callApi<{
     attempt: {
       id: string;
@@ -196,11 +245,14 @@ export async function submitGlobalExamAttempt(
     status: string;
   }>(`/api/global-exams/assignments/${assignmentId}/attempt`, {
     method: "POST",
+    keepalive: options?.keepalive,
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      answers,
-    }),
+    body: JSON.stringify(payload),
   });
+}
+
+export async function getGlobalExamSessionToken(): Promise<string> {
+  return getSessionToken();
 }

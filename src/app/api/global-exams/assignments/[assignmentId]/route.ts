@@ -85,6 +85,8 @@ export async function PATCH(
     const updatePayload: Record<string, unknown> = {
       enabled: requestedEnabled,
       status: nextStatus,
+      currentAttemptStartedAt: null,
+      currentAttemptDeadlineAt: null,
       updatedById: access.uid,
       updatedByName: actorName,
       updatedAt: now,

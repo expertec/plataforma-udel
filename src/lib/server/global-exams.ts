@@ -1,9 +1,11 @@
 import * as admin from "firebase-admin";
 import {
+  GLOBAL_EXAM_DURATION_MINUTES,
   GLOBAL_EXAM_MAX_ATTEMPTS,
   GLOBAL_EXAM_PASS_SCORE,
   type GlobalExamAssignmentReason,
   type GlobalExamAssignmentRecord,
+  type GlobalExamAttemptCompletionReason,
   type GlobalExamAssignmentStatus,
   type GlobalExamAttemptRecord,
   type GlobalExamTemplateRecord,
@@ -227,6 +229,16 @@ export function toGlobalExamAssignmentRecord(
     latestAttemptNumber: asNumberOrNull(rawData.latestAttemptNumber) ?? 0,
     latestAttemptId: asTrimmedString(rawData.latestAttemptId) || null,
     passed: asBoolean(rawData.passed, false),
+    currentAttemptStartedAt: toIsoString(rawData.currentAttemptStartedAt),
+    currentAttemptDeadlineAt:
+      toIsoString(rawData.currentAttemptDeadlineAt) ??
+      (() => {
+        const startedAtIso = toIsoString(rawData.currentAttemptStartedAt);
+        if (!startedAtIso) return null;
+        const startedAtMs = new Date(startedAtIso).getTime();
+        if (!Number.isFinite(startedAtMs)) return null;
+        return new Date(startedAtMs + GLOBAL_EXAM_DURATION_MINUTES * 60_000).toISOString();
+      })(),
     paymentVerifiedAt: toIsoString(rawData.paymentVerifiedAt),
     enabledAt: toIsoString(rawData.enabledAt),
     enabledById: asTrimmedString(rawData.enabledById) || null,
@@ -246,6 +258,14 @@ export function toGlobalExamAttemptRecord(
   rawData: FirestoreRecord,
 ): GlobalExamAttemptRecord {
   const answers = asObject(rawData.answers);
+  const rawCompletionReason = asTrimmedString(rawData.completionReason);
+  const completionReason: GlobalExamAttemptCompletionReason | null =
+    rawCompletionReason === "timeout" ||
+    rawCompletionReason === "visibility_change" ||
+    rawCompletionReason === "page_exit" ||
+    rawCompletionReason === "submitted"
+      ? rawCompletionReason
+      : null;
   return {
     id,
     assignmentId,
@@ -261,6 +281,9 @@ export function toGlobalExamAttemptRecord(
       acc[normalizedQuestionId] = normalizedAnswer;
       return acc;
     }, {}),
+    completionReason,
+    startedAt: toIsoString(rawData.startedAt),
+    deadlineAt: toIsoString(rawData.deadlineAt),
     submittedAt: toIsoString(rawData.submittedAt),
   };
 }

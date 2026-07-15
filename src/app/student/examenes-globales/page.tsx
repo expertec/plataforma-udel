@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { onAuthStateChanged } from "firebase/auth";
 import { RoleGate } from "@/components/auth/RoleGate";
@@ -9,6 +9,7 @@ import { auth } from "@/lib/firebase/client";
 import {
   fetchGlobalExamAssignments,
   fetchGlobalExamAttemptPayload,
+  getGlobalExamSessionToken,
   submitGlobalExamAttempt,
   type GlobalExamAttemptPayload,
 } from "@/lib/global-exams/client";
@@ -16,16 +17,45 @@ import {
   getGlobalExamCourseLabel,
   getGlobalExamReasonLabel,
   getGlobalExamStatusLabel,
+  type GlobalExamAttemptCompletionReason,
   type GlobalExamAssignmentRecord,
 } from "@/lib/global-exams/types";
 
-export default function StudentGlobalExamsPage() {
+type StudentGlobalExamsPageProps = {
+  backHref?: string;
+  backLabel?: string;
+  profileHref?: string;
+  profileLabel?: string;
+};
+
+function formatRemainingTime(ms: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+export default function StudentGlobalExamsPage({
+  backHref = "/student",
+  backLabel = "Volver al feed",
+  profileHref = "/student/profile",
+  profileLabel = "Ir a perfil",
+}: StudentGlobalExamsPageProps) {
   const [loading, setLoading] = useState(true);
   const [assignments, setAssignments] = useState<GlobalExamAssignmentRecord[]>([]);
   const [activeExam, setActiveExam] = useState<GlobalExamAttemptPayload | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [openingAssignmentId, setOpeningAssignmentId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [timeLeftMs, setTimeLeftMs] = useState(0);
+  const [activeSessionToken, setActiveSessionToken] = useState<string | null>(null);
+
+  const activeExamRef = useRef<GlobalExamAttemptPayload | null>(null);
+  const answersRef = useRef<Record<string, string>>({});
+  const activeSessionTokenRef = useRef<string | null>(null);
+  const submittingRef = useRef(false);
+  const closingReasonRef = useRef<GlobalExamAttemptCompletionReason | null>(null);
+  const pageRootRef = useRef<HTMLDivElement | null>(null);
 
   const openAssignments = useMemo(
     () =>
@@ -43,7 +73,23 @@ export default function StudentGlobalExamsPage() {
     [assignments],
   );
 
-  const loadAssignments = async () => {
+  useEffect(() => {
+    activeExamRef.current = activeExam;
+  }, [activeExam]);
+
+  useEffect(() => {
+    answersRef.current = answers;
+  }, [answers]);
+
+  useEffect(() => {
+    activeSessionTokenRef.current = activeSessionToken;
+  }, [activeSessionToken]);
+
+  useEffect(() => {
+    submittingRef.current = submitting;
+  }, [submitting]);
+
+  const loadAssignments = useCallback(async () => {
     setLoading(true);
     try {
       const loadedAssignments = await fetchGlobalExamAssignments();
@@ -56,7 +102,29 @@ export default function StudentGlobalExamsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  const requestExamFullscreen = useCallback(async () => {
+    const target = pageRootRef.current;
+    if (!target?.requestFullscreen) return false;
+    if (document.fullscreenElement === target) return true;
+    try {
+      await target.requestFullscreen();
+      return true;
+    } catch (error) {
+      console.warn("No se pudo activar pantalla completa para el examen:", error);
+      return false;
+    }
+  }, []);
+
+  const exitExamFullscreen = useCallback(async () => {
+    if (!document.fullscreenElement || !document.exitFullscreen) return;
+    try {
+      await document.exitFullscreen();
+    } catch (error) {
+      console.warn("No se pudo salir de pantalla completa:", error);
+    }
+  }, []);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -68,22 +136,104 @@ export default function StudentGlobalExamsPage() {
       await loadAssignments();
     });
     return () => unsub();
-  }, []);
+  }, [loadAssignments]);
 
   const handleOpenExam = async (assignmentId: string) => {
     setOpeningAssignmentId(assignmentId);
     try {
-      const payload = await fetchGlobalExamAttemptPayload(assignmentId);
+      const fullscreenEnabled = await requestExamFullscreen();
+      const [payload, token] = await Promise.all([
+        fetchGlobalExamAttemptPayload(assignmentId),
+        getGlobalExamSessionToken(),
+      ]);
       setActiveExam(payload);
       setAnswers({});
+      setActiveSessionToken(token);
+      setTimeLeftMs(Math.max(0, new Date(payload.session.deadlineAt).getTime() - Date.now()));
+      if (!fullscreenEnabled) {
+        toast.error("No se pudo activar pantalla completa. Si sales o cambias de pestaña, el examen se cerrará.");
+      }
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
+      await exitExamFullscreen();
       console.error(error);
       toast.error(error instanceof Error ? error.message : "No se pudo abrir el examen");
     } finally {
       setOpeningAssignmentId(null);
     }
   };
+
+  const resetActiveExamState = useCallback(() => {
+    setActiveExam(null);
+    setAnswers({});
+    setActiveSessionToken(null);
+    setTimeLeftMs(0);
+    void exitExamFullscreen();
+  }, [exitExamFullscreen]);
+
+  const finalizeExam = useCallback(
+    async (
+      completionReason: GlobalExamAttemptCompletionReason,
+      options?: {
+        suppressSuccessToast?: boolean;
+        suppressErrorToast?: boolean;
+        keepalive?: boolean;
+        shouldReloadAssignments?: boolean;
+      },
+    ) => {
+      const exam = activeExamRef.current;
+      if (!exam || submittingRef.current || closingReasonRef.current) {
+        return false;
+      }
+
+      closingReasonRef.current = completionReason;
+      setSubmitting(true);
+
+      try {
+        const result = await submitGlobalExamAttempt(exam.assignment.id, answersRef.current, {
+          completionReason,
+          token: options?.keepalive ? activeSessionTokenRef.current ?? undefined : undefined,
+          keepalive: options?.keepalive,
+        });
+
+        if (!options?.suppressSuccessToast) {
+          if (completionReason === "timeout") {
+            toast.error("Se agotó el tiempo. El examen se cerró automáticamente.");
+          } else if (completionReason === "visibility_change") {
+            toast.error("El examen se cerró por cambiar de pestaña o salir de la ventana.");
+          } else if (completionReason === "page_exit") {
+            toast.error("El examen se cerró al salir de la página.");
+          } else {
+            toast.success(
+              result.attempt.passed
+                ? `Aprobaste con ${result.attempt.score}`
+                : `Intento enviado con ${result.attempt.score}`,
+            );
+          }
+        }
+
+        if (!result.gradeSynced) {
+          toast.error("El intento se guardo, pero la sincronizacion a kardex quedo pendiente");
+        }
+
+        resetActiveExamState();
+        if (options?.shouldReloadAssignments !== false) {
+          await loadAssignments();
+        }
+        return true;
+      } catch (error) {
+        console.error(error);
+        if (!options?.suppressErrorToast) {
+          toast.error(error instanceof Error ? error.message : "No se pudo cerrar el examen");
+        }
+        return false;
+      } finally {
+        closingReasonRef.current = null;
+        setSubmitting(false);
+      }
+    },
+    [loadAssignments, resetActiveExamState],
+  );
 
   const handleSubmitExam = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -95,31 +245,93 @@ export default function StudentGlobalExamsPage() {
       return;
     }
 
-    setSubmitting(true);
-    try {
-      const result = await submitGlobalExamAttempt(activeExam.assignment.id, answers);
-      toast.success(
-        result.attempt.passed
-          ? `Aprobaste con ${result.attempt.score}`
-          : `Intento enviado con ${result.attempt.score}`,
-      );
-      if (!result.gradeSynced) {
-        toast.error("El intento se guardo, pero la sincronizacion a kardex quedo pendiente");
-      }
-      setActiveExam(null);
-      setAnswers({});
-      await loadAssignments();
-    } catch (error) {
-      console.error(error);
-      toast.error(error instanceof Error ? error.message : "No se pudo enviar el examen");
-    } finally {
-      setSubmitting(false);
-    }
+    await finalizeExam("submitted");
   };
+
+  useEffect(() => {
+    if (!activeExam) {
+      setTimeLeftMs(0);
+      return;
+    }
+
+    const deadlineTs = new Date(activeExam.session.deadlineAt).getTime();
+    const updateRemaining = () => {
+      const nextMs = Math.max(0, deadlineTs - Date.now());
+      setTimeLeftMs(nextMs);
+      if (nextMs <= 0 && !submittingRef.current && !closingReasonRef.current) {
+        void finalizeExam("timeout");
+      }
+    };
+
+    updateRemaining();
+    const timerId = window.setInterval(updateRemaining, 1000);
+    return () => window.clearInterval(timerId);
+  }, [activeExam, finalizeExam]);
+
+  useEffect(() => {
+    if (!activeExam) return;
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (submittingRef.current || closingReasonRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    const handlePageHide = () => {
+      if (submittingRef.current || closingReasonRef.current) return;
+      void finalizeExam("page_exit", {
+        suppressSuccessToast: true,
+        suppressErrorToast: true,
+        keepalive: true,
+        shouldReloadAssignments: false,
+      });
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "hidden") return;
+      if (submittingRef.current || closingReasonRef.current) return;
+      window.alert("¿Quieres terminar el examen? El examen se cerrará al cambiar de pestaña o salir.");
+      void finalizeExam("visibility_change", {
+        suppressSuccessToast: true,
+        keepalive: true,
+      });
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    window.addEventListener("pagehide", handlePageHide);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      window.removeEventListener("pagehide", handlePageHide);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [activeExam, finalizeExam]);
+
+  useEffect(() => {
+    if (!activeExam) return;
+
+    const handleFullscreenChange = () => {
+      if (submittingRef.current || closingReasonRef.current) return;
+      if (document.fullscreenElement === pageRootRef.current) return;
+      window.alert("Saliste de pantalla completa. El examen se cerrará automáticamente.");
+      void finalizeExam("visibility_change", {
+        suppressSuccessToast: true,
+      });
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    };
+  }, [activeExam, finalizeExam]);
 
   return (
     <RoleGate allowedRole="student">
-      <div className="min-h-screen bg-slate-50 px-4 py-6 text-slate-900 sm:px-6">
+      <div
+        ref={pageRootRef}
+        className="min-h-screen bg-slate-50 px-4 py-6 text-slate-900 sm:px-6 [&:fullscreen]:h-screen [&:fullscreen]:overflow-y-auto"
+      >
         <div className="mx-auto max-w-5xl space-y-6">
           <header className="flex flex-col gap-3 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:flex-row sm:items-end sm:justify-between">
             <div className="space-y-2">
@@ -132,16 +344,16 @@ export default function StudentGlobalExamsPage() {
             </div>
             <div className="flex flex-wrap gap-2">
               <Link
-                href="/student"
+                href={backHref}
                 className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-800 shadow-sm transition hover:border-blue-500 hover:text-blue-700"
               >
-                Volver al feed
+                {backLabel}
               </Link>
               <Link
-                href="/student/profile"
+                href={profileHref}
                 className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-800 shadow-sm transition hover:border-blue-500 hover:text-blue-700"
               >
-                Ir a perfil
+                {profileLabel}
               </Link>
             </div>
           </header>
@@ -164,17 +376,34 @@ export default function StudentGlobalExamsPage() {
                     Pase con {activeExam.template.passScore} | Intento {activeExam.assignment.attemptsUsed + 1} de{" "}
                     {activeExam.assignment.attemptsAllowed}
                   </p>
+                  <p className="text-sm text-amber-700">
+                    Tienes 45 minutos. El examen se abre en pantalla completa y se termina si
+                    cambias de pestaña, sales de la página o cierras la pantalla completa.
+                  </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveExam(null);
-                    setAnswers({});
-                  }}
-                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
-                >
-                  Cerrar
-                </button>
+                <div className="flex flex-col items-start gap-3 sm:items-end">
+                  <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-right">
+                    <p className="text-xs uppercase tracking-[0.14em] text-red-500">Tiempo restante</p>
+                    <p className="text-2xl font-semibold text-red-700">{formatRemainingTime(timeLeftMs)}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (
+                        !window.confirm(
+                          "¿Quieres terminar el examen? Se enviarán tus respuestas actuales y se cerrará el intento.",
+                        )
+                      ) {
+                        return;
+                      }
+                      void finalizeExam("submitted");
+                    }}
+                    disabled={submitting}
+                    className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+                  >
+                    {submitting ? "Cerrando..." : "Terminar examen"}
+                  </button>
+                </div>
               </div>
 
               {activeExam.template.description ? (
@@ -229,7 +458,7 @@ export default function StudentGlobalExamsPage() {
                   disabled={submitting}
                   className="inline-flex items-center justify-center rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {submitting ? "Enviando..." : "Enviar examen"}
+                  {submitting ? "Cerrando examen..." : "Enviar examen"}
                 </button>
               </form>
             </section>

@@ -15,6 +15,30 @@ function GradeBadge({ grade }: { grade: number | null }) {
   );
 }
 
+function GlobalExamBadge({
+  grade,
+  source,
+}: {
+  grade: number | null;
+  source: KardexRow["globalExamSource"];
+}) {
+  if (grade === null) {
+    return <span className="text-[var(--aula-text-muted)]">—</span>;
+  }
+
+  const formatted = Number.isInteger(grade) ? grade : grade.toFixed(1);
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <span className="font-semibold text-[var(--aula-text)]">{formatted}</span>
+      {source === "regularization" ? (
+        <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-[11px] font-medium text-sky-300">
+          Regularizacion
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 export function KardexTable({ rows, loading }: { rows: KardexRow[]; loading: boolean }) {
   if (loading) {
     return <p className="text-[var(--aula-text-muted)]">Cargando tus calificaciones…</p>;
@@ -30,13 +54,14 @@ export function KardexTable({ rows, loading }: { rows: KardexRow[]; loading: boo
 
   return (
     <div className="overflow-x-auto rounded-2xl border border-[var(--aula-border)] bg-[var(--aula-surface)]">
-      <table className="w-full min-w-[640px] text-left text-sm">
+      <table className="w-full min-w-[760px] text-left text-sm">
         <thead className="border-b border-[var(--aula-border)] text-[var(--aula-text-muted)]">
           <tr>
             <th className="px-4 py-3 font-medium">Materia</th>
             <th className="px-4 py-3 font-medium">Grupo</th>
             <th className="px-4 py-3 font-medium">Estado</th>
             <th className="px-4 py-3 font-medium">Cierre</th>
+            <th className="px-4 py-3 text-right font-medium">Examen global</th>
             <th className="px-4 py-3 text-right font-medium">Calificación</th>
           </tr>
         </thead>
@@ -72,6 +97,9 @@ export function KardexTable({ rows, loading }: { rows: KardexRow[]; loading: boo
               </td>
               <td className="px-4 py-3 text-[var(--aula-text-muted)]">
                 {row.status === "closed" ? formatDate(row.closedAt) : "—"}
+              </td>
+              <td className="px-4 py-3 text-right">
+                <GlobalExamBadge grade={row.globalExamGrade} source={row.globalExamSource} />
               </td>
               <td className="px-4 py-3 text-right">
                 {row.status === "closed" ? (

@@ -7,6 +7,9 @@ export type AulaComment = {
   author: string;
   authorId: string;
   text: string;
+  audioUrl?: string;
+  mediaMimeType?: string | null;
+  format?: "text" | "audio";
   createdAt: number;
   parentId: string | null;
   role?: "student" | "professor";
@@ -39,6 +42,12 @@ export const loadComments = async (cls: FeedClass): Promise<AulaComment[]> => {
       author: author && !/^alumno$/i.test(author) ? author : "Estudiante",
       authorId: c.authorId ?? "",
       text: c.text ?? "",
+      audioUrl: typeof c.audioUrl === "string" ? c.audioUrl : "",
+      mediaMimeType: typeof c.mediaMimeType === "string" ? c.mediaMimeType : null,
+      format:
+        c.format === "audio" || (typeof c.audioUrl === "string" && c.audioUrl.trim().length > 0)
+          ? "audio"
+          : "text",
       createdAt: (c.createdAt?.toMillis?.() ?? c.createdAt ?? Date.now()) as number,
       parentId: c.parentId ?? null,
       role: role === "professor" ? "professor" : role === "student" ? "student" : undefined,
@@ -51,12 +60,18 @@ export const addComment = async (params: {
   text: string;
   authorId: string;
   authorName: string;
+  audioUrl?: string;
+  mediaMimeType?: string | null;
+  format?: "text" | "audio";
   parentId?: string | null;
 }) => {
-  const { cls, text, authorId, authorName, parentId } = params;
+  const { cls, text, authorId, authorName, audioUrl, mediaMimeType, format, parentId } = params;
   if (!hasCommentsPath(cls)) throw new Error("La clase no tiene ruta de comentarios");
   await addDoc(commentsCollection(cls), {
     text,
+    audioUrl: audioUrl ?? "",
+    mediaMimeType: mediaMimeType ?? null,
+    format: format === "audio" ? "audio" : "text",
     authorId,
     authorName,
     parentId: parentId ?? null,

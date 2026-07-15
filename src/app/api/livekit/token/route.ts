@@ -112,7 +112,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    await ensureLiveKitRoom(session.roomName);
+    if (isTeacher && !isSessionLive) {
+      await ensureLiveKitRoom(session.roomName);
+    }
 
     const token = await createJoinToken({
       roomName: session.roomName,

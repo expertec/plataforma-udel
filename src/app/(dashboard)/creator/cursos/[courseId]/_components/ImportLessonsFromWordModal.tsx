@@ -1,15 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { auth } from "@/lib/firebase/client";
 import {
   createClass,
-  createCourse,
   createLesson,
   createQuizQuestion,
 } from "@/lib/firebase/courses-service";
-import { getPrograms } from "@/lib/firebase/programs-service";
 import {
   parseWordCourseTemplate,
   type WordImportedClass,
@@ -17,12 +15,12 @@ import {
   type WordImportedQuizQuestion,
 } from "@/lib/course-word-template-parser";
 
-type BulkUploadWordCoursesModalProps = {
+type ImportLessonsFromWordModalProps = {
   open: boolean;
   onClose: () => void;
-  teacherId?: string | null;
-  teacherName?: string | null;
-  onImported?: () => Promise<void> | void;
+  courseId: string;
+  nextLessonNumber: number;
+  nextLessonOrder: number;
 };
 
 type ParsedLessonFromFile = WordImportedLesson & {
@@ -78,11 +76,11 @@ const previewTypeLabel: Record<WordImportedClass["type"], string> = {
 const stripFileExtension = (fileName: string): string =>
   fileName.replace(/\.[^/.]+$/, "").trim() || "Lección";
 
-const inferCourseTitleFromFileName = (fileName: string): string =>
-  stripFileExtension(fileName)
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+const normalizeLessonTitle = (title: string, fallback: string): string => {
+  const trimmed = title.trim();
+  if (!trimmed) return fallback;
+  return trimmed.replace(/\s+/g, " ");
+};
 
 const fileKey = (file: File): string => `${file.name}:${file.size}:${file.lastModified}`;
 
@@ -130,7 +128,7 @@ const buildImportPlan = (
   const lessonsCount = lessons.length;
   const classesCount = totalClassesCount(lessons);
   const vimeoMirrorSteps = mirrorVideos ? totalVimeoClassCount(lessons) : 0;
-  const totalSteps = Math.max(1, 1 + lessonsCount + classesCount + vimeoMirrorSteps);
+  const totalSteps = Math.max(1, lessonsCount + classesCount + vimeoMirrorSteps);
   return { totalSteps };
 };
 
@@ -154,12 +152,6 @@ async function extractRawTextFromDocx(file: File): Promise<MammothResult> {
   return mammoth.extractRawText({
     arrayBuffer: await file.arrayBuffer(),
   });
-}
-
-function normalizeLessonTitle(title: string, fallback: string): string {
-  const trimmed = title.trim();
-  if (!trimmed) return fallback;
-  return trimmed.replace(/\s+/g, " ");
 }
 
 function PreviewClassIcon({ type }: { type: WordImportedClass["type"] }) {
@@ -294,20 +286,13 @@ async function createImportedQuizQuestions(params: {
   }
 }
 
-export function BulkUploadWordCoursesModal({
+export function ImportLessonsFromWordModal({
   open,
   onClose,
-  teacherId,
-  teacherName,
-  onImported,
-}: BulkUploadWordCoursesModalProps) {
-  const [courseTitle, setCourseTitle] = useState("");
-  const [courseDescription, setCourseDescription] = useState("");
-  const [introVideoUrl, setIntroVideoUrl] = useState("");
-  const [program, setProgram] = useState("");
-  const [programOptions, setProgramOptions] = useState<string[]>([]);
-  const [programLoading, setProgramLoading] = useState(false);
-
+  courseId,
+  nextLessonNumber,
+  nextLessonOrder,
+}: ImportLessonsFromWordModalProps) {
   const [parsing, setParsing] = useState(false);
   const [importing, setImporting] = useState(false);
   const [mirrorVimeoToFirebase, setMirrorVimeoToFirebase] = useState(true);
@@ -339,34 +324,7 @@ export function BulkUploadWordCoursesModal({
     return Math.max(0, Math.min(100, Math.round(ratio * 100)));
   }, [importProgress]);
 
-  useEffect(() => {
-    if (!open) return;
-    let active = true;
-    const loadPrograms = async () => {
-      setProgramLoading(true);
-      try {
-        const data = await getPrograms();
-        if (!active) return;
-        const names = Array.from(new Set(data.map((p) => p.name).filter(Boolean)));
-        setProgramOptions(names);
-      } catch (error) {
-        console.error(error);
-        toast.error("No se pudieron cargar los programas");
-      } finally {
-        if (active) setProgramLoading(false);
-      }
-    };
-    loadPrograms();
-    return () => {
-      active = false;
-    };
-  }, [open]);
-
   const reset = () => {
-    setCourseTitle("");
-    setCourseDescription("");
-    setIntroVideoUrl("");
-    setProgram("");
     setMirrorVimeoToFirebase(true);
     setAllowVimeoFallback(true);
     setParseError(null);
@@ -407,11 +365,6 @@ export function BulkUploadWordCoursesModal({
       setWarnings((current) => mergeUniqueWarnings(current, duplicateWarnings));
       setParseError("Las semanas seleccionadas ya estaban agregadas.");
       return;
-    }
-
-    const inferredCourseTitle = inferCourseTitleFromFileName(filesToParse[0]?.name ?? "");
-    if (!courseTitle.trim() && inferredCourseTitle) {
-      setCourseTitle(inferredCourseTitle);
     }
 
     setParsing(true);
@@ -492,7 +445,9 @@ export function BulkUploadWordCoursesModal({
       });
       return next;
     });
-    setWarnings((current) => current.filter((warning) => !warning.startsWith(`${targetFile.name}:`)));
+    setWarnings((current) =>
+      current.filter((warning) => !warning.startsWith(`${targetFile.name}:`)),
+    );
     setParseError(null);
     setResults([]);
     setImportProgress(null);
@@ -500,7 +455,6 @@ export function BulkUploadWordCoursesModal({
   };
 
   const mirrorVimeoVideoInFirebase = async (params: {
-    courseId: string;
     lessonId: string;
     classId: string;
     title: string;
@@ -513,7 +467,7 @@ export function BulkUploadWordCoursesModal({
 
     const idToken = await currentUser.getIdToken();
     const response = await fetch(
-      `/api/courses/${encodeURIComponent(params.courseId)}/videos/import-vimeo`,
+      `/api/courses/${encodeURIComponent(courseId)}/videos/import-vimeo`,
       {
         method: "POST",
         headers: {
@@ -538,14 +492,6 @@ export function BulkUploadWordCoursesModal({
   };
 
   const handleImport = async () => {
-    if (!teacherId) {
-      toast.error("Debes iniciar sesión para importar cursos.");
-      return;
-    }
-    if (!courseTitle.trim()) {
-      toast.error("Ingresa el título del curso.");
-      return;
-    }
     if (parsedLessons.length === 0) {
       toast.error("Primero agrega y valida al menos una semana en Word.");
       return;
@@ -561,7 +507,7 @@ export function BulkUploadWordCoursesModal({
       totalSteps: importPlan.totalSteps,
       completedSteps: 0,
       phase: "Preparando importación",
-      detail: "Creando curso...",
+      detail: "Agregando semanas al curso...",
     });
 
     const setProgressStatus = (phase: string, detail: string) => {
@@ -581,31 +527,21 @@ export function BulkUploadWordCoursesModal({
     };
 
     try {
-      setProgressStatus("Creando curso", "Guardando información base del curso...");
-      const courseId = await createCourse({
-        title: courseTitle.trim(),
-        description: courseDescription.trim(),
-        introVideoUrl: introVideoUrl.trim(),
-        program: program.trim(),
-        teacherId,
-        teacherName: teacherName ?? auth.currentUser?.displayName ?? "",
-      });
-      advanceProgress("Curso creado", courseTitle.trim() || "Curso");
-
       for (let lessonIndex = 0; lessonIndex < parsedLessons.length; lessonIndex += 1) {
         const lesson = parsedLessons[lessonIndex];
-        const lessonOrder = lessonIndex + 1;
+        const lessonNumber = nextLessonNumber + lessonIndex;
+        const lessonOrder = nextLessonOrder + lessonIndex;
 
         try {
           setProgressStatus(
             "Creando lección",
-            `Lección ${lessonIndex + 1}/${parsedLessons.length}: ${lesson.title}`,
+            `Lección ${lessonNumber}: ${lesson.title}`,
           );
           const lessonId = await createLesson({
             courseId,
             title: lesson.title,
             description: "",
-            lessonNumber: lessonOrder,
+            lessonNumber,
             order: lessonOrder,
           });
           advanceProgress("Lección creada", lesson.title);
@@ -631,7 +567,6 @@ export function BulkUploadWordCoursesModal({
                 setProgressStatus("Procesando video", `Copiando video de Vimeo: ${classItem.title}`);
                 try {
                   const mirroredUrl = await mirrorVimeoVideoInFirebase({
-                    courseId,
                     lessonId,
                     classId: `orden-${classIndex + 1}`,
                     title: classItem.title,
@@ -661,7 +596,7 @@ export function BulkUploadWordCoursesModal({
 
               setProgressStatus(
                 "Creando clase",
-                `Lección ${lessonIndex + 1}: ${classItem.title}`,
+                `Lección ${lessonNumber}: ${classItem.title}`,
               );
               const classId = await createClass(
                 classToPayload(courseId, lessonId, classToCreate, classIndex + 1),
@@ -679,8 +614,8 @@ export function BulkUploadWordCoursesModal({
                   questions: classToCreate.quizQuestions ?? [],
                 });
               }
-              advanceProgress("Clase creada", `${lesson.title} / ${classItem.title}`);
 
+              advanceProgress("Clase creada", `${lesson.title} / ${classItem.title}`);
               outcome.push({
                 lessonTitle: lesson.title,
                 classTitle: classItem.title,
@@ -734,20 +669,19 @@ export function BulkUploadWordCoursesModal({
               detail:
                 failCount > 0
                   ? `${failCount} elemento(s) con error. Revisa resultados abajo.`
-                  : "Curso creado correctamente.",
+                  : "Las semanas se agregaron correctamente al curso.",
             }
           : current,
       );
 
       if (okCount > 0) {
-        toast.success("Curso importado desde Word");
+        toast.success("Semanas agregadas al curso");
         if (vimeoFallbackCount > 0) {
           toast(
             `${vimeoFallbackCount} video(s) no se pudieron copiar a Firebase y se dejaron con URL de Vimeo.`,
             { duration: 6000 },
           );
         }
-        await onImported?.();
       }
       if (failCount > 0) {
         toast.error(`${failCount} elemento(s) fallaron durante la importación.`);
@@ -764,11 +698,11 @@ export function BulkUploadWordCoursesModal({
           ? {
               ...current,
               phase: "Importación detenida",
-              detail: "Ocurrió un error general al crear el curso.",
+              detail: "Ocurrió un error general al agregar las semanas.",
             }
           : current,
       );
-      toast.error("No se pudo crear el curso desde Word.");
+      toast.error("No se pudieron agregar las semanas desde Word.");
     } finally {
       setImporting(false);
     }
@@ -789,8 +723,8 @@ export function BulkUploadWordCoursesModal({
   const importButtonLabel = parsing
     ? "Analizando Word..."
     : importing
-      ? `Creando curso (${importProgressPercent}%)`
-      : "Crear curso desde Word";
+      ? `Agregando semanas (${importProgressPercent}%)`
+      : "Agregar semanas al curso";
 
   if (!open) return null;
 
@@ -803,11 +737,10 @@ export function BulkUploadWordCoursesModal({
               Importación Word
             </p>
             <h2 className="text-xl font-semibold text-slate-900">
-              Subir curso desde plantilla .docx
+              Agregar semanas desde plantilla .docx
             </h2>
             <p className="text-sm text-slate-600">
-              Detecta lecciones y clases (texto + enlaces de video/recurso) a partir de plantillas
-              de Word.
+              Sube una o varias plantillas Word para crear nuevas lecciones dentro de este curso.
             </p>
           </div>
           <button
@@ -824,67 +757,6 @@ export function BulkUploadWordCoursesModal({
 
         <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(300px,340px)]">
           <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="md:col-span-2">
-                <label className="text-sm font-medium text-slate-800">
-                  Título del curso *
-                </label>
-                <input
-                  value={courseTitle}
-                  onChange={(event) => setCourseTitle(event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  placeholder="Ej. Inducción a la Psicología"
-                />
-              </div>
-
-              <div className="md:col-span-2">
-                <label className="text-sm font-medium text-slate-800">
-                  Descripción corta (opcional)
-                </label>
-                <textarea
-                  rows={3}
-                  value={courseDescription}
-                  onChange={(event) => setCourseDescription(event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="text-sm font-medium text-slate-800">
-                  Intro video URL (opcional)
-                </label>
-                <input
-                  value={introVideoUrl}
-                  onChange={(event) => setIntroVideoUrl(event.target.value)}
-                  placeholder="https://vimeo.com/..."
-                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="text-sm font-medium text-slate-800">
-                  Programa / carrera
-                </label>
-                <select
-                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  value={program}
-                  onChange={(event) => setProgram(event.target.value)}
-                >
-                  <option value="">{programLoading ? "Cargando..." : "Seleccionar"}</option>
-                  {!programLoading && programOptions.length === 0 ? (
-                    <option value="" disabled>
-                      No hay programas
-                    </option>
-                  ) : null}
-                  {programOptions.map((opt) => (
-                    <option key={opt} value={opt}>
-                      {opt}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
             <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-3">
               <label className="flex items-start gap-2 text-sm text-slate-800">
                 <input
@@ -911,8 +783,7 @@ export function BulkUploadWordCoursesModal({
                 </span>
               </label>
               <p className="text-xs text-slate-500">
-                Intenta primero sin token (modo unlisted/config). Si no alcanza, usa{" "}
-                <code>VIMEO_ACCESS_TOKEN</code> como fallback recomendado.
+                Las semanas se agregan al final del curso actual respetando el orden existente.
               </p>
             </div>
 
@@ -932,10 +803,10 @@ export function BulkUploadWordCoursesModal({
               <div className="flex w-full flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div className="text-left">
                   <p className="text-sm font-semibold text-slate-800">
-                    Semanas / lecciones del curso
+                    Semanas / lecciones a importar
                   </p>
                   <p className="text-xs text-slate-500">
-                    Cada plantilla `.docx` agrega una o varias semanas. Puedes seleccionar varias a la vez.
+                    Cada plantilla `.docx` puede agregar una o varias semanas al curso.
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -1034,7 +905,7 @@ export function BulkUploadWordCoursesModal({
                     Vista previa de lecciones
                   </p>
                   <span className="text-xs text-slate-500">
-                    Misma estructura del constructor
+                    Se agregarán al final del curso
                   </span>
                 </div>
                 <div className="max-h-[28rem] space-y-3 overflow-auto p-3">
@@ -1056,7 +927,7 @@ export function BulkUploadWordCoursesModal({
                           </span>
                           <div>
                             <p className="text-sm font-semibold text-slate-900">
-                              Lección {lessonIndex + 1}: {lesson.title}
+                              Lección {nextLessonNumber + lessonIndex}: {lesson.title}
                             </p>
                             <p className="text-[11px] text-slate-500">
                               Archivo: {lesson.sourceFileName} · {lesson.classes.length} clase(s)
@@ -1113,13 +984,13 @@ export function BulkUploadWordCoursesModal({
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
               <p className="font-semibold text-slate-900">Flujo</p>
               <p className="pt-1">
-                1) Define los datos del curso.
+                1) Agrega una o varias plantillas Word (.docx).
                 <br />
-                2) Sube plantillas Word (.docx).
+                2) Revisa la vista previa.
                 <br />
-                3) Revisa vista previa.
+                3) Importa semanas, clases y quizzes.
                 <br />
-                4) Crea curso, lecciones y clases.
+                4) Las nuevas lecciones aparecerán al final del curso.
               </p>
             </div>
 
@@ -1159,27 +1030,29 @@ export function BulkUploadWordCoursesModal({
                         {result.lessonTitle}
                         {result.classTitle ? ` / ${result.classTitle}` : ""}
                       </p>
-                      <p className="text-xs opacity-90">{result.message}</p>
+                      <p className="text-xs">{result.message}</p>
                     </div>
                   ))}
                 </div>
               </div>
             ) : null}
 
-            <div className="flex flex-col gap-2 pt-2">
+            <div className="flex items-center justify-end gap-3 pt-2">
               <button
                 type="button"
-                onClick={reset}
-                disabled={parsing || importing}
-                className="w-full shrink-0 rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => {
+                  reset();
+                  onClose();
+                }}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
               >
-                Limpiar
+                Cancelar
               </button>
               <button
                 type="button"
-                onClick={handleImport}
                 disabled={parsing || importing || parsedLessons.length === 0}
-                className="w-full shrink-0 whitespace-nowrap rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
+                onClick={handleImport}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {importButtonLabel}
               </button>

@@ -18,6 +18,7 @@ import { LessonItem } from "./_components/LessonItem";
 import { AddLessonModal } from "./_components/AddLessonModal";
 import { AddClassModal } from "./_components/AddClassModal";
 import { CommentsModal } from "./_components/CommentsModal";
+import { ImportLessonsFromWordModal } from "./_components/ImportLessonsFromWordModal";
 import toast from "react-hot-toast";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { auth } from "@/lib/firebase/client";
@@ -102,6 +103,7 @@ export default function CourseBuilderPage() {
   const [loadingClasses, setLoadingClasses] = useState<Record<string, boolean>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [addLessonOpen, setAddLessonOpen] = useState(false);
+  const [importWordLessonsOpen, setImportWordLessonsOpen] = useState(false);
   const [addClassOpen, setAddClassOpen] = useState(false);
   const [classModalMode, setClassModalMode] = useState<"create" | "edit">("create");
   const [selectedLesson, setSelectedLesson] = useState<Lesson | null>(null);
@@ -806,7 +808,15 @@ export default function CourseBuilderPage() {
     });
   };
 
-  const nextLessonNumber = lessons.length + 1;
+  const nextLessonNumber = useMemo(() => {
+    if (lessonsDeduped.length === 0) return 1;
+    return Math.max(...lessonsDeduped.map((lesson) => lesson.lessonNumber ?? 0)) + 1;
+  }, [lessonsDeduped]);
+
+  const nextLessonOrder = useMemo(() => {
+    if (lessonsDeduped.length === 0) return 0;
+    return Math.max(...lessonsDeduped.map((lesson) => lesson.order ?? 0)) + 1;
+  }, [lessonsDeduped]);
 
   const selectedClassesCount = useMemo(
     () => (lessonId: string) => classesMap[lessonId]?.length ?? 0,
@@ -1324,12 +1334,21 @@ export default function CourseBuilderPage() {
         <>
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold text-slate-900">Lecciones</h2>
-            <button
-              onClick={() => setAddLessonOpen(true)}
-              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"
-            >
-              + Agregar Lección
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setImportWordLessonsOpen(true)}
+                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+              >
+                📄 Agregar semanas desde Word
+              </button>
+              <button
+                onClick={() => setAddLessonOpen(true)}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"
+              >
+                + Agregar Lección
+              </button>
+            </div>
           </div>
 
           {loadingLessons ? (
@@ -1691,6 +1710,14 @@ export default function CourseBuilderPage() {
         courseId={courseId}
         nextNumber={nextLessonNumber}
         onCreated={handleLessonCreated}
+      />
+
+      <ImportLessonsFromWordModal
+        open={importWordLessonsOpen}
+        onClose={() => setImportWordLessonsOpen(false)}
+        courseId={courseId}
+        nextLessonNumber={nextLessonNumber}
+        nextLessonOrder={nextLessonOrder}
       />
 
       {selectedLesson && (

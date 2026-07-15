@@ -10,6 +10,7 @@ import toast from "react-hot-toast";
 import { auth, prepareAuthPersistence } from "@/lib/firebase/client";
 import { db } from "@/lib/firebase/firestore";
 import { resolveUserRole } from "@/lib/firebase/roles";
+import { getStudentHomeRoute, normalizeStudentPlatformView } from "@/lib/student-platform-view";
 import { isStudentStatusBlocked } from "@/lib/students/status";
 import Image from "next/image";
 
@@ -60,7 +61,7 @@ export function LoginCard({
         redirectTo && redirectTo.startsWith("/")
           ? redirectTo
           : role === "student"
-            ? "/feed"
+            ? getStudentHomeRoute(normalizeStudentPlatformView(userData?.preferredStudentView))
             : "/creator";
       toast.success("Inicio de sesión correcto");
       router.replace(destination);

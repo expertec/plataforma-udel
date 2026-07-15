@@ -3,16 +3,26 @@
 import { ReactNode, useEffect, useState } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import { useRouter } from "next/navigation";
+import { doc, getDoc } from "firebase/firestore";
 import { auth } from "@/lib/firebase/client";
+import { db } from "@/lib/firebase/firestore";
 import { resolveUserRole, UserRole } from "@/lib/firebase/roles";
+import { getStudentHomeRoute, normalizeStudentPlatformView } from "@/lib/student-platform-view";
 
 type RoleGateProps = {
   allowedRole: UserRole | UserRole[];
   children: ReactNode;
 };
 
-function resolveRoleHome(role: UserRole): string {
-  if (role === "student") return "/feed";
+async function resolveRoleHome(userId: string, role: UserRole): Promise<string> {
+  if (role === "student") {
+    try {
+      const userSnap = await getDoc(doc(db, "users", userId));
+      return getStudentHomeRoute(normalizeStudentPlatformView(userSnap.data()?.preferredStudentView));
+    } catch {
+      return "/feed";
+    }
+  }
   return "/creator";
 }
 
@@ -38,7 +48,7 @@ export function RoleGate({ allowedRole, children }: RoleGateProps) {
         }
 
         if (!allowed.includes(role)) {
-          const destination = resolveRoleHome(role);
+          const destination = await resolveRoleHome(user.uid, role);
           router.replace(destination);
           return;
         }

@@ -2,6 +2,10 @@ import { doc, getDoc, setDoc } from "firebase/firestore";
 import { updateProfile, type User } from "firebase/auth";
 import { db } from "@/lib/firebase/firestore";
 import { getStudentSubmissions, type Submission } from "@/lib/firebase/submissions-service";
+import {
+  normalizeStudentPlatformView,
+  type StudentPlatformView,
+} from "@/lib/student-platform-view";
 import { trimSafeString } from "./gating";
 
 export type StudentProfile = {
@@ -11,6 +15,7 @@ export type StudentProfile = {
   program: string;
   plantelNames: string[];
   photoURL: string;
+  preferredStudentView: StudentPlatformView;
 };
 
 export const loadStudentProfile = async (user: User): Promise<StudentProfile> => {
@@ -28,12 +33,13 @@ export const loadStudentProfile = async (user: User): Promise<StudentProfile> =>
     program: trimSafeString(data.program ?? data.degree),
     plantelNames,
     photoURL: trimSafeString(data.photoURL) || user.photoURL || "",
+    preferredStudentView: normalizeStudentPlatformView(data.preferredStudentView),
   };
 };
 
 /**
  * Las reglas de Firestore solo dejan al alumno cambiar displayName, name,
- * photoURL, updatedAt y mustChangePassword sobre su propio documento
+ * photoURL, updatedAt, mustChangePassword y preferredStudentView sobre su propio documento
  * (`canSelfUpsertProfile`). El resto de los campos los administra el plantel.
  */
 export const updateStudentDisplayName = async (user: User, displayName: string) => {

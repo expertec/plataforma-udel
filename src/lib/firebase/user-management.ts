@@ -12,6 +12,7 @@ import { doc, serverTimestamp, setDoc, getDoc } from "firebase/firestore";
 import { db } from "./firestore";
 import { UserRole } from "./roles";
 import { buildPhoneLookupValues } from "@/lib/utils/phone";
+import { DEFAULT_STUDENT_PLATFORM_VIEW, STUDENT_PLATFORM_VIEW_FIELD } from "@/lib/student-platform-view";
 
 type CreateAccountInput = {
   email: string;
@@ -67,6 +68,7 @@ export async function createAccountWithRole(input: CreateAccountInput): Promise<
     };
     if (role === "student") {
       baseData.program = program ?? "";
+      baseData[STUDENT_PLATFORM_VIEW_FIELD] = DEFAULT_STUDENT_PLATFORM_VIEW;
     }
     await setDoc(doc(db, "users", cred.user.uid), baseData, { merge: true });
 
@@ -104,6 +106,7 @@ export async function createAccountWithRole(input: CreateAccountInput): Promise<
       };
       if (role === "student") {
         updateData.program = program ?? "";
+        updateData[STUDENT_PLATFORM_VIEW_FIELD] = DEFAULT_STUDENT_PLATFORM_VIEW;
       }
       await setDoc(doc(db, "users", existingCred.user.uid), updateData, { merge: true });
       try {

@@ -3,8 +3,10 @@
 import { useEffect, useState, useMemo } from "react";
 import { ArrowLeft } from "lucide-react";
 import { getDocs, collection, doc, getDoc } from "firebase/firestore";
+import { getDownloadURL, getStorage, ref, uploadBytes } from "firebase/storage";
 import { db } from "@/lib/firebase/firestore";
 import { auth } from "@/lib/firebase/client";
+import { v4 as uuidv4 } from "uuid";
 import {
   createSubmission,
   getAllSubmissions,
@@ -32,6 +34,12 @@ import {
   DEFAULT_FORUM_POINT_VALUE,
   formatForumPointValue,
 } from "@/lib/forum-grading";
+import {
+  normalizeForumAudioFile,
+  resolvePreferredContentTypeForMediaFile,
+  resolvePreferredExtensionForMediaFile,
+  validateForumMediaFile,
+} from "@/lib/media/forum-media";
 
 type QuizAnswer = {
   questionId: string;
@@ -85,6 +93,53 @@ const formatQuizPoints = (value: number) => {
   if (Number.isInteger(normalized)) return String(normalized);
   return normalized.toFixed(2).replace(/\.?0+$/, "");
 };
+
+function PendingReplyAudioPreview({
+  file,
+  onRemove,
+}: {
+  file: File | null;
+  onRemove: () => void;
+}) {
+  const [previewUrl, setPreviewUrl] = useState("");
+
+  useEffect(() => {
+    if (!file) {
+      setPreviewUrl("");
+      return;
+    }
+
+    const nextUrl = URL.createObjectURL(file);
+    setPreviewUrl(nextUrl);
+
+    return () => {
+      URL.revokeObjectURL(nextUrl);
+    };
+  }, [file]);
+
+  if (!file || !previewUrl) return null;
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">
+            Previsualizacion de audio
+          </p>
+          <p className="truncate text-xs text-slate-600">{file.name}</p>
+        </div>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="rounded-full border border-red-200 bg-red-50 px-2.5 py-1 text-[11px] font-semibold text-red-600 hover:bg-red-100"
+        >
+          Borrar audio
+        </button>
+      </div>
+      <audio controls src={previewUrl} className="w-full" />
+    </div>
+  );
+}
 
 const toComparableText = (value: unknown) =>
   typeof value === "string"
@@ -586,6 +641,8 @@ function ForumThreadModal({
   const [loadingReplies, setLoadingReplies] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [replyText, setReplyText] = useState<Record<string, string>>({});
+  const [replyAudioFiles, setReplyAudioFiles] = useState<Record<string, File | null>>({});
+  const [processingReplyAudio, setProcessingReplyAudio] = useState<Record<string, boolean>>({});
   const [sendingReply, setSendingReply] = useState<string | null>(null);
   const [postGradeInputs, setPostGradeInputs] = useState<Record<string, string>>({});
   const [postFeedbackInputs, setPostFeedbackInputs] = useState<Record<string, string>>({});
@@ -698,13 +755,62 @@ function ForumThreadModal({
     setExpandedPosts((prev) => new Set(prev).add(postId));
   };
 
+  const handleReplyAudioFileSelection = async (postId: string, file: File | null) => {
+    if (!file) {
+      setReplyAudioFiles((prev) => ({ ...prev, [postId]: null }));
+      setProcessingReplyAudio((prev) => ({ ...prev, [postId]: false }));
+      return;
+    }
+
+    setProcessingReplyAudio((prev) => ({ ...prev, [postId]: true }));
+    try {
+      const normalized = await normalizeForumAudioFile(file, "upload");
+      setReplyAudioFiles((prev) => ({ ...prev, [postId]: normalized }));
+    } catch (error) {
+      console.error("No se pudo procesar el audio de la respuesta:", error);
+      toast.error(
+        error instanceof Error && error.message
+          ? error.message
+          : "No se pudo procesar el audio de la respuesta",
+      );
+      setReplyAudioFiles((prev) => ({ ...prev, [postId]: null }));
+    } finally {
+      setProcessingReplyAudio((prev) => ({ ...prev, [postId]: false }));
+    }
+  };
+
   const handleSendReply = async (postId: string) => {
     if (readOnly) return;
-    const text = replyText[postId]?.trim();
-    if (!text) return;
+    const text = replyText[postId]?.trim() ?? "";
+    const audioFile = replyAudioFiles[postId] ?? null;
+    if (!text && !audioFile) return;
+    if (processingReplyAudio[postId]) {
+      toast.error("Estamos procesando el audio. Espera unos segundos e inténtalo de nuevo.");
+      return;
+    }
 
     setSendingReply(postId);
     try {
+      let storedUrl: string | null = null;
+      let mediaMimeType: string | null = null;
+
+      if (audioFile) {
+        const validationError = validateForumMediaFile("audio", audioFile);
+        if (validationError) {
+          throw new Error(validationError);
+        }
+
+        const storage = getStorage();
+        const ext = resolvePreferredExtensionForMediaFile(audioFile, "wav");
+        mediaMimeType = resolvePreferredContentTypeForMediaFile(audioFile, "audio/wav");
+        const storageRef = ref(
+          storage,
+          `forum-replies/${currentUserId || "teacher"}/${classId}/${postId}/${uuidv4()}.${ext}`,
+        );
+        await uploadBytes(storageRef, audioFile, { contentType: mediaMimeType });
+        storedUrl = await getDownloadURL(storageRef);
+      }
+
       const replyId = await addForumReply({
         courseId,
         lessonId,
@@ -713,6 +819,9 @@ function ForumThreadModal({
         text,
         authorId: currentUserId,
         authorName: currentUserName,
+        format: storedUrl ? "audio" : "text",
+        mediaUrl: storedUrl,
+        mediaMimeType,
         role: "professor",
       });
 
@@ -729,6 +838,7 @@ function ForumThreadModal({
 
       // Limpiar input
       setReplyText((prev) => ({ ...prev, [postId]: "" }));
+      setReplyAudioFiles((prev) => ({ ...prev, [postId]: null }));
       void notifyForumReply(postId, replyId);
       toast.success("Respuesta enviada");
     } catch (err) {
@@ -1104,37 +1214,92 @@ function ForumThreadModal({
                                     Profesor
                                   </span>
                                 )}
+                                {reply.format === "audio" && (
+                                  <span className="rounded-full bg-sky-100 px-1.5 py-0.5 text-[9px] font-bold uppercase text-sky-800">
+                                    Audio
+                                  </span>
+                                )}
                                 <span className="text-[10px] text-slate-400">{formatDate(reply.createdAt)}</span>
                               </div>
-                              <p className="text-sm text-slate-700">{reply.text}</p>
+                              {reply.text ? (
+                                <p className="text-sm text-slate-700">{reply.text}</p>
+                              ) : null}
+                              {reply.mediaUrl && reply.format === "audio" ? (
+                                <div className="mt-2 space-y-2">
+                                  <audio controls src={reply.mediaUrl} className="w-full max-w-md" />
+                                  <a
+                                    href={reply.mediaUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex text-xs font-medium text-blue-600 hover:underline"
+                                  >
+                                    Abrir archivo de audio
+                                  </a>
+                                </div>
+                              ) : null}
                             </div>
                           ))}
                         </div>
                       )}
 
                       {!readOnly ? (
-                        <div className="flex gap-2">
-                          <input
-                            type="text"
-                            value={replyText[post.id] ?? ""}
-                            onChange={(e) => setReplyText((prev) => ({ ...prev, [post.id]: e.target.value }))}
-                            placeholder="Escribe una respuesta como profesor..."
-                            className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" && !e.shiftKey) {
-                                e.preventDefault();
-                                handleSendReply(post.id);
+                        <div className="space-y-2">
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              value={replyText[post.id] ?? ""}
+                              onChange={(e) => setReplyText((prev) => ({ ...prev, [post.id]: e.target.value }))}
+                              placeholder="Escribe una respuesta o adjunta un audio..."
+                              className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && !e.shiftKey) {
+                                  e.preventDefault();
+                                  void handleSendReply(post.id);
+                                }
+                              }}
+                            />
+                            <button
+                              type="button"
+                              disabled={
+                                sendingReply === post.id ||
+                                processingReplyAudio[post.id] === true ||
+                                (!replyText[post.id]?.trim() && !replyAudioFiles[post.id])
                               }
-                            }}
+                              onClick={() => void handleSendReply(post.id)}
+                              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              {sendingReply === post.id ? "..." : "Enviar"}
+                            </button>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <label className="cursor-pointer rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50">
+                              Adjuntar audio
+                              <input
+                                type="file"
+                                accept="audio/*,audio/mp4,audio/x-m4a,.wav,.wave,.mp3,.m4a,.aac,.ogg,.oga,.flac,.opus,.weba,.mpeg"
+                                className="hidden"
+                                disabled={sendingReply === post.id || processingReplyAudio[post.id] === true}
+                                onChange={(e) => {
+                                  void handleReplyAudioFileSelection(post.id, e.target.files?.[0] ?? null);
+                                  e.currentTarget.value = "";
+                                }}
+                              />
+                            </label>
+                            {replyAudioFiles[post.id] ? (
+                              <span className="text-xs text-sky-700">
+                                Audio listo para escuchar y enviar
+                              </span>
+                            ) : null}
+                            {processingReplyAudio[post.id] ? (
+                              <span className="text-xs text-amber-600">Procesando audio...</span>
+                            ) : null}
+                          </div>
+                          <PendingReplyAudioPreview
+                            file={replyAudioFiles[post.id] ?? null}
+                            onRemove={() =>
+                              setReplyAudioFiles((prev) => ({ ...prev, [post.id]: null }))
+                            }
                           />
-                          <button
-                            type="button"
-                            disabled={!replyText[post.id]?.trim() || sendingReply === post.id}
-                            onClick={() => handleSendReply(post.id)}
-                            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {sendingReply === post.id ? "..." : "Enviar"}
-                          </button>
                         </div>
                       ) : (
                         <p className="text-xs text-slate-500">Vista de solo lectura.</p>

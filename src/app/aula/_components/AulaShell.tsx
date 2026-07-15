@@ -3,12 +3,13 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, User } from "lucide-react";
+import { FileText, Home, User } from "lucide-react";
 import { LOADING_STAGES, useAulaData } from "../_lib/AulaDataContext";
 import { BillingBlockedScreen } from "./BillingBlockedScreen";
 
 const railItems = [
   { href: "/aula", icon: Home, label: "Inicio" },
+  { href: "/aula/examenes-globales", icon: FileText, label: "Examenes" },
   { href: "/aula/perfil", icon: User, label: "Mi perfil" },
 ];
 
@@ -52,8 +53,21 @@ function BottomBar() {
             : "text-[var(--aula-text-muted)]"
         }`}
       >
-        <User size={20} />
+        <FileText size={20} />
         {railItems[1].label}
+      </Link>
+
+      <Link
+        href={railItems[2].href}
+        aria-current={pathname === railItems[2].href ? "page" : undefined}
+        className={`flex flex-1 flex-col items-center gap-1 py-2.5 text-xs transition-colors ${
+          pathname === railItems[2].href
+            ? "text-[var(--aula-accent-soft)]"
+            : "text-[var(--aula-text-muted)]"
+        }`}
+      >
+        <User size={20} />
+        {railItems[2].label}
       </Link>
     </nav>
   );

@@ -10,6 +10,8 @@ export type KardexRow = {
   courseName: string;
   status: "open" | "closed";
   finalGrade: number | null;
+  globalExamGrade: number | null;
+  globalExamSource: "closure" | "regularization" | null;
   autoGrade: number | null;
   pendingUngradedCount: number | null;
   closedAt: Date | null;
@@ -39,6 +41,31 @@ const toDateOrNull = (value: unknown): Date | null => {
 const toNumberOrNull = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
 
+const resolveGlobalExamData = (
+  closure: Record<string, unknown>,
+): Pick<KardexRow, "globalExamGrade" | "globalExamSource"> => {
+  const capturedGrade = toNumberOrNull(closure.globalExamGrade);
+  if (capturedGrade !== null) {
+    return {
+      globalExamGrade: capturedGrade,
+      globalExamSource: "closure",
+    };
+  }
+
+  if (closure.gradeSource === "globalRegularizationExam") {
+    return {
+      globalExamGrade:
+        toNumberOrNull(closure.globalExamScore) ?? toNumberOrNull(closure.finalGrade),
+      globalExamSource: "regularization",
+    };
+  }
+
+  return {
+    globalExamGrade: null,
+    globalExamSource: null,
+  };
+};
+
 /** Un id de Firestore no sirve como nombre de materia. */
 const looksLikeFirestoreId = (value: string) => /^[A-Za-z0-9_-]{16,}$/.test(value.trim());
 
@@ -46,6 +73,12 @@ const rowKey = (groupId: string, courseId: string) => `${groupId}::${courseId}`;
 
 const rowTimestamp = (row: KardexRow) =>
   Math.max(row.closedAt?.getTime() ?? 0, row.updatedAt?.getTime() ?? 0);
+
+const shouldPreserveClosedRow = (current: KardexRow, incoming: KardexRow) =>
+  current.status === "closed" &&
+  incoming.status === "open" &&
+  current.finalGrade !== null &&
+  incoming.finalGrade === null;
 
 /**
  * El kardex se arma con el mapa `courseClosures` de cada inscripción, igual que el
@@ -77,8 +110,16 @@ export const loadKardex = async (
 
   const upsert = (row: KardexRow) => {
     const previous = rows.get(row.id);
+    if (previous && shouldPreserveClosedRow(previous, row)) {
+      return;
+    }
+    if (previous && shouldPreserveClosedRow(row, previous)) {
+      rows.set(row.id, row);
+      return;
+    }
     // Ante duplicados (misma materia en inscripción viva y archivada) gana la más
-    // reciente; y a igualdad, la viva, que se ingiere después.
+    // reciente; y a igualdad, la viva, que se ingiere después. Una fila cerrada
+    // nunca debe ser reemplazada por otra abierta del mismo grupo/materia.
     if (!previous || rowTimestamp(row) >= rowTimestamp(previous)) rows.set(row.id, row);
   };
 
@@ -121,6 +162,7 @@ export const loadKardex = async (
       const courseId = courseIdKey.trim();
       if (!courseId) return;
       const closure = closureValue as Record<string, unknown>;
+      const globalExamData = resolveGlobalExamData(closure);
       const closureCourseName = trimSafeString(closure.courseName);
       rememberCourseName(courseId, closureCourseName, fallbackCourseName);
       if (!courseTitles[courseId] && !rememberedCourseNames.has(courseId)) {
@@ -136,6 +178,8 @@ export const loadKardex = async (
         courseName: resolveCourseName(courseId, closureCourseName, fallbackCourseName),
         status,
         finalGrade: toNumberOrNull(closure.finalGrade),
+        globalExamGrade: globalExamData.globalExamGrade,
+        globalExamSource: globalExamData.globalExamSource,
         autoGrade: toNumberOrNull(closure.autoGrade),
         pendingUngradedCount: toNumberOrNull(closure.pendingUngradedCount),
         closedAt: toDateOrNull(closure.closedAt),
@@ -161,6 +205,8 @@ export const loadKardex = async (
         courseName: resolveCourseName(courseId, fallbackCourseName),
         status: finalGrade !== null ? "closed" : "open",
         finalGrade,
+        globalExamGrade: null,
+        globalExamSource: null,
         autoGrade: null,
         pendingUngradedCount: null,
         closedAt: null,

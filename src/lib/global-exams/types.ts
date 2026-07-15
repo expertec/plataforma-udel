@@ -1,6 +1,7 @@
 export const GLOBAL_EXAM_MIN_QUESTIONS = 1;
 export const GLOBAL_EXAM_MAX_QUESTIONS = 25;
 export const GLOBAL_EXAM_PASS_SCORE = 70;
+export const GLOBAL_EXAM_DURATION_MINUTES = 45;
 // Cada habilitación otorga un único intento. Si el alumno lo usa (apruebe o repruebe)
 // queda bloqueado hasta que un adminTeacher vuelva a habilitar el examen, lo que
 // concede exactamente un intento adicional.
@@ -10,6 +11,11 @@ export const GLOBAL_EXAM_OPTION_COUNT = 4;
 export type GlobalExamTemplateStatus = "draft" | "published";
 export type GlobalExamAssignmentStatus = "draft" | "enabled" | "passed" | "failed" | "disabled";
 export type GlobalExamAssignmentReason = "failed_course" | "late_joiner";
+export type GlobalExamAttemptCompletionReason =
+  | "submitted"
+  | "timeout"
+  | "visibility_change"
+  | "page_exit";
 
 export type GlobalExamQuestionOption = {
   id: string;
@@ -68,6 +74,8 @@ export type GlobalExamAssignmentRecord = {
   latestAttemptNumber: number;
   latestAttemptId: string | null;
   passed: boolean;
+  currentAttemptStartedAt?: string | null;
+  currentAttemptDeadlineAt?: string | null;
   paymentVerifiedAt?: string | null;
   enabledAt?: string | null;
   enabledById?: string | null;
@@ -89,6 +97,9 @@ export type GlobalExamAttemptRecord = {
   correctAnswers: number;
   totalQuestions: number;
   answers: Record<string, string>;
+  completionReason?: GlobalExamAttemptCompletionReason | null;
+  startedAt?: string | null;
+  deadlineAt?: string | null;
   submittedAt?: string | null;
 };
 

@@ -29,6 +29,9 @@ type CourseClosure = {
   status?: "open" | "closed";
   finalGrade?: number;
   autoGrade?: number | null;
+  globalExamGrade?: number | null;
+  globalExamScore?: number | null;
+  gradeSource?: string;
   pendingUngradedCount?: number;
   closedAt?: unknown;
   updatedAt?: unknown;
@@ -43,6 +46,8 @@ type GradeRow = {
   status: "open" | "closed";
   finalGrade: number | null;
   autoGrade: number | null;
+  globalExamGrade: number | null;
+  globalExamSource: "closure" | "regularization" | null;
   pendingUngradedCount: number | null;
   closedAt: Date | null;
   updatedAt: Date | null;
@@ -67,6 +72,31 @@ const toDateOrNull = (value: unknown): Date | null => {
 const toNumberOrNull = (value: unknown): number | null => {
   if (typeof value !== "number") return null;
   return Number.isFinite(value) ? value : null;
+};
+
+const resolveGlobalExamData = (
+  closure: CourseClosure,
+): Pick<GradeRow, "globalExamGrade" | "globalExamSource"> => {
+  const capturedGrade = toNumberOrNull(closure.globalExamGrade);
+  if (capturedGrade !== null) {
+    return {
+      globalExamGrade: capturedGrade,
+      globalExamSource: "closure",
+    };
+  }
+
+  if (closure.gradeSource === "globalRegularizationExam") {
+    return {
+      globalExamGrade:
+        toNumberOrNull(closure.globalExamScore) ?? toNumberOrNull(closure.finalGrade),
+      globalExamSource: "regularization",
+    };
+  }
+
+  return {
+    globalExamGrade: null,
+    globalExamSource: null,
+  };
 };
 
 const formatDate = (value: Date | null): string => {
@@ -508,6 +538,7 @@ export function StudentGradesModal({
           Object.entries(closures).forEach(([courseIdRaw, closureRaw]) => {
             const closure = closureRaw as CourseClosure;
             if (!closure || typeof closure !== "object") return;
+            const globalExamData = resolveGlobalExamData(closure);
 
             const courseId = courseIdRaw.trim();
             const closureCourseNameRaw = (closure as { courseName?: unknown }).courseName;
@@ -535,6 +566,8 @@ export function StudentGradesModal({
               status: closure.status === "closed" ? "closed" : "open",
               finalGrade,
               autoGrade,
+              globalExamGrade: globalExamData.globalExamGrade,
+              globalExamSource: globalExamData.globalExamSource,
               pendingUngradedCount:
                 typeof closure.pendingUngradedCount === "number"
                   ? closure.pendingUngradedCount
@@ -777,6 +810,8 @@ export function StudentGradesModal({
             status: "open",
             finalGrade: null,
             autoGrade: agg.numericCount > 0 ? agg.numericSum / agg.numericCount : null,
+            globalExamGrade: null,
+            globalExamSource: null,
             pendingUngradedCount: Math.max(agg.total - agg.graded, 0),
             closedAt: null,
             updatedAt: agg.latestAt,
@@ -795,6 +830,8 @@ export function StudentGradesModal({
             status: closureRow.status,
             finalGrade: closureRow.finalGrade ?? current.finalGrade,
             autoGrade: closureRow.autoGrade ?? current.autoGrade,
+            globalExamGrade: closureRow.globalExamGrade ?? current.globalExamGrade,
+            globalExamSource: closureRow.globalExamSource ?? current.globalExamSource,
             pendingUngradedCount:
               closureRow.pendingUngradedCount ?? current.pendingUngradedCount,
             closedAt: closureRow.closedAt ?? current.closedAt,
@@ -902,6 +939,7 @@ export function StudentGradesModal({
                     <th className="px-4 py-2 text-left">Grupo</th>
                     <th className="px-4 py-2 text-left">Materia</th>
                     <th className="px-4 py-2 text-left">Estado</th>
+                    <th className="px-4 py-2 text-left">Examen global</th>
                     <th className="px-4 py-2 text-left">Final</th>
                     <th className="px-4 py-2 text-left">Auto</th>
                     <th className="px-4 py-2 text-left">Pendientes</th>
@@ -923,6 +961,18 @@ export function StudentGradesModal({
                         >
                           {row.status === "closed" ? "Cerrada" : "Abierta"}
                         </span>
+                      </td>
+                      <td className="px-4 py-3 text-slate-700">
+                        <div className="flex flex-col gap-1">
+                          <span>
+                            {row.globalExamGrade === null ? "—" : row.globalExamGrade.toFixed(1)}
+                          </span>
+                          {row.globalExamSource === "regularization" ? (
+                            <span className="inline-flex w-fit rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-semibold text-sky-700">
+                              Regularizacion
+                            </span>
+                          ) : null}
+                        </div>
                       </td>
                       <td className="px-4 py-3 font-semibold text-slate-900">
                         {row.finalGrade === null ? "—" : row.finalGrade.toFixed(1)}

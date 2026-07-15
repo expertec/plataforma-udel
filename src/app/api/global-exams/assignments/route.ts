@@ -249,6 +249,8 @@ export async function POST(request: NextRequest) {
       latestAttemptNumber: 0,
       latestAttemptId: null,
       passed: false,
+      currentAttemptStartedAt: null,
+      currentAttemptDeadlineAt: null,
       paymentVerifiedAt: requestedEnabled ? now : null,
       enabledAt: requestedEnabled ? now : null,
       enabledById: requestedEnabled ? access.uid : null,

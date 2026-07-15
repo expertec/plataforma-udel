@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { signOut, updatePassword } from "firebase/auth";
 import toast from "react-hot-toast";
 import {
@@ -20,6 +21,12 @@ import {
 } from "lucide-react";
 import { auth } from "@/lib/firebase/client";
 import type { Submission } from "@/lib/firebase/submissions-service";
+import {
+  getStudentPlatformViewLabel,
+  getStudentProfileRoute,
+  saveStudentPlatformViewForUser,
+  type StudentPlatformView,
+} from "@/lib/student-platform-view";
 import { useAulaData } from "../_lib/AulaDataContext";
 import {
   formatDate,
@@ -68,6 +75,7 @@ function Chip({ children }: { children: React.ReactNode }) {
 }
 
 export default function ProfilePage() {
+  const router = useRouter();
   const { currentUser, classes, curriculum, isComplete, courseCovers, courseTitles } = useAulaData();
 
   const [profile, setProfile] = useState<StudentProfile | null>(null);
@@ -80,6 +88,7 @@ export default function ProfilePage() {
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [savingName, setSavingName] = useState(false);
+  const [savingPreferredView, setSavingPreferredView] = useState(false);
 
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -195,6 +204,24 @@ export default function ProfilePage() {
       }
     } finally {
       setChangingPassword(false);
+    }
+  };
+
+  const handlePreferredViewChange = async (preferredView: StudentPlatformView) => {
+    if (!currentUser || savingPreferredView) return;
+    if (profile?.preferredStudentView === preferredView) return;
+
+    setSavingPreferredView(true);
+    try {
+      const savedView = await saveStudentPlatformViewForUser(currentUser, preferredView);
+      setProfile((prev) => (prev ? { ...prev, preferredStudentView: savedView } : prev));
+      toast.success(`${getStudentPlatformViewLabel(savedView)} activada`);
+      router.push(getStudentProfileRoute(savedView));
+    } catch (error) {
+      console.error("No se pudo actualizar la vista preferida del alumno:", error);
+      toast.error("No se pudo actualizar tu vista preferida.");
+    } finally {
+      setSavingPreferredView(false);
     }
   };
 
@@ -493,6 +520,53 @@ export default function ProfilePage() {
                   </div>
                 ))}
               </dl>
+            </section>
+
+            <section className="rounded-2xl border border-[var(--aula-border)] bg-[var(--aula-surface)] p-6">
+              <h2 className="font-semibold text-[var(--aula-text)]">Vista de la plataforma</h2>
+              <p className="mt-1 text-sm text-[var(--aula-text-muted)]">
+                Elige con qué experiencia quieres entrar por defecto. La vista tradicional usa
+                <span className="font-medium text-[var(--aula-text)]"> /aula</span>.
+              </p>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                {([
+                  {
+                    id: "traditional",
+                    title: "Vista tradicional",
+                    hint: "/aula",
+                  },
+                  {
+                    id: "modern",
+                    title: "Vista moderna",
+                    hint: "/feed",
+                  },
+                ] as const).map((option) => {
+                  const active = profile?.preferredStudentView === option.id;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => handlePreferredViewChange(option.id)}
+                      disabled={savingPreferredView || active}
+                      className={`rounded-xl border px-4 py-4 text-left transition ${
+                        active
+                          ? "border-[var(--aula-accent)] bg-[var(--aula-accent)]/10"
+                          : "border-[var(--aula-border)] hover:bg-white/5"
+                      } disabled:opacity-60`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-[var(--aula-text)]">{option.title}</span>
+                        {active ? (
+                          <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-400">
+                            Activa
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 text-sm text-[var(--aula-text-muted)]">{option.hint}</p>
+                    </button>
+                  );
+                })}
+              </div>
             </section>
 
             <section className="rounded-2xl border border-[var(--aula-border)] bg-[var(--aula-surface)] p-6">

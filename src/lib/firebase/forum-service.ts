@@ -94,6 +94,13 @@ const normalizeFormat = (value: unknown): ForumPost["format"] => {
   return "text";
 };
 
+const normalizeReplyFormat = (value: unknown): ForumReply["format"] => {
+  if (value === "audio" || value === "text") {
+    return value;
+  }
+  return "text";
+};
+
 const normalizeRole = (value: unknown): ForumReply["role"] => {
   if (value === "professor" || value === "student" || value === "mentor") {
     return value;
@@ -157,6 +164,9 @@ export type ForumReply = {
   text: string;
   authorId: string;
   authorName: string;
+  format: "text" | "audio";
+  mediaUrl?: string | null;
+  mediaMimeType?: string | null;
   role?: "professor" | "student" | "mentor";
   createdAt: Date;
 };
@@ -336,6 +346,9 @@ export async function getForumReplies(
       text: normalizeText(data.text, ""),
       authorId: normalizeText(data.authorId, ""),
       authorName: normalizeText(data.authorName, "Usuario"),
+      format: normalizeReplyFormat(data.format),
+      mediaUrl: normalizeOptionalString(data.mediaUrl),
+      mediaMimeType: normalizeOptionalString(data.mediaMimeType),
       role: normalizeRole(data.role),
       createdAt: normalizeDate(data.createdAt),
     };
@@ -353,9 +366,24 @@ export async function addForumReply(params: {
   text: string;
   authorId: string;
   authorName: string;
+  format?: "text" | "audio";
+  mediaUrl?: string | null;
+  mediaMimeType?: string | null;
   role?: "professor" | "student" | "mentor";
 }): Promise<string> {
-  const { courseId, lessonId, classId, postId, text, authorId, authorName, role } = params;
+  const {
+    courseId,
+    lessonId,
+    classId,
+    postId,
+    text,
+    authorId,
+    authorName,
+    format,
+    mediaUrl,
+    mediaMimeType,
+    role,
+  } = params;
 
   const repliesRef = collection(
     db,
@@ -374,6 +402,9 @@ export async function addForumReply(params: {
     text: text.trim(),
     authorId: authorId,
     authorName: authorName,
+    format: format ?? "text",
+    mediaUrl: mediaUrl ?? null,
+    mediaMimeType: mediaMimeType ?? null,
     role: role ?? "student",
     createdAt: serverTimestamp(),
   });

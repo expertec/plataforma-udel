@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import { auth } from "@/lib/firebase/client";
@@ -8,6 +9,13 @@ import { onAuthStateChanged, signOut, updatePassword, User } from "firebase/auth
 import { collection, doc, getDoc, getDocs, orderBy, query, where } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { getStudentSubmissions, Submission } from "@/lib/firebase/submissions-service";
+import {
+  DEFAULT_STUDENT_PLATFORM_VIEW,
+  getStudentPlatformViewLabel,
+  getStudentProfileRoute,
+  saveStudentPlatformViewForUser,
+  type StudentPlatformView,
+} from "@/lib/student-platform-view";
 
 type TaskItem = {
   id: string;
@@ -66,11 +74,16 @@ type DailyPointsCourse = {
 };
 
 export default function StudentProfilePage() {
+  const router = useRouter();
   const [user, setUser] = useState<User | null>(auth.currentUser);
   const [name, setName] = useState(auth.currentUser?.displayName ?? "");
   const [email, setEmail] = useState(auth.currentUser?.email ?? "");
   const [phone, setPhone] = useState("");
   const [degree, setDegree] = useState("");
+  const [preferredView, setPreferredView] = useState<StudentPlatformView>(
+    DEFAULT_STUDENT_PLATFORM_VIEW,
+  );
+  const [savingPreferredView, setSavingPreferredView] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [changingPassword, setChangingPassword] = useState(false);
@@ -138,6 +151,7 @@ export default function StudentProfilePage() {
         setEmail((prev) => prev || (d.email ?? ""));
         setPhone(d.phone ?? "");
         setDegree(d.program ?? d.degree ?? "");
+        setPreferredView(d.preferredStudentView === "traditional" ? "traditional" : "modern");
       } catch (err) {
         console.error("No se pudo cargar el perfil de usuario:", err);
       }
@@ -712,6 +726,23 @@ export default function StudentProfilePage() {
     }
   };
 
+  const handlePreferredViewChange = async (nextView: StudentPlatformView) => {
+    if (!user || savingPreferredView || preferredView === nextView) return;
+
+    setSavingPreferredView(true);
+    try {
+      const savedView = await saveStudentPlatformViewForUser(user, nextView);
+      setPreferredView(savedView);
+      toast.success(`${getStudentPlatformViewLabel(savedView)} activada`);
+      router.push(getStudentProfileRoute(savedView));
+    } catch (error) {
+      console.error("No se pudo actualizar la vista preferida del alumno:", error);
+      toast.error("No se pudo actualizar tu vista preferida.");
+    } finally {
+      setSavingPreferredView(false);
+    }
+  };
+
   const tabs: { key: "perfil" | "plan" | "seguridad"; label: string }[] = [
     { key: "perfil", label: "Perfil" },
     { key: "plan", label: "Plan de estudio" },
@@ -887,6 +918,63 @@ export default function StudentProfilePage() {
                   </div>
                 </>
               )}
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-neutral-900/70 p-5 shadow-lg">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.16em] text-white/60">
+                    Vista de plataforma
+                  </p>
+                  <h3 className="mt-1 text-lg font-semibold text-white">
+                    Elige la experiencia que quieres usar
+                  </h3>
+                  <p className="mt-1 text-sm text-white/65">
+                    La vista tradicional usa <span className="font-semibold text-white">/aula</span>.
+                    Esta preferencia se aplicará al iniciar sesión.
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                {([
+                  {
+                    id: "traditional",
+                    title: "Vista tradicional",
+                    hint: "/aula",
+                  },
+                  {
+                    id: "modern",
+                    title: "Vista moderna",
+                    hint: "/feed",
+                  },
+                ] as const).map((option) => {
+                  const active = preferredView === option.id;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => handlePreferredViewChange(option.id)}
+                      disabled={savingPreferredView || active}
+                      className={`rounded-2xl border px-4 py-4 text-left transition ${
+                        active
+                          ? "border-emerald-400/40 bg-emerald-500/10"
+                          : "border-white/10 bg-white/5 hover:bg-white/10"
+                      } disabled:opacity-60`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-white">{option.title}</span>
+                        {active ? (
+                          <span className="rounded-full bg-emerald-500/20 px-2 py-1 text-[11px] font-semibold text-emerald-100">
+                            Activa
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 text-sm text-white/60">{option.hint}</p>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </section>
         ) : null}

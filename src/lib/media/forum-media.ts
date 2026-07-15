@@ -180,6 +180,37 @@ export async function transcodeForumAudioToWav(file: File): Promise<File> {
   return new File([blob], `${baseName}.wav`, { type: "audio/wav" });
 }
 
+export async function normalizeForumAudioFile(
+  file: File,
+  source: "upload" | "recording",
+): Promise<File> {
+  // MP3 y WAV se reproducen de forma fiable en todos los navegadores y
+  // dispositivos, así que se usan tal cual. El resto (M4A/AAC, que muchas
+  // veces muestran 0:00 y no reproducen; y webm/opus/ogg de grabaciones en
+  // Android) se convierte a WAV.
+  const validationError = validateForumMediaFile("audio", file);
+  const shouldTranscode = Boolean(validationError) || isForumAudioTranscodeCandidate(file);
+  if (!shouldTranscode) {
+    return file;
+  }
+
+  // La conversión se hace en el servidor con ffmpeg, fiable en cualquier
+  // dispositivo (a diferencia del decode en el navegador, que falla en iOS).
+  try {
+    const normalized = await transcodeForumAudioToWav(file);
+    const normalizedValidationError = validateForumMediaFile("audio", normalized);
+    if (normalizedValidationError) {
+      throw new Error(normalizedValidationError);
+    }
+    return normalized;
+  } catch {
+    if (source === "upload") {
+      throw new Error("Audio no compatible. Usa MP3, M4A, AAC o WAV.");
+    }
+    throw new Error("No se pudo procesar la grabación. Intenta grabar de nuevo.");
+  }
+}
+
 export function validateForumMediaFile(
   kind: ForumMediaKind,
   file: File,

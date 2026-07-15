@@ -228,11 +228,16 @@ export async function ensureLiveKitRoom(roomName: string): Promise<void> {
   const roomService = getRoomServiceClient();
   const existing = await roomService.listRooms([roomName]);
   if (existing.some((room) => room.name === roomName)) return;
-  await roomService.createRoom({
-    name: roomName,
-    emptyTimeout: 60 * 60,
-    departureTimeout: 60 * 10,
-  });
+  try {
+    await roomService.createRoom({
+      name: roomName,
+      emptyTimeout: 60 * 60,
+      departureTimeout: 60 * 10,
+    });
+  } catch (error) {
+    if (isLiveKitRoomAlreadyExistsError(error)) return;
+    throw error;
+  }
 }
 
 export function isLiveKitNotFoundError(error: unknown): boolean {
@@ -250,6 +255,23 @@ export function isLiveKitNotFoundError(error: unknown): boolean {
   const message =
     typeof candidate.message === "string" ? candidate.message.trim().toLowerCase() : "";
   return message.includes("not found") || message.includes("does not exist");
+}
+
+function isLiveKitRoomAlreadyExistsError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as {
+    status?: unknown;
+    code?: unknown;
+    message?: unknown;
+  };
+
+  if (candidate.status === 409 || candidate.status === 412) return true;
+  const code = typeof candidate.code === "string" ? candidate.code.trim().toLowerCase() : "";
+  if (code.includes("already_exists") || code.includes("already exists")) return true;
+
+  const message =
+    typeof candidate.message === "string" ? candidate.message.trim().toLowerCase() : "";
+  return message.includes("already exists") || message.includes("already created");
 }
 
 export async function closeLiveKitRoom(roomName: string): Promise<boolean> {

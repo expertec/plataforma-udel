@@ -73,12 +73,11 @@ import {
   normalizeForumPointValue,
 } from "@/lib/forum-grading";
 import {
-  isForumAudioTranscodeCandidate,
+  normalizeForumAudioFile,
   pickPreferredAudioRecordingMimeType,
   resolvePreferredContentTypeForMediaFile,
   resolvePreferredExtensionForMediaFile,
   resolvePreferredExtensionForMimeType,
-  transcodeForumAudioToWav,
   validateForumMediaFile,
 } from "@/lib/media/forum-media";
 
@@ -2073,6 +2072,7 @@ export default function StudentFeedPageClient() {
             author: rawAuthor,
             authorId: c.authorId ?? "",
             text: c.text ?? "",
+            audioUrl: typeof c.audioUrl === "string" ? c.audioUrl : "",
             createdAt: (c.createdAt?.toMillis?.() ?? c.createdAt ?? Date.now()) as number,
             parentId: c.parentId ?? null,
             role: role === "professor" ? "professor" : role === "student" ? "student" : undefined,
@@ -6848,34 +6848,6 @@ function getErrorMessage(error: unknown) {
     : "";
 }
 
-async function normalizeForumAudioFile(file: File, source: "upload" | "recording"): Promise<File> {
-  // MP3 y WAV se reproducen de forma fiable en todos los navegadores y
-  // dispositivos, así que se usan tal cual. El resto (M4A/AAC, que muchas
-  // veces muestran 0:00 y no reproducen; y webm/opus/ogg de grabaciones en
-  // Android) se convierte a WAV.
-  const validationError = validateForumMediaFile("audio", file);
-  const shouldTranscode = Boolean(validationError) || isForumAudioTranscodeCandidate(file);
-  if (!shouldTranscode) {
-    return file;
-  }
-
-  // La conversión se hace en el servidor con ffmpeg, fiable en cualquier
-  // dispositivo (a diferencia del decode en el navegador, que falla en iOS).
-  try {
-    const normalized = await transcodeForumAudioToWav(file);
-    const normalizedValidationError = validateForumMediaFile("audio", normalized);
-    if (normalizedValidationError) {
-      throw new Error(normalizedValidationError);
-    }
-    return normalized;
-  } catch {
-    if (source === "upload") {
-      throw new Error("Audio no compatible. Usa MP3, M4A, AAC o WAV.");
-    }
-    throw new Error("No se pudo procesar la grabación. Intenta grabar de nuevo.");
-  }
-}
-
 function MicrophonePermissionGuide({
   open,
   kind,
@@ -8071,6 +8043,7 @@ type CommentsPanelComment = {
   authorId?: string;
   role?: "professor" | "student";
   text: string;
+  audioUrl?: string;
   createdAt: number;
   parentId?: string | null;
 };
@@ -8121,7 +8094,16 @@ function CommentsPanel({ classId, comments, onAdd, onClose, loading = false, pos
                 </span>
               ) : null}
             </div>
-            <p className="text-sm text-white/90 whitespace-pre-wrap">{c.text}</p>
+            {c.text ? (
+              <p className="text-sm text-white/90 whitespace-pre-wrap">{c.text}</p>
+            ) : (
+              <p className="text-sm text-white/60">Comentario de audio</p>
+            )}
+            {c.audioUrl ? (
+              <div className="mt-2">
+                <audio controls src={c.audioUrl} className="w-full" />
+              </div>
+            ) : null}
             <div className="mt-1 flex items-center gap-3 text-[11px] text-white/60">
               <span>{new Date(c.createdAt).toLocaleString()}</span>
               <button
@@ -8223,6 +8205,57 @@ type ForumPanelProps = {
   onDeleted: () => void;
 };
 
+type ForumRecordingTarget =
+  | { kind: "post" }
+  | { kind: "reply"; postId: string };
+
+function PendingReplyAudioPreview({
+  file,
+  onRemove,
+}: {
+  file: File | null;
+  onRemove: () => void;
+}) {
+  const [previewUrl, setPreviewUrl] = useState("");
+
+  useEffect(() => {
+    if (!file) {
+      setPreviewUrl("");
+      return;
+    }
+
+    const nextUrl = URL.createObjectURL(file);
+    setPreviewUrl(nextUrl);
+
+    return () => {
+      URL.revokeObjectURL(nextUrl);
+    };
+  }, [file]);
+
+  if (!file || !previewUrl) return null;
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/5 p-2.5 space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-200">
+            Previsualizacion de audio
+          </p>
+          <p className="truncate text-[11px] text-white/70">{file.name}</p>
+        </div>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="rounded-full border border-red-400/30 bg-red-500/10 px-2.5 py-1 text-[11px] font-semibold text-red-200 hover:bg-red-500/20"
+        >
+          Borrar audio
+        </button>
+      </div>
+      <audio controls src={previewUrl} className="w-full" />
+    </div>
+  );
+}
+
 export function ForumPanel({
   open,
   onClose,
@@ -8240,6 +8273,8 @@ export function ForumPanel({
   const [replies, setReplies] = useState<Record<string, ForumReply[]>>({});
   const [showReplies, setShowReplies] = useState<Record<string, boolean>>({});
   const [replyText, setReplyText] = useState<Record<string, string>>({});
+  const [replyAudioFiles, setReplyAudioFiles] = useState<Record<string, File | null>>({});
+  const [processingReplyAudio, setProcessingReplyAudio] = useState<Record<string, boolean>>({});
   const [sendingReply, setSendingReply] = useState<Record<string, boolean>>({});
   const [expandedPosts, setExpandedPosts] = useState<Record<string, boolean>>({});
   const [studentPost, setStudentPost] = useState<ForumPost | null>(null);
@@ -8259,7 +8294,10 @@ export function ForumPanel({
   const chunksRef = useRef<BlobPart[]>([]);
   const [recording, setRecording] = useState(false);
   const [recordingError, setRecordingError] = useState<string | null>(null);
+  const [replyRecordingErrors, setReplyRecordingErrors] = useState<Record<string, string | null>>({});
   const [microphoneGuideKind, setMicrophoneGuideKind] = useState<MicrophonePermissionGuideKind | null>(null);
+  const [recordingTarget, setRecordingTarget] = useState<ForumRecordingTarget | null>(null);
+  const [recordingRequestTarget, setRecordingRequestTarget] = useState<ForumRecordingTarget>({ kind: "post" });
 
   useEffect(() => {
     if (mediaFile) {
@@ -8362,15 +8400,75 @@ export function ForumPanel({
     }
   };
 
+  const clearReplyAudioState = (postId: string) => {
+    setReplyAudioFiles((prev) => ({ ...prev, [postId]: null }));
+    setReplyRecordingErrors((prev) => ({ ...prev, [postId]: null }));
+    setProcessingReplyAudio((prev) => ({ ...prev, [postId]: false }));
+  };
+
+  const handleReplyAudioFileSelection = async (
+    postId: string,
+    file: File | null,
+    source: "upload" | "recording" = "upload",
+  ) => {
+    if (!file) {
+      clearReplyAudioState(postId);
+      return;
+    }
+
+    setProcessingReplyAudio((prev) => ({ ...prev, [postId]: true }));
+    setReplyRecordingErrors((prev) => ({ ...prev, [postId]: null }));
+    try {
+      const normalized = await normalizeForumAudioFile(file, source);
+      setReplyAudioFiles((prev) => ({ ...prev, [postId]: normalized }));
+    } catch (error) {
+      const message = getErrorMessage(error) || "No se pudo procesar el audio de la respuesta.";
+      toast.error(message);
+      setReplyAudioFiles((prev) => ({ ...prev, [postId]: null }));
+      setReplyRecordingErrors((prev) => ({ ...prev, [postId]: message }));
+    } finally {
+      setProcessingReplyAudio((prev) => ({ ...prev, [postId]: false }));
+    }
+  };
+
   const handleSendReply = async (postId: string) => {
-    const text = replyText[postId]?.trim();
-    if (!text || !studentId || !classMeta?.courseId || !classMeta.lessonId || !classMeta.classDocId) {
-      toast.error("Escribe un mensaje para responder");
+    const text = replyText[postId]?.trim() ?? "";
+    const audioFile = replyAudioFiles[postId] ?? null;
+    if (!studentId || !classMeta?.courseId || !classMeta.lessonId || !classMeta.classDocId) {
+      toast.error("No se encontró el foro para responder");
+      return;
+    }
+    if (!text && !audioFile) {
+      toast.error("Escribe un mensaje o adjunta un audio para responder");
+      return;
+    }
+    if (processingReplyAudio[postId]) {
+      toast.error("Estamos procesando el audio. Espera unos segundos e inténtalo de nuevo.");
       return;
     }
 
     setSendingReply(prev => ({ ...prev, [postId]: true }));
     try {
+      let storedUrl: string | null = null;
+      let mediaMimeType: string | null = null;
+
+      if (audioFile) {
+        const validationError = validateForumMediaFile("audio", audioFile);
+        if (validationError) {
+          throw new Error(validationError);
+        }
+
+        const storage = getStorage();
+        const ext = resolvePreferredExtensionForMediaFile(audioFile, "wav");
+        mediaMimeType = resolvePreferredContentTypeForMediaFile(audioFile, "audio/wav");
+        const storageRef = ref(
+          storage,
+          `forum-replies/${studentId}/${classMeta.classDocId}/${postId}/${uuidv4()}.${ext}`,
+        );
+        await uploadBytes(storageRef, audioFile, { contentType: mediaMimeType });
+        storedUrl = await getDownloadURL(storageRef);
+      }
+
       const replyId = await addForumReply({
         courseId: classMeta.courseId,
         lessonId: classMeta.lessonId,
@@ -8379,10 +8477,14 @@ export function ForumPanel({
         text: text,
         authorId: studentId,
         authorName: studentName || "Estudiante",
+        format: storedUrl ? "audio" : "text",
+        mediaUrl: storedUrl,
+        mediaMimeType,
         role: "student",
       });
 
       setReplyText(prev => ({ ...prev, [postId]: "" }));
+      clearReplyAudioState(postId);
       await loadReplies(postId);
 
       try {
@@ -8459,21 +8561,49 @@ export function ForumPanel({
     setMediaFile(file);
   };
 
-  const handleAudioRecording = async () => {
+  const handleAudioRecording = async (target: ForumRecordingTarget) => {
+    setRecordingRequestTarget(target);
+
     if (recording) {
-      recorderRef.current?.stop();
+      const sameTarget =
+        (target.kind === "post" && recordingTarget?.kind === "post") ||
+        (target.kind === "reply" &&
+          recordingTarget?.kind === "reply" &&
+          recordingTarget.postId === target.postId);
+
+      if (sameTarget) {
+        recorderRef.current?.stop();
+        return;
+      }
+
+      toast.error("Termina la grabación actual antes de iniciar otra.");
       return;
     }
 
-    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-      setRecordingError(getMicrophonePermissionInlineMessage("unsupported"));
+    if (target.kind === "post") {
+      setRecordingError(null);
+    } else {
+      setReplyRecordingErrors((prev) => ({ ...prev, [target.postId]: null }));
+    }
+
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices?.getUserMedia ||
+      typeof MediaRecorder === "undefined"
+    ) {
+      const message = getMicrophonePermissionInlineMessage("unsupported");
+      if (target.kind === "post") {
+        setRecordingError(message);
+      } else {
+        setReplyRecordingErrors((prev) => ({ ...prev, [target.postId]: message }));
+      }
       setMicrophoneGuideKind("unsupported");
       return;
     }
 
     try {
-      setRecordingError(null);
       setMicrophoneGuideKind(null);
+      setRecordingTarget(target);
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       const preferredMimeType = pickPreferredAudioRecordingMimeType();
@@ -8497,17 +8627,29 @@ export function ForumPanel({
         activeStream.getTracks().forEach((track) => track.stop());
         streamRef.current = null;
         setRecording(false);
+        setRecordingTarget(null);
 
-        void handleAudioFileSelection(rawFile, "recording");
+        if (target.kind === "post") {
+          void handleAudioFileSelection(rawFile, "recording");
+          return;
+        }
+
+        void handleReplyAudioFileSelection(target.postId, rawFile, "recording");
       };
       recorder.start();
       setRecording(true);
     } catch (err) {
       console.error("No se pudo iniciar grabación:", err);
       const nextKind = getMicrophonePermissionGuideKind(err);
-      setRecordingError(getMicrophonePermissionInlineMessage(nextKind));
+      const message = getMicrophonePermissionInlineMessage(nextKind);
+      if (target.kind === "post") {
+        setRecordingError(message);
+      } else {
+        setReplyRecordingErrors((prev) => ({ ...prev, [target.postId]: message }));
+      }
       setMicrophoneGuideKind(nextKind);
       setRecording(false);
+      setRecordingTarget(null);
     }
   };
 
@@ -8802,6 +8944,11 @@ export function ForumPanel({
                 const isTextPost = post.format === "text" && typeof post.text === "string" && post.text.trim().length > 0;
                 const isLongTextPost = isTextPost && post.text.trim().length > FORUM_TEXT_PREVIEW_LIMIT;
                 const isExpanded = !!expandedPosts[post.id];
+                const isRecordingThisReply =
+                  recording &&
+                  recordingTarget?.kind === "reply" &&
+                  recordingTarget.postId === post.id;
+                const anotherRecordingActive = recording && !isRecordingThisReply;
                 const visibleText = post.text
                   ? isLongTextPost && !isExpanded
                     ? getForumTextPreview(post.text)
@@ -8894,8 +9041,28 @@ export function ForumPanel({
                                     Profesor
                                   </span>
                                 )}
+                                {reply.format === "audio" && (
+                                  <span className="text-xs px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-200">
+                                    Audio
+                                  </span>
+                                )}
                               </div>
-                              <p className="text-xs text-white/80 whitespace-pre-wrap">{reply.text}</p>
+                              {reply.text ? (
+                                <p className="text-xs text-white/80 whitespace-pre-wrap">{reply.text}</p>
+                              ) : null}
+                              {reply.mediaUrl && reply.format === "audio" ? (
+                                <div className="mt-2 space-y-2">
+                                  <audio controls src={reply.mediaUrl} className="w-full" />
+                                  <a
+                                    href={reply.mediaUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex text-[11px] font-medium text-blue-300 hover:underline"
+                                  >
+                                    Abrir archivo de audio
+                                  </a>
+                                </div>
+                              ) : null}
                               <p className="text-xs text-white/40 mt-1">
                                 {reply.createdAt.toLocaleDateString("es-MX", {
                                   day: "numeric",
@@ -8908,28 +9075,87 @@ export function ForumPanel({
                           ))}
                         </div>
 
-                        <div className="flex gap-2 mt-2">
-                          <input
-                            type="text"
-                            value={replyText[post.id] || ""}
-                            onChange={(e) => setReplyText(prev => ({ ...prev, [post.id]: e.target.value }))}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" && !e.shiftKey) {
-                                e.preventDefault();
-                                handleSendReply(post.id);
+                        <div className="mt-2 space-y-2">
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              value={replyText[post.id] || ""}
+                              onChange={(e) => setReplyText(prev => ({ ...prev, [post.id]: e.target.value }))}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && !e.shiftKey) {
+                                  e.preventDefault();
+                                  void handleSendReply(post.id);
+                                }
+                              }}
+                              placeholder="Escribe una respuesta o adjunta un audio..."
+                              className="flex-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-xs text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => void handleSendReply(post.id)}
+                              disabled={
+                                sendingReply[post.id] ||
+                                processingReplyAudio[post.id] ||
+                                isRecordingThisReply
                               }
-                            }}
-                            placeholder="Escribe una respuesta..."
-                            className="flex-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-xs text-white placeholder:text-white/50 focus:border-blue-500 focus:outline-none"
+                              className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 px-3 py-1.5 text-xs font-semibold text-white"
+                            >
+                              {sendingReply[post.id] ? "..." : "Enviar"}
+                            </button>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void handleAudioRecording({ kind: "reply", postId: post.id });
+                              }}
+                              disabled={processingReplyAudio[post.id] || !!sendingReply[post.id] || anotherRecordingActive}
+                              className={`rounded-lg px-2.5 py-1.5 text-[11px] font-semibold ${
+                                isRecordingThisReply
+                                  ? "bg-red-600 text-white"
+                                  : "border border-white/10 bg-white/5 text-white/80 hover:bg-white/10"
+                              }`}
+                            >
+                              {isRecordingThisReply ? "Detener audio" : "Grabar audio"}
+                            </button>
+                            <label className="cursor-pointer rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-[11px] font-medium text-white/80 hover:bg-white/10">
+                              Adjuntar audio
+                              <input
+                                type="file"
+                                accept="audio/*,audio/mp4,audio/x-m4a,.wav,.wave,.mp3,.m4a,.aac,.ogg,.oga,.flac,.opus,.weba,.mpeg"
+                                className="hidden"
+                                onChange={(e) => {
+                                  void handleReplyAudioFileSelection(post.id, e.target.files?.[0] ?? null);
+                                  e.currentTarget.value = "";
+                                }}
+                                disabled={sendingReply[post.id] || processingReplyAudio[post.id]}
+                              />
+                            </label>
+                            {isRecordingThisReply ? (
+                              <span className="text-[11px] text-red-200">
+                                Grabando... toca de nuevo para detener.
+                              </span>
+                            ) : null}
+                            {replyAudioFiles[post.id] ? (
+                              <span className="text-[11px] text-sky-200">
+                                Audio listo para escuchar y enviar
+                              </span>
+                            ) : null}
+                            {processingReplyAudio[post.id] ? (
+                              <span className="text-[11px] text-amber-200">
+                                Procesando audio...
+                              </span>
+                            ) : null}
+                            {replyRecordingErrors[post.id] ? (
+                              <span className="text-[11px] text-red-300">
+                                {replyRecordingErrors[post.id]}
+                              </span>
+                            ) : null}
+                          </div>
+                          <PendingReplyAudioPreview
+                            file={replyAudioFiles[post.id] ?? null}
+                            onRemove={() => clearReplyAudioState(post.id)}
                           />
-                          <button
-                            type="button"
-                            onClick={() => handleSendReply(post.id)}
-                            disabled={sendingReply[post.id]}
-                            className="rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 px-3 py-1.5 text-xs font-semibold text-white"
-                          >
-                            {sendingReply[post.id] ? "..." : "Enviar"}
-                          </button>
                         </div>
                       </div>
                     )}
@@ -8973,14 +9199,18 @@ export function ForumPanel({
                   <button
                     type="button"
                     onClick={() => {
-                      void handleAudioRecording();
+                      void handleAudioRecording({ kind: "post" });
                     }}
                     disabled={uploading || normalizingAudio}
                     className={`rounded-full px-3 py-2 text-xs font-semibold ${
-                      recording ? "bg-red-600 text-white" : "bg-white/10 text-white hover:bg-white/20"
+                      recording && recordingTarget?.kind === "post"
+                        ? "bg-red-600 text-white"
+                        : "bg-white/10 text-white hover:bg-white/20"
                     }`}
                   >
-                    {recording ? "Detener grabación" : "Grabar audio"}
+                    {recording && recordingTarget?.kind === "post"
+                      ? "Detener grabación"
+                      : "Grabar audio"}
                   </button>
                   <button
                     type="button"
@@ -9062,11 +9292,11 @@ export function ForumPanel({
       <MicrophonePermissionGuide
         open={microphoneGuideKind !== null}
         kind={microphoneGuideKind ?? "prompt"}
-        purpose="grabar tu aporte"
+        purpose={recordingRequestTarget.kind === "reply" ? "grabar tu respuesta" : "grabar tu aporte"}
         onClose={() => setMicrophoneGuideKind(null)}
         onRetry={() => {
           setMicrophoneGuideKind(null);
-          void handleAudioRecording();
+          void handleAudioRecording(recordingRequestTarget);
         }}
       />
     </>

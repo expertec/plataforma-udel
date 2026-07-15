@@ -1775,7 +1775,7 @@ function SelectStudentsModal({
   const [saving, setSaving] = useState(false);
   const [students, setStudents] = useState<StudentUser[]>([]);
   const [searchResults, setSearchResults] = useState<StudentUser[]>([]);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectedStudents, setSelectedStudents] = useState<Map<string, StudentUser>>(new Map());
   const [search, setSearch] = useState("");
   const [hasMore, setHasMore] = useState(false);
   const lastDocRef = useRef<DocumentSnapshot | null>(null);
@@ -1801,7 +1801,7 @@ function SelectStudentsModal({
 
   useEffect(() => {
     if (!open) return;
-    setSelected(new Set());
+    setSelectedStudents(new Map());
     setSearch("");
     setSearchResults([]);
     setSearching(false);
@@ -1865,22 +1865,16 @@ function SelectStudentsModal({
     return () => clearTimeout(timer);
   }, [open, scopePlantelId, search, isSearchActive]);
 
-  const toggle = (id: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+  const toggle = (student: StudentUser) => {
+    setSelectedStudents((prev) => {
+      const next = new Map(prev);
+      if (next.has(student.id)) next.delete(student.id);
+      else next.set(student.id, student);
       return next;
     });
   };
 
   const visibleStudents = isSearchActive ? searchResults : students;
-  const studentsById = useMemo(() => {
-    const map = new Map<string, StudentUser>();
-    students.forEach((s) => map.set(s.id, s));
-    searchResults.forEach((s) => map.set(s.id, s));
-    return map;
-  }, [students, searchResults]);
 
   const handleLoadMore = async () => {
     if (loadingMore || !hasMore || isSearchActive) return;
@@ -1899,15 +1893,13 @@ function SelectStudentsModal({
   };
 
   const handleSave = async () => {
-    if (selected.size === 0) {
+    if (selectedStudents.size === 0) {
       toast.error("Selecciona al menos un alumno");
       return;
     }
     setSaving(true);
     try {
-      const toAdd = Array.from(selected)
-        .map((id) => studentsById.get(id))
-        .filter((student): student is StudentUser => Boolean(student))
+      const toAdd = Array.from(selectedStudents.values())
         .filter((student) => !existingIds.includes(student.id));
 
       if (toAdd.length === 0) {
@@ -1923,7 +1915,7 @@ function SelectStudentsModal({
       onAdded(toAdd.length);
       await onReload();
       onClose();
-      setSelected(new Set());
+      setSelectedStudents(new Map());
     } catch (err) {
       console.error(err);
       toast.error("No se pudieron agregar los alumnos");
@@ -1960,7 +1952,7 @@ function SelectStudentsModal({
               className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             <p className="text-xs text-slate-600">
-              Seleccionados: <span className="font-semibold">{selected.size}</span>
+              Seleccionados: <span className="font-semibold">{selectedStudents.size}</span>
             </p>
           </div>
 
@@ -1995,8 +1987,8 @@ function SelectStudentsModal({
                       <td className="px-3 py-2">
                         <input
                           type="checkbox"
-                          checked={selected.has(s.id)}
-                          onChange={() => toggle(s.id)}
+                          checked={selectedStudents.has(s.id)}
+                          onChange={() => toggle(s)}
                           disabled={existingIds.includes(s.id)}
                         />
                       </td>
@@ -2032,7 +2024,7 @@ function SelectStudentsModal({
             </button>
             <button
               type="button"
-              disabled={saving || selected.size === 0}
+              disabled={saving || selectedStudents.size === 0}
               onClick={handleSave}
               className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
             >

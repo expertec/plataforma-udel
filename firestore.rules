@@ -225,6 +225,9 @@ service cloud.firestore {
     function isOptionalString(x) {
       return x is string || x == null;
     }
+    function isAllowedStudentPlatformViewPreference(x) {
+      return x == null || x == 'modern' || x == 'traditional';
+    }
     function publishedSurveyExists(surveyId) {
       return surveyId is string &&
         surveyId.size() > 0 &&
@@ -257,11 +260,13 @@ service cloud.firestore {
     }
     function canSelfUpsertProfile(userId) {
       return isSelf(userId) &&
-        request.resource.data.diff(resource.data).changedKeys().hasOnly(['displayName', 'name', 'photoURL', 'updatedAt', 'mustChangePassword']) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['displayName', 'name', 'photoURL', 'updatedAt', 'mustChangePassword', 'preferredStudentView']) &&
         (!("displayName" in request.resource.data) || isOptionalString(request.resource.data.displayName)) &&
         (!("name" in request.resource.data) || isOptionalString(request.resource.data.name)) &&
         (!("photoURL" in request.resource.data) || isOptionalString(request.resource.data.photoURL)) &&
-        (!("mustChangePassword" in request.resource.data) || request.resource.data.mustChangePassword is bool);
+        (!("mustChangePassword" in request.resource.data) || request.resource.data.mustChangePassword is bool) &&
+        (!("preferredStudentView" in request.resource.data) ||
+          isAllowedStudentPlatformViewPreference(request.resource.data.preferredStudentView));
     }
     // Permite que profesores agreguen su materia a un grupo existente sin modificar otros campos.
     function canTeacherLinkCourseToGroup() {

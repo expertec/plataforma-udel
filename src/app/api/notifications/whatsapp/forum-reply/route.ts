@@ -93,6 +93,7 @@ function buildForumReplyMessage(params: {
   courseTitle?: string;
   lessonTitle?: string;
   replyText: string;
+  replyFormat?: string;
 }): string {
   const authorName = params.authorName || "Alguien";
   const classTitle = params.classTitle || "foro";
@@ -102,6 +103,10 @@ function buildForumReplyMessage(params: {
   const contextText = contextParts.length ? contextParts.join(" • ") : "";
   const contextLine = contextText ? `\n📚 Contexto: ${contextText}` : "";
   const snippet = toSnippet(params.replyText);
+  const replyBody =
+    params.replyFormat === "audio" && !snippet
+      ? "Te respondió con un audio."
+      : `"${snippet || "Tienes una nueva respuesta"}"`;
 
   return (
     `💬 *Nuevo comentario en tu aportación*\n` +
@@ -110,7 +115,7 @@ function buildForumReplyMessage(params: {
     `🧩 Foro: ${classTitle}${contextLine}\n` +
     `\n` +
     `🗨️ Comentario:\n` +
-    `"${snippet}"\n` +
+    `${replyBody}\n` +
     `\n` +
     `Ingresa a la plataforma para responder.`
   );
@@ -244,7 +249,8 @@ export async function POST(request: NextRequest) {
         "foro",
       courseTitle: asText(courseSnap.data()?.title) || undefined,
       lessonTitle: asText(lessonSnap.data()?.title) || undefined,
-      replyText: asText(replyData.text) || "Tienes un nuevo comentario",
+      replyText: asText(replyData.text),
+      replyFormat: asText(replyData.format) || undefined,
     });
 
     const outcome = await sendWhatsAppTextToStudent({
