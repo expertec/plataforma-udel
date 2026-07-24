@@ -969,7 +969,7 @@ export default function AlumnosPage() {
       await loadStudents();
     } catch (err) {
       console.error(err);
-      toast.error("No se pudo dar de baja al alumno");
+      toast.error(err instanceof Error ? err.message : "No se pudo dar de baja al alumno");
     } finally {
       setDeletingStudentId(null);
     }
@@ -1894,29 +1894,29 @@ export default function AlumnosPage() {
                   Entregas
                 </button>
                 {isAdmin ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setOpenActionMenu(null);
-                        handleOpenChangePassword(actionMenuStudent);
-                      }}
-                      className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
-                    >
-                      Contraseña
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setOpenActionMenu(null);
-                        handleDeleteStudent(actionMenuStudent);
-                      }}
-                      disabled={deletingStudentId === actionMenuStudent.id}
-                      className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {deletingStudentId === actionMenuStudent.id ? "Archivando..." : "Dar de baja"}
-                    </button>
-                  </>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpenActionMenu(null);
+                      handleOpenChangePassword(actionMenuStudent);
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+                  >
+                    Contraseña
+                  </button>
+                ) : null}
+                {canOpenStudentActionMenu ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpenActionMenu(null);
+                      handleDeleteStudent(actionMenuStudent);
+                    }}
+                    disabled={deletingStudentId === actionMenuStudent.id}
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {deletingStudentId === actionMenuStudent.id ? "Dando de baja..." : "Dar de baja"}
+                  </button>
                 ) : null}
               </div>
             </div>,

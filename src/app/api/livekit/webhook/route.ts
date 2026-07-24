@@ -1,6 +1,12 @@
 import { EgressStatus } from "livekit-server-sdk";
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminFirestore } from "@/lib/firebase/admin";
+import {
+  finalizeLiveAttendanceForClass,
+  recordLiveAttendanceJoin,
+  recordLiveAttendanceLeave,
+  type LiveAttendanceParticipantInput,
+} from "@/lib/live-classes/attendance";
 import { resolveLiveClassByRoomName } from "@/lib/live-classes/access";
 import { createLiveSessionForClass } from "@/lib/live-classes/types";
 import {
@@ -37,18 +43,46 @@ function asNullableString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function parseRoleFromParticipantMetadata(raw: string | null | undefined): string {
-  if (!raw?.trim()) return "";
+function parseParticipantMetadata(raw: string | null | undefined): Record<string, unknown> {
+  if (!raw?.trim()) return {};
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const role = (parsed as Record<string, unknown>).role;
-      return typeof role === "string" ? role.trim() : "";
+      return parsed as Record<string, unknown>;
     }
   } catch {
     // ignore malformed metadata
   }
-  return "";
+  return {};
+}
+
+function parseRoleFromParticipantMetadata(raw: string | null | undefined): string {
+  const role = parseParticipantMetadata(raw).role;
+  return typeof role === "string" ? role.trim() : "";
+}
+
+function parseUidFromParticipantMetadata(raw: string | null | undefined): string | null {
+  const uid = parseParticipantMetadata(raw).uid;
+  return typeof uid === "string" && uid.trim() ? uid.trim() : null;
+}
+
+function toAttendanceParticipant(
+  participant: {
+    identity?: string | null;
+    name?: string | null;
+    metadata?: string | null;
+  } | null | undefined,
+): LiveAttendanceParticipantInput | null {
+  const identity = participant?.identity?.trim() ?? "";
+  if (!identity) return null;
+  const name = participant?.name?.trim() || null;
+  const metadata = participant?.metadata;
+  return {
+    identity,
+    name,
+    role: parseRoleFromParticipantMetadata(metadata) || null,
+    uid: parseUidFromParticipantMetadata(metadata) ?? identity,
+  };
 }
 
 function getRoomNameFromEvent(event: {
@@ -147,8 +181,40 @@ export async function POST(request: NextRequest) {
             error: stopError,
           });
         }
+        try {
+          await finalizeLiveAttendanceForClass(liveClass.classRef, now);
+        } catch (attendanceError) {
+          console.error("[livekit:webhook] room_finished: failed to finalize attendance", {
+            classId: liveClass.classId,
+            roomName,
+            error: attendanceError,
+          });
+        }
       }
     } else if (event.event === "participant_joined") {
+      const attendanceParticipant = toAttendanceParticipant(event.participant);
+      if (attendanceParticipant) {
+        try {
+          await recordLiveAttendanceJoin(
+            {
+              classRef: liveClass.classRef,
+              classId: liveClass.classId,
+              courseId: liveClass.courseId,
+              lessonId: liveClass.lessonId,
+              roomName,
+            },
+            attendanceParticipant,
+            now,
+          );
+        } catch (attendanceError) {
+          console.error("[livekit:webhook] participant_joined: failed to record attendance", {
+            classId: liveClass.classId,
+            roomName,
+            participantIdentity: attendanceParticipant.identity,
+            error: attendanceError,
+          });
+        }
+      }
       const role = parseRoleFromParticipantMetadata(event.participant?.metadata);
       if (role === "teacher" && sessionWasLive) {
         nextSession.teacherActive = true;
@@ -156,6 +222,29 @@ export async function POST(request: NextRequest) {
         nextSession.lastStartedAt = now;
       }
     } else if (event.event === "participant_left") {
+      const attendanceParticipant = toAttendanceParticipant(event.participant);
+      if (attendanceParticipant) {
+        try {
+          await recordLiveAttendanceLeave(
+            {
+              classRef: liveClass.classRef,
+              classId: liveClass.classId,
+              courseId: liveClass.courseId,
+              lessonId: liveClass.lessonId,
+              roomName,
+            },
+            attendanceParticipant,
+            now,
+          );
+        } catch (attendanceError) {
+          console.error("[livekit:webhook] participant_left: failed to record attendance", {
+            classId: liveClass.classId,
+            roomName,
+            participantIdentity: attendanceParticipant.identity,
+            error: attendanceError,
+          });
+        }
+      }
       const role = parseRoleFromParticipantMetadata(event.participant?.metadata);
       if (role === "teacher" && sessionWasLive) {
         const shouldForceProcessing =
@@ -188,6 +277,15 @@ export async function POST(request: NextRequest) {
             classId: liveClass.classId,
             roomName,
             error: stopError,
+          });
+        }
+        try {
+          await finalizeLiveAttendanceForClass(liveClass.classRef, now);
+        } catch (attendanceError) {
+          console.error("[livekit:webhook] participant_left(teacher): failed to finalize attendance", {
+            classId: liveClass.classId,
+            roomName,
+            error: attendanceError,
           });
         }
       }

@@ -3,10 +3,7 @@ import {
   archiveStudentAccount,
   StudentArchiveError,
 } from "@/lib/server/student-archive";
-import {
-  requireAdminTeacherAccess,
-  toAdminTeacherRouteErrorResponse,
-} from "@/lib/server/require-admin-teacher-access";
+import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,13 +15,116 @@ type ArchiveStudentRequest = {
   reason?: string;
 };
 
+type ArchiveAllowedRole = "adminTeacher" | "superAdminTeacher" | "coordinadorPlantel" | "director";
+
+type ArchiveAccessContext = {
+  uid: string;
+  role: ArchiveAllowedRole;
+  plantelIds: string[];
+};
+
+class RouteAccessError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function asUniqueStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value.filter((item): item is string => typeof item === "string" && item.trim().length > 0),
+    ),
+  );
+}
+
+function extractBearerToken(authorizationHeader: string | null): string | null {
+  if (!authorizationHeader) return null;
+  const trimmed = authorizationHeader.trim();
+  if (!trimmed.toLowerCase().startsWith("bearer ")) return null;
+  const token = trimmed.slice(7).trim();
+  return token || null;
+}
+
+function asAllowedRole(value: unknown): ArchiveAllowedRole | null {
+  if (
+    value === "adminTeacher" ||
+    value === "superAdminTeacher" ||
+    value === "coordinadorPlantel" ||
+    value === "director"
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function getUserPlantelIds(data: Record<string, unknown>): string[] {
+  const plantelIds = asUniqueStringArray(data.plantelIds);
+  if (plantelIds.length > 0) return plantelIds;
+  const legacyPlantelId = asTrimmedString(data.plantelId);
+  return legacyPlantelId ? [legacyPlantelId] : [];
+}
+
+function isGlobalArchiveRole(role: ArchiveAllowedRole): boolean {
+  return role === "adminTeacher" || role === "superAdminTeacher";
+}
+
+async function resolveArchiveAccess(request: NextRequest): Promise<ArchiveAccessContext> {
+  const bearerToken = extractBearerToken(request.headers.get("authorization"));
+  if (!bearerToken) {
+    throw new RouteAccessError(401, "Authorization Bearer token requerido");
+  }
+
+  let decodedToken: Awaited<ReturnType<ReturnType<typeof getAdminAuth>["verifyIdToken"]>>;
+  try {
+    decodedToken = await getAdminAuth().verifyIdToken(bearerToken);
+  } catch {
+    throw new RouteAccessError(401, "Token inválido o expirado");
+  }
+
+  const userSnap = await getAdminFirestore().collection("users").doc(decodedToken.uid).get();
+  const userData = (userSnap.data() ?? {}) as Record<string, unknown>;
+  const role = asAllowedRole(userData.role) ?? asAllowedRole(decodedToken.role);
+  if (!role) {
+    throw new RouteAccessError(
+      403,
+      "Acceso restringido a adminTeacher, coordinador o director",
+    );
+  }
+
+  return {
+    uid: decodedToken.uid,
+    role,
+    plantelIds: getUserPlantelIds(userData),
+  };
+}
+
+function toErrorResponse(error: unknown): NextResponse {
+  if (error instanceof RouteAccessError || error instanceof StudentArchiveError) {
+    return NextResponse.json(
+      { success: false, error: error.message },
+      { status: error.status },
+    );
+  }
+
+  console.error("Error archivando alumno", error);
+  const message =
+    process.env.NODE_ENV !== "production" && error instanceof Error
+      ? error.message.trim() || "Error interno del servidor"
+      : "Error interno del servidor";
+  return NextResponse.json({ success: false, error: message }, { status: 500 });
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const adminContext = await requireAdminTeacherAccess(request);
+    const accessContext = await resolveArchiveAccess(request);
     const body = (await request.json().catch(() => ({}))) as ArchiveStudentRequest;
     const studentId = asTrimmedString(body.studentId);
     const email = asTrimmedString(body.email).toLowerCase();
@@ -41,9 +141,12 @@ export async function POST(request: NextRequest) {
       phone: phone || undefined,
       uid: studentId || undefined,
       email: email || undefined,
-      archivedBy: adminContext.uid,
+      archivedBy: accessContext.uid,
       source: "admin-panel",
       reason: body.reason,
+      allowedPlantelIds: isGlobalArchiveRole(accessContext.role)
+        ? undefined
+        : accessContext.plantelIds,
     });
 
     return NextResponse.json(
@@ -54,12 +157,6 @@ export async function POST(request: NextRequest) {
       { status: 200 },
     );
   } catch (error: unknown) {
-    if (error instanceof StudentArchiveError) {
-      return NextResponse.json(
-        { success: false, error: error.message },
-        { status: error.status },
-      );
-    }
-    return toAdminTeacherRouteErrorResponse(error, "Error archivando alumno");
+    return toErrorResponse(error);
   }
 }

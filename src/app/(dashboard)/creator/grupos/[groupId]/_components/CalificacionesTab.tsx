@@ -305,76 +305,6 @@ const formatDateTime = (value?: Date | null) => {
 const formatGradeValue = (value?: number | null) =>
   typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "—";
 
-const drawRoundRect = (
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  radius: number,
-) => {
-  ctx.beginPath();
-  if (typeof ctx.roundRect === "function") {
-    ctx.roundRect(x, y, width, height, radius);
-    return;
-  }
-  const r = Math.min(radius, width / 2, height / 2);
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + width - r, y);
-  ctx.quadraticCurveTo(x + width, y, x + width, y + r);
-  ctx.lineTo(x + width, y + height - r);
-  ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
-  ctx.lineTo(x + r, y + height);
-  ctx.quadraticCurveTo(x, y + height, x, y + height - r);
-  ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
-  ctx.closePath();
-};
-
-const wrapTextLines = (
-  ctx: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number,
-  maxLines: number,
-) => {
-  const normalized = text.replace(/\s+/g, " ").trim() || "Sin nombre";
-  const words = normalized.split(" ");
-  const lines: string[] = [];
-  let current = "";
-
-  words.forEach((word) => {
-    const candidate = current ? `${current} ${word}` : word;
-    if (ctx.measureText(candidate).width <= maxWidth) {
-      current = candidate;
-      return;
-    }
-
-    if (current) {
-      lines.push(current);
-    }
-    current = word;
-  });
-
-  if (current) {
-    lines.push(current);
-  }
-
-  if (lines.length <= maxLines) {
-    return lines;
-  }
-
-  const trimmed = lines.slice(0, maxLines);
-  let last = trimmed[maxLines - 1];
-  while (last.length > 0 && ctx.measureText(`${last}…`).width > maxWidth) {
-    last = last.slice(0, -1);
-  }
-  trimmed[maxLines - 1] = `${last || "…"}`;
-  if (!trimmed[maxLines - 1].endsWith("…")) {
-    trimmed[maxLines - 1] = `${trimmed[maxLines - 1]}…`;
-  }
-  return trimmed;
-};
-
 const taskTypeLabel = (classType: Task["classType"]) => {
   if (classType === "quiz") return "Quiz";
   if (classType === "forum") return "Foro";
@@ -434,7 +364,7 @@ export function CalificacionesTab({
   const [extraConceptModalDrafts, setExtraConceptModalDrafts] = useState<ExtraConceptDraft[]>([]);
   const [extraConceptModalError, setExtraConceptModalError] = useState<string | null>(null);
   const [savingExtraConceptModal, setSavingExtraConceptModal] = useState(false);
-  const [exportingGradesImage, setExportingGradesImage] = useState(false);
+  const [exportingGradesPdf, setExportingGradesPdf] = useState(false);
   const [activeExtraConceptDropdownId, setActiveExtraConceptDropdownId] = useState<string | null>(null);
   const [signatureModalContext, setSignatureModalContext] = useState<SignatureModalContext | null>(null);
   const [signerNameInput, setSignerNameInput] = useState("");
@@ -448,6 +378,7 @@ export function CalificacionesTab({
   const signatureModalResolverRef = useRef<((value: SignatureResult | null) => void) | null>(null);
   const confirmationModalResolverRef = useRef<((value: boolean) => void) | null>(null);
   const pdfBackgroundDataUrlRef = useRef<string | null>(null);
+  const pdfLogoDataUrlRef = useRef<string | null>(null);
 
   const canManageClosures = useMemo(() => {
     if (typeof canManageClosuresOverride === "boolean") return canManageClosuresOverride;
@@ -1921,6 +1852,34 @@ export function CalificacionesTab({
     }
   };
 
+  const loadPdfLogoDataUrl = async (): Promise<string | null> => {
+    if (pdfLogoDataUrlRef.current) return pdfLogoDataUrlRef.current;
+    try {
+      const response = await fetch("/university-logo.jpg", { cache: "force-cache" });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const blob = await response.blob();
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          if (typeof reader.result === "string") {
+            resolve(reader.result);
+            return;
+          }
+          reject(new Error("No se pudo convertir el logo del PDF"));
+        };
+        reader.onerror = () => reject(new Error("No se pudo leer el logo del PDF"));
+        reader.readAsDataURL(blob);
+      });
+      pdfLogoDataUrlRef.current = dataUrl;
+      return dataUrl;
+    } catch (error) {
+      console.error("No se pudo cargar university-logo.jpg para el PDF:", error);
+      return null;
+    }
+  };
+
   const downloadSignedClosurePdf = async (signature: SignatureResult) => {
     const pdf = new jsPDF({ unit: "pt", format: "a4" });
     const pageWidth = pdf.internal.pageSize.getWidth();
@@ -2942,9 +2901,9 @@ export function CalificacionesTab({
   const courseExtraConceptsResolution = resolveExtraConceptsForCourse();
   const courseExtraConceptColumns = courseExtraConceptsResolution.concepts;
 
-  const downloadGradesSummaryImage = useCallback(async () => {
+  const downloadGradesSummaryPdf = useCallback(async () => {
     if (!selectedCourseId || !selectedCourse) {
-      toast.error("Selecciona una materia para descargar la imagen.");
+      toast.error("Selecciona una materia para descargar el PDF.");
       return;
     }
     if (rows.length === 0) {
@@ -2952,149 +2911,152 @@ export function CalificacionesTab({
       return;
     }
 
-    setExportingGradesImage(true);
+    setExportingGradesPdf(true);
     try {
-      const canvas = document.createElement("canvas");
-      const width = 1080;
+      const pdf = new jsPDF({ unit: "pt", format: "a4" });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
       const marginX = 42;
-      const contentWidth = width - marginX * 2;
-      const headerHeight = 154;
-      const tableHeaderHeight = 54;
-      const rowHeight = 88;
-      const tableContainerHeight = tableHeaderHeight + rows.length * rowHeight + 26;
-      const height = headerHeight + tableContainerHeight + 36;
-
-      canvas.width = width;
-      canvas.height = height;
-
-      const ctx = canvas.getContext("2d");
-      if (!ctx) throw new Error("No se pudo crear el lienzo");
-
-      ctx.fillStyle = "#f1f5f9";
-      ctx.fillRect(0, 0, width, height);
-
-      const headerGradient = ctx.createLinearGradient(0, 0, width, headerHeight);
-      headerGradient.addColorStop(0, "#5d1115");
-      headerGradient.addColorStop(0.55, "#7b241d");
-      headerGradient.addColorStop(1, "#8f2d1c");
-      ctx.fillStyle = headerGradient;
-      ctx.fillRect(0, 0, width, headerHeight);
-
-      ctx.fillStyle = "#ffffff";
-      ctx.font = "700 40px Arial, sans-serif";
-      ctx.fillText("Resumen de calificaciones", marginX, 72);
-
-      ctx.font = "500 20px Arial, sans-serif";
-      ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
-      const subtitleLines = wrapTextLines(ctx, selectedCourse.courseName, contentWidth, 2);
-      subtitleLines.forEach((line, index) => {
-        ctx.fillText(line, marginX, 110 + index * 28);
-      });
-
-      const tableTop = headerHeight - 2;
-      ctx.fillStyle = "#ffffff";
-      drawRoundRect(ctx, marginX, tableTop, contentWidth, tableContainerHeight, 28);
-      ctx.fill();
-
-      const tableInnerWidth = contentWidth - 36;
-      const studentWidth = Math.floor(tableInnerWidth * 0.48);
-      const autoWidth = Math.floor(tableInnerWidth * 0.11);
-      const finalWidth = Math.floor(tableInnerWidth * 0.11);
-      const pendingWidth = Math.floor(tableInnerWidth * 0.14);
-      const statusWidth =
-        tableInnerWidth - studentWidth - autoWidth - finalWidth - pendingWidth;
-      const studentX = marginX + 18;
-      const autoX = studentX + studentWidth;
-      const finalX = autoX + autoWidth;
-      const pendingX = finalX + finalWidth;
-      const statusX = pendingX + pendingWidth;
+      const contentWidth = pageWidth - marginX * 2;
+      const topMargin = 42;
+      const footerHeight = 34;
+      const tableTop = 142;
+      const tableBottom = pageHeight - footerHeight - 18;
+      const rowHeight = 30;
       const columns = {
-        student: { x: studentX, width: studentWidth },
-        auto: { x: autoX, width: autoWidth },
-        final: { x: finalX, width: finalWidth },
-        pending: { x: pendingX, width: pendingWidth },
-        status: { x: statusX, width: statusWidth },
+        index: { x: marginX, width: 28 },
+        student: { x: marginX + 30, width: 220 },
+        auto: { x: marginX + 263, width: 46 },
+        final: { x: marginX + 316, width: 46 },
+        pending: { x: marginX + 372, width: 58 },
+        status: { x: marginX + 440, width: 68 },
+      };
+      const generatedAt = new Date();
+      const generatedAtLabel = formatDateTime(generatedAt);
+      const logoDataUrl = await loadPdfLogoDataUrl();
+      const avgFinalGradeRows = rows
+        .map((row) => row.closure?.finalGrade)
+        .filter((grade): grade is number => typeof grade === "number" && Number.isFinite(grade));
+      const avgFinalGrade =
+        avgFinalGradeRows.length > 0
+          ? avgFinalGradeRows.reduce((acc, grade) => acc + grade, 0) / avgFinalGradeRows.length
+          : null;
+      let pageNumber = 1;
+      let y = tableTop;
+
+      const drawHeader = () => {
+        pdf.setFillColor(93, 17, 21);
+        pdf.rect(0, 0, pageWidth, 98, "F");
+        const titleX = logoDataUrl ? marginX + 58 : marginX;
+        if (logoDataUrl) {
+          pdf.addImage(logoDataUrl, "JPEG", marginX, 24, 44, 44);
+        }
+        pdf.setTextColor(255, 255, 255);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(19);
+        pdf.text("Resumen de calificaciones", titleX, topMargin);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(10);
+        const courseLines = pdf.splitTextToSize(selectedCourse.courseName, contentWidth - 178) as string[];
+        pdf.text(courseLines.slice(0, 2), titleX, topMargin + 20);
+        pdf.text(generatedAtLabel, pageWidth - marginX, topMargin, { align: "right" });
+
+        pdf.setTextColor(15, 23, 42);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(10);
+        pdf.text(`Alumnos: ${rows.length}`, marginX, 120);
+        pdf.text(
+          `Promedio final: ${avgFinalGrade === null ? "N/D" : avgFinalGrade.toFixed(1)}`,
+          marginX + 96,
+          120,
+        );
+
+        pdf.setFillColor(248, 250, 252);
+        pdf.roundedRect(marginX, tableTop - 18, contentWidth, 24, 6, 6, "F");
+        pdf.setTextColor(71, 85, 105);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(9);
+        pdf.text("#", columns.index.x + 2, tableTop - 3);
+        pdf.text("Alumno", columns.student.x, tableTop - 3);
+        pdf.text("Auto", columns.auto.x, tableTop - 3);
+        pdf.text("Final", columns.final.x, tableTop - 3);
+        pdf.text("Pend.", columns.pending.x, tableTop - 3);
+        pdf.text("Estado", columns.status.x, tableTop - 3);
+        pdf.setDrawColor(226, 232, 240);
+        pdf.line(marginX, tableTop + 6, marginX + contentWidth, tableTop + 6);
       };
 
-      ctx.fillStyle = "#f8fafc";
-      drawRoundRect(ctx, marginX + 10, tableTop + 10, contentWidth - 20, tableHeaderHeight, 18);
-      ctx.fill();
+      const drawFooter = () => {
+        pdf.setDrawColor(226, 232, 240);
+        pdf.line(marginX, pageHeight - footerHeight, marginX + contentWidth, pageHeight - footerHeight);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(8);
+        pdf.setTextColor(100, 116, 139);
+        pdf.text(`Pagina ${pageNumber}`, pageWidth - marginX, pageHeight - 18, { align: "right" });
+      };
 
-      ctx.font = "700 16px Arial, sans-serif";
-      ctx.fillStyle = "#475569";
-      ctx.fillText("Alumno", columns.student.x, tableTop + 44);
-      ctx.fillText("Auto", columns.auto.x, tableTop + 44);
-      ctx.fillText("Final", columns.final.x, tableTop + 44);
-      ctx.fillText("Pendientes", columns.pending.x, tableTop + 44);
-      ctx.fillText("Estado", columns.status.x, tableTop + 44);
+      const startPage = () => {
+        drawHeader();
+        drawFooter();
+        y = tableTop + 22;
+      };
+
+      const addPage = () => {
+        pdf.addPage();
+        pageNumber += 1;
+        startPage();
+      };
+
+      startPage();
 
       rows.forEach((row, index) => {
-        const rowY = tableTop + tableHeaderHeight + index * rowHeight + 10;
-        const rowFill = index % 2 === 0 ? "#ffffff" : "#f8fafc";
+        if (y + rowHeight > tableBottom) {
+          addPage();
+        }
+
         const exportedFinalGrade =
           typeof row.closure?.finalGrade === "number" && Number.isFinite(row.closure.finalGrade)
             ? row.closure.finalGrade
             : null;
-        ctx.fillStyle = rowFill;
-        ctx.fillRect(marginX + 10, rowY, contentWidth - 20, rowHeight);
-
-        ctx.strokeStyle = "#e2e8f0";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(marginX + 10, rowY + rowHeight);
-        ctx.lineTo(marginX + contentWidth - 10, rowY + rowHeight);
-        ctx.stroke();
-
-        ctx.fillStyle = "#0f172a";
-        ctx.font = "600 18px Arial, sans-serif";
-        const studentLines = wrapTextLines(ctx, row.studentName || "Sin nombre", columns.student.width - 20, 2);
-        studentLines.forEach((line, lineIndex) => {
-          ctx.fillText(line, columns.student.x, rowY + 32 + lineIndex * 22);
-        });
-
-        ctx.font = "600 18px Arial, sans-serif";
-        ctx.fillStyle = "#1d4ed8";
-        ctx.textAlign = "center";
-        ctx.fillText(formatGradeValue(row.autoGrade), columns.auto.x + columns.auto.width / 2, rowY + 48);
-        ctx.fillStyle = "#0f172a";
-        ctx.fillText(
-          formatGradeValue(exportedFinalGrade),
-          columns.final.x + columns.final.width / 2,
-          rowY + 48,
-        );
-        ctx.fillStyle = "#475569";
-        ctx.fillText(
-          `${row.pendingUngradedCount}/${row.totalEvaluable}`,
-          columns.pending.x + columns.pending.width / 2,
-          rowY + 48,
-        );
-
         const statusLabel = row.closure?.status === "closed" ? "Cerrada" : "Abierta";
-        const statusFill = row.closure?.status === "closed" ? "#dcfce7" : "#fef3c7";
-        const statusText = row.closure?.status === "closed" ? "#166534" : "#b45309";
-        const pillWidth = Math.max(118, ctx.measureText(statusLabel).width + 28);
-        const pillX = columns.status.x + (columns.status.width - pillWidth) / 2;
-        ctx.fillStyle = statusFill;
-        drawRoundRect(ctx, pillX, rowY + 28, pillWidth, 32, 16);
-        ctx.fill();
-        ctx.fillStyle = statusText;
-        ctx.font = "700 15px Arial, sans-serif";
-        ctx.fillText(statusLabel, columns.status.x + columns.status.width / 2, rowY + 50);
-        ctx.textAlign = "left";
-      });
+        const rowTop = y - 13;
 
-      const blob = await new Promise<Blob>((resolve, reject) => {
-        canvas.toBlob(
-          (result) => {
-            if (result) {
-              resolve(result);
-              return;
-            }
-            reject(new Error("No se pudo generar la imagen"));
-          },
-          "image/jpeg",
-          0.95,
-        );
+        if (index % 2 === 0) {
+          pdf.setFillColor(248, 250, 252);
+          pdf.rect(marginX, rowTop, contentWidth, rowHeight, "F");
+        }
+
+        pdf.setTextColor(15, 23, 42);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(9);
+        pdf.text(String(index + 1), columns.index.x + 2, y + 5);
+        const studentLines = pdf.splitTextToSize(row.studentName || "Sin nombre", columns.student.width) as string[];
+        pdf.text(studentLines.slice(0, 2), columns.student.x, y);
+
+        pdf.setFont("helvetica", "bold");
+        pdf.setTextColor(29, 78, 216);
+        pdf.text(formatGradeValue(row.autoGrade), columns.auto.x, y + 5);
+        pdf.setTextColor(15, 23, 42);
+        pdf.text(formatGradeValue(exportedFinalGrade), columns.final.x, y + 5);
+        pdf.setFont("helvetica", "normal");
+        pdf.setTextColor(71, 85, 105);
+        pdf.text(`${row.pendingUngradedCount}/${row.totalEvaluable}`, columns.pending.x, y + 5);
+
+        if (statusLabel === "Cerrada") {
+          pdf.setFillColor(220, 252, 231);
+          pdf.setTextColor(22, 101, 52);
+        } else {
+          pdf.setFillColor(254, 243, 199);
+          pdf.setTextColor(180, 83, 9);
+        }
+        pdf.roundedRect(columns.status.x, y - 10, columns.status.width, 18, 8, 8, "F");
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(8);
+        pdf.text(statusLabel, columns.status.x + columns.status.width / 2, y + 2, { align: "center" });
+
+        pdf.setDrawColor(226, 232, 240);
+        pdf.line(marginX, rowTop + rowHeight, marginX + contentWidth, rowTop + rowHeight);
+        y += rowHeight;
       });
 
       const fileName = `calificaciones-${selectedCourse.courseName
@@ -3102,19 +3064,14 @@ export function CalificacionesTab({
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-+|-+$/g, "") || "materia"}-${new Date()
         .toISOString()
-        .slice(0, 10)}.jpg`;
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = fileName;
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      toast.success("Imagen descargada.");
+        .slice(0, 10)}.pdf`;
+      pdf.save(fileName);
+      toast.success("PDF descargado.");
     } catch (error) {
-      console.error("No se pudo generar la imagen de calificaciones:", error);
-      toast.error("No se pudo descargar la imagen.");
+      console.error("No se pudo generar el PDF de calificaciones:", error);
+      toast.error("No se pudo descargar el PDF.");
     } finally {
-      setExportingGradesImage(false);
+      setExportingGradesPdf(false);
     }
   }, [rows, selectedCourse, selectedCourseId]);
 
@@ -3245,12 +3202,12 @@ export function CalificacionesTab({
           </select>
           <button
             type="button"
-            onClick={downloadGradesSummaryImage}
-            disabled={exportingGradesImage || rows.length === 0}
+            onClick={downloadGradesSummaryPdf}
+            disabled={exportingGradesPdf || rows.length === 0}
             className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
           >
             <Download size={14} />
-            <span>{exportingGradesImage ? "Generando..." : "Descargar imagen"}</span>
+            <span>{exportingGradesPdf ? "Generando..." : "Descargar PDF"}</span>
           </button>
           <button
             type="button"

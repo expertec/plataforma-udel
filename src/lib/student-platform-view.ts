@@ -1,5 +1,5 @@
 import type { User } from "firebase/auth";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { doc, getDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 
 export type StudentPlatformView = "modern" | "traditional";
@@ -31,13 +31,29 @@ export const saveStudentPlatformViewForUser = async (
   preferredView: StudentPlatformView,
 ): Promise<StudentPlatformView> => {
   const normalized = normalizeStudentPlatformView(preferredView);
-  await setDoc(
-    doc(db, "users", user.uid),
-    {
-      [STUDENT_PLATFORM_VIEW_FIELD]: normalized,
-      updatedAt: new Date(),
+  const token = await user.getIdToken();
+  const response = await fetch("/api/students/platform-view", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
     },
-    { merge: true },
-  );
-  return normalized;
+    body: JSON.stringify({
+      preferredView: normalized,
+    }),
+  });
+
+  const payload = (await response.json().catch(() => ({}))) as {
+    success?: boolean;
+    error?: string;
+    data?: {
+      preferredView?: unknown;
+    };
+  };
+
+  if (!response.ok || payload.success !== true) {
+    throw new Error(payload.error || "No se pudo actualizar tu vista preferida");
+  }
+
+  return normalizeStudentPlatformView(payload.data?.preferredView);
 };

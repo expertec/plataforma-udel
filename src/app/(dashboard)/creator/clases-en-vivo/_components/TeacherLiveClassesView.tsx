@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { MoreHorizontal } from "lucide-react";
+import { Download, MoreHorizontal } from "lucide-react";
 import { type User } from "firebase/auth";
 import { collection, getDocs } from "firebase/firestore";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -85,6 +85,31 @@ type TeacherRecordingAccessResponse = {
   error?: string;
 };
 
+type TeacherAttendanceReportRow = {
+  studentId: string;
+  studentName: string;
+  studentEmail: string;
+  attended: boolean;
+  attendanceSeconds: number;
+  attendancePercentage: number;
+  joinCount: number;
+  firstJoinedAt: string | null;
+  lastLeftAt: string | null;
+};
+
+type TeacherAttendanceReportResponse = {
+  success?: boolean;
+  data?: {
+    title?: string;
+    linkedGroupName?: string | null;
+    startedAt?: string | null;
+    endedAt?: string | null;
+    classDurationSeconds?: number;
+    rows?: TeacherAttendanceReportRow[];
+  };
+  error?: string;
+};
+
 type TeacherLiveClassesViewProps = {
   currentUser: User | null;
   authReady: boolean;
@@ -164,6 +189,102 @@ function buildLiveHref(item: Pick<TeacherLiveClassItem, "classId" | "courseId" |
   return `/live/${encodeURIComponent(item.classId)}?${searchParams.toString()}`;
 }
 
+function isAttendanceReportAvailable(item: TeacherLiveClassItem): boolean {
+  return (
+    Boolean(item.lastEndedAt) ||
+    item.sessionStatus === "ended" ||
+    item.sessionStatus === "recording_ready" ||
+    item.liveStatus === "processing" ||
+    item.liveStatus === "ready" ||
+    item.liveStatus === "finalized" ||
+    item.liveStatus === "failed"
+  );
+}
+
+function csvCell(value: string | number | null | undefined): string {
+  const text = value === null || value === undefined ? "" : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function buildAttendanceCsv(params: {
+  item: TeacherLiveClassItem;
+  report: NonNullable<TeacherAttendanceReportResponse["data"]>;
+}): string {
+  const rows = params.report.rows ?? [];
+  const headers = [
+    "Alumno",
+    "Correo",
+    "Asistio",
+    "Tiempo conectado",
+    "Segundos conectado",
+    "Porcentaje",
+    "Entradas",
+    "Primera entrada",
+    "Ultima salida",
+    "Duracion de clase",
+  ];
+  const csvRows = [
+    ["Reporte de asistencia", params.report.title || params.item.title],
+    ["Grupo", params.report.linkedGroupName || params.item.linkedGroupName || "Grupo no vinculado"],
+    [
+      "Inicio real",
+      params.report.startedAt
+        ? formatEsMxDateTime(params.report.startedAt, { timeZone: params.item.timezone })
+        : "N/D",
+    ],
+    [
+      "Fin real",
+      params.report.endedAt
+        ? formatEsMxDateTime(params.report.endedAt, { timeZone: params.item.timezone })
+        : "N/D",
+    ],
+    ["Duracion", formatDuration(params.report.classDurationSeconds ?? null)],
+    [],
+    headers,
+    ...rows.map((row) => [
+      row.studentName || "Sin nombre",
+      row.studentEmail || "",
+      row.attended ? "Si" : "No",
+      formatDuration(row.attendanceSeconds),
+      row.attendanceSeconds,
+      `${row.attendancePercentage.toFixed(1)}%`,
+      row.joinCount,
+      row.firstJoinedAt
+        ? formatEsMxDateTime(row.firstJoinedAt, { timeZone: params.item.timezone })
+        : "",
+      row.lastLeftAt
+        ? formatEsMxDateTime(row.lastLeftAt, { timeZone: params.item.timezone })
+        : "",
+      formatDuration(params.report.classDurationSeconds ?? null),
+    ]),
+  ];
+
+  return csvRows.map((row) => row.map(csvCell).join(",")).join("\n");
+}
+
+function downloadCsv(fileName: string, csv: string) {
+  const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function buildAttendanceFileName(item: TeacherLiveClassItem): string {
+  const safeTitle = (item.title || "clase-en-vivo")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+  return `asistencia-${safeTitle || "clase-en-vivo"}.csv`;
+}
+
 function getInitialForm(groups: ScheduleGroupOption[]): ScheduleFormState {
   const firstGroup = groups[0] ?? null;
   const firstCourse = firstGroup?.courses[0] ?? null;
@@ -193,6 +314,7 @@ export function TeacherLiveClassesView({
   const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [recordingLoadingClassId, setRecordingLoadingClassId] = useState<string | null>(null);
+  const [attendanceLoadingClassId, setAttendanceLoadingClassId] = useState<string | null>(null);
   const [detailsItem, setDetailsItem] = useState<TeacherLiveClassItem | null>(null);
   const [openActionsClassId, setOpenActionsClassId] = useState<string | null>(null);
   const [groupSearch, setGroupSearch] = useState("");
@@ -538,6 +660,55 @@ export function TeacherLiveClassesView({
     }
   }, []);
 
+  const downloadAttendanceReport = useCallback(
+    async (item: TeacherLiveClassItem) => {
+      if (!currentUser) return;
+      if (!isAttendanceReportAvailable(item)) {
+        toast.error("El reporte estará disponible cuando termine la sesión.");
+        return;
+      }
+
+      setAttendanceLoadingClassId(item.classId);
+      try {
+        const token = await currentUser.getIdToken();
+        const searchParams = new URLSearchParams();
+        searchParams.set("courseId", item.courseId);
+        searchParams.set("lessonId", item.lessonId);
+
+        const response = await fetch(
+          `/api/live/classes/${encodeURIComponent(item.classId)}/attendance?${searchParams.toString()}`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          },
+        );
+
+        const payload = (await response.json().catch(() => null)) as
+          | TeacherAttendanceReportResponse
+          | null;
+        if (!response.ok || !payload?.success || !payload.data) {
+          throw new Error(payload?.error || "No se pudo generar el reporte de asistencia");
+        }
+
+        downloadCsv(
+          buildAttendanceFileName(item),
+          buildAttendanceCsv({ item, report: payload.data }),
+        );
+        toast.success("Reporte de asistencia descargado.");
+      } catch (error) {
+        console.error(error);
+        toast.error(
+          error instanceof Error ? error.message : "No se pudo descargar la asistencia",
+        );
+      } finally {
+        setAttendanceLoadingClassId(null);
+      }
+    },
+    [currentUser],
+  );
+
   if (!authReady) {
     return (
       <div className="creator-card rounded-xl border p-6 text-sm text-[#754848] shadow-sm">
@@ -736,6 +907,23 @@ export function TeacherLiveClassesView({
                                 className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm font-medium text-[#551b22] hover:bg-[#f3e3db] disabled:cursor-not-allowed disabled:text-[#b99a90] disabled:hover:bg-transparent"
                               >
                                 {recordingLoadingClassId === item.classId ? "Abriendo..." : "Grabación"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOpenActionsClassId(null);
+                                  void downloadAttendanceReport(item);
+                                }}
+                                disabled={
+                                  attendanceLoadingClassId === item.classId ||
+                                  !isAttendanceReportAvailable(item)
+                                }
+                                className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-medium text-[#551b22] hover:bg-[#f3e3db] disabled:cursor-not-allowed disabled:text-[#b99a90] disabled:hover:bg-transparent"
+                              >
+                                <Download size={14} />
+                                {attendanceLoadingClassId === item.classId
+                                  ? "Generando..."
+                                  : "Asistencia CSV"}
                               </button>
                             </div>
                           ) : null}

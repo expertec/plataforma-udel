@@ -16,6 +16,7 @@ type StudentArchiveParams = {
   archivedBy: string;
   source: "admin-panel" | "finance-webhook";
   reason?: string | null;
+  allowedPlantelIds?: string[];
 };
 
 export class StudentArchiveError extends Error {
@@ -33,6 +34,7 @@ type ResolvedStudentIdentity = {
   displayName: string | null;
   userRecord: UserRecord;
   role: string | null;
+  plantelIds: string[];
 };
 
 export type StudentArchiveResult = {
@@ -47,6 +49,22 @@ export type StudentArchiveResult = {
 
 function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function asUniqueStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value.filter((item): item is string => typeof item === "string" && item.trim().length > 0),
+    ),
+  );
+}
+
+function getPlantelIds(data: Record<string, unknown>): string[] {
+  const plantelIds = asUniqueStringArray(data.plantelIds);
+  if (plantelIds.length > 0) return plantelIds;
+  const legacyPlantelId = asTrimmedString(data.plantelId);
+  return legacyPlantelId ? [legacyPlantelId] : [];
 }
 
 function isPotentialStudentRole(role: string): boolean {
@@ -225,6 +243,7 @@ async function resolveStudentIdentity(params: {
     displayName: userRecord.displayName ?? null,
     userRecord,
     role: resolvedRole,
+    plantelIds: getPlantelIds(userData),
   };
 }
 
@@ -236,6 +255,18 @@ export async function archiveStudentAccount(
   const resolved = await resolveStudentIdentity(params);
   const now = new Date();
   const reason = asTrimmedString(params.reason) || null;
+  const allowedPlantelIds = asUniqueStringArray(params.allowedPlantelIds);
+
+  if (params.allowedPlantelIds && allowedPlantelIds.length === 0) {
+    throw new StudentArchiveError(403, "No tienes un plantel asignado para dar de baja alumnos");
+  }
+
+  if (
+    allowedPlantelIds.length > 0 &&
+    !resolved.plantelIds.some((plantelId) => allowedPlantelIds.includes(plantelId))
+  ) {
+    throw new StudentArchiveError(403, "No tienes permisos para dar de baja a este alumno");
+  }
 
   const userRef = firestore.collection("users").doc(resolved.uid);
   const [enrollmentsSnap, membershipsSnap] = await Promise.all([

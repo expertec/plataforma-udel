@@ -62,7 +62,7 @@ export function KardexTable({ rows, loading }: { rows: KardexRow[]; loading: boo
             <th className="px-4 py-3 font-medium">Estado</th>
             <th className="px-4 py-3 font-medium">Cierre</th>
             <th className="px-4 py-3 text-right font-medium">Examen global</th>
-            <th className="px-4 py-3 text-right font-medium">Calificación</th>
+            <th className="px-4 py-3 text-right font-medium">Calificación final</th>
           </tr>
         </thead>
         <tbody>
@@ -104,13 +104,6 @@ export function KardexTable({ rows, loading }: { rows: KardexRow[]; loading: boo
               <td className="px-4 py-3 text-right">
                 {row.status === "closed" ? (
                   <GradeBadge grade={row.finalGrade} />
-                ) : row.autoGrade !== null ? (
-                  <span
-                    title="Promedio parcial, aún no es tu calificación final"
-                    className="text-[var(--aula-text-muted)]"
-                  >
-                    {row.autoGrade.toFixed(1)} parcial
-                  </span>
                 ) : (
                   <span className="text-[var(--aula-text-muted)]">—</span>
                 )}

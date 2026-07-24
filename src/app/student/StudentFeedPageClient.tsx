@@ -29,6 +29,7 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
+import { StudentViewSwitch } from "@/components/student/StudentViewSwitch";
 import { createSubmission, deleteSubmission, type SubmissionStatus } from "@/lib/firebase/submissions-service";
 import {
   getForumPosts,
@@ -4666,6 +4667,7 @@ export default function StudentFeedPageClient() {
           </button>
         ) : (
           <div className={`pointer-events-auto fixed right-3 z-40 flex items-center gap-2 ${floatingButtonsTopClass}`}>
+            <StudentViewSwitch currentView="modern" user={currentUser} />
             <Link
               href="/student/examenes-globales"
               className="inline-flex items-center rounded-full border border-emerald-400/30 bg-emerald-500/15 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-emerald-100 shadow-lg backdrop-blur transition hover:bg-emerald-500/25"

@@ -4,6 +4,7 @@ import {
   resolveAuthorizedLiveClassAccess,
   toLiveAccessErrorResponse,
 } from "@/lib/live-classes/access";
+import { finalizeLiveAttendanceForClass } from "@/lib/live-classes/attendance";
 import { mergeTeacherEditableLiveSession } from "@/lib/live-classes/types";
 import { stopActiveLiveKitEgressForRoom, stopLiveKitEgress } from "@/lib/server/livekit";
 
@@ -81,6 +82,13 @@ export async function POST(
     });
 
     const warnings: string[] = [];
+    try {
+      await finalizeLiveAttendanceForClass(classRef, endedAtIso);
+    } catch (attendanceError) {
+      console.error("No se pudo cerrar asistencia de clase en vivo", attendanceError);
+      warnings.push("No se pudo consolidar la asistencia en este momento.");
+    }
+
     let egressStopRequested = false;
     if (shouldStopEgress && egressId) {
       try {

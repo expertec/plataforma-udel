@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { FileText, Home, User } from "lucide-react";
+import { StudentViewSwitch } from "@/components/student/StudentViewSwitch";
 import { LOADING_STAGES, useAulaData } from "../_lib/AulaDataContext";
 import { BillingBlockedScreen } from "./BillingBlockedScreen";
 
@@ -75,6 +76,7 @@ function BottomBar() {
 
 function Rail() {
   const pathname = usePathname();
+  const { currentUser } = useAulaData();
   return (
     <nav className="fixed left-0 top-0 z-40 hidden h-screen w-14 flex-col items-center gap-2 border-r border-[var(--aula-border)] bg-[var(--aula-surface)] py-4 lg:flex">
       <Link href="/aula" aria-label="Inicio del aula" className="mb-4 shrink-0">
@@ -104,6 +106,7 @@ function Rail() {
           </Link>
         );
       })}
+      <StudentViewSwitch currentView="traditional" user={currentUser} variant="aulaRail" />
     </nav>
   );
 }

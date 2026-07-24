@@ -940,8 +940,7 @@ export function StudentGradesModal({
                     <th className="px-4 py-2 text-left">Materia</th>
                     <th className="px-4 py-2 text-left">Estado</th>
                     <th className="px-4 py-2 text-left">Examen global</th>
-                    <th className="px-4 py-2 text-left">Final</th>
-                    <th className="px-4 py-2 text-left">Auto</th>
+                    <th className="px-4 py-2 text-left">Calificación final</th>
                     <th className="px-4 py-2 text-left">Pendientes</th>
                     <th className="px-4 py-2 text-left">Actualizado</th>
                   </tr>
@@ -976,9 +975,6 @@ export function StudentGradesModal({
                       </td>
                       <td className="px-4 py-3 font-semibold text-slate-900">
                         {row.finalGrade === null ? "—" : row.finalGrade.toFixed(1)}
-                      </td>
-                      <td className="px-4 py-3 text-slate-700">
-                        {row.autoGrade === null ? "—" : row.autoGrade.toFixed(1)}
                       </td>
                       <td className="px-4 py-3 text-slate-700">
                         {row.pendingUngradedCount === null ? "—" : row.pendingUngradedCount}
