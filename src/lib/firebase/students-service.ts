@@ -31,6 +31,14 @@ export type StudentUser = {
   plantelNames?: string[];
 };
 
+export type StudentDropoutType = "Baja Voluntaria" | "Baja involuntaria";
+
+export type ArchivedStudentUser = StudentUser & {
+  archivedAt: string | null;
+  archivedReasonType: StudentDropoutType | "";
+  archivedReason: string;
+};
+
 export type PaginatedStudentsResult = {
   students: StudentUser[];
   lastDoc: DocumentSnapshot | null;
@@ -411,6 +419,7 @@ export async function archiveStudent(params: {
   userId: string;
   email?: string;
   reason?: string;
+  reasonType?: StudentDropoutType;
 }): Promise<void> {
   const userId = params.userId.trim();
   if (!userId) return;
@@ -430,6 +439,7 @@ export async function archiveStudent(params: {
       studentId: userId,
       email: params.email?.trim().toLowerCase() || undefined,
       reason: params.reason?.trim() || undefined,
+      reasonType: params.reasonType,
     }),
   });
 
@@ -439,6 +449,64 @@ export async function archiveStudent(params: {
   };
   if (!response.ok || payload.success !== true) {
     throw new Error(payload.error || "No se pudo archivar al alumno");
+  }
+}
+
+export async function getArchivedStudents(): Promise<ArchivedStudentUser[]> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error("No hay sesión activa para consultar bajas");
+  }
+
+  const token = await currentUser.getIdToken();
+  const response = await fetch("/api/students/archived", {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    cache: "no-store",
+  });
+
+  const payload = (await response.json().catch(() => ({}))) as {
+    success?: boolean;
+    error?: string;
+    data?: {
+      students?: ArchivedStudentUser[];
+    };
+  };
+  if (!response.ok || payload.success !== true) {
+    throw new Error(payload.error || "No se pudieron cargar las bajas");
+  }
+
+  return payload.data?.students ?? [];
+}
+
+export async function reactivateStudent(params: { userId: string }): Promise<void> {
+  const userId = params.userId.trim();
+  if (!userId) return;
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error("No hay sesión activa para reactivar al alumno");
+  }
+
+  const token = await currentUser.getIdToken();
+  const response = await fetch("/api/students/reactivate", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      studentId: userId,
+    }),
+  });
+
+  const payload = (await response.json().catch(() => ({}))) as {
+    success?: boolean;
+    error?: string;
+  };
+  if (!response.ok || payload.success !== true) {
+    throw new Error(payload.error || "No se pudo reactivar al alumno");
   }
 }
 

@@ -6,7 +6,7 @@ import { createLiveSessionForClass, normalizeLiveSession } from "@/lib/live-clas
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type TeacherRole = "teacher" | "adminTeacher" | "superAdminTeacher";
+type TeacherRole = "teacher" | "adminTeacher" | "superAdminTeacher" | "coordinadorPlantel" | "director";
 
 type TeacherLiveStatus =
   | "scheduled"
@@ -44,7 +44,13 @@ function extractBearerToken(authorizationHeader: string | null): string | null {
 }
 
 function asTeacherRole(value: unknown): TeacherRole | null {
-  if (value === "teacher" || value === "adminTeacher" || value === "superAdminTeacher") {
+  if (
+    value === "teacher" ||
+    value === "adminTeacher" ||
+    value === "superAdminTeacher" ||
+    value === "coordinadorPlantel" ||
+    value === "director"
+  ) {
     return value;
   }
   return null;
@@ -119,6 +125,17 @@ function getMentorAllowedCourseIds(
   return asUniqueStringArray(rawAllowed).filter((courseId) => validCourseIds.has(courseId));
 }
 
+function getUserPlantelIds(data: Record<string, unknown>): string[] {
+  const plantelIds = asUniqueStringArray(data.plantelIds);
+  if (plantelIds.length > 0) return plantelIds;
+  const legacyPlantelId = asTrimmedString(data.plantelId);
+  return legacyPlantelId ? [legacyPlantelId] : [];
+}
+
+function isCoordinatorRole(role: TeacherRole): boolean {
+  return role === "coordinadorPlantel" || role === "director";
+}
+
 function deriveTeacherLiveStatus(session: ReturnType<typeof normalizeLiveSession>): TeacherLiveStatus {
   if (!session) return "scheduled";
   if (session.recording.status === "failed") return "failed";
@@ -174,6 +191,7 @@ async function resolveTeacherContext(request: NextRequest): Promise<{
   uid: string;
   role: TeacherRole;
   displayName: string;
+  plantelIds: string[];
 }> {
   const token = extractBearerToken(request.headers.get("authorization"));
   if (!token) {
@@ -198,6 +216,7 @@ async function resolveTeacherContext(request: NextRequest): Promise<{
   return {
     uid,
     role,
+    plantelIds: getUserPlantelIds(userData),
     displayName:
       asTrimmedString(userData.name) ||
       asTrimmedString(userData.displayName) ||
@@ -206,22 +225,35 @@ async function resolveTeacherContext(request: NextRequest): Promise<{
   };
 }
 
-async function resolveTeacherGroups(teacherId: string) {
+type ScopedLiveGroup = {
+  groupId: string;
+  groupName: string;
+  status: string;
+  courses: Array<{ courseId: string; courseName: string }>;
+};
+
+function toScopedLiveGroup(
+  docSnap: FirebaseFirestore.QueryDocumentSnapshot,
+  courses: Array<{ courseId: string; courseName: string }>,
+): ScopedLiveGroup | null {
+  if (courses.length === 0) return null;
+  const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+  return {
+    groupId: docSnap.id,
+    groupName: asTrimmedString(data.groupName) || "Grupo",
+    status: asTrimmedString(data.status) || "active",
+    courses,
+  };
+}
+
+async function resolveTeacherGroups(teacherId: string): Promise<ScopedLiveGroup[]> {
   const db = getAdminFirestore();
   const [mainGroupsSnap, assistantGroupsSnap] = await Promise.all([
     db.collection("groups").where("teacherId", "==", teacherId).get(),
     db.collection("groups").where("assistantTeacherIds", "array-contains", teacherId).get(),
   ]);
 
-  const groupsById = new Map<
-    string,
-    {
-      groupId: string;
-      groupName: string;
-      status: string;
-      courses: Array<{ courseId: string; courseName: string }>;
-    }
-  >();
+  const groupsById = new Map<string, ScopedLiveGroup>();
 
   const consume = (docs: FirebaseFirestore.QueryDocumentSnapshot[], isPrincipal: boolean) => {
     docs.forEach((docSnap) => {
@@ -232,18 +264,53 @@ async function resolveTeacherGroups(teacherId: string) {
         ? new Set(allCourses.map((course) => course.courseId))
         : new Set(getMentorAllowedCourseIds(data, teacherId));
       const courses = allCourses.filter((course) => allowedCourseIds.has(course.courseId));
-      if (courses.length === 0) return;
-      groupsById.set(docSnap.id, {
-        groupId: docSnap.id,
-        groupName: asTrimmedString(data.groupName) || "Grupo",
-        status: asTrimmedString(data.status) || "active",
-        courses,
-      });
+      const group = toScopedLiveGroup(docSnap, courses);
+      if (group) groupsById.set(docSnap.id, group);
     });
   };
 
   consume(mainGroupsSnap.docs, true);
   consume(assistantGroupsSnap.docs, false);
+
+  return Array.from(groupsById.values()).sort((left, right) =>
+    left.groupName.localeCompare(right.groupName, "es"),
+  );
+}
+
+async function resolveCoordinatorGroups(params: {
+  coordinatorId: string;
+  plantelIds: string[];
+}): Promise<ScopedLiveGroup[]> {
+  const db = getAdminFirestore();
+  const normalizedCoordinatorId = params.coordinatorId.trim();
+  const normalizedPlantelIds = asUniqueStringArray(params.plantelIds);
+  if (!normalizedCoordinatorId) return [];
+
+  const [plantelGroupSnaps, assignedOnlineGroupsSnap] = await Promise.all([
+    Promise.all(
+      normalizedPlantelIds.map((plantelId) =>
+        db.collection("groups").where("plantelId", "==", plantelId).get(),
+      ),
+    ),
+    db
+      .collection("groups")
+      .where("isInPerson", "==", false)
+      .where("coordinatorId", "==", normalizedCoordinatorId)
+      .get(),
+  ]);
+
+  const groupsById = new Map<string, ScopedLiveGroup>();
+  const consume = (docs: FirebaseFirestore.QueryDocumentSnapshot[]) => {
+    docs.forEach((docSnap) => {
+      if (groupsById.has(docSnap.id)) return;
+      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+      const group = toScopedLiveGroup(docSnap, getGroupCourses(data));
+      if (group) groupsById.set(docSnap.id, group);
+    });
+  };
+
+  plantelGroupSnaps.forEach((snap) => consume(snap.docs));
+  consume(assignedOnlineGroupsSnap.docs);
 
   return Array.from(groupsById.values()).sort((left, right) =>
     left.groupName.localeCompare(right.groupName, "es"),
@@ -265,20 +332,29 @@ function toErrorResponse(error: unknown) {
 export async function GET(request: NextRequest) {
   try {
     const teacher = await resolveTeacherContext(request);
-    const teacherGroups = await resolveTeacherGroups(teacher.uid);
-    const scheduleGroups = teacherGroups
-      .filter((group) => group.status !== "archived")
-      .map((group) => ({
-        groupId: group.groupId,
-        groupName: group.groupName,
-        courses: group.courses.map((course) => ({
-          courseId: course.courseId,
-          courseName: course.courseName || "Materia",
-        })),
-      }));
+    const isCoordinator = isCoordinatorRole(teacher.role);
+    const scopedGroups = isCoordinator
+      ? await resolveCoordinatorGroups({
+          coordinatorId: teacher.uid,
+          plantelIds: teacher.plantelIds,
+        })
+      : await resolveTeacherGroups(teacher.uid);
+    const scopedGroupIds = new Set(scopedGroups.map((group) => group.groupId));
+    const scheduleGroups = isCoordinator
+      ? []
+      : scopedGroups
+          .filter((group) => group.status !== "archived")
+          .map((group) => ({
+            groupId: group.groupId,
+            groupName: group.groupName,
+            courses: group.courses.map((course) => ({
+              courseId: course.courseId,
+              courseName: course.courseName || "Materia",
+            })),
+          }));
 
     const groupsByCourseId = new Map<string, Array<{ groupId: string; groupName: string }>>();
-    teacherGroups.forEach((group) => {
+    scopedGroups.forEach((group) => {
       group.courses.forEach((course) => {
         const current = groupsByCourseId.get(course.courseId) ?? [];
         current.push({ groupId: group.groupId, groupName: group.groupName });
@@ -340,13 +416,16 @@ export async function GET(request: NextRequest) {
               if (classType !== "live" && !liveSession) return;
 
               const teacherCreatedById = asTrimmedString(classData.teacherCreatedById) || null;
-              if (teacherCreatedById) {
+              const linkedGroupId = asTrimmedString(classData.linkedGroupId) || null;
+              if (isCoordinator) {
+                if (linkedGroupId && !scopedGroupIds.has(linkedGroupId)) return;
+                if (!linkedGroupId && !(groupsByCourseId.get(courseId)?.length)) return;
+              } else if (teacherCreatedById) {
                 if (teacherCreatedById !== teacher.uid) return;
               } else if (courseTeacherId !== teacher.uid) {
                 return;
               }
 
-              const linkedGroupId = asTrimmedString(classData.linkedGroupId) || null;
               const linkedGroupName = asTrimmedString(classData.linkedGroupName) || null;
               const sharedGroupNames = Array.from(
                 new Set((groupsByCourseId.get(courseId) ?? []).map((group) => group.groupName)),
@@ -412,6 +491,8 @@ export async function GET(request: NextRequest) {
         data: {
           items,
           scheduleGroups,
+          canSchedule: !isCoordinator,
+          viewerRole: teacher.role,
           fetchedAt: new Date().toISOString(),
         },
       },
@@ -425,6 +506,10 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const teacher = await resolveTeacherContext(request);
+    if (isCoordinatorRole(teacher.role)) {
+      throw new RouteAccessError(403, "Los coordinadores y directores solo pueden consultar sesiones en vivo.");
+    }
+
     const body = (await request.json()) as ScheduleLiveClassBody;
     const groupId = asTrimmedString(body?.groupId);
     const courseId = asTrimmedString(body?.courseId);

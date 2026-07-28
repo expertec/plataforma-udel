@@ -7,7 +7,8 @@ export type UserRole =
   | "student"
   | "adminTeacher"
   | "superAdminTeacher"
-  | "coordinadorPlantel";
+  | "coordinadorPlantel"
+  | "director";
 
 export type AuthorizedLiveAccessRole = "teacher" | "student";
 
@@ -43,6 +44,7 @@ type AuthenticatedUser = {
   role: UserRole | null;
   displayName: string;
   email: string;
+  plantelIds: string[];
 };
 
 type LiveClassContext = {
@@ -59,6 +61,7 @@ const TEACHER_ROLES = new Set<UserRole>([
   "adminTeacher",
   "superAdminTeacher",
   "coordinadorPlantel",
+  "director",
 ]);
 
 function extractBearerToken(authorizationHeader: string | null): string | null {
@@ -88,11 +91,23 @@ function asUserRole(value: unknown): UserRole | null {
     value === "student" ||
     value === "adminTeacher" ||
     value === "superAdminTeacher" ||
-    value === "coordinadorPlantel"
+    value === "coordinadorPlantel" ||
+    value === "director"
   ) {
     return value;
   }
   return null;
+}
+
+function getUserPlantelIds(data: Record<string, unknown>): string[] {
+  const plantelIds = asUniqueStringArray(data.plantelIds);
+  if (plantelIds.length > 0) return plantelIds;
+  const legacyPlantelId = asTrimmedString(data.plantelId);
+  return legacyPlantelId ? [legacyPlantelId] : [];
+}
+
+function isCoordinatorRole(role: UserRole | null): boolean {
+  return role === "coordinadorPlantel" || role === "director";
 }
 
 function getGroupCourseIds(groupData: Record<string, unknown>): string[] {
@@ -200,6 +215,7 @@ export async function resolveAuthenticatedUser(request: NextRequest): Promise<Au
     role,
     displayName,
     email,
+    plantelIds: getUserPlantelIds(userData),
   };
 }
 
@@ -246,6 +262,54 @@ function buildLiveClassContextFromSnapshot(params: {
     classData,
     liveSession: normalizeLiveSession(classData.liveSession),
   };
+}
+
+async function canCoordinatorAccessLiveClass(params: {
+  uid: string;
+  plantelIds: string[];
+  courseId: string;
+  classData?: Record<string, unknown>;
+}): Promise<boolean> {
+  const db = getAdminFirestore();
+  const normalizedPlantelIds = asUniqueStringArray(params.plantelIds);
+  const linkedGroupId = asTrimmedString(params.classData?.linkedGroupId);
+
+  if (linkedGroupId) {
+    const groupSnap = await db.collection("groups").doc(linkedGroupId).get();
+    if (!groupSnap.exists) return false;
+    const groupData = (groupSnap.data() ?? {}) as Record<string, unknown>;
+    const groupPlantelId = asTrimmedString(groupData.plantelId);
+    const coordinatorId = asTrimmedString(groupData.coordinatorId);
+    const isOnlineGroup = groupData.isInPerson === false;
+    return (
+      (groupPlantelId.length > 0 && normalizedPlantelIds.includes(groupPlantelId)) ||
+      (isOnlineGroup && coordinatorId === params.uid)
+    );
+  }
+
+  const [plantelGroupSnaps, assignedOnlineGroupsSnap] = await Promise.all([
+    Promise.all(
+      normalizedPlantelIds.map((plantelId) =>
+        db.collection("groups").where("plantelId", "==", plantelId).get(),
+      ),
+    ),
+    db
+      .collection("groups")
+      .where("isInPerson", "==", false)
+      .where("coordinatorId", "==", params.uid)
+      .get(),
+  ]);
+
+  const hasCourseInScope = (docs: FirebaseFirestore.QueryDocumentSnapshot[]): boolean =>
+    docs.some((groupDoc) => {
+      const groupData = (groupDoc.data() ?? {}) as Record<string, unknown>;
+      return getGroupCourseIds(groupData).includes(params.courseId);
+    });
+
+  return (
+    plantelGroupSnaps.some((snap) => hasCourseInScope(snap.docs)) ||
+    hasCourseInScope(assignedOnlineGroupsSnap.docs)
+  );
 }
 
 async function resolveLiveClassContext(params: {
@@ -311,6 +375,9 @@ async function canUserManageCourse(params: {
   uid: string;
   role: UserRole | null;
   courseId: string;
+  plantelIds?: string[];
+  classData?: Record<string, unknown>;
+  allowCoordinatorAccess?: boolean;
 }): Promise<boolean> {
   const db = getAdminFirestore();
   const courseRef = db.collection("courses").doc(params.courseId);
@@ -324,6 +391,18 @@ async function canUserManageCourse(params: {
   if (teacherId && teacherId === params.uid) return true;
   if (mentorIds.includes(params.uid)) return true;
   if (params.role === "adminTeacher" || params.role === "superAdminTeacher") return true;
+  if (
+    params.allowCoordinatorAccess === true &&
+    isCoordinatorRole(params.role) &&
+    (await canCoordinatorAccessLiveClass({
+      uid: params.uid,
+      plantelIds: params.plantelIds ?? [],
+      courseId: params.courseId,
+      classData: params.classData,
+    }))
+  ) {
+    return true;
+  }
 
   const mentorGroupsSnap = await db
     .collection("groups")
@@ -443,6 +522,7 @@ export async function resolveAuthorizedLiveClassAccess(params: {
   courseId?: string;
   lessonId?: string;
   requireTeacher?: boolean;
+  allowCoordinatorAccess?: boolean;
 }): Promise<{
   user: AuthenticatedUser;
   classContext: LiveClassContext;
@@ -460,6 +540,9 @@ export async function resolveAuthorizedLiveClassAccess(params: {
     uid: user.uid,
     role: user.role,
     courseId: classContext.courseId,
+    plantelIds: user.plantelIds,
+    classData: classContext.classData,
+    allowCoordinatorAccess: params.allowCoordinatorAccess,
   });
 
   if (teacherAllowed) {

@@ -114,6 +114,7 @@ export async function GET(
       courseId: courseId || undefined,
       lessonId: lessonId || undefined,
       requireTeacher: true,
+      allowCoordinatorAccess: true,
     });
 
     const liveSession = normalizeLiveSession(access.classContext.classData.liveSession);

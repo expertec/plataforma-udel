@@ -95,11 +95,11 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
       ? "SuperAdminTeacher"
       : userRole === "adminTeacher"
         ? "AdminTeacher"
-        : isCampusCoordinatorRole(userRole)
-          ? "Coordinador de plantel"
-          : userRole === "director"
-            ? "Director de plantel"
-          : "Profesor";
+        : userRole === "director"
+          ? "Director de plantel"
+          : isCampusCoordinatorRole(userRole)
+            ? "Coordinador de plantel"
+            : "Profesor";
 
   const isActive = (href: string) => {
     if (href === "/creator") return pathname === "/creator" || pathname === "/creator/";
@@ -117,7 +117,7 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
       { href: "/creator/cursos", label: "Cursos" },
       { href: "/creator/grupos", label: "Grupos" },
     ];
-    if (userRole === "teacher" || isAdminTeacherRole(userRole)) {
+    if (userRole === "teacher" || isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole)) {
       items.push({ href: "/creator/mis-clases-en-vivo", label: "Clases En Vivo" });
     }
     if (isAdminTeacherRole(userRole)) {

@@ -70,6 +70,8 @@ type TeacherLiveClassesResponse = {
   data?: {
     items?: TeacherLiveClassItem[];
     scheduleGroups?: ScheduleGroupOption[];
+    canSchedule?: boolean;
+    viewerRole?: "teacher" | "adminTeacher" | "superAdminTeacher" | "coordinadorPlantel" | "director";
     fetchedAt?: string;
   };
   error?: string;
@@ -308,6 +310,7 @@ export function TeacherLiveClassesView({
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState<TeacherLiveClassItem[]>([]);
   const [scheduleGroups, setScheduleGroups] = useState<ScheduleGroupOption[]>([]);
+  const [canScheduleClasses, setCanScheduleClasses] = useState(true);
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | TeacherLiveStatus>("all");
@@ -345,6 +348,7 @@ export function TeacherLiveClassesView({
       const nextGroups = payload.data.scheduleGroups ?? [];
       setItems(payload.data.items ?? []);
       setScheduleGroups(nextGroups);
+      setCanScheduleClasses(payload.data.canSchedule ?? true);
       setFetchedAt(payload.data.fetchedAt ?? new Date().toISOString());
       setForm((current) => {
         if (current.groupId || current.courseId) return current;
@@ -450,6 +454,7 @@ export function TeacherLiveClassesView({
     }),
     [items],
   );
+  const isReadOnlyScope = !canScheduleClasses;
 
   const openScheduleModal = useCallback(() => {
     const nextForm = getInitialForm(scheduleGroups);
@@ -732,12 +737,13 @@ export function TeacherLiveClassesView({
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.25em] text-[#9f6e61]">
-                Profesor
+                {isReadOnlyScope ? "Coordinación" : "Profesor"}
               </p>
               <h1 className="mt-2 text-2xl font-semibold text-[#551b22]">Clases En Vivo</h1>
               <p className="mt-2 max-w-3xl text-sm text-[#754848]">
-                Revisa tus sesiones live, su estado actual y programa nuevas clases sin entrar al
-                creador del curso.
+                {isReadOnlyScope
+                  ? "Consulta las sesiones live relacionadas con tus planteles y grupos asignados."
+                  : "Revisa tus sesiones live, su estado actual y programa nuevas clases sin entrar al creador del curso."}
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -749,21 +755,25 @@ export function TeacherLiveClassesView({
               >
                 {loading ? "Actualizando..." : "Refrescar"}
               </button>
-              <button
-                type="button"
-                onClick={openScheduleModal}
-                disabled={scheduleGroups.length === 0}
-                className="rounded-lg bg-[#6e2d2d] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#551b22] disabled:opacity-60"
-              >
-                Programar clase
-              </button>
+              {canScheduleClasses ? (
+                <button
+                  type="button"
+                  onClick={openScheduleModal}
+                  disabled={scheduleGroups.length === 0}
+                  className="rounded-lg bg-[#6e2d2d] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#551b22] disabled:opacity-60"
+                >
+                  Programar clase
+                </button>
+              ) : null}
             </div>
           </div>
         </div>
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <div className="creator-card rounded-2xl border p-5 shadow-sm">
-            <p className="text-sm text-[#9f6e61]">Tus clases live</p>
+            <p className="text-sm text-[#9f6e61]">
+              {isReadOnlyScope ? "Clases live relacionadas" : "Tus clases live"}
+            </p>
             <p className="mt-2 text-3xl font-semibold text-[#551b22]">{summary.total}</p>
             <p className="mt-1 text-xs text-[#9f6e61]">
               Última actualización: {fetchedAt ? formatEsMxDateTime(fetchedAt) : "N/D"}
@@ -808,7 +818,9 @@ export function TeacherLiveClassesView({
               </select>
             </div>
             <p className="text-xs text-[#9f6e61]">
-              Solo se muestran clases live creadas por ti.
+              {isReadOnlyScope
+                ? "Solo se muestran clases live relacionadas con tus planteles o grupos online asignados."
+                : "Solo se muestran clases live creadas por ti."}
             </p>
           </div>
 
@@ -877,23 +889,27 @@ export function TeacherLiveClassesView({
                               >
                                 Info
                               </button>
-                              <Link
-                                href={buildLiveHref(item)}
-                                className="flex rounded-xl px-3 py-2 text-sm font-semibold text-[#551b22] hover:bg-[#f3e3db]"
-                                onClick={() => setOpenActionsClassId(null)}
-                              >
-                                Entrar
-                              </Link>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setOpenActionsClassId(null);
-                                  void copyLiveLink(item);
-                                }}
-                                className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm font-medium text-[#551b22] hover:bg-[#f3e3db]"
-                              >
-                                Copiar enlace
-                              </button>
+                              {canScheduleClasses ? (
+                                <>
+                                  <Link
+                                    href={buildLiveHref(item)}
+                                    className="flex rounded-xl px-3 py-2 text-sm font-semibold text-[#551b22] hover:bg-[#f3e3db]"
+                                    onClick={() => setOpenActionsClassId(null)}
+                                  >
+                                    Entrar
+                                  </Link>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenActionsClassId(null);
+                                      void copyLiveLink(item);
+                                    }}
+                                    className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm font-medium text-[#551b22] hover:bg-[#f3e3db]"
+                                  >
+                                    Copiar enlace
+                                  </button>
+                                </>
+                              ) : null}
                               <button
                                 type="button"
                                 onClick={() => {
@@ -1252,12 +1268,14 @@ export function TeacherLiveClassesView({
                 >
                   Cerrar
                 </button>
-                <Link
-                  href={buildLiveHref(detailsItem)}
-                  className="rounded-lg bg-[#6e2d2d] px-4 py-2 text-sm font-semibold text-white hover:bg-[#551b22]"
-                >
-                  Entrar
-                </Link>
+                {canScheduleClasses ? (
+                  <Link
+                    href={buildLiveHref(detailsItem)}
+                    className="rounded-lg bg-[#6e2d2d] px-4 py-2 text-sm font-semibold text-white hover:bg-[#551b22]"
+                  >
+                    Entrar
+                  </Link>
+                ) : null}
               </div>
             </div>
           ) : null}

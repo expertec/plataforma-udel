@@ -18,12 +18,16 @@ import { getPrograms } from "@/lib/firebase/programs-service";
 import {
   createStudentAccount,
   archiveStudent,
+  ArchivedStudentUser,
   getCoordinatorScopedStudents,
+  getArchivedStudents,
   getStudentUsersPaginated,
   getStudentsCount,
   StudentUser,
+  StudentDropoutType,
   createStudentIfNotExists,
   checkStudentExists,
+  reactivateStudent,
   updateStudentPlantelAssignment,
 } from "@/lib/firebase/students-service";
 import { getGroupStudents, getGroupsForTeacher } from "@/lib/firebase/groups-service";
@@ -82,6 +86,10 @@ type ActionMenuState = {
   openUp: boolean;
 };
 
+type StudentsTab = "gestion" | "altas" | "passwords" | "riesgo" | "bajas";
+
+const DROPOUT_TYPES: StudentDropoutType[] = ["Baja Voluntaria", "Baja involuntaria"];
+
 const isValidEmail = (email: string): boolean => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
@@ -118,6 +126,24 @@ function getStudentPlantelSummary(student: StudentUser): string {
   return "Sin plantel";
 }
 
+function getDropoutReportReason(student: ArchivedStudentUser): string {
+  const reasonType = student.archivedReasonType?.trim() ?? "";
+  const reason = student.archivedReason?.trim() ?? "";
+  if (reasonType && reason) return `${reasonType}: ${reason}`;
+  return reason || reasonType || "Sin motivo";
+}
+
+function formatDropoutDate(value: string | null | undefined): string {
+  if (!value) return "Sin fecha";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Sin fecha";
+  return date.toLocaleDateString("es-MX", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+}
+
 function getStudentPhoneForPlantelSuggestion(student: StudentUser): string {
   return student.whatsapp ?? student.phone ?? "";
 }
@@ -136,7 +162,7 @@ export default function AlumnosPage() {
   const [parseError, setParseError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [activeTab, setActiveTab] = useState<"gestion" | "altas" | "passwords" | "riesgo">("gestion");
+  const [activeTab, setActiveTab] = useState<StudentsTab>("gestion");
   const [newStudent, setNewStudent] = useState({
     name: "",
     email: "",
@@ -157,6 +183,13 @@ export default function AlumnosPage() {
   const [coordinatorScopeGroupIds, setCoordinatorScopeGroupIds] = useState<string[]>([]);
   const [deletingStudentId, setDeletingStudentId] = useState<string | null>(null);
   const [previewFilter, setPreviewFilter] = useState<"all" | "invalid" | "new" | "existing">("all");
+  const [dropoutModalOpen, setDropoutModalOpen] = useState(false);
+  const [dropoutStudent, setDropoutStudent] = useState<StudentUser | null>(null);
+  const [dropoutType, setDropoutType] = useState<StudentDropoutType | "">("");
+  const [dropoutReason, setDropoutReason] = useState("");
+  const [archivedStudents, setArchivedStudents] = useState<ArchivedStudentUser[]>([]);
+  const [archivedLoading, setArchivedLoading] = useState(false);
+  const [reactivatingStudentId, setReactivatingStudentId] = useState<string | null>(null);
 
   // Estados para actualización de contraseñas
   const [passwordFileName, setPasswordFileName] = useState<string | null>(null);
@@ -328,9 +361,31 @@ export default function AlumnosPage() {
     }
   }, [currentUser?.uid, plantelAssignment?.plantelId, userRole]);
 
+  const loadArchivedStudents = useCallback(async () => {
+    if (!currentUser?.uid || !userRole) return;
+    if (!isAdminTeacherRole(userRole) && !isCampusCoordinatorRole(userRole)) return;
+
+    setArchivedLoading(true);
+    try {
+      const data = await getArchivedStudents();
+      setArchivedStudents(data);
+    } catch (err) {
+      console.error(err);
+      toast.error(err instanceof Error ? err.message : "No se pudieron cargar las bajas");
+    } finally {
+      setArchivedLoading(false);
+    }
+  }, [currentUser?.uid, userRole]);
+
   useEffect(() => {
     loadStudents(false);
   }, [loadStudents]);
+
+  useEffect(() => {
+    if (activeTab === "bajas") {
+      void loadArchivedStudents();
+    }
+  }, [activeTab, loadArchivedStudents]);
 
   useEffect(() => {
     let active = true;
@@ -824,10 +879,11 @@ export default function AlumnosPage() {
   const hasCoordinatorPlantel = !isCoordinator || coordinatorPlantelId.length > 0;
   const canViewRiskReport = isAdmin || (isCoordinator && hasCoordinatorPlantel);
   const canViewAllStudents = isAdmin || isCoordinator;
-  const adminTabs: { key: "gestion" | "altas" | "passwords" | "riesgo"; label: string; helper?: string }[] = isAdmin
+  const adminTabs: { key: StudentsTab; label: string; helper?: string }[] = isAdmin
     ? [
         { key: "gestion", label: "Listado y acciones" },
         { key: "riesgo", label: "Riesgo deserción" },
+        { key: "bajas", label: "Bajas" },
         { key: "altas", label: "Altas e importación" },
         { key: "passwords", label: "Contraseñas" },
       ]
@@ -835,6 +891,7 @@ export default function AlumnosPage() {
       ? [
           { key: "gestion", label: "Listado y acciones" },
           { key: "riesgo", label: "Riesgo deserción" },
+          { key: "bajas", label: "Bajas" },
         ]
       : [];
 
@@ -949,30 +1006,91 @@ export default function AlumnosPage() {
     }
   };
 
-  const handleDeleteStudent = async (student: StudentUser) => {
+  const handleDeleteStudent = (student: StudentUser) => {
     if (!student.id) return;
-    if (
-      !window.confirm(
-        `¿Dar de baja a ${student.name}? El alumno quedará archivado, perderá acceso y dejará de contar en grupos y estadísticas.`,
-      )
-    ) {
+    setDropoutStudent(student);
+    setDropoutType("");
+    setDropoutReason("");
+    setDropoutModalOpen(true);
+  };
+
+  const handleCloseDropoutModal = () => {
+    if (deletingStudentId) return;
+    setDropoutModalOpen(false);
+    setDropoutStudent(null);
+    setDropoutType("");
+    setDropoutReason("");
+  };
+
+  const handleConfirmDropout = async () => {
+    if (!dropoutStudent?.id) return;
+    const trimmedReason = dropoutReason.trim();
+    if (!dropoutType) {
+      toast.error("Selecciona el tipo de baja");
       return;
     }
-    setDeletingStudentId(student.id);
+    if (!trimmedReason) {
+      toast.error("Describe el motivo de la baja");
+      return;
+    }
+
+    setDeletingStudentId(dropoutStudent.id);
     try {
       await archiveStudent({
-        userId: student.id,
-        email: student.email,
-        reason: "Baja desde panel de alumnos",
+        userId: dropoutStudent.id,
+        email: dropoutStudent.email,
+        reasonType: dropoutType,
+        reason: trimmedReason,
       });
       toast.success("Alumno dado de baja");
+      setDropoutModalOpen(false);
+      setDropoutStudent(null);
+      setDropoutType("");
+      setDropoutReason("");
       await loadStudents();
+      if (activeTab === "bajas") {
+        await loadArchivedStudents();
+      }
     } catch (err) {
       console.error(err);
       toast.error(err instanceof Error ? err.message : "No se pudo dar de baja al alumno");
     } finally {
       setDeletingStudentId(null);
     }
+  };
+
+  const handleReactivateStudent = async (student: ArchivedStudentUser) => {
+    if (!student.id) return;
+    setReactivatingStudentId(student.id);
+    try {
+      await reactivateStudent({ userId: student.id });
+      toast.success("Alumno reactivado");
+      setArchivedStudents((prev) => prev.filter((item) => item.id !== student.id));
+      await loadStudents();
+    } catch (err) {
+      console.error(err);
+      toast.error(err instanceof Error ? err.message : "No se pudo reactivar al alumno");
+    } finally {
+      setReactivatingStudentId(null);
+    }
+  };
+
+  const handleDownloadDropoutReport = () => {
+    if (archivedStudents.length === 0) {
+      toast.error("No hay bajas para generar el reporte");
+      return;
+    }
+
+    const rows = archivedStudents.map((student) => ({
+      "Nombre completo del alumno": student.name,
+      Plantel: getStudentPlantelSummary(student),
+      Fecha: formatDropoutDate(student.archivedAt),
+      "Motivo de la baja": getDropoutReportReason(student),
+    }));
+    const sheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "Bajas");
+    XLSX.writeFile(workbook, "reporte-desercion.xlsx");
   };
 
   const handleOpenEditProfile = (student: StudentUser) => {
@@ -1606,6 +1724,96 @@ export default function AlumnosPage() {
         />
       ) : null}
 
+      {canViewRiskReport && activeTab === "bajas" ? (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Bajas</p>
+              <h2 className="text-lg font-semibold text-slate-900">Alumnos dados de baja</h2>
+              <p className="text-sm text-slate-600">
+                {archivedStudents.length} alumno{archivedStudents.length !== 1 ? "s" : ""} en baja.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => loadArchivedStudents()}
+                disabled={archivedLoading}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {archivedLoading ? "Cargando..." : "Refrescar"}
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadDropoutReport}
+                disabled={archivedStudents.length === 0}
+                className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Generar reporte de deserción
+              </button>
+            </div>
+          </div>
+
+          {archivedLoading ? (
+            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
+              Cargando bajas...
+            </div>
+          ) : archivedStudents.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
+              No hay alumnos dados de baja.
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm text-slate-800">
+                  <thead className="bg-slate-50 text-xs font-semibold text-slate-600">
+                    <tr className="border-b border-slate-200">
+                      <th className="min-w-[190px] px-4 py-2 text-left">Nombre</th>
+                      <th className="min-w-[220px] px-4 py-2 text-left">Email</th>
+                      <th className="min-w-[190px] px-4 py-2 text-left">Plantel</th>
+                      <th className="min-w-[120px] px-4 py-2 text-left">Fecha</th>
+                      <th className="min-w-[160px] px-4 py-2 text-left">Tipo</th>
+                      <th className="min-w-[260px] px-4 py-2 text-left">Motivo</th>
+                      <th className="min-w-[130px] px-4 py-2 text-right">Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {archivedStudents.map((student) => (
+                      <tr key={student.id} className="align-middle">
+                        <td className="px-4 py-3 font-medium text-slate-900">{student.name}</td>
+                        <td className="px-4 py-3 text-slate-600">
+                          <span className="block max-w-[240px] truncate">{student.email}</span>
+                        </td>
+                        <td className="px-4 py-3 text-slate-700">{getStudentPlantelSummary(student)}</td>
+                        <td className="px-4 py-3 text-slate-600">{formatDropoutDate(student.archivedAt)}</td>
+                        <td className="px-4 py-3 text-slate-700">
+                          {student.archivedReasonType || "Sin tipo"}
+                        </td>
+                        <td className="px-4 py-3 text-slate-600">
+                          <span className="block max-w-[320px] whitespace-pre-wrap">
+                            {student.archivedReason || "Sin motivo"}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => handleReactivateStudent(student)}
+                            disabled={reactivatingStudentId === student.id}
+                            className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {reactivatingStudentId === student.id ? "Reactivando..." : "Reactivar"}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : null}
+
       {(activeTab === "gestion" || !canViewRiskReport) && (
         <>
           {loading ? (
@@ -1923,6 +2131,78 @@ export default function AlumnosPage() {
             document.body,
           )
         : null}
+
+      {dropoutModalOpen && dropoutStudent ? (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black bg-opacity-50 px-4 py-6">
+          <div className="w-full max-w-lg rounded-xl bg-white p-6 shadow-2xl">
+            <div className="mb-4">
+              <h2 className="text-xl font-semibold text-slate-900">Dar de baja alumno</h2>
+              <p className="text-sm text-slate-600">
+                Alumno: <span className="font-medium">{dropoutStudent.name}</span>
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                El alumno perderá acceso y dejará de contar en grupos y estadísticas. Podrás reactivarlo desde la
+                pestaña Bajas.
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Tipo de baja
+                </label>
+                <select
+                  value={dropoutType}
+                  onChange={(e) => setDropoutType(e.target.value as StudentDropoutType | "")}
+                  disabled={deletingStudentId === dropoutStudent.id}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-slate-100"
+                >
+                  <option value="">Seleccionar motivo</option>
+                  {DROPOUT_TYPES.map((type) => (
+                    <option key={type} value={type}>
+                      {type}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Descripción del motivo
+                </label>
+                <textarea
+                  value={dropoutReason}
+                  onChange={(e) => setDropoutReason(e.target.value)}
+                  disabled={deletingStudentId === dropoutStudent.id}
+                  rows={4}
+                  placeholder="Describe el motivo de la baja"
+                  className="w-full resize-none rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-slate-100"
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={handleCloseDropoutModal}
+                disabled={deletingStudentId === dropoutStudent.id}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDropout}
+                disabled={deletingStudentId === dropoutStudent.id}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {deletingStudentId === dropoutStudent.id ? "Dando de baja..." : "Confirmar baja"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Modal para editar perfil del alumno */}
       {editProfileModalOpen && selectedStudent && (

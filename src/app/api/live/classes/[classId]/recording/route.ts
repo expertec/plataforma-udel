@@ -597,6 +597,7 @@ export async function GET(
       courseId: courseId || undefined,
       lessonId: lessonId || undefined,
       requireTeacher: false,
+      allowCoordinatorAccess: true,
     });
 
     const egressConfig = getLiveKitEgressConfig();

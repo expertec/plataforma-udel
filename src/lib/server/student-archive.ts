@@ -1,8 +1,11 @@
 import type { UserRecord } from "firebase-admin/auth";
+import * as admin from "firebase-admin";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 import {
+  ACTIVE_STUDENT_STATUS,
   ARCHIVED_STUDENT_STATUS,
   isStudentStatusActive,
+  isStudentStatusBlocked,
 } from "@/lib/students/status";
 import {
   extractPhoneLookupValues,
@@ -16,6 +19,13 @@ type StudentArchiveParams = {
   archivedBy: string;
   source: "admin-panel" | "finance-webhook";
   reason?: string | null;
+  reasonType?: string | null;
+  allowedPlantelIds?: string[];
+};
+
+type StudentReactivateParams = {
+  uid: string;
+  reactivatedBy: string;
   allowedPlantelIds?: string[];
 };
 
@@ -35,6 +45,9 @@ type ResolvedStudentIdentity = {
   userRecord: UserRecord;
   role: string | null;
   plantelIds: string[];
+  plantelNames: string[];
+  archivedPlantelIds: string[];
+  archivedPlantelNames: string[];
 };
 
 export type StudentArchiveResult = {
@@ -44,6 +57,16 @@ export type StudentArchiveResult = {
   role: string | null;
   archivedEnrollments: number;
   archivedGroupMemberships: number;
+  affectedGroups: number;
+};
+
+export type StudentReactivateResult = {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+  role: string | null;
+  reactivatedEnrollments: number;
+  reactivatedGroupMemberships: number;
   affectedGroups: number;
 };
 
@@ -65,6 +88,24 @@ function getPlantelIds(data: Record<string, unknown>): string[] {
   if (plantelIds.length > 0) return plantelIds;
   const legacyPlantelId = asTrimmedString(data.plantelId);
   return legacyPlantelId ? [legacyPlantelId] : [];
+}
+
+function getPlantelNames(data: Record<string, unknown>): string[] {
+  const plantelNames = asUniqueStringArray(data.plantelNames);
+  if (plantelNames.length > 0) return plantelNames;
+  const legacyPlantelName = asTrimmedString(data.plantelName);
+  return legacyPlantelName ? [legacyPlantelName] : [];
+}
+
+function asDropoutReasonType(value: unknown): string | null {
+  const normalized = asTrimmedString(value).toLowerCase();
+  if (normalized === "voluntaria" || normalized === "baja voluntaria") {
+    return "Baja Voluntaria";
+  }
+  if (normalized === "involuntaria" || normalized === "baja involuntaria") {
+    return "Baja involuntaria";
+  }
+  return null;
 }
 
 function isPotentialStudentRole(role: string): boolean {
@@ -244,6 +285,9 @@ async function resolveStudentIdentity(params: {
     userRecord,
     role: resolvedRole,
     plantelIds: getPlantelIds(userData),
+    plantelNames: getPlantelNames(userData),
+    archivedPlantelIds: asUniqueStringArray(userData.archivedPlantelIds),
+    archivedPlantelNames: asUniqueStringArray(userData.archivedPlantelNames),
   };
 }
 
@@ -255,6 +299,7 @@ export async function archiveStudentAccount(
   const resolved = await resolveStudentIdentity(params);
   const now = new Date();
   const reason = asTrimmedString(params.reason) || null;
+  const reasonType = asDropoutReasonType(params.reasonType);
   const allowedPlantelIds = asUniqueStringArray(params.allowedPlantelIds);
 
   if (params.allowedPlantelIds && allowedPlantelIds.length === 0) {
@@ -304,7 +349,10 @@ export async function archiveStudentAccount(
       archivedAt: now,
       archivedBy: params.archivedBy,
       archivedSource: params.source,
+      archivedReasonType: reasonType,
       archivedReason: reason,
+      archivedPlantelIds: resolved.plantelIds,
+      archivedPlantelNames: resolved.plantelNames,
       updatedAt: now,
       updatedBy: params.archivedBy,
       plantelIds: [],
@@ -321,6 +369,7 @@ export async function archiveStudentAccount(
         archivedAt: now,
         archivedBy: params.archivedBy,
         archivedSource: params.source,
+        archivedReasonType: reasonType,
         archivedReason: reason,
         updatedAt: now,
         updatedBy: params.archivedBy,
@@ -337,6 +386,7 @@ export async function archiveStudentAccount(
         archivedAt: now,
         archivedBy: params.archivedBy,
         archivedSource: params.source,
+        archivedReasonType: reasonType,
         archivedReason: reason,
         updatedAt: now,
         updatedBy: params.archivedBy,
@@ -373,6 +423,124 @@ export async function archiveStudentAccount(
     role: resolved.role,
     archivedEnrollments: enrollmentsSnap.size,
     archivedGroupMemberships: membershipsSnap.size,
+    affectedGroups: affectedGroupIds.size,
+  };
+}
+
+export async function reactivateStudentAccount(
+  params: StudentReactivateParams,
+): Promise<StudentReactivateResult> {
+  const firestore = getAdminFirestore();
+  const auth = getAdminAuth();
+  const resolved = await resolveStudentIdentity({ uid: params.uid });
+  const now = new Date();
+  const allowedPlantelIds = asUniqueStringArray(params.allowedPlantelIds);
+  const restoredPlantelIds =
+    resolved.archivedPlantelIds.length > 0 ? resolved.archivedPlantelIds : resolved.plantelIds;
+  const restoredPlantelNames =
+    resolved.archivedPlantelNames.length > 0 ? resolved.archivedPlantelNames : resolved.plantelNames;
+
+  if (params.allowedPlantelIds && allowedPlantelIds.length === 0) {
+    throw new StudentArchiveError(403, "No tienes un plantel asignado para reactivar alumnos");
+  }
+
+  if (
+    allowedPlantelIds.length > 0 &&
+    !restoredPlantelIds.some((plantelId) => allowedPlantelIds.includes(plantelId))
+  ) {
+    throw new StudentArchiveError(403, "No tienes permisos para reactivar a este alumno");
+  }
+
+  const userRef = firestore.collection("users").doc(resolved.uid);
+  const [enrollmentsSnap, membershipsSnap] = await Promise.all([
+    firestore.collection("studentEnrollments").where("studentId", "==", resolved.uid).get(),
+    firestore.collectionGroup("students").where("studentId", "==", resolved.uid).get(),
+  ]);
+
+  const affectedGroupIds = new Set<string>();
+  const archivedEnrollments = enrollmentsSnap.docs.filter((docSnap) => {
+    const data = docSnap.data() as Record<string, unknown>;
+    const groupId = asTrimmedString(data.groupId);
+    if (groupId && isStudentStatusBlocked(data.status)) {
+      affectedGroupIds.add(groupId);
+      return true;
+    }
+    return false;
+  });
+  const archivedMemberships = membershipsSnap.docs.filter((docSnap) => {
+    const data = docSnap.data() as Record<string, unknown>;
+    const groupId = asTrimmedString(docSnap.ref.parent.parent?.id);
+    if (groupId && isStudentStatusBlocked(data.status)) {
+      affectedGroupIds.add(groupId);
+      return true;
+    }
+    return false;
+  });
+
+  const batch = firestore.batch();
+  batch.set(
+    userRef,
+    {
+      status: ACTIVE_STUDENT_STATUS,
+      reactivatedAt: now,
+      reactivatedBy: params.reactivatedBy,
+      updatedAt: now,
+      updatedBy: params.reactivatedBy,
+      plantelIds: restoredPlantelIds,
+      plantelNames: restoredPlantelNames,
+    },
+    { merge: true },
+  );
+
+  archivedEnrollments.forEach((docSnap) => {
+    batch.set(
+      docSnap.ref,
+      {
+        status: ACTIVE_STUDENT_STATUS,
+        reactivatedAt: now,
+        reactivatedBy: params.reactivatedBy,
+        updatedAt: now,
+        updatedBy: params.reactivatedBy,
+      },
+      { merge: true },
+    );
+  });
+
+  archivedMemberships.forEach((docSnap) => {
+    batch.set(
+      docSnap.ref,
+      {
+        status: ACTIVE_STUDENT_STATUS,
+        reactivatedAt: now,
+        reactivatedBy: params.reactivatedBy,
+        updatedAt: now,
+        updatedBy: params.reactivatedBy,
+      },
+      { merge: true },
+    );
+  });
+
+  affectedGroupIds.forEach((groupId) => {
+    batch.set(
+      firestore.collection("groups").doc(groupId),
+      {
+        studentsCount: admin.firestore.FieldValue.increment(1),
+        updatedAt: now,
+      },
+      { merge: true },
+    );
+  });
+
+  await batch.commit();
+  await auth.updateUser(resolved.uid, { disabled: false });
+
+  return {
+    uid: resolved.uid,
+    email: resolved.email,
+    displayName: resolved.displayName,
+    role: resolved.role,
+    reactivatedEnrollments: archivedEnrollments.length,
+    reactivatedGroupMemberships: archivedMemberships.length,
     affectedGroups: affectedGroupIds.size,
   };
 }

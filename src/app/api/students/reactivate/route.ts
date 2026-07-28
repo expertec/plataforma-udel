@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  archiveStudentAccount,
+  reactivateStudentAccount,
   StudentArchiveError,
 } from "@/lib/server/student-archive";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
@@ -8,19 +8,15 @@ import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type ArchiveStudentRequest = {
+type ReactivateStudentRequest = {
   studentId?: string;
-  email?: string;
-  phone?: string;
-  reason?: string;
-  reasonType?: string;
 };
 
-type ArchiveAllowedRole = "adminTeacher" | "superAdminTeacher" | "coordinadorPlantel" | "director";
+type ReactivateAllowedRole = "adminTeacher" | "superAdminTeacher" | "coordinadorPlantel" | "director";
 
-type ArchiveAccessContext = {
+type ReactivateAccessContext = {
   uid: string;
-  role: ArchiveAllowedRole;
+  role: ReactivateAllowedRole;
   plantelIds: string[];
 };
 
@@ -54,7 +50,7 @@ function extractBearerToken(authorizationHeader: string | null): string | null {
   return token || null;
 }
 
-function asAllowedRole(value: unknown): ArchiveAllowedRole | null {
+function asAllowedRole(value: unknown): ReactivateAllowedRole | null {
   if (
     value === "adminTeacher" ||
     value === "superAdminTeacher" ||
@@ -73,11 +69,11 @@ function getUserPlantelIds(data: Record<string, unknown>): string[] {
   return legacyPlantelId ? [legacyPlantelId] : [];
 }
 
-function isGlobalArchiveRole(role: ArchiveAllowedRole): boolean {
+function isGlobalReactivateRole(role: ReactivateAllowedRole): boolean {
   return role === "adminTeacher" || role === "superAdminTeacher";
 }
 
-async function resolveArchiveAccess(request: NextRequest): Promise<ArchiveAccessContext> {
+async function resolveReactivateAccess(request: NextRequest): Promise<ReactivateAccessContext> {
   const bearerToken = extractBearerToken(request.headers.get("authorization"));
   if (!bearerToken) {
     throw new RouteAccessError(401, "Authorization Bearer token requerido");
@@ -115,7 +111,7 @@ function toErrorResponse(error: unknown): NextResponse {
     );
   }
 
-  console.error("Error archivando alumno", error);
+  console.error("Error reactivando alumno", error);
   const message =
     process.env.NODE_ENV !== "production" && error instanceof Error
       ? error.message.trim() || "Error interno del servidor"
@@ -125,39 +121,26 @@ function toErrorResponse(error: unknown): NextResponse {
 
 export async function POST(request: NextRequest) {
   try {
-    const accessContext = await resolveArchiveAccess(request);
-    const body = (await request.json().catch(() => ({}))) as ArchiveStudentRequest;
+    const accessContext = await resolveReactivateAccess(request);
+    const body = (await request.json().catch(() => ({}))) as ReactivateStudentRequest;
     const studentId = asTrimmedString(body.studentId);
-    const email = asTrimmedString(body.email).toLowerCase();
-    const phone = asTrimmedString(body.phone);
 
-    if (!studentId && !email && !phone) {
+    if (!studentId) {
       return NextResponse.json(
-        { success: false, error: "studentId, email o phone son requeridos" },
+        { success: false, error: "studentId es requerido" },
         { status: 400 },
       );
     }
 
-    const result = await archiveStudentAccount({
-      phone: phone || undefined,
-      uid: studentId || undefined,
-      email: email || undefined,
-      archivedBy: accessContext.uid,
-      source: "admin-panel",
-      reason: body.reason,
-      reasonType: body.reasonType,
-      allowedPlantelIds: isGlobalArchiveRole(accessContext.role)
+    const result = await reactivateStudentAccount({
+      uid: studentId,
+      reactivatedBy: accessContext.uid,
+      allowedPlantelIds: isGlobalReactivateRole(accessContext.role)
         ? undefined
         : accessContext.plantelIds,
     });
 
-    return NextResponse.json(
-      {
-        success: true,
-        data: result,
-      },
-      { status: 200 },
-    );
+    return NextResponse.json({ success: true, data: result }, { status: 200 });
   } catch (error: unknown) {
     return toErrorResponse(error);
   }
