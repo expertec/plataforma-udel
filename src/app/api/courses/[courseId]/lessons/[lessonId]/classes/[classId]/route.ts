@@ -164,23 +164,6 @@ function getGroupCourseIds(groupData: Record<string, unknown>): string[] {
   return legacyCourseId ? [legacyCourseId] : [];
 }
 
-function getMentorAllowedCourseIds(
-  groupData: Record<string, unknown>,
-  mentorId: string,
-): string[] {
-  const groupCourseIds = getGroupCourseIds(groupData);
-  const mentorAccess = groupData.mentorCourseAccess;
-  if (!mentorAccess || typeof mentorAccess !== "object" || Array.isArray(mentorAccess)) {
-    return groupCourseIds;
-  }
-  if (!Object.prototype.hasOwnProperty.call(mentorAccess, mentorId)) {
-    return groupCourseIds;
-  }
-  const rawAllowed = (mentorAccess as Record<string, unknown>)[mentorId];
-  const validGroupIds = new Set(groupCourseIds);
-  return asUniqueStringArray(rawAllowed).filter((courseId) => validGroupIds.has(courseId));
-}
-
 async function canCampusCoordinatorManageCourse(params: {
   courseId: string;
   plantelIds: string[];
@@ -277,27 +260,7 @@ async function canUserManageCourse(params: {
     }
   }
 
-  if (mentorIds.includes(uid)) {
-    return { allowed: true, mentorIds, shouldBackfillMentor: false };
-  }
-
-  // Fallback para datos legacy: validar acceso de mentor por grupos.
-  const mentorGroupsSnap = await db
-    .collection("groups")
-    .where("assistantTeacherIds", "array-contains", uid)
-    .get();
-
-  const hasGroupAccess = mentorGroupsSnap.docs.some((groupDoc) => {
-    const groupData = groupDoc.data() as Record<string, unknown>;
-    const allowedCourseIds = getMentorAllowedCourseIds(groupData, uid);
-    return allowedCourseIds.includes(courseId);
-  });
-
-  if (!hasGroupAccess) {
-    return { allowed: false, mentorIds, shouldBackfillMentor: false };
-  }
-
-  return { allowed: true, mentorIds, shouldBackfillMentor: true };
+  return { allowed: false, mentorIds, shouldBackfillMentor: false };
 }
 
 function toErrorResponse(error: unknown): NextResponse {

@@ -62,30 +62,6 @@ function asUniqueStringArray(value: unknown): string[] {
   );
 }
 
-function getGroupCourseIds(groupData: Record<string, unknown>): string[] {
-  const ids = asUniqueStringArray(groupData.courseIds);
-  if (ids.length > 0) return ids;
-  const legacyCourseId = asTrimmedString(groupData.courseId);
-  return legacyCourseId ? [legacyCourseId] : [];
-}
-
-function getMentorAllowedCourseIds(
-  groupData: Record<string, unknown>,
-  mentorId: string,
-): string[] {
-  const groupCourseIds = getGroupCourseIds(groupData);
-  const mentorAccess = groupData.mentorCourseAccess;
-  if (!mentorAccess || typeof mentorAccess !== "object" || Array.isArray(mentorAccess)) {
-    return groupCourseIds;
-  }
-  if (!Object.prototype.hasOwnProperty.call(mentorAccess, mentorId)) {
-    return groupCourseIds;
-  }
-  const rawAllowed = (mentorAccess as Record<string, unknown>)[mentorId];
-  const validGroupIds = new Set(groupCourseIds);
-  return asUniqueStringArray(rawAllowed).filter((courseId) => validGroupIds.has(courseId));
-}
-
 function normalizePositiveInt(value: unknown, fieldName: string): number {
   if (typeof value !== "number" || !Number.isInteger(value)) {
     throw new RouteAccessError(400, `${fieldName} debe ser un entero`);
@@ -147,27 +123,7 @@ async function canUserManageCourse(params: {
     return { allowed: true, mentorIds, shouldBackfillMentor: false };
   }
 
-  if (mentorIds.includes(uid)) {
-    return { allowed: true, mentorIds, shouldBackfillMentor: false };
-  }
-
-  // Fallback defensivo: validar mentoría por asignación de grupo para reparar datos legacy.
-  const mentorGroupsSnap = await db
-    .collection("groups")
-    .where("assistantTeacherIds", "array-contains", uid)
-    .get();
-
-  const hasGroupAccess = mentorGroupsSnap.docs.some((groupDoc) => {
-    const groupData = groupDoc.data() as Record<string, unknown>;
-    const allowedCourseIds = getMentorAllowedCourseIds(groupData, uid);
-    return allowedCourseIds.includes(courseId);
-  });
-
-  if (!hasGroupAccess) {
-    return { allowed: false, mentorIds, shouldBackfillMentor: false };
-  }
-
-  return { allowed: true, mentorIds, shouldBackfillMentor: true };
+  return { allowed: false, mentorIds, shouldBackfillMentor: false };
 }
 
 function toErrorResponse(error: unknown): NextResponse {

@@ -170,11 +170,14 @@ export default function CourseBuilderPage() {
     return Array.from(map.values());
   }, [lessons]);
   const canManageGroups = isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
-  const canLinkGroups = canManageGroups || userRole === "teacher";
+  const isCourseOwner = Boolean(currentUser?.uid && courseInfo?.teacherId === currentUser.uid);
+  const canEditCourseContent =
+    isCourseOwner || isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
+  const canLinkGroups = canManageGroups || isCourseOwner;
   const canEditLessons =
-    userRole === "teacher" || isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
+    canEditCourseContent;
   const canReorderClasses =
-    userRole === "teacher" || isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
+    canEditCourseContent;
   const showCreationMetadata = isAdminTeacherRole(userRole);
   const availablePlanteles = useMemo<Plantel[]>(() => {
     if (isAdminTeacherRole(userRole)) return planteles;
@@ -260,6 +263,10 @@ export default function CourseBuilderPage() {
             thumbnail: d.thumbnail ?? "",
             isPublished: d.isPublished ?? false,
             createdAt: d.createdAt?.toDate?.() ?? undefined,
+            teacherId: d.teacherId ?? "",
+            mentorIds: Array.isArray(d.mentorIds)
+              ? d.mentorIds.filter((mentorId): mentorId is string => typeof mentorId === "string")
+              : [],
           });
           setLoadError(null);
         }
@@ -824,6 +831,10 @@ export default function CourseBuilderPage() {
   );
 
   const handleOpenAddClass = (lesson: Lesson) => {
+    if (!canEditCourseContent) {
+      toast.error("No tienes permiso para editar este curso");
+      return;
+    }
     setSelectedLesson(lesson);
     setClassModalMode("create");
     setEditingClass(null);
@@ -874,6 +885,10 @@ export default function CourseBuilderPage() {
   const handleReorderClasses = useCallback(
     async (lessonId: string, fromIndex: number, toIndex: number) => {
       if (!courseId) return;
+      if (!canReorderClasses) {
+        toast.error("No tienes permiso para reordenar clases");
+        return;
+      }
       let previousOrder: ClassData[] | null = null;
       let nextOrderIds: string[] | null = null;
       let valid = false;
@@ -910,12 +925,16 @@ export default function CourseBuilderPage() {
         }
       }
     },
-    [courseId],
+    [canReorderClasses, courseId],
   );
 
   // ya no se usa selector de preguntas desde el listado
 
   const handleEditClass = (lesson: Lesson, classItem: ClassData) => {
+    if (!canEditCourseContent) {
+      toast.error("No tienes permiso para editar este curso");
+      return;
+    }
     setSelectedLesson(lesson);
     setClassModalMode("edit");
     setEditingClass({ lesson, classItem });
@@ -1170,6 +1189,10 @@ export default function CourseBuilderPage() {
               onSubmit={async (e) => {
                 e.preventDefault();
                 if (!courseId) return;
+                if (!canEditCourseContent) {
+                  toast.error("No tienes permiso para editar este curso");
+                  return;
+                }
                 setSavingInfo(true);
                 try {
                   await updateCourse(courseId, {
@@ -1192,6 +1215,7 @@ export default function CourseBuilderPage() {
                 <label className="text-sm font-medium text-slate-800">Título</label>
                 <input
                   value={courseInfo.title ?? ""}
+                  disabled={!canEditCourseContent}
                   onChange={(e) =>
                     setCourseInfo((prev) => ({ ...prev, title: e.target.value }))
                   }
@@ -1202,6 +1226,7 @@ export default function CourseBuilderPage() {
                 <label className="text-sm font-medium text-slate-800">Descripción</label>
                 <textarea
                   value={courseInfo.description ?? ""}
+                  disabled={!canEditCourseContent}
                   onChange={(e) =>
                     setCourseInfo((prev) => ({ ...prev, description: e.target.value }))
                   }
@@ -1215,6 +1240,7 @@ export default function CourseBuilderPage() {
                 </label>
                 <input
                   value={courseInfo.introVideoUrl ?? ""}
+                  disabled={!canEditCourseContent}
                   onChange={(e) =>
                     setCourseInfo((prev) => ({ ...prev, introVideoUrl: e.target.value }))
                   }
@@ -1225,6 +1251,7 @@ export default function CourseBuilderPage() {
                 <label className="text-sm font-medium text-slate-800">Programa / carrera</label>
                 <select
                   value={courseInfo.program ?? courseInfo.category ?? ""}
+                  disabled={!canEditCourseContent}
                   onChange={(e) =>
                     setCourseInfo((prev) => ({ ...prev, program: e.target.value }))
                   }
@@ -1255,6 +1282,7 @@ export default function CourseBuilderPage() {
                     }`}
                     onDragOver={(e) => {
                       e.preventDefault();
+                      if (!canEditCourseContent) return;
                       setThumbDragOver(true);
                     }}
                     onDragLeave={(e) => {
@@ -1264,6 +1292,7 @@ export default function CourseBuilderPage() {
                     onDrop={async (e) => {
                       e.preventDefault();
                       setThumbDragOver(false);
+                      if (!canEditCourseContent) return;
                       const file = e.dataTransfer.files?.[0];
                       if (file) {
                         await handleThumbnailFile(file);
@@ -1279,6 +1308,7 @@ export default function CourseBuilderPage() {
                       <input
                         type="file"
                         accept="image/*"
+                        disabled={!canEditCourseContent}
                         className="hidden"
                         onChange={async (e) => {
                           const file = e.target.files?.[0];
@@ -1317,7 +1347,7 @@ export default function CourseBuilderPage() {
               <div className="sm:col-span-2 flex justify-end gap-3">
                 <button
                   type="submit"
-                  disabled={savingInfo}
+                  disabled={savingInfo || !canEditCourseContent}
                   className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:opacity-60"
                 >
                   {savingInfo ? "Guardando..." : "Guardar cambios"}
@@ -1332,24 +1362,26 @@ export default function CourseBuilderPage() {
 
       {activeTab === "lessons" ? (
         <>
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-slate-900">Lecciones</h2>
-            <div className="flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setImportWordLessonsOpen(true)}
-                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
-              >
-                📄 Agregar semanas desde Word
-              </button>
-              <button
-                onClick={() => setAddLessonOpen(true)}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"
-              >
-                + Agregar Lección
-              </button>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-slate-900">Lecciones</h2>
+              {canEditCourseContent ? (
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setImportWordLessonsOpen(true)}
+                    className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+                  >
+                    📄 Agregar semanas desde Word
+                  </button>
+                  <button
+                    onClick={() => setAddLessonOpen(true)}
+                    className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500"
+                  >
+                    + Agregar Lección
+                  </button>
+                </div>
+              ) : null}
             </div>
-          </div>
 
           {loadingLessons ? (
             <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-600 shadow-sm">

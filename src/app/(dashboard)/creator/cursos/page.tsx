@@ -256,24 +256,26 @@ export default function CoursesPage() {
                       </p>
                     </div>
                     <div className="flex flex-col items-end gap-2 text-right text-sm font-semibold">
-                      <span
-                        className={
-                          course.isPublished ? "text-green-600" : "text-slate-500"
-                        }
-                      >
-                        {course.isPublished ? "Publicado" : "Borrador"}
-                      </span>
-                      <button
-                        onClick={(e) => {
-                          e.preventDefault();
-                          setEditingCourse(course);
-                          setEditModalOpen(true);
-                        }}
-                        className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 text-slate-700 shadow-sm transition hover:border-blue-300 hover:text-blue-700"
-                        aria-label="Configurar curso"
-                      >
-                        <Settings2 size={16} />
-                      </button>
+                        <span
+                          className={
+                            course.isPublished ? "text-green-600" : "text-slate-500"
+                          }
+                        >
+                          {course.isPublished ? "Publicado" : "Borrador"}
+                        </span>
+                        {!course.isMentorCourse ? (
+                          <button
+                            onClick={(e) => {
+                              e.preventDefault();
+                              setEditingCourse(course);
+                              setEditModalOpen(true);
+                            }}
+                            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 text-slate-700 shadow-sm transition hover:border-blue-300 hover:text-blue-700"
+                            aria-label="Configurar curso"
+                          >
+                            <Settings2 size={16} />
+                          </button>
+                        ) : null}
                     </div>
                   </div>
                   <div className="flex items-center gap-3 text-sm text-slate-600">

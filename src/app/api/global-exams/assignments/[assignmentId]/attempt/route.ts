@@ -105,6 +105,7 @@ type FinalizedAttemptResult = {
     passed: boolean;
     correctAnswers: number;
     totalQuestions: number;
+    durationSeconds: number | null;
   };
   assignment: ReturnType<typeof toGlobalExamAssignmentRecord>;
   attemptsRemaining: number;
@@ -141,6 +142,14 @@ function getAttemptSessionFromAssignment(assignment: {
     startedAt,
     deadlineAt,
   };
+}
+
+function calculateAttemptDurationSeconds(session: AttemptSession | null, submittedAt: Date): number | null {
+  if (!session) return null;
+  const completedAtMs = Math.min(submittedAt.getTime(), session.deadlineAt.getTime());
+  const elapsedMs = completedAtMs - session.startedAt.getTime();
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return null;
+  return Math.round(elapsedMs / 1000);
 }
 
 async function ensureStudentAttemptSession(params: {
@@ -231,6 +240,7 @@ async function finalizeGlobalExamAttempt(params: {
   let committedAssignmentStatus = params.assignment.status;
   let committedBestScore: number | null = params.assignment.bestScore;
   let committedSession: AttemptSession | null = null;
+  let committedDurationSeconds: number | null = null;
 
   await db.runTransaction(async (transaction) => {
     const freshAssignmentSnap = await transaction.get(params.assignmentRef);
@@ -262,6 +272,7 @@ async function finalizeGlobalExamAttempt(params: {
       })();
 
     committedAttemptNumber = freshAssignment.attemptsUsed + 1;
+    committedDurationSeconds = calculateAttemptDurationSeconds(committedSession, now);
     const nextBestScore =
       typeof freshAssignment.bestScore === "number"
         ? Math.max(freshAssignment.bestScore, result.score)
@@ -284,6 +295,7 @@ async function finalizeGlobalExamAttempt(params: {
       correctAnswers: result.correctAnswers,
       totalQuestions: result.totalQuestions,
       answers: result.answers,
+      durationSeconds: committedDurationSeconds,
       completionReason: params.completionReason,
       startedAt: committedSession.startedAt,
       deadlineAt: committedSession.deadlineAt,
@@ -298,6 +310,7 @@ async function finalizeGlobalExamAttempt(params: {
         bestScore: nextBestScore,
         latestAttemptNumber: committedAttemptNumber,
         latestAttemptId: attemptRef.id,
+        latestAttemptDurationSeconds: committedDurationSeconds,
         passed: result.passed,
         enabled: nextStatus === "enabled",
         status: nextStatus,
@@ -408,6 +421,7 @@ async function finalizeGlobalExamAttempt(params: {
       passed: result.passed,
       correctAnswers: result.correctAnswers,
       totalQuestions: result.totalQuestions,
+      durationSeconds: committedDurationSeconds,
     },
     assignment: nextAssignment,
     attemptsRemaining: Math.max(nextAssignment.attemptsAllowed - nextAssignment.attemptsUsed, 0),

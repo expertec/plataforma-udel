@@ -228,6 +228,7 @@ export function toGlobalExamAssignmentRecord(
     bestScore: asNumberOrNull(rawData.bestScore),
     latestAttemptNumber: asNumberOrNull(rawData.latestAttemptNumber) ?? 0,
     latestAttemptId: asTrimmedString(rawData.latestAttemptId) || null,
+    latestAttemptDurationSeconds: asNumberOrNull(rawData.latestAttemptDurationSeconds),
     passed: asBoolean(rawData.passed, false),
     currentAttemptStartedAt: toIsoString(rawData.currentAttemptStartedAt),
     currentAttemptDeadlineAt:
@@ -258,6 +259,16 @@ export function toGlobalExamAttemptRecord(
   rawData: FirestoreRecord,
 ): GlobalExamAttemptRecord {
   const answers = asObject(rawData.answers);
+  const startedAt = toIsoString(rawData.startedAt);
+  const submittedAt = toIsoString(rawData.submittedAt);
+  const parsedStartedAtMs = startedAt ? new Date(startedAt).getTime() : Number.NaN;
+  const parsedSubmittedAtMs = submittedAt ? new Date(submittedAt).getTime() : Number.NaN;
+  const calculatedDurationSeconds =
+    Number.isFinite(parsedStartedAtMs) &&
+    Number.isFinite(parsedSubmittedAtMs) &&
+    parsedSubmittedAtMs >= parsedStartedAtMs
+      ? Math.round((parsedSubmittedAtMs - parsedStartedAtMs) / 1000)
+      : null;
   const rawCompletionReason = asTrimmedString(rawData.completionReason);
   const completionReason: GlobalExamAttemptCompletionReason | null =
     rawCompletionReason === "timeout" ||
@@ -282,9 +293,10 @@ export function toGlobalExamAttemptRecord(
       return acc;
     }, {}),
     completionReason,
-    startedAt: toIsoString(rawData.startedAt),
+    durationSeconds: asNumberOrNull(rawData.durationSeconds) ?? calculatedDurationSeconds,
+    startedAt,
     deadlineAt: toIsoString(rawData.deadlineAt),
-    submittedAt: toIsoString(rawData.submittedAt),
+    submittedAt,
   };
 }
 

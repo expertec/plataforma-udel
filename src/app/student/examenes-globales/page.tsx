@@ -35,6 +35,18 @@ function formatRemainingTime(ms: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
+function formatElapsedTime(seconds: number | null | undefined): string | null {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return null;
+  const totalSeconds = Math.round(seconds);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours} h ${minutes.toString().padStart(2, "0")} min`;
+  }
+  return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+}
+
 export default function StudentGlobalExamsPage({
   backHref = "/student",
   backLabel = "Volver al feed",
@@ -377,7 +389,7 @@ export default function StudentGlobalExamsPage({
                     {activeExam.assignment.attemptsAllowed}
                   </p>
                   <p className="text-sm text-amber-700">
-                    Tienes 45 minutos. El examen se abre en pantalla completa y se termina si
+                    Tienes 40 minutos. El examen se abre en pantalla completa y se termina si
                     cambias de pestaña, sales de la página o cierras la pantalla completa.
                   </p>
                 </div>
@@ -574,6 +586,11 @@ export default function StudentGlobalExamsPage({
                                 ? `Ultima nota: ${assignment.latestScore}`
                                 : "Sin intentos registrados"}
                             </p>
+                            {formatElapsedTime(assignment.latestAttemptDurationSeconds) ? (
+                              <p className="text-xs text-slate-500">
+                                Tiempo usado: {formatElapsedTime(assignment.latestAttemptDurationSeconds)}
+                              </p>
+                            ) : null}
                             <p className="text-xs text-slate-500">
                               Mejor nota: {assignment.bestScore ?? "N/D"}
                             </p>

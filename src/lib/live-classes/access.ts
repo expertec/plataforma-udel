@@ -139,10 +139,10 @@ function getMentorAllowedCourseIds(
   const groupCourseIds = getGroupCourseIds(groupData);
   const mentorAccess = groupData.mentorCourseAccess;
   if (!mentorAccess || typeof mentorAccess !== "object" || Array.isArray(mentorAccess)) {
-    return groupCourseIds;
+    return [];
   }
   if (!Object.prototype.hasOwnProperty.call(mentorAccess, mentorId)) {
-    return groupCourseIds;
+    return [];
   }
   const rawAllowed = (mentorAccess as Record<string, unknown>)[mentorId];
   const validGroupIds = new Set(groupCourseIds);
@@ -386,10 +386,8 @@ async function canUserManageCourse(params: {
 
   const courseData = (courseSnap.data() ?? {}) as Record<string, unknown>;
   const teacherId = asTrimmedString(courseData.teacherId);
-  const mentorIds = asUniqueStringArray(courseData.mentorIds);
 
   if (teacherId && teacherId === params.uid) return true;
-  if (mentorIds.includes(params.uid)) return true;
   if (params.role === "adminTeacher" || params.role === "superAdminTeacher") return true;
   if (
     params.allowCoordinatorAccess === true &&

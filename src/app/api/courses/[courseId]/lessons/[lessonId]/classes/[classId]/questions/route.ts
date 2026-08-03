@@ -46,39 +46,6 @@ function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function asUniqueStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return Array.from(
-    new Set(
-      value.filter((item): item is string => typeof item === "string" && item.trim().length > 0),
-    ),
-  );
-}
-
-function getGroupCourseIds(groupData: Record<string, unknown>): string[] {
-  const ids = asUniqueStringArray(groupData.courseIds);
-  if (ids.length > 0) return ids;
-  const legacyCourseId = asTrimmedString(groupData.courseId);
-  return legacyCourseId ? [legacyCourseId] : [];
-}
-
-function getMentorAllowedCourseIds(
-  groupData: Record<string, unknown>,
-  mentorId: string,
-): string[] {
-  const groupCourseIds = getGroupCourseIds(groupData);
-  const mentorAccess = groupData.mentorCourseAccess;
-  if (!mentorAccess || typeof mentorAccess !== "object" || Array.isArray(mentorAccess)) {
-    return groupCourseIds;
-  }
-  if (!Object.prototype.hasOwnProperty.call(mentorAccess, mentorId)) {
-    return groupCourseIds;
-  }
-  const rawAllowed = (mentorAccess as Record<string, unknown>)[mentorId];
-  const validGroupIds = new Set(groupCourseIds);
-  return asUniqueStringArray(rawAllowed).filter((courseId) => validGroupIds.has(courseId));
-}
-
 function normalizeClassType(value: unknown) {
   if (
     value === "video" ||
@@ -148,7 +115,6 @@ async function canUserManageCourse(params: {
   }
 
   const courseData = (courseSnap.data() ?? {}) as Record<string, unknown>;
-  const mentorIds = asUniqueStringArray(courseData.mentorIds);
   const teacherId = asTrimmedString(courseData.teacherId);
 
   if (role === "adminTeacher" || role === "superAdminTeacher") {
@@ -159,20 +125,7 @@ async function canUserManageCourse(params: {
     return true;
   }
 
-  if (mentorIds.includes(uid)) {
-    return true;
-  }
-
-  const mentorGroupsSnap = await db
-    .collection("groups")
-    .where("assistantTeacherIds", "array-contains", uid)
-    .get();
-
-  return mentorGroupsSnap.docs.some((groupDoc) => {
-    const groupData = groupDoc.data() as Record<string, unknown>;
-    const allowedCourseIds = getMentorAllowedCourseIds(groupData, uid);
-    return allowedCourseIds.includes(courseId);
-  });
+  return false;
 }
 
 function toErrorResponse(error: unknown): NextResponse {

@@ -41,6 +41,9 @@ import {
 import type { DocumentSnapshot } from "firebase/firestore";
 import { normalizeTeacherProfessionalProfile } from "@/lib/teachers/profile";
 
+const AUTO_CLOSE_DAYS = 40;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 export default function GroupDetailPage() {
   const params = useParams<{ groupId: string }>();
   const router = useRouter();
@@ -457,7 +460,7 @@ export default function GroupDetailPage() {
     }
 
     const explicitAccess = group.mentorCourseAccess?.[mentorId];
-    if (!Array.isArray(explicitAccess)) return courseIdsForGroup;
+    if (!Array.isArray(explicitAccess)) return [];
     const allowedSet = new Set(explicitAccess.filter((id): id is string => typeof id === "string"));
     return courseIdsForGroup.filter((courseId) => allowedSet.has(courseId));
   };
@@ -928,7 +931,12 @@ export default function GroupDetailPage() {
                 <p className="font-semibold text-slate-800">Materias asignadas</p>
                 <ul className="mt-1 list-disc space-y-1 pl-5">
                   {assignedCourses.map((c) => (
-                    <li key={c.courseId}>{c.courseName}</li>
+                    <li key={c.courseId}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span>{c.courseName}</span>
+                        <CourseAutoCloseBadge enabledAt={c.enabledAt ?? null} />
+                      </div>
+                    </li>
                   ))}
                 </ul>
               </div>
@@ -1433,7 +1441,10 @@ export default function GroupDetailPage() {
                       {assignedCourses.map((course) => (
                         <li key={course.courseId} className="flex items-center justify-between gap-3">
                           <div>
-                            <p className="font-medium">{course.courseName}</p>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="font-medium">{course.courseName}</p>
+                              <CourseAutoCloseBadge enabledAt={course.enabledAt ?? null} />
+                            </div>
                             <p className="text-xs text-slate-500">ID: {course.courseId}</p>
                           </div>
                           <button
@@ -1748,6 +1759,67 @@ function AlumnosTab({
 function formatRange(start: Date, end: Date) {
   const opts: Intl.DateTimeFormatOptions = { day: "2-digit", month: "2-digit", year: "numeric" };
   return `${start.toLocaleDateString("es-MX", opts)} - ${end.toLocaleDateString("es-MX", opts)}`;
+}
+
+function getAutoCloseState(enabledAt?: Date | null) {
+  if (!enabledAt || Number.isNaN(enabledAt.getTime())) {
+    return {
+      label: "Sin cierre estimado",
+      className: "border-slate-200 bg-slate-100 text-slate-600",
+      title: "Esta materia no tiene fecha de habilitación registrada.",
+    };
+  }
+
+  const closeAtMs = enabledAt.getTime() + AUTO_CLOSE_DAYS * DAY_MS;
+  const daysRemaining = Math.ceil((closeAtMs - Date.now()) / DAY_MS);
+  const closeDate = new Date(closeAtMs).toLocaleDateString("es-MX", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+
+  if (daysRemaining > 1) {
+    return {
+      label: `Cierra en ${daysRemaining} días`,
+      className: "border-blue-200 bg-blue-50 text-blue-700",
+      title: `Cierre automático estimado: ${closeDate}`,
+    };
+  }
+
+  if (daysRemaining === 1) {
+    return {
+      label: "Cierra mañana",
+      className: "border-amber-200 bg-amber-50 text-amber-700",
+      title: `Cierre automático estimado: ${closeDate}`,
+    };
+  }
+
+  if (daysRemaining === 0) {
+    return {
+      label: "Cierra hoy",
+      className: "border-amber-200 bg-amber-50 text-amber-700",
+      title: `Cierre automático estimado: ${closeDate}`,
+    };
+  }
+
+  const daysOverdue = Math.abs(daysRemaining);
+  return {
+    label: daysOverdue === 1 ? "Debió cerrar ayer" : `Debió cerrar hace ${daysOverdue} días`,
+    className: "border-red-200 bg-red-50 text-red-700",
+    title: `Cierre automático estimado: ${closeDate}`,
+  };
+}
+
+function CourseAutoCloseBadge({ enabledAt }: { enabledAt?: Date | null }) {
+  const state = getAutoCloseState(enabledAt);
+  return (
+    <span
+      title={state.title}
+      className={`inline-flex w-fit rounded-full border px-2 py-0.5 text-[11px] font-semibold ${state.className}`}
+    >
+      {state.label}
+    </span>
+  );
 }
 
 type SelectStudentsModalProps = {

@@ -118,6 +118,8 @@ type CourseClosureState = {
   extraPointsTotal?: number | null;
   manualOverride?: boolean;
   pendingUngradedCount?: number;
+  closedByType?: "teacher" | "system";
+  closureTrigger?: "manual" | "automatic";
   lastFinalGradeNotifiedAt?: Date | null;
   lastFinalGradeNotifiedBy?: string;
   lastFinalGradeNotifiedValue?: number;
@@ -304,6 +306,16 @@ const formatDateTime = (value?: Date | null) => {
 
 const formatGradeValue = (value?: number | null) =>
   typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "—";
+
+const closureOriginLabel = (closure?: CourseClosureState | null) => {
+  if (closure?.closureTrigger === "automatic" || closure?.closedByType === "system") {
+    return "Cierre automático";
+  }
+  if (closure?.closureTrigger === "manual" || closure?.closedByType === "teacher") {
+    return "Cierre por docente";
+  }
+  return null;
+};
 
 const taskTypeLabel = (classType: Task["classType"]) => {
   if (classType === "quiz") return "Quiz";
@@ -530,6 +542,14 @@ export function CalificacionesTab({
               pendingUngradedCount:
                 typeof closureObj.pendingUngradedCount === "number"
                   ? closureObj.pendingUngradedCount
+                  : undefined,
+              closedByType:
+                closureObj.closedByType === "teacher" || closureObj.closedByType === "system"
+                  ? closureObj.closedByType
+                  : undefined,
+              closureTrigger:
+                closureObj.closureTrigger === "manual" || closureObj.closureTrigger === "automatic"
+                  ? closureObj.closureTrigger
                   : undefined,
               lastFinalGradeNotifiedAt: toDateOrNull(closureObj.lastFinalGradeNotifiedAt),
               lastFinalGradeNotifiedBy:
@@ -2171,6 +2191,8 @@ export function CalificacionesTab({
         extraPointsTotal,
         manualOverride,
         pendingUngradedCount: row.pendingUngradedCount,
+        closedByType: "teacher",
+        closureTrigger: "manual",
         lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
         lastFinalGradeNotifiedBy: previousClosure?.lastFinalGradeNotifiedBy,
         lastFinalGradeNotifiedValue: previousClosure?.lastFinalGradeNotifiedValue,
@@ -2201,6 +2223,8 @@ export function CalificacionesTab({
               extraPointsTotal: closurePayload.extraPointsTotal ?? 0,
               manualOverride: closurePayload.manualOverride,
               pendingUngradedCount: closurePayload.pendingUngradedCount,
+              closedByType: closurePayload.closedByType,
+              closureTrigger: closurePayload.closureTrigger,
               lastFinalGradeNotifiedAt: closurePayload.lastFinalGradeNotifiedAt ?? null,
               lastFinalGradeNotifiedBy: closurePayload.lastFinalGradeNotifiedBy ?? null,
               lastFinalGradeNotifiedValue: closurePayload.lastFinalGradeNotifiedValue ?? null,
@@ -2261,6 +2285,8 @@ export function CalificacionesTab({
         extraPointsTotal,
         manualOverride,
         pendingUngradedCount: row.pendingUngradedCount,
+        closedByType: previousClosure?.closedByType,
+        closureTrigger: previousClosure?.closureTrigger,
         lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
         lastFinalGradeNotifiedBy: previousClosure?.lastFinalGradeNotifiedBy,
         lastFinalGradeNotifiedValue: previousClosure?.lastFinalGradeNotifiedValue,
@@ -2294,6 +2320,8 @@ export function CalificacionesTab({
               extraPointsTotal: payload.extraPointsTotal ?? 0,
               manualOverride: payload.manualOverride,
               pendingUngradedCount: payload.pendingUngradedCount,
+              closedByType: payload.closedByType ?? null,
+              closureTrigger: payload.closureTrigger ?? null,
               lastFinalGradeNotifiedAt: payload.lastFinalGradeNotifiedAt ?? null,
               lastFinalGradeNotifiedBy: payload.lastFinalGradeNotifiedBy ?? null,
               lastFinalGradeNotifiedValue: payload.lastFinalGradeNotifiedValue ?? null,
@@ -2388,6 +2416,8 @@ export function CalificacionesTab({
         extraPointsTotal,
         manualOverride,
         pendingUngradedCount: row.pendingUngradedCount,
+        closedByType: previousClosure?.closedByType,
+        closureTrigger: previousClosure?.closureTrigger,
         lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
         lastFinalGradeNotifiedBy: previousClosure?.lastFinalGradeNotifiedBy,
         lastFinalGradeNotifiedValue: previousClosure?.lastFinalGradeNotifiedValue,
@@ -2421,6 +2451,8 @@ export function CalificacionesTab({
               extraPointsTotal: payload.extraPointsTotal ?? 0,
               manualOverride: payload.manualOverride,
               pendingUngradedCount: payload.pendingUngradedCount,
+              closedByType: payload.closedByType ?? null,
+              closureTrigger: payload.closureTrigger ?? null,
               lastFinalGradeNotifiedAt: payload.lastFinalGradeNotifiedAt ?? null,
               lastFinalGradeNotifiedBy: payload.lastFinalGradeNotifiedBy ?? null,
               lastFinalGradeNotifiedValue: payload.lastFinalGradeNotifiedValue ?? null,
@@ -2538,6 +2570,8 @@ export function CalificacionesTab({
                 extraPointsTotal: notifiedPayload.extraPointsTotal ?? 0,
                 manualOverride: notifiedPayload.manualOverride,
                 pendingUngradedCount: notifiedPayload.pendingUngradedCount,
+                closedByType: notifiedPayload.closedByType ?? null,
+                closureTrigger: notifiedPayload.closureTrigger ?? null,
                 lastFinalGradeNotifiedAt: notifiedPayload.lastFinalGradeNotifiedAt,
                 lastFinalGradeNotifiedBy: notifiedPayload.lastFinalGradeNotifiedBy,
                 lastFinalGradeNotifiedValue: notifiedPayload.lastFinalGradeNotifiedValue,
@@ -2606,6 +2640,8 @@ export function CalificacionesTab({
         extraPointsTotal: previous?.extraPointsTotal ?? 0,
         manualOverride: previous?.manualOverride ?? false,
         pendingUngradedCount: row.pendingUngradedCount,
+        closedByType: previous?.closedByType,
+        closureTrigger: previous?.closureTrigger,
         lastFinalGradeNotifiedAt: previous?.lastFinalGradeNotifiedAt ?? null,
         lastFinalGradeNotifiedBy: previous?.lastFinalGradeNotifiedBy,
         lastFinalGradeNotifiedValue: previous?.lastFinalGradeNotifiedValue,
@@ -2639,6 +2675,8 @@ export function CalificacionesTab({
               extraPointsTotal: reopenPayload.extraPointsTotal ?? 0,
               manualOverride: reopenPayload.manualOverride ?? false,
               pendingUngradedCount: reopenPayload.pendingUngradedCount,
+              closedByType: reopenPayload.closedByType ?? null,
+              closureTrigger: reopenPayload.closureTrigger ?? null,
               lastFinalGradeNotifiedAt: reopenPayload.lastFinalGradeNotifiedAt ?? null,
               lastFinalGradeNotifiedBy: reopenPayload.lastFinalGradeNotifiedBy ?? null,
               lastFinalGradeNotifiedValue: reopenPayload.lastFinalGradeNotifiedValue ?? null,
@@ -2782,6 +2820,8 @@ export function CalificacionesTab({
                   extraPointsTotal,
                   manualOverride,
                   pendingUngradedCount: row.pendingUngradedCount,
+                  closedByType: "teacher",
+                  closureTrigger: "manual",
                   lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
                   lastFinalGradeNotifiedBy: previousClosure?.lastFinalGradeNotifiedBy ?? null,
                   lastFinalGradeNotifiedValue: previousClosure?.lastFinalGradeNotifiedValue ?? null,
@@ -2822,6 +2862,8 @@ export function CalificacionesTab({
                 extraPointsTotal,
                 manualOverride,
                 pendingUngradedCount: row.pendingUngradedCount,
+                closedByType: "teacher",
+                closureTrigger: "manual",
                 lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
                 lastFinalGradeNotifiedBy: previousClosure?.lastFinalGradeNotifiedBy,
                 lastFinalGradeNotifiedValue: previousClosure?.lastFinalGradeNotifiedValue,
@@ -3493,6 +3535,11 @@ export function CalificacionesTab({
                         {isClosed && row.closure?.closedAt ? (
                           <span className="text-[11px] text-slate-500">
                             Cierre: {formatDate(row.closure.closedAt)}
+                          </span>
+                        ) : null}
+                        {isClosed && closureOriginLabel(row.closure) ? (
+                          <span className="text-[11px] text-slate-500">
+                            {closureOriginLabel(row.closure)}
                           </span>
                         ) : null}
                       </div>

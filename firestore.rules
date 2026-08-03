@@ -335,17 +335,6 @@ service cloud.firestore {
         ("grade" in resource.data && resource.data.grade is number) ||
         ("gradedAt" in resource.data && resource.data.gradedAt is timestamp);
     }
-    function isMentorOfCourse(courseId) {
-      // Verifica si el usuario es mentor del curso consultando el array mentorIds
-      let coursePath = /databases/$(database)/documents/courses/$(courseId);
-      let courseData = isTeacherLike() && exists(coursePath)
-        ? get(coursePath).data
-        : null;
-      return courseData != null &&
-        courseData.keys().hasAny(['mentorIds']) &&
-        courseData.mentorIds is list &&
-        request.auth.uid in courseData.mentorIds;
-    }
     function canManageCourse(courseId) {
       return isAdmin() ||
         isAdminTeacher() ||
@@ -353,8 +342,7 @@ service cloud.firestore {
           isTeacherLike() &&
           exists(/databases/$(database)/documents/courses/$(courseId)) &&
           get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
-        ) ||
-        isMentorOfCourse(courseId);
+        );
     }
     // Autoridad docente sobre una materia tolerante a roles no normalizados:
     // ser el teacherId del curso o estar en mentorIds ya prueba que el usuario es
@@ -372,16 +360,6 @@ service cloud.firestore {
           (courseData.mentorIds is list && request.auth.uid in courseData.mentorIds)
         );
     }
-    // Permite a mentores ajustar únicamente el contador de lecciones del curso.
-    function canMentorAdjustLessonsCount(courseId) {
-      let currentLessonsCount = resource.data.lessonsCount is int ? resource.data.lessonsCount : 0;
-      return isMentorOfCourse(courseId) &&
-        request.resource.data.diff(resource.data).changedKeys().hasOnly(['lessonsCount']) &&
-        request.resource.data.lessonsCount is int &&
-        request.resource.data.lessonsCount >= 0 &&
-        absVal(request.resource.data.lessonsCount - currentLessonsCount) <= 1;
-    }
-    
     /* users */
     match /users/{userId} {
       allow read: if isSelf(userId) || isAdmin() || isAdminTeacher() || (
@@ -462,8 +440,7 @@ service cloud.firestore {
       allow create: if isSignedIn() && request.resource.data.teacherId == request.auth.uid;
       allow update: if isAdmin() ||
         isAdminTeacher() ||
-        (isSignedIn() && resource.data.teacherId == request.auth.uid) ||
-        canMentorAdjustLessonsCount(courseId);
+        (isSignedIn() && resource.data.teacherId == request.auth.uid);
       allow delete: if isAdmin() || isAdminTeacher() || (isSignedIn() && resource.data.teacherId == request.auth.uid);
 
       match /lessons/{lessonId} {

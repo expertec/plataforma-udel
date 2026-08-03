@@ -248,6 +248,7 @@ export async function POST(request: NextRequest) {
       bestScore: null,
       latestAttemptNumber: 0,
       latestAttemptId: null,
+      latestAttemptDurationSeconds: null,
       passed: false,
       currentAttemptStartedAt: null,
       currentAttemptDeadlineAt: null,

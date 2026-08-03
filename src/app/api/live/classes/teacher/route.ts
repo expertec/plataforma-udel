@@ -115,10 +115,10 @@ function getMentorAllowedCourseIds(
   const groupCourseIds = getGroupCourses(groupData).map((course) => course.courseId);
   const mentorAccess = groupData.mentorCourseAccess;
   if (!mentorAccess || typeof mentorAccess !== "object" || Array.isArray(mentorAccess)) {
-    return groupCourseIds;
+    return [];
   }
   if (!Object.prototype.hasOwnProperty.call(mentorAccess, teacherId)) {
-    return groupCourseIds;
+    return [];
   }
   const rawAllowed = (mentorAccess as Record<string, unknown>)[teacherId];
   const validCourseIds = new Set(groupCourseIds);
@@ -340,6 +340,7 @@ export async function GET(request: NextRequest) {
         })
       : await resolveTeacherGroups(teacher.uid);
     const scopedGroupIds = new Set(scopedGroups.map((group) => group.groupId));
+    const scopedGroupById = new Map(scopedGroups.map((group) => [group.groupId, group]));
     const scheduleGroups = isCoordinator
       ? []
       : scopedGroups
@@ -416,19 +417,30 @@ export async function GET(request: NextRequest) {
               if (classType !== "live" && !liveSession) return;
 
               const teacherCreatedById = asTrimmedString(classData.teacherCreatedById) || null;
-              const linkedGroupId = asTrimmedString(classData.linkedGroupId) || null;
+              const rawLinkedGroupId = asTrimmedString(classData.linkedGroupId) || null;
+              const courseGroups = groupsByCourseId.get(courseId) ?? [];
               if (isCoordinator) {
-                if (linkedGroupId && !scopedGroupIds.has(linkedGroupId)) return;
-                if (!linkedGroupId && !(groupsByCourseId.get(courseId)?.length)) return;
+                if (rawLinkedGroupId && !scopedGroupIds.has(rawLinkedGroupId)) return;
+                if (!rawLinkedGroupId && courseGroups.length === 0) return;
               } else if (teacherCreatedById) {
                 if (teacherCreatedById !== teacher.uid) return;
               } else if (courseTeacherId !== teacher.uid) {
                 return;
               }
 
-              const linkedGroupName = asTrimmedString(classData.linkedGroupName) || null;
+              const inferredGroup =
+                rawLinkedGroupId && scopedGroupById.has(rawLinkedGroupId)
+                  ? scopedGroupById.get(rawLinkedGroupId) ?? null
+                  : !rawLinkedGroupId && courseGroups.length === 1
+                    ? courseGroups[0]
+                    : null;
+              const linkedGroupId = rawLinkedGroupId ?? inferredGroup?.groupId ?? null;
+              const linkedGroupName =
+                asTrimmedString(classData.linkedGroupName) ||
+                inferredGroup?.groupName ||
+                null;
               const sharedGroupNames = Array.from(
-                new Set((groupsByCourseId.get(courseId) ?? []).map((group) => group.groupName)),
+                new Set(courseGroups.map((group) => group.groupName)),
               );
               const createdAt = toIsoString(classData.createdAt);
               const updatedAt = toIsoString(classData.updatedAt);

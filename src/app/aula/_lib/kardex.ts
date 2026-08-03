@@ -14,6 +14,8 @@ export type KardexRow = {
   globalExamSource: "closure" | "regularization" | null;
   autoGrade: number | null;
   pendingUngradedCount: number | null;
+  closedByType: "teacher" | "system" | null;
+  closureTrigger: "manual" | "automatic" | null;
   closedAt: Date | null;
   updatedAt: Date | null;
   archived: boolean;
@@ -182,6 +184,14 @@ export const loadKardex = async (
         globalExamSource: globalExamData.globalExamSource,
         autoGrade: toNumberOrNull(closure.autoGrade),
         pendingUngradedCount: toNumberOrNull(closure.pendingUngradedCount),
+        closedByType:
+          closure.closedByType === "teacher" || closure.closedByType === "system"
+            ? closure.closedByType
+            : null,
+        closureTrigger:
+          closure.closureTrigger === "manual" || closure.closureTrigger === "automatic"
+            ? closure.closureTrigger
+            : null,
         closedAt: toDateOrNull(closure.closedAt),
         updatedAt: toDateOrNull(closure.updatedAt),
         archived,
@@ -209,6 +219,8 @@ export const loadKardex = async (
         globalExamSource: null,
         autoGrade: null,
         pendingUngradedCount: null,
+        closedByType: null,
+        closureTrigger: null,
         closedAt: null,
         updatedAt: toDateOrNull(data.enrolledAt),
         archived,

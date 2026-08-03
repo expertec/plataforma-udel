@@ -192,6 +192,7 @@ export async function submitGlobalExamAttempt(
     passed: boolean;
     correctAnswers: number;
     totalQuestions: number;
+    durationSeconds: number | null;
   };
   assignment: GlobalExamAssignmentRecord;
   attemptsRemaining: number;
@@ -213,6 +214,7 @@ export async function submitGlobalExamAttempt(
         passed: boolean;
         correctAnswers: number;
         totalQuestions: number;
+        durationSeconds: number | null;
       };
       assignment: GlobalExamAssignmentRecord;
       attemptsRemaining: number;
@@ -237,6 +239,7 @@ export async function submitGlobalExamAttempt(
       passed: boolean;
       correctAnswers: number;
       totalQuestions: number;
+      durationSeconds: number | null;
     };
     assignment: GlobalExamAssignmentRecord;
     attemptsRemaining: number;

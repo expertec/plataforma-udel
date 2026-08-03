@@ -191,6 +191,20 @@ function buildLiveHref(item: Pick<TeacherLiveClassItem, "classId" | "courseId" |
   return `/live/${encodeURIComponent(item.classId)}?${searchParams.toString()}`;
 }
 
+function getClassGroupLabel(item: Pick<TeacherLiveClassItem, "linkedGroupName" | "sharedGroupNames">): string {
+  if (item.linkedGroupName?.trim()) return item.linkedGroupName.trim();
+  const names = Array.from(
+    new Set(
+      item.sharedGroupNames
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0),
+    ),
+  );
+  if (names.length === 1) return names[0];
+  if (names.length > 1) return `Múltiples grupos: ${names.join(", ")}`;
+  return "Grupo no vinculado";
+}
+
 function isAttendanceReportAvailable(item: TeacherLiveClassItem): boolean {
   return (
     Boolean(item.lastEndedAt) ||
@@ -227,7 +241,7 @@ function buildAttendanceCsv(params: {
   ];
   const csvRows = [
     ["Reporte de asistencia", params.report.title || params.item.title],
-    ["Grupo", params.report.linkedGroupName || params.item.linkedGroupName || "Grupo no vinculado"],
+    ["Grupo", params.report.linkedGroupName || getClassGroupLabel(params.item)],
     [
       "Inicio real",
       params.report.startedAt
@@ -841,7 +855,7 @@ export function TeacherLiveClassesView({
                     <td className="px-3 py-4">
                       <div className="font-semibold text-[#551b22]">{item.title}</div>
                       <div className="mt-1 text-xs text-[#8c5e57]">
-                        {item.courseTitle} · {item.linkedGroupName || "Grupo no vinculado"}
+                        {item.courseTitle} · {getClassGroupLabel(item)}
                       </div>
                     </td>
                     <td className="px-3 py-4 text-sm text-[#754848]">
@@ -1179,7 +1193,7 @@ export function TeacherLiveClassesView({
                   </span>
                 </div>
                 <p className="mt-1 text-sm text-[#754848]">
-                  {detailsItem.courseTitle} · {detailsItem.linkedGroupName || "Grupo no vinculado"}
+                  {detailsItem.courseTitle} · {getClassGroupLabel(detailsItem)}
                 </p>
               </div>
 

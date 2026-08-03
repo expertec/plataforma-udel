@@ -34,7 +34,7 @@ export type Group = {
   plantelName?: string;
   coordinatorId?: string;
   coordinatorName?: string;
-  courses?: Array<{ courseId: string; courseName: string }>;
+  courses?: Array<{ courseId: string; courseName: string; enabledAt?: Date | null }>;
   courseIds?: string[];
   groupName: string;
   teacherId: string;
@@ -64,7 +64,7 @@ type CreateGroupData = {
   program?: string;
   plantelId?: string;
   plantelName?: string;
-  courses?: Array<{ courseId: string; courseName: string }>;
+  courses?: Array<{ courseId: string; courseName: string; enabledAt?: Date | null }>;
   courseIds?: string[];
   groupName: string;
   teacherId: string;
@@ -166,7 +166,7 @@ const toDateFromUnknown = (value: unknown): Date | null => {
   return null;
 };
 
-const toGroupCourses = (data: DocumentData): Array<{ courseId: string; courseName: string }> => {
+const toGroupCourses = (data: DocumentData): Array<{ courseId: string; courseName: string; enabledAt?: Date | null }> => {
   if (Array.isArray(data.courses)) {
     const courses = data.courses
       .map((course) => {
@@ -177,9 +177,10 @@ const toGroupCourses = (data: DocumentData): Array<{ courseId: string; courseNam
         return {
           courseId,
           courseName: typeof c.courseName === "string" ? c.courseName : "",
+          enabledAt: toDateFromUnknown((course as { enabledAt?: unknown }).enabledAt),
         };
       })
-      .filter((course): course is { courseId: string; courseName: string } => course !== null);
+      .filter((course): course is { courseId: string; courseName: string; enabledAt: Date | null } => course !== null);
     if (courses.length > 0) return courses;
   }
   const legacyCourseId = typeof data.courseId === "string" ? data.courseId : "";
@@ -268,7 +269,7 @@ const buildMentorCourseAccess = (params: {
       next[mentorId] = (existingAccess[mentorId] ?? []).filter((courseId) => validSet.has(courseId));
       return;
     }
-    next[mentorId] = [...validCourseIds];
+    next[mentorId] = [];
   });
   return next;
 };
@@ -281,7 +282,7 @@ const mapCourseMentorsByAccess = (
   const next: Record<string, string[]> = {};
   courseIds.forEach((courseId) => {
     next[courseId] = mentorIds.filter((mentorId) => {
-      if (!Object.prototype.hasOwnProperty.call(mentorCourseAccess, mentorId)) return true;
+      if (!Object.prototype.hasOwnProperty.call(mentorCourseAccess, mentorId)) return false;
       return mentorCourseAccess[mentorId]?.includes(courseId) ?? false;
     });
   });
@@ -355,18 +356,30 @@ const toGroup = (id: string, data: DocumentData): Group => {
 
 export async function createGroup(data: CreateGroupData): Promise<string> {
   const ref = collection(db, "groups");
-  const coursesList = Array.isArray(data.courses) ? data.courses : [];
+  const now = Timestamp.now();
+  const rawCoursesList = Array.isArray(data.courses)
+    ? data.courses.map((course) => ({
+        ...course,
+        enabledAt: course.enabledAt ? Timestamp.fromDate(course.enabledAt) : now,
+      }))
+    : [];
   const initialIds =
     data.courseIds && data.courseIds.length > 0
       ? data.courseIds
-      : coursesList.map((c) => c.courseId);
+      : rawCoursesList.map((c) => c.courseId);
   const courseIdsList = Array.from(new Set(initialIds.filter(Boolean)));
-  const primaryCourseId = data.courseId ?? courseIdsList[0] ?? coursesList[0]?.courseId ?? "";
+  const primaryCourseId = data.courseId ?? courseIdsList[0] ?? rawCoursesList[0]?.courseId ?? "";
   const primaryCourseName =
     data.courseName ??
-    coursesList.find((c) => c.courseId === primaryCourseId)?.courseName ??
-    coursesList[0]?.courseName ??
+    rawCoursesList.find((c) => c.courseId === primaryCourseId)?.courseName ??
+    rawCoursesList[0]?.courseName ??
     "";
+  const coursesList =
+    rawCoursesList.length > 0
+      ? rawCoursesList
+      : primaryCourseId
+        ? [{ courseId: primaryCourseId, courseName: primaryCourseName, enabledAt: now }]
+        : [];
   const docRef = await addDoc(ref, {
     courseId: primaryCourseId,
     courseName: primaryCourseName,
@@ -1099,21 +1112,20 @@ export async function linkCourseToGroup(params: {
   const existingAccess = normalizeMentorCourseAccess(data.mentorCourseAccess, courseIds);
 
   const hasCourse = courses.some((c) => c.courseId === courseId);
-  const nextCourses = hasCourse ? courses : [...courses, { courseId, courseName }];
+  const enabledAt = Timestamp.now();
+  const nextCourses = hasCourse
+    ? courses.map((course) => (
+        course.courseId === courseId && !course.enabledAt
+          ? { ...course, enabledAt }
+          : course
+      ))
+    : [...courses, { courseId, courseName, enabledAt }];
   const nextCourseIds = Array.from(new Set([...(courseIds || []), courseId]));
   const nextMentorCourseAccess = buildMentorCourseAccess({
     mentorIds,
     existingAccess,
     validCourseIds: nextCourseIds,
   });
-
-  if (!hasCourse) {
-    mentorIds.forEach((mentorId) => {
-      nextMentorCourseAccess[mentorId] = Array.from(
-        new Set([...(nextMentorCourseAccess[mentorId] ?? []), courseId]),
-      );
-    });
-  }
 
   await updateDoc(ref, {
     courses: nextCourses,
@@ -1205,27 +1217,51 @@ export async function unlinkCourseForTeacherInGroup(params: {
   }
 
   const existingAccess = normalizeMentorCourseAccess(data.mentorCourseAccess, courseIds);
+  const hasExplicitTeacherAccess = Object.prototype.hasOwnProperty.call(existingAccess, teacherUid);
   const nextAccess = buildMentorCourseAccess({
     mentorIds,
     existingAccess,
     validCourseIds: courseIds,
   });
 
-  const currentTeacherAccess = new Set(nextAccess[teacherUid] ?? []);
+  const currentTeacherAccess = new Set(
+    hasExplicitTeacherAccess ? (nextAccess[teacherUid] ?? []) : [courseId],
+  );
   if (!currentTeacherAccess.has(courseId)) {
     return { updated: false };
   }
   currentTeacherAccess.delete(courseId);
   nextAccess[teacherUid] = courseIds.filter((id) => currentTeacherAccess.has(id));
 
+  const remainingCourseIdsForTeacher = nextAccess[teacherUid];
+  const detachedFromGroup = remainingCourseIdsForTeacher.length === 0;
+  const nextMentorIds = detachedFromGroup
+    ? mentorIds.filter((mentorId) => mentorId !== teacherUid)
+    : mentorIds;
+  const nextAssistantTeachers = detachedFromGroup
+    ? toAssistantTeachers(data.assistantTeachers).filter((teacher) => teacher.id !== teacherUid)
+    : toAssistantTeachers(data.assistantTeachers);
+
+  if (detachedFromGroup) {
+    delete nextAccess[teacherUid];
+  }
+
+  const finalAccess = buildMentorCourseAccess({
+    mentorIds: nextMentorIds,
+    existingAccess: nextAccess,
+    validCourseIds: courseIds,
+  });
+
   await updateDoc(ref, {
-    mentorCourseAccess: nextAccess,
+    assistantTeacherIds: nextMentorIds,
+    assistantTeachers: nextAssistantTeachers,
+    mentorCourseAccess: finalAccess,
     updatedAt: serverTimestamp(),
   });
 
   if (courseIds.length > 0) {
     const { syncCourseMentorsByCourse } = await import("./courses-service");
-    const courseMentors = mapCourseMentorsByAccess(courseIds, mentorIds, nextAccess);
+    const courseMentors = mapCourseMentorsByAccess(courseIds, nextMentorIds, finalAccess);
     await syncCourseMentorsByCourse(courseMentors);
   }
 

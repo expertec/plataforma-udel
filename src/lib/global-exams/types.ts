@@ -1,7 +1,7 @@
 export const GLOBAL_EXAM_MIN_QUESTIONS = 1;
 export const GLOBAL_EXAM_MAX_QUESTIONS = 25;
 export const GLOBAL_EXAM_PASS_SCORE = 70;
-export const GLOBAL_EXAM_DURATION_MINUTES = 45;
+export const GLOBAL_EXAM_DURATION_MINUTES = 40;
 // Cada habilitación otorga un único intento. Si el alumno lo usa (apruebe o repruebe)
 // queda bloqueado hasta que un adminTeacher vuelva a habilitar el examen, lo que
 // concede exactamente un intento adicional.
@@ -73,6 +73,7 @@ export type GlobalExamAssignmentRecord = {
   bestScore: number | null;
   latestAttemptNumber: number;
   latestAttemptId: string | null;
+  latestAttemptDurationSeconds: number | null;
   passed: boolean;
   currentAttemptStartedAt?: string | null;
   currentAttemptDeadlineAt?: string | null;
@@ -97,6 +98,7 @@ export type GlobalExamAttemptRecord = {
   correctAnswers: number;
   totalQuestions: number;
   answers: Record<string, string>;
+  durationSeconds?: number | null;
   completionReason?: GlobalExamAttemptCompletionReason | null;
   startedAt?: string | null;
   deadlineAt?: string | null;
@@ -107,6 +109,7 @@ export type GlobalExamAttemptSummary = {
   attemptNumber: number;
   score: number;
   passed: boolean;
+  durationSeconds?: number | null;
   submittedAt?: string | null;
 };
 

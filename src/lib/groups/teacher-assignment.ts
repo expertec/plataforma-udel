@@ -19,27 +19,6 @@ function toUniqueStringArray(value: unknown): string[] {
   );
 }
 
-function getGroupCourseIds(groupData: Record<string, unknown>): string[] {
-  const explicitIds = toUniqueStringArray(groupData.courseIds);
-  if (explicitIds.length > 0) return explicitIds;
-
-  if (Array.isArray(groupData.courses)) {
-    const ids = groupData.courses
-      .map((course) =>
-        course && typeof course === "object"
-          ? asTrimmedString((course as Record<string, unknown>).courseId)
-          : "",
-      )
-      .filter(Boolean);
-    if (ids.length > 0) {
-      return Array.from(new Set(ids));
-    }
-  }
-
-  const legacyCourseId = asTrimmedString(groupData.courseId);
-  return legacyCourseId ? [legacyCourseId] : [];
-}
-
 function getAssistantTeacherNameMap(groupData: Record<string, unknown>): Map<string, string> {
   const map = new Map<string, string>();
   if (!Array.isArray(groupData.assistantTeachers)) return map;
@@ -94,8 +73,6 @@ function getMentorIdsAssignedToCourse(params: {
     mentorIds,
   });
 
-  const groupCourseIds = getGroupCourseIds(params.groupData);
-  const validGroupCourseIds = new Set(groupCourseIds);
   const rawAccess = params.groupData.mentorCourseAccess;
   const accessMap =
     rawAccess && typeof rawAccess === "object" && !Array.isArray(rawAccess)
@@ -113,7 +90,7 @@ function getMentorIdsAssignedToCourse(params: {
       return false;
     }
     if (!hasExplicitMentorAccessMap) {
-      return validGroupCourseIds.has(courseId);
+      return false;
     }
     if (!Object.prototype.hasOwnProperty.call(accessMap, mentorId)) return false;
     return toUniqueStringArray(accessMap[mentorId]).includes(courseId);

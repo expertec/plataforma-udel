@@ -138,7 +138,7 @@ function buildMentorCourseAccess(params: {
       next[mentorId] = (existingAccess[mentorId] ?? []).filter((courseId) => validSet.has(courseId));
       return;
     }
-    next[mentorId] = [...validCourseIds];
+    next[mentorId] = [];
   });
   return next;
 }
@@ -151,7 +151,7 @@ function mapCourseMentorsByAccess(
   const byCourse: Record<string, string[]> = {};
   courseIds.forEach((courseId) => {
     byCourse[courseId] = mentorIds.filter((mentorId) => {
-      if (!Object.prototype.hasOwnProperty.call(mentorCourseAccess, mentorId)) return true;
+      if (!Object.prototype.hasOwnProperty.call(mentorCourseAccess, mentorId)) return false;
       return mentorCourseAccess[mentorId]?.includes(courseId) ?? false;
     });
   });
@@ -270,13 +270,16 @@ export async function POST(request: NextRequest) {
       }
 
       const existingAccess = normalizeMentorCourseAccess(groupData.mentorCourseAccess, courseIds);
+      const hasExplicitTeacherAccess = Object.prototype.hasOwnProperty.call(existingAccess, teacherId);
       const nextAccess = buildMentorCourseAccess({
         mentorIds,
         existingAccess,
         validCourseIds: courseIds,
       });
 
-      const currentTeacherAccess = new Set(nextAccess[teacherId] ?? []);
+      const currentTeacherAccess = new Set(
+        hasExplicitTeacherAccess ? (nextAccess[teacherId] ?? []) : [courseId],
+      );
       if (!currentTeacherAccess.has(courseId)) {
         return NextResponse.json({
           success: true,

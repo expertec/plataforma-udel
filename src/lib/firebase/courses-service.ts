@@ -43,6 +43,7 @@ export type Course = {
   createdAt?: Date;
   isMentorCourse?: boolean; // Indica si el curso pertenece a un grupo donde el usuario es mentor
   teacherId?: string; // ID del profesor creador del curso
+  mentorIds?: string[];
 };
 
 type CourseClassType = "video" | "text" | "audio" | "quiz" | "image" | "live";
@@ -136,10 +137,10 @@ const getMentorAllowedCourseIds = (
   const groupCourseIds = getGroupCourseIds(groupData);
   const mentorAccess = groupData.mentorCourseAccess;
   if (!mentorAccess || typeof mentorAccess !== "object" || Array.isArray(mentorAccess)) {
-    return groupCourseIds;
+    return [];
   }
   if (!Object.prototype.hasOwnProperty.call(mentorAccess, mentorId)) {
-    return groupCourseIds;
+    return [];
   }
   const rawAllowed = (mentorAccess as Record<string, unknown>)[mentorId];
   const validGroupIds = new Set(groupCourseIds);
@@ -180,6 +181,7 @@ export async function getCourses(teacherId?: string, maxResults?: number): Promi
         category: data.category ?? data.program ?? "",
         createdAt: data.createdAt?.toDate?.() ?? undefined,
         teacherId: data.teacherId,
+        mentorIds: toUniqueStringArray(data.mentorIds),
         isMentorCourse: false,
       };
     });
@@ -212,6 +214,7 @@ export async function getCourses(teacherId?: string, maxResults?: number): Promi
       category: data.category ?? data.program ?? "",
       createdAt: data.createdAt?.toDate?.() ?? undefined,
       teacherId: data.teacherId,
+      mentorIds: toUniqueStringArray(data.mentorIds),
       isMentorCourse: false,
     };
   });
@@ -290,6 +293,7 @@ export async function getCourses(teacherId?: string, maxResults?: number): Promi
         category: data.category ?? data.program ?? "",
         createdAt: data.createdAt?.toDate?.() ?? undefined,
         teacherId: data.teacherId,
+        mentorIds: toUniqueStringArray(data.mentorIds),
         isMentorCourse: isMentorOnlyCourse,
       });
     });

@@ -44,6 +44,8 @@ export type CourseClosureState = {
   autoGrade?: number | null;
   manualOverride?: boolean;
   pendingUngradedCount?: number;
+  closedByType?: "teacher" | "system";
+  closureTrigger?: "manual" | "automatic";
   closedAt?: Date | null;
   reopenedAt?: Date | null;
   updatedAt?: Date | null;

@@ -364,13 +364,6 @@ async function assertCourseAccess(params: {
   const teacherId = asTrimmedString(courseData.teacherId);
   if (teacherId && teacherId === uid) return;
 
-  const mentorIds = Array.isArray(courseData.mentorIds)
-    ? courseData.mentorIds.filter(
-        (mentorId): mentorId is string => typeof mentorId === "string" && mentorId.trim().length > 0,
-      )
-    : [];
-  if (mentorIds.includes(uid)) return;
-
   throw new RouteAccessError(403, "Missing or insufficient permissions.");
 }
 

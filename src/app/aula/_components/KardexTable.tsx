@@ -39,6 +39,19 @@ function GlobalExamBadge({
   );
 }
 
+function ClosureOriginBadge({ row }: { row: KardexRow }) {
+  if (row.status !== "closed") return null;
+  const isAutomatic = row.closureTrigger === "automatic" || row.closedByType === "system";
+  const isManual = row.closureTrigger === "manual" || row.closedByType === "teacher";
+  if (!isAutomatic && !isManual) return null;
+
+  return (
+    <span className="rounded-full bg-white/5 px-2 py-0.5 text-[11px] font-medium text-[var(--aula-text-muted)]">
+      {isAutomatic ? "Automatico" : "Docente"}
+    </span>
+  );
+}
+
 export function KardexTable({ rows, loading }: { rows: KardexRow[]; loading: boolean }) {
   if (loading) {
     return <p className="text-[var(--aula-text-muted)]">Cargando tus calificaciones…</p>;
@@ -96,7 +109,14 @@ export function KardexTable({ rows, loading }: { rows: KardexRow[]; loading: boo
                 )}
               </td>
               <td className="px-4 py-3 text-[var(--aula-text-muted)]">
-                {row.status === "closed" ? formatDate(row.closedAt) : "—"}
+                {row.status === "closed" ? (
+                  <div className="flex flex-col gap-1">
+                    <span>{formatDate(row.closedAt)}</span>
+                    <ClosureOriginBadge row={row} />
+                  </div>
+                ) : (
+                  "—"
+                )}
               </td>
               <td className="px-4 py-3 text-right">
                 <GlobalExamBadge grade={row.globalExamGrade} source={row.globalExamSource} />

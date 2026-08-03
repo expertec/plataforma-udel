@@ -92,6 +92,18 @@ function cloneTemplateQuestions(questions: GlobalExamQuestion[]): QuestionFormSt
   }));
 }
 
+function formatElapsedTime(seconds: number | null | undefined): string | null {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return null;
+  const totalSeconds = Math.round(seconds);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours} h ${minutes.toString().padStart(2, "0")} min`;
+  }
+  return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+}
+
 export default function GlobalExamsPage() {
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [loadingContext, setLoadingContext] = useState(true);
@@ -1335,6 +1347,7 @@ export default function GlobalExamsPage() {
                       assignment.status === "disabled" ||
                       // Reprobado: el adminTeacher puede rehabilitar para conceder otro intento.
                       assignment.status === "failed";
+                    const latestAttemptDuration = formatElapsedTime(assignment.latestAttemptDurationSeconds);
 
                     return (
                       <article
@@ -1362,6 +1375,7 @@ export default function GlobalExamsPage() {
                               <p className="text-xs font-medium text-slate-600">
                                 Ultima nota: {assignment.latestScore} | Mejor nota:{" "}
                                 {assignment.bestScore ?? assignment.latestScore}
+                                {latestAttemptDuration ? ` | Tiempo: ${latestAttemptDuration}` : ""}
                               </p>
                             ) : null}
                           </div>

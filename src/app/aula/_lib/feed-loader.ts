@@ -192,6 +192,23 @@ const captureClosures = (
           ? closure.finalGrade
           : undefined,
       manualOverride: closure.manualOverride === true,
+      closedByType:
+        closure.closedByType === "teacher" || closure.closedByType === "system"
+          ? closure.closedByType
+          : undefined,
+      closureTrigger:
+        closure.closureTrigger === "manual" || closure.closureTrigger === "automatic"
+          ? closure.closureTrigger
+          : undefined,
+      closedAt:
+        closure.closedAt instanceof Date
+          ? closure.closedAt
+          : closure.closedAt &&
+              typeof closure.closedAt === "object" &&
+              "toDate" in closure.closedAt &&
+              typeof (closure.closedAt as { toDate?: unknown }).toDate === "function"
+            ? (closure.closedAt as { toDate: () => Date }).toDate()
+            : null,
     };
   });
 };
