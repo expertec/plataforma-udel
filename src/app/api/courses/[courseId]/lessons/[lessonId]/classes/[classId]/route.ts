@@ -3,6 +3,7 @@ import { type DocumentReference } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 import { mergeTeacherEditableLiveSession } from "@/lib/live-classes/types";
 import { normalizeForumPointValue } from "@/lib/forum-grading";
+import { resolveCourseManagementAccess } from "@/lib/server/course-management-access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -157,33 +158,6 @@ function normalizeDuration(value: unknown): number | null {
   return value;
 }
 
-function getGroupCourseIds(groupData: Record<string, unknown>): string[] {
-  const ids = asUniqueStringArray(groupData.courseIds);
-  if (ids.length > 0) return ids;
-  const legacyCourseId = asTrimmedString(groupData.courseId);
-  return legacyCourseId ? [legacyCourseId] : [];
-}
-
-async function canCampusCoordinatorManageCourse(params: {
-  courseId: string;
-  plantelIds: string[];
-}): Promise<boolean> {
-  const { courseId, plantelIds } = params;
-  if (plantelIds.length === 0) return false;
-  const db = getAdminFirestore();
-  const groupSnaps = await Promise.all(
-    plantelIds.map((plantelId) =>
-      db.collection("groups").where("plantelId", "==", plantelId).get(),
-    ),
-  );
-  return groupSnaps.some((groupsSnap) =>
-    groupsSnap.docs.some((groupDoc) => {
-      const groupData = groupDoc.data() as Record<string, unknown>;
-      return getGroupCourseIds(groupData).includes(courseId);
-    }),
-  );
-}
-
 async function resolveTeacherContext(request: NextRequest): Promise<{
   uid: string;
   role: TeacherRole;
@@ -229,38 +203,10 @@ async function canUserManageCourse(params: {
   role: TeacherRole;
   coordinatorPlantelIds: string[];
 }): Promise<{ allowed: boolean; mentorIds: string[]; shouldBackfillMentor: boolean }> {
-  const { courseId, uid, role, coordinatorPlantelIds } = params;
-  const db = getAdminFirestore();
-
-  const courseRef = db.collection("courses").doc(courseId);
-  const courseSnap = await courseRef.get();
-  if (!courseSnap.exists) {
-    throw new RouteAccessError(404, "Curso no encontrado");
-  }
-
-  const courseData = (courseSnap.data() ?? {}) as Record<string, unknown>;
-  const mentorIds = asUniqueStringArray(courseData.mentorIds);
-  const teacherId = asTrimmedString(courseData.teacherId);
-
-  if (role === "adminTeacher" || role === "superAdminTeacher") {
-    return { allowed: true, mentorIds, shouldBackfillMentor: false };
-  }
-
-  if (teacherId && teacherId === uid) {
-    return { allowed: true, mentorIds, shouldBackfillMentor: false };
-  }
-
-  if (role === "coordinadorPlantel" || role === "director") {
-    const hasCampusAccess = await canCampusCoordinatorManageCourse({
-      courseId,
-      plantelIds: coordinatorPlantelIds,
-    });
-    if (hasCampusAccess) {
-      return { allowed: true, mentorIds, shouldBackfillMentor: false };
-    }
-  }
-
-  return { allowed: false, mentorIds, shouldBackfillMentor: false };
+  return resolveCourseManagementAccess({
+    ...params,
+    AccessError: RouteAccessError,
+  });
 }
 
 function toErrorResponse(error: unknown): NextResponse {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
+import { resolveCourseManagementAccess } from "@/lib/server/course-management-access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -105,27 +106,11 @@ async function canUserManageCourse(params: {
   uid: string;
   role: TeacherRole;
 }): Promise<boolean> {
-  const { courseId, uid, role } = params;
-  const db = getAdminFirestore();
-
-  const courseRef = db.collection("courses").doc(courseId);
-  const courseSnap = await courseRef.get();
-  if (!courseSnap.exists) {
-    throw new RouteAccessError(404, "Curso no encontrado");
-  }
-
-  const courseData = (courseSnap.data() ?? {}) as Record<string, unknown>;
-  const teacherId = asTrimmedString(courseData.teacherId);
-
-  if (role === "adminTeacher" || role === "superAdminTeacher") {
-    return true;
-  }
-
-  if (teacherId && teacherId === uid) {
-    return true;
-  }
-
-  return false;
+  const access = await resolveCourseManagementAccess({
+    ...params,
+    AccessError: RouteAccessError,
+  });
+  return access.allowed;
 }
 
 function toErrorResponse(error: unknown): NextResponse {

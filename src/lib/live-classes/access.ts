@@ -402,10 +402,16 @@ async function canUserManageCourse(params: {
     return true;
   }
 
-  const mentorGroupsSnap = await db
-    .collection("groups")
-    .where("assistantTeacherIds", "array-contains", params.uid)
-    .get();
+  const [principalGroupsSnap, mentorGroupsSnap] = await Promise.all([
+    db.collection("groups").where("teacherId", "==", params.uid).get(),
+    db.collection("groups").where("assistantTeacherIds", "array-contains", params.uid).get(),
+  ]);
+
+  const isPrincipalLinked = principalGroupsSnap.docs.some((groupDoc) => {
+    const groupData = groupDoc.data() as Record<string, unknown>;
+    return getGroupCourseIds(groupData).includes(params.courseId);
+  });
+  if (isPrincipalLinked) return true;
 
   return mentorGroupsSnap.docs.some((groupDoc) => {
     const groupData = groupDoc.data() as Record<string, unknown>;

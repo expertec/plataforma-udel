@@ -3,6 +3,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 import { createLiveSessionForClass } from "@/lib/live-classes/types";
 import { DEFAULT_FORUM_POINT_VALUE, normalizeForumPointValue } from "@/lib/forum-grading";
+import { resolveCourseManagementAccess } from "@/lib/server/course-management-access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -70,15 +71,6 @@ function asTeacherRole(value: unknown): TeacherRole | null {
 
 function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function asUniqueStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return Array.from(
-    new Set(
-      value.filter((item): item is string => typeof item === "string" && item.trim().length > 0),
-    ),
-  );
 }
 
 function asString(value: unknown, fieldName: string, fallback = ""): string {
@@ -184,28 +176,10 @@ async function canUserManageCourse(params: {
   uid: string;
   role: TeacherRole;
 }): Promise<{ allowed: boolean; mentorIds: string[]; shouldBackfillMentor: boolean }> {
-  const { courseId, uid, role } = params;
-  const db = getAdminFirestore();
-
-  const courseRef = db.collection("courses").doc(courseId);
-  const courseSnap = await courseRef.get();
-  if (!courseSnap.exists) {
-    throw new RouteAccessError(404, "Curso no encontrado");
-  }
-
-  const courseData = (courseSnap.data() ?? {}) as Record<string, unknown>;
-  const mentorIds = asUniqueStringArray(courseData.mentorIds);
-  const teacherId = asTrimmedString(courseData.teacherId);
-
-  if (role === "adminTeacher" || role === "superAdminTeacher") {
-    return { allowed: true, mentorIds, shouldBackfillMentor: false };
-  }
-
-  if (teacherId && teacherId === uid) {
-    return { allowed: true, mentorIds, shouldBackfillMentor: false };
-  }
-
-  return { allowed: false, mentorIds, shouldBackfillMentor: false };
+  return resolveCourseManagementAccess({
+    ...params,
+    AccessError: RouteAccessError,
+  });
 }
 
 function toErrorResponse(error: unknown): NextResponse {

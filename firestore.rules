@@ -341,7 +341,13 @@ service cloud.firestore {
         (
           isTeacherLike() &&
           exists(/databases/$(database)/documents/courses/$(courseId)) &&
-          get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid
+          (
+            get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid ||
+            (
+              get(/databases/$(database)/documents/courses/$(courseId)).data.mentorIds is list &&
+              request.auth.uid in get(/databases/$(database)/documents/courses/$(courseId)).data.mentorIds
+            )
+          )
         );
     }
     // Autoridad docente sobre una materia tolerante a roles no normalizados:

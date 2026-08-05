@@ -27,6 +27,7 @@ import {
   addStudentsToGroup,
   createGroup,
   getActiveGroups,
+  getGroupsForTeacher,
   linkCourseToGroup,
   Group,
 } from "@/lib/firebase/groups-service";
@@ -91,6 +92,27 @@ const formatCreationDate = (value?: Date): string => {
     hour: "2-digit",
     minute: "2-digit",
   }).format(value);
+};
+
+const getCourseIdsFromGroup = (group: Group): string[] => {
+  const ids = new Set<string>();
+  (group.courseIds ?? []).forEach((id) => {
+    if (typeof id === "string" && id.trim()) ids.add(id.trim());
+  });
+  (group.courses ?? []).forEach((course) => {
+    if (course.courseId?.trim()) ids.add(course.courseId.trim());
+  });
+  if (group.courseId?.trim()) ids.add(group.courseId.trim());
+  return Array.from(ids);
+};
+
+const teacherHasGroupCourseAccess = (group: Group, teacherId: string, courseId: string): boolean => {
+  if (!teacherId || !courseId) return false;
+  if (!getCourseIdsFromGroup(group).includes(courseId)) return false;
+  if (group.teacherId === teacherId) return true;
+  if (!(group.assistantTeacherIds ?? []).includes(teacherId)) return false;
+  const explicitAccess = group.mentorCourseAccess?.[teacherId];
+  return Array.isArray(explicitAccess) && explicitAccess.includes(courseId);
 };
 
 export default function CourseBuilderPage() {
@@ -163,6 +185,7 @@ export default function CourseBuilderPage() {
   } | null>(null);
   const [groupLinkModalOpen, setGroupLinkModalOpen] = useState(false);
   const [liveActionLoadingMap, setLiveActionLoadingMap] = useState<Record<string, boolean>>({});
+  const [hasLinkedGroupCourseAccess, setHasLinkedGroupCourseAccess] = useState(false);
 
   const lessonsDeduped = useMemo(() => {
     const map = new Map<string, Lesson>();
@@ -171,8 +194,13 @@ export default function CourseBuilderPage() {
   }, [lessons]);
   const canManageGroups = isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
   const isCourseOwner = Boolean(currentUser?.uid && courseInfo?.teacherId === currentUser.uid);
-  const canEditCourseContent =
+  const canEditCourseMetadata =
     isCourseOwner || isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
+  const canEditCourseContent =
+    isCourseOwner ||
+    hasLinkedGroupCourseAccess ||
+    isAdminTeacherRole(userRole) ||
+    isCampusCoordinatorRole(userRole);
   const canLinkGroups = canManageGroups || isCourseOwner;
   const canEditLessons =
     canEditCourseContent;
@@ -313,6 +341,32 @@ export default function CourseBuilderPage() {
       unsubAuth();
     };
   }, [courseId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadLinkedGroupAccess = async () => {
+      if (!courseId || !currentUser?.uid || roleLoading) {
+        if (!cancelled) setHasLinkedGroupCourseAccess(false);
+        return;
+      }
+
+      try {
+        const groups = await getGroupsForTeacher(currentUser.uid);
+        if (cancelled) return;
+        setHasLinkedGroupCourseAccess(
+          groups.some((group) => teacherHasGroupCourseAccess(group, currentUser.uid, courseId)),
+        );
+      } catch (err) {
+        console.warn("No se pudo validar el acceso por grupo del curso", err);
+        if (!cancelled) setHasLinkedGroupCourseAccess(false);
+      }
+    };
+
+    void loadLinkedGroupAccess();
+    return () => {
+      cancelled = true;
+    };
+  }, [courseId, currentUser?.uid, roleLoading]);
 
   useEffect(() => {
     if (!isAdminTeacherRole(userRole)) return;
@@ -1189,7 +1243,7 @@ export default function CourseBuilderPage() {
               onSubmit={async (e) => {
                 e.preventDefault();
                 if (!courseId) return;
-                if (!canEditCourseContent) {
+                if (!canEditCourseMetadata) {
                   toast.error("No tienes permiso para editar este curso");
                   return;
                 }
@@ -1215,7 +1269,7 @@ export default function CourseBuilderPage() {
                 <label className="text-sm font-medium text-slate-800">Título</label>
                 <input
                   value={courseInfo.title ?? ""}
-                  disabled={!canEditCourseContent}
+                  disabled={!canEditCourseMetadata}
                   onChange={(e) =>
                     setCourseInfo((prev) => ({ ...prev, title: e.target.value }))
                   }
@@ -1226,7 +1280,7 @@ export default function CourseBuilderPage() {
                 <label className="text-sm font-medium text-slate-800">Descripción</label>
                 <textarea
                   value={courseInfo.description ?? ""}
-                  disabled={!canEditCourseContent}
+                  disabled={!canEditCourseMetadata}
                   onChange={(e) =>
                     setCourseInfo((prev) => ({ ...prev, description: e.target.value }))
                   }
@@ -1240,7 +1294,7 @@ export default function CourseBuilderPage() {
                 </label>
                 <input
                   value={courseInfo.introVideoUrl ?? ""}
-                  disabled={!canEditCourseContent}
+                  disabled={!canEditCourseMetadata}
                   onChange={(e) =>
                     setCourseInfo((prev) => ({ ...prev, introVideoUrl: e.target.value }))
                   }
@@ -1251,7 +1305,7 @@ export default function CourseBuilderPage() {
                 <label className="text-sm font-medium text-slate-800">Programa / carrera</label>
                 <select
                   value={courseInfo.program ?? courseInfo.category ?? ""}
-                  disabled={!canEditCourseContent}
+                  disabled={!canEditCourseMetadata}
                   onChange={(e) =>
                     setCourseInfo((prev) => ({ ...prev, program: e.target.value }))
                   }
@@ -1282,7 +1336,7 @@ export default function CourseBuilderPage() {
                     }`}
                     onDragOver={(e) => {
                       e.preventDefault();
-                      if (!canEditCourseContent) return;
+                      if (!canEditCourseMetadata) return;
                       setThumbDragOver(true);
                     }}
                     onDragLeave={(e) => {
@@ -1292,7 +1346,7 @@ export default function CourseBuilderPage() {
                     onDrop={async (e) => {
                       e.preventDefault();
                       setThumbDragOver(false);
-                      if (!canEditCourseContent) return;
+                      if (!canEditCourseMetadata) return;
                       const file = e.dataTransfer.files?.[0];
                       if (file) {
                         await handleThumbnailFile(file);
@@ -1308,7 +1362,7 @@ export default function CourseBuilderPage() {
                       <input
                         type="file"
                         accept="image/*"
-                        disabled={!canEditCourseContent}
+                        disabled={!canEditCourseMetadata}
                         className="hidden"
                         onChange={async (e) => {
                           const file = e.target.files?.[0];
@@ -1347,7 +1401,7 @@ export default function CourseBuilderPage() {
               <div className="sm:col-span-2 flex justify-end gap-3">
                 <button
                   type="submit"
-                  disabled={savingInfo || !canEditCourseContent}
+                  disabled={savingInfo || !canEditCourseMetadata}
                   className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:opacity-60"
                 >
                   {savingInfo ? "Guardando..." : "Guardar cambios"}
