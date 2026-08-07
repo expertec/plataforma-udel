@@ -93,10 +93,12 @@ type ClosureReviewItem = {
   teacherId: string;
   teacherName: string;
   enabledAt: string;
+  estimatedCloseAt: string;
   daysSinceEnabled: number;
   weeksSinceEnabled: number;
   daysUntilDue: number;
   due: boolean;
+  reviewReady: boolean;
   closedCount: number;
   openCount: number;
   totalCount: number;
@@ -823,9 +825,10 @@ async function listClosureReviewItems(request: NextRequest): Promise<NextRespons
       if (openCount <= 0) continue;
 
       const daysSinceEnabled = daysBetween(course.enabledAt, nowMs);
-      if (daysSinceEnabled < REVIEW_START_DAYS) continue;
-
       const daysUntilDue = REVIEW_DUE_DAYS - daysSinceEnabled;
+      const estimatedCloseAt = admin.firestore.Timestamp.fromMillis(
+        course.enabledAt.toMillis() + REVIEW_DUE_DAYS * 24 * 60 * 60 * 1000,
+      );
       items.push({
         groupId: groupDoc.id,
         groupName: asTrimmedString(groupData.groupName) || "Grupo",
@@ -834,10 +837,12 @@ async function listClosureReviewItems(request: NextRequest): Promise<NextRespons
         teacherId: asTrimmedString(groupData.teacherId),
         teacherName: asTrimmedString(groupData.teacherName) || "Sin profesor",
         enabledAt: course.enabledAt.toDate().toISOString(),
+        estimatedCloseAt: estimatedCloseAt.toDate().toISOString(),
         daysSinceEnabled,
         weeksSinceEnabled: Math.floor(daysSinceEnabled / 7),
         daysUntilDue,
         due: daysUntilDue <= 0,
+        reviewReady: daysSinceEnabled >= REVIEW_START_DAYS,
         closedCount,
         openCount,
         totalCount: closedCount + openCount,
@@ -847,6 +852,7 @@ async function listClosureReviewItems(request: NextRequest): Promise<NextRespons
 
   items.sort((left, right) => {
     if (left.due !== right.due) return Number(right.due) - Number(left.due);
+    if (left.reviewReady !== right.reviewReady) return Number(right.reviewReady) - Number(left.reviewReady);
     if (left.daysUntilDue !== right.daysUntilDue) return left.daysUntilDue - right.daysUntilDue;
     return left.groupName.localeCompare(right.groupName, "es-MX", { sensitivity: "base" });
   });

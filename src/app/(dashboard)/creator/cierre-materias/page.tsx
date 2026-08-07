@@ -15,10 +15,12 @@ type ClosureReviewItem = {
   teacherId: string;
   teacherName: string;
   enabledAt: string;
+  estimatedCloseAt: string;
   daysSinceEnabled: number;
   weeksSinceEnabled: number;
   daysUntilDue: number;
   due: boolean;
+  reviewReady: boolean;
   closedCount: number;
   openCount: number;
   totalCount: number;
@@ -40,6 +42,9 @@ function dueLabel(item: ClosureReviewItem): string {
     return overdueDays === 0
       ? "7 semanas cumplidas"
       : `7+ semanas, vencida hace ${overdueDays} dia${overdueDays === 1 ? "" : "s"}`;
+  }
+  if (!item.reviewReady) {
+    return `Cierre estimado en ${item.daysUntilDue} dia${item.daysUntilDue === 1 ? "" : "s"}`;
   }
   return `6 semanas, faltan ${item.daysUntilDue} dia${item.daysUntilDue === 1 ? "" : "s"} para 7`;
 }
@@ -123,7 +128,11 @@ export default function CourseClosureReviewPage() {
   }, [items, search]);
 
   const dueCount = useMemo(() => items.filter((item) => item.due).length, [items]);
-  const nextCount = Math.max(items.length - dueCount, 0);
+  const reviewReadyCount = useMemo(
+    () => items.filter((item) => item.reviewReady && !item.due).length,
+    [items],
+  );
+  const estimatedCount = Math.max(items.length - dueCount - reviewReadyCount, 0);
 
   const closeCourse = async (item: ClosureReviewItem) => {
     if (!currentUser) return;
@@ -184,8 +193,8 @@ export default function CourseClosureReviewPage() {
             <p className="text-xs uppercase tracking-[0.3em] text-[#9f6e61]">Cierres</p>
             <h1 className="mt-2 text-3xl font-semibold text-[#551b22]">Cierre de materias</h1>
               <p className="mt-1 text-sm text-[#754848]">
-                Materias abiertas con {Math.floor(reviewStartDays / 7)} semanas o mas desde que se habilitaron;
-                {` ${Math.floor(dueDays / 7)} semanas o mas aparecen primero.`}
+                Materias abiertas con fecha estimada de cierre. Las de {Math.floor(dueDays / 7)} semanas o mas aparecen primero,
+                seguidas por las de {Math.floor(reviewStartDays / 7)} semanas.
                 {!canCloseCourse ? " Vista filtrada a tus grupos relacionados." : ""}
               </p>
           </div>
@@ -208,8 +217,8 @@ export default function CourseClosureReviewPage() {
 
         <div className="grid gap-4 md:grid-cols-3">
           <SummaryCard label="7 semanas o mas" value={dueCount.toString()} tone="danger" />
-          <SummaryCard label="6 semanas" value={nextCount.toString()} tone="warning" />
-          <SummaryCard label="Pendientes totales" value={items.length.toString()} tone="neutral" />
+          <SummaryCard label="6 semanas" value={reviewReadyCount.toString()} tone="warning" />
+          <SummaryCard label="Cierre futuro" value={estimatedCount.toString()} tone="neutral" />
         </div>
 
         <section className="creator-card overflow-hidden rounded-2xl border">
@@ -233,7 +242,7 @@ export default function CourseClosureReviewPage() {
             <div className="px-5 py-6 text-sm text-[#754848]">Cargando materias...</div>
           ) : filteredItems.length === 0 ? (
             <div className="px-5 py-6 text-sm text-[#754848]">
-              No hay materias abiertas con 6 semanas o mas que coincidan con la busqueda.
+              No hay materias abiertas con fecha estimada de cierre que coincidan con la busqueda.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -244,7 +253,7 @@ export default function CourseClosureReviewPage() {
                     <th className="px-5 py-3 font-semibold">Grupo</th>
                     <th className="px-5 py-3 font-semibold">Materia</th>
                     <th className="px-5 py-3 font-semibold">Profesor</th>
-                    <th className="px-5 py-3 font-semibold">Habilitada</th>
+                    <th className="px-5 py-3 font-semibold">Cierre estimado</th>
                     <th className="px-5 py-3 font-semibold">Avance</th>
                     {canCloseCourse ? <th className="px-5 py-3 font-semibold">Accion</th> : null}
                   </tr>
@@ -259,7 +268,9 @@ export default function CourseClosureReviewPage() {
                             className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${
                               item.due
                                 ? "bg-red-100 text-red-700"
-                                : "bg-amber-100 text-amber-700"
+                                : item.reviewReady
+                                  ? "bg-amber-100 text-amber-700"
+                                  : "bg-slate-100 text-slate-700"
                             }`}
                           >
                             <ShieldCheck size={14} />
@@ -276,7 +287,10 @@ export default function CourseClosureReviewPage() {
                           {item.courseName}
                         </td>
                         <td className="min-w-48 px-5 py-4 text-[#754848]">{item.teacherName}</td>
-                        <td className="px-5 py-4 text-[#754848]">{formatDate(item.enabledAt)}</td>
+                        <td className="px-5 py-4 text-[#754848]">
+                          <p className="font-medium text-[#551b22]">{formatDate(item.estimatedCloseAt)}</p>
+                          <p className="text-xs">Habilitada: {formatDate(item.enabledAt)}</p>
+                        </td>
                         <td className="px-5 py-4 text-[#754848]">
                           <p className="font-medium text-[#551b22]">
                             {item.closedCount}/{item.totalCount} cerrados
