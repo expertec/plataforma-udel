@@ -114,6 +114,7 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
 
     const items = [
       { href: "/creator", label: "Dashboard" },
+      { href: "/creator/asistencia", label: "Asistencia" },
       { href: "/creator/cursos", label: "Cursos" },
       { href: "/creator/grupos", label: "Grupos" },
     ];
@@ -135,6 +136,9 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
     }
     if (isAdminTeacherRole(userRole)) {
       items.push({ href: "/creator/profesores", label: "Profesores" });
+    }
+    if (isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole)) {
+      items.push({ href: "/creator/cierre-materias", label: "Cierre de materias" });
     }
     if (isAdminTeacherRole(userRole)) {
       items.push({ href: "/creator/diagnostico-permisos", label: "Diagnóstico de permisos" });

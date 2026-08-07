@@ -27,6 +27,69 @@ import {
 } from "@/lib/firebase/roles";
 import { normalizeTeacherProfessionalProfile } from "@/lib/teachers/profile";
 
+type GroupViewMode = "cards" | "table";
+
+type GroupCourseClosureSummary = {
+  courseId: string;
+  courseName: string;
+  closedCount: number;
+  totalCount: number;
+  lastClosedAt: string | null;
+  lastClosedByName: string | null;
+};
+
+type GroupClosureSummary = {
+  loading: boolean;
+  error: string | null;
+  courses: GroupCourseClosureSummary[];
+};
+
+const EMPTY_GROUP_CLOSURE_SUMMARY: GroupClosureSummary = {
+  loading: false,
+  error: null,
+  courses: [],
+};
+
+function getGroupCourseList(group: Group): Array<{ courseId: string; courseName: string }> {
+  if (Array.isArray(group.courses) && group.courses.length > 0) {
+    return group.courses.map((course) => ({
+      courseId: course.courseId,
+      courseName: course.courseName || "Materia",
+    }));
+  }
+  if (group.courseId) {
+    return [{ courseId: group.courseId, courseName: group.courseName || "Materia" }];
+  }
+  return [];
+}
+
+function formatGroupCourses(group: Group): string {
+  const courses = getGroupCourseList(group);
+  if (courses.length === 0) return "Sin materias";
+  return courses.map((course) => course.courseName).join(", ");
+}
+
+function formatShortDate(value: string | null): string {
+  if (!value) return "Sin cierre";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("es-MX", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(date);
+}
+
+async function readApiError(response: Response): Promise<string> {
+  try {
+    const payload = (await response.json()) as { error?: unknown };
+    if (typeof payload.error === "string" && payload.error.trim()) return payload.error.trim();
+  } catch {
+    // ignore and use fallback
+  }
+  return "No se pudo cargar el resumen";
+}
+
 export default function GroupsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [assistantGroups, setAssistantGroups] = useState<Group[]>([]);
@@ -43,6 +106,8 @@ export default function GroupsPage() {
   const [search, setSearch] = useState("");
   const [plantelFilter, setPlantelFilter] = useState("all");
   const [modeFilter, setModeFilter] = useState<"all" | "presencial" | "enLinea">("all");
+  const [viewMode, setViewMode] = useState<GroupViewMode>("cards");
+  const [closureSummaries, setClosureSummaries] = useState<Record<string, GroupClosureSummary>>({});
   const [teacherOptions, setTeacherOptions] = useState<TeacherUser[]>([]);
   const [loadingTeacherOptions, setLoadingTeacherOptions] = useState(false);
 
@@ -181,6 +246,7 @@ export default function GroupsPage() {
       const searchableText = [
         group.groupName,
         group.courseName,
+        formatGroupCourses(group),
         group.program,
         group.plantelName,
         group.teacherName,
@@ -223,6 +289,101 @@ export default function GroupsPage() {
       finishedAssistantGroups: finishedAssistant,
     };
   }, [assistantGroups, groups, modeFilter, plantelFilter, searchTerm]);
+
+  const quickViewGroups = useMemo(
+    () => [
+      ...activeGroups.map((group) => ({ group, relation: "Principal" as const })),
+      ...activeAssistantGroups.map((group) => ({ group, relation: "Mentor" as const })),
+      ...finishedGroups.map((group) => ({ group, relation: "Principal" as const })),
+      ...finishedAssistantGroups.map((group) => ({ group, relation: "Mentor" as const })),
+    ],
+    [activeAssistantGroups, activeGroups, finishedAssistantGroups, finishedGroups],
+  );
+
+  useEffect(() => {
+    if (viewMode !== "table" || quickViewGroups.length === 0 || !currentUser) return;
+    const missingGroups = quickViewGroups
+      .map((item) => item.group)
+      .filter((group) => !closureSummaries[group.id]);
+    if (missingGroups.length === 0) return;
+
+    let cancelled = false;
+    setClosureSummaries((prev) => {
+      const next = { ...prev };
+      missingGroups.forEach((group) => {
+        next[group.id] = { loading: true, error: null, courses: [] };
+      });
+      return next;
+    });
+
+    const loadSummaries = async () => {
+      try {
+        const token = await currentUser.getIdToken();
+        const response = await fetch("/api/groups/quick-summary", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ groupIds: missingGroups.map((group) => group.id) }),
+        });
+        if (!response.ok) throw new Error(await readApiError(response));
+
+        const payload = (await response.json()) as {
+          data?: {
+            summaries?: Array<{
+              groupId: string;
+              courses: GroupCourseClosureSummary[];
+            }>;
+          };
+        };
+        const summaries = payload.data?.summaries ?? [];
+        if (cancelled) return;
+        setClosureSummaries((prev) => {
+          const next = { ...prev };
+          const loadedGroupIds = new Set<string>();
+          summaries.forEach((summary) => {
+            loadedGroupIds.add(summary.groupId);
+            next[summary.groupId] = {
+              loading: false,
+              error: null,
+              courses: summary.courses,
+            };
+          });
+          missingGroups.forEach((group) => {
+            if (!loadedGroupIds.has(group.id)) {
+              next[group.id] = {
+                loading: false,
+                error: "No se encontro el grupo",
+                courses: [],
+              };
+            }
+          });
+          return next;
+        });
+      } catch (err) {
+        console.error(err);
+        if (cancelled) return;
+        setClosureSummaries((prev) => {
+          const next = { ...prev };
+          missingGroups.forEach((group) => {
+            next[group.id] = {
+              loading: false,
+              error: "No se pudo cargar cierre",
+              courses: [],
+            };
+          });
+          return next;
+        });
+      }
+    };
+
+    void loadSummaries();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [closureSummaries, currentUser, quickViewGroups, viewMode]);
 
   const formatRange = (start?: Date | null, end?: Date | null) => {
     if (!start || !end) return "Sin fechas";
@@ -401,14 +562,49 @@ export default function GroupsPage() {
               ) : null}
             </div>
 
+            <div className="creator-tabs-list inline-flex rounded-full p-1">
+              <button
+                type="button"
+                onClick={() => setViewMode("cards")}
+                className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                  viewMode === "cards"
+                    ? "creator-tabs-trigger"
+                    : "text-[#754848] hover:bg-white/70"
+                }`}
+                data-state={viewMode === "cards" ? "active" : "inactive"}
+              >
+                Tarjetas
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("table")}
+                className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                  viewMode === "table"
+                    ? "creator-tabs-trigger"
+                    : "text-[#754848] hover:bg-white/70"
+                }`}
+                data-state={viewMode === "table" ? "active" : "inactive"}
+              >
+                Tabla rápida
+              </button>
+            </div>
+
             {filteredTotalGroups === 0 ? (
               <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-600 shadow-sm">
                 No encontramos grupos que coincidan con tu búsqueda.
               </div>
             ) : null}
 
+            {filteredTotalGroups > 0 && viewMode === "table" ? (
+              <QuickGroupsTable
+                rows={quickViewGroups}
+                closureSummaries={closureSummaries}
+                formatRange={formatRange}
+              />
+            ) : null}
+
             {/* Grupos propios */}
-            {filteredTotalGroups > 0 && canViewPrimaryGroups && activeGroups.length > 0 ? (
+            {filteredTotalGroups > 0 && viewMode === "cards" && canViewPrimaryGroups && activeGroups.length > 0 ? (
               <section className="space-y-3">
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-semibold text-slate-800">
@@ -430,7 +626,7 @@ export default function GroupsPage() {
             ) : null}
 
             {/* Grupos donde es mentor */}
-            {filteredTotalGroups > 0 && activeAssistantGroups.length > 0 ? (
+            {filteredTotalGroups > 0 && viewMode === "cards" && activeAssistantGroups.length > 0 ? (
               <section className="space-y-3">
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-semibold text-slate-800">
@@ -451,7 +647,7 @@ export default function GroupsPage() {
             ) : null}
 
             {/* Grupos finalizados propios */}
-            {filteredTotalGroups > 0 && canViewPrimaryGroups && finishedGroups.length > 0 ? (
+            {filteredTotalGroups > 0 && viewMode === "cards" && canViewPrimaryGroups && finishedGroups.length > 0 ? (
               <section className="space-y-3">
                 <h2 className="text-sm font-semibold text-slate-800">
                   {hasGlobalGroupsView ? "Grupos Finalizados" : "Mis Grupos Finalizados"}
@@ -471,7 +667,7 @@ export default function GroupsPage() {
             ) : null}
 
             {/* Grupos finalizados como mentor */}
-            {filteredTotalGroups > 0 && finishedAssistantGroups.length > 0 ? (
+            {filteredTotalGroups > 0 && viewMode === "cards" && finishedAssistantGroups.length > 0 ? (
               <section className="space-y-3">
                 <h2 className="text-sm font-semibold text-slate-800">
                   {canViewPrimaryGroups ? "Grupos como Mentor - Finalizados" : "Grupos Finalizados"}
@@ -537,6 +733,152 @@ export default function GroupsPage() {
         />
       </div>
     </RoleGate>
+  );
+}
+
+function QuickGroupsTable({
+  rows,
+  closureSummaries,
+  formatRange,
+}: {
+  rows: Array<{ group: Group; relation: "Principal" | "Mentor" }>;
+  closureSummaries: Record<string, GroupClosureSummary>;
+  formatRange: (s?: Date | null, e?: Date | null) => string;
+}) {
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-600 shadow-sm">
+        No hay grupos para mostrar en tabla.
+      </div>
+    );
+  }
+
+  return (
+    <section className="creator-card overflow-hidden rounded-2xl border">
+      <div className="flex flex-col gap-1 border-b border-[#d9b1a1]/60 px-5 py-4">
+        <p className="text-xs uppercase tracking-[0.2em] text-[#9f6e61]">Vista rápida</p>
+        <h2 className="text-lg font-semibold text-[#551b22]">Grupos y materias asignadas</h2>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full divide-y divide-[#d9b1a1]/60 text-left text-sm">
+          <thead className="bg-[#f3e3db]/60 text-xs uppercase tracking-[0.14em] text-[#754848]">
+            <tr>
+              <th className="px-5 py-3 font-semibold">Grupo</th>
+              <th className="px-5 py-3 font-semibold">Materias</th>
+              <th className="px-5 py-3 font-semibold">Profesor</th>
+              <th className="px-5 py-3 font-semibold">Alumnos</th>
+              <th className="px-5 py-3 font-semibold">Fechas</th>
+              <th className="px-5 py-3 font-semibold">Cierres</th>
+              <th className="px-5 py-3 font-semibold">Accion</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#d9b1a1]/50 bg-white/60">
+            {rows.map(({ group, relation }) => {
+              const summary = closureSummaries[group.id] ?? EMPTY_GROUP_CLOSURE_SUMMARY;
+              const statusLabel =
+                group.status === "active" ? "Activo" : group.status === "finished" ? "Finalizado" : "Archivado";
+              return (
+                <tr key={`${relation}-${group.id}`} className="align-top">
+                  <td className="min-w-64 px-5 py-4">
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-semibold text-[#551b22]">{group.groupName}</p>
+                        {relation === "Mentor" ? (
+                          <span className="rounded-full bg-[#f3e3db] px-2 py-0.5 text-[11px] font-semibold text-[#6e2d2d]">
+                            Mentor
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="text-xs text-[#754848]">
+                        {group.program || "Sin programa"} | {group.plantelName || "Sin plantel"}
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                            group.status === "active"
+                              ? "bg-emerald-100 text-emerald-700"
+                              : "bg-slate-100 text-slate-600"
+                          }`}
+                        >
+                          {statusLabel}
+                        </span>
+                        <span className="rounded-full bg-[#f3e3db] px-2 py-0.5 text-[11px] font-semibold text-[#6e2d2d]">
+                          {group.isInPerson === true ? "Presencial" : "En linea"}
+                        </span>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="min-w-80 px-5 py-4">
+                    <div className="flex flex-wrap gap-2">
+                      {getGroupCourseList(group).length > 0 ? (
+                        getGroupCourseList(group).map((course) => (
+                          <span
+                            key={course.courseId}
+                            className="rounded-full border border-[#d9b1a1]/70 bg-[#fffaf7] px-2.5 py-1 text-xs font-medium text-[#6e2d2d]"
+                          >
+                            {course.courseName}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-[#754848]">Sin materias</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="min-w-48 px-5 py-4 text-[#754848]">
+                    <p className="font-medium text-[#551b22]">{group.teacherName || "Sin profesor"}</p>
+                    {group.assistantTeachers && group.assistantTeachers.length > 0 ? (
+                      <p className="mt-1 text-xs">
+                        Mentores: {group.assistantTeachers.map((teacher) => teacher.name || teacher.email || teacher.id).join(", ")}
+                      </p>
+                    ) : null}
+                  </td>
+                  <td className="px-5 py-4 text-[#551b22]">
+                    {group.studentsCount}/{group.maxStudents || "∞"}
+                  </td>
+                  <td className="min-w-44 px-5 py-4 text-[#754848]">
+                    {formatRange(group.startDate, group.endDate)}
+                  </td>
+                  <td className="min-w-96 px-5 py-4 text-[#754848]">
+                    {summary.loading ? (
+                      <span>Cargando cierres...</span>
+                    ) : summary.error ? (
+                      <span className="text-red-600">{summary.error}</span>
+                    ) : summary.courses.length === 0 ? (
+                      <span>Sin materias para cierre</span>
+                    ) : (
+                      <div className="space-y-2">
+                        {summary.courses.map((course) => (
+                          <div key={course.courseId} className="rounded-lg border border-[#d9b1a1]/60 bg-white/70 p-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="font-medium text-[#551b22]">{course.courseName}</span>
+                              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
+                                {course.closedCount}/{course.totalCount} cerrados
+                              </span>
+                            </div>
+                            <p className="mt-1 text-xs">
+                              Ultimo cierre: {formatShortDate(course.lastClosedAt)}
+                              {course.lastClosedByName ? ` por ${course.lastClosedByName}` : ""}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-5 py-4">
+                    <Link
+                      href={`/creator/grupos/${group.id}`}
+                      className="inline-flex whitespace-nowrap rounded-lg border border-[#d9b1a1] bg-white px-3 py-2 text-sm font-medium text-[#6e2d2d] transition hover:border-[#b67a68] hover:bg-[#fff7f7]"
+                    >
+                      Gestionar
+                    </Link>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 

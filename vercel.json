@@ -1,8 +1,1 @@
-{
-  "crons": [
-    {
-      "path": "/api/admin/course-auto-closures",
-      "schedule": "0 9 * * *"
-    }
-  ]
-}
+{}

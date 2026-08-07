@@ -95,6 +95,7 @@ async function loadAssignmentContext(
 type AttemptSession = {
   startedAt: Date;
   deadlineAt: Date;
+  sessionId: string;
 };
 
 type FinalizedAttemptResult = {
@@ -127,9 +128,14 @@ function toDateOrNull(value: string | null | undefined): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function asTrimmedString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function getAttemptSessionFromAssignment(assignment: {
   currentAttemptStartedAt?: string | null;
   currentAttemptDeadlineAt?: string | null;
+  currentAttemptSessionId?: string | null;
 }): AttemptSession | null {
   const startedAt = toDateOrNull(assignment.currentAttemptStartedAt);
   if (!startedAt) return null;
@@ -141,6 +147,7 @@ function getAttemptSessionFromAssignment(assignment: {
   return {
     startedAt,
     deadlineAt,
+    sessionId: asTrimmedString(assignment.currentAttemptSessionId),
   };
 }
 
@@ -155,6 +162,7 @@ function calculateAttemptDurationSeconds(session: AttemptSession | null, submitt
 async function ensureStudentAttemptSession(params: {
   assignmentId: string;
   assignmentRef: DocumentReference<DocumentData>;
+  sessionId: string;
 }) {
   const db = getAdminFirestore();
   return db.runTransaction(async (transaction) => {
@@ -163,7 +171,8 @@ async function ensureStudentAttemptSession(params: {
       throw new AttemptRouteError(404, "La asignacion ya no existe");
     }
 
-    const assignment = toGlobalExamAssignmentRecord(params.assignmentId, snap.data() ?? {});
+    const rawAssignmentData = (snap.data() ?? {}) as Record<string, unknown>;
+    const assignment = toGlobalExamAssignmentRecord(params.assignmentId, rawAssignmentData);
     if (
       !assignment.enabled ||
       assignment.status !== "enabled" ||
@@ -177,8 +186,49 @@ async function ensureStudentAttemptSession(params: {
     }
 
     const now = new Date();
-    const currentSession = getAttemptSessionFromAssignment(assignment);
+    const currentSession = getAttemptSessionFromAssignment({
+      ...assignment,
+      currentAttemptSessionId: asTrimmedString(rawAssignmentData.currentAttemptSessionId),
+    });
     if (currentSession) {
+      if (currentSession.deadlineAt.getTime() > now.getTime()) {
+        if (currentSession.sessionId && currentSession.sessionId !== params.sessionId) {
+          throw new AttemptRouteError(
+            409,
+            "Ya hay un intento abierto para este examen. Continualo desde el mismo navegador donde se inicio.",
+          );
+        }
+
+        if (!currentSession.sessionId) {
+          const restartedAt = now;
+          const restartedDeadlineAt = new Date(now.getTime() + GLOBAL_EXAM_DURATION_MINUTES * 60_000);
+          transaction.set(
+            params.assignmentRef,
+            {
+              currentAttemptStartedAt: restartedAt,
+              currentAttemptDeadlineAt: restartedDeadlineAt,
+              currentAttemptSessionId: params.sessionId,
+              updatedAt: now,
+            },
+            { merge: true },
+          );
+
+          return {
+            assignment: {
+              ...assignment,
+              currentAttemptStartedAt: restartedAt.toISOString(),
+              currentAttemptDeadlineAt: restartedDeadlineAt.toISOString(),
+            },
+            session: {
+              startedAt: restartedAt,
+              deadlineAt: restartedDeadlineAt,
+              sessionId: params.sessionId,
+            },
+            expired: false,
+          };
+        }
+      }
+
       return {
         assignment,
         session: currentSession,
@@ -193,6 +243,7 @@ async function ensureStudentAttemptSession(params: {
       {
         currentAttemptStartedAt: startedAt,
         currentAttemptDeadlineAt: deadlineAt,
+        currentAttemptSessionId: params.sessionId,
         updatedAt: now,
       },
       { merge: true },
@@ -207,6 +258,7 @@ async function ensureStudentAttemptSession(params: {
       session: {
         startedAt,
         deadlineAt,
+        sessionId: params.sessionId,
       },
       expired: false,
     };
@@ -225,6 +277,7 @@ async function finalizeGlobalExamAttempt(params: {
   };
   answers: Record<string, string>;
   completionReason: GlobalExamAttemptCompletionReason;
+  sessionId?: string;
 }) : Promise<FinalizedAttemptResult> {
   const db = getAdminFirestore();
   const now = new Date();
@@ -248,9 +301,10 @@ async function finalizeGlobalExamAttempt(params: {
       throw new AttemptRouteError(404, "La asignacion ya no existe");
     }
 
+    const freshRawAssignmentData = (freshAssignmentSnap.data() ?? {}) as Record<string, unknown>;
     const freshAssignment = toGlobalExamAssignmentRecord(
       params.assignmentId,
-      freshAssignmentSnap.data() ?? {},
+      freshRawAssignmentData,
     );
 
     if (!freshAssignment.enabled || freshAssignment.status !== "enabled") {
@@ -262,14 +316,28 @@ async function finalizeGlobalExamAttempt(params: {
     }
 
     committedSession =
-      getAttemptSessionFromAssignment(freshAssignment) ??
+      getAttemptSessionFromAssignment({
+        ...freshAssignment,
+        currentAttemptSessionId: asTrimmedString(freshRawAssignmentData.currentAttemptSessionId),
+      }) ??
       (() => {
         const startedAt = now;
         return {
           startedAt,
           deadlineAt: new Date(startedAt.getTime() + GLOBAL_EXAM_DURATION_MINUTES * 60_000),
+          sessionId: params.sessionId ?? "",
         };
       })();
+
+    if (
+      committedSession.sessionId &&
+      committedSession.sessionId !== params.sessionId
+    ) {
+      throw new AttemptRouteError(
+        409,
+        "Este intento se inicio en otra sesion. Vuelve a abrir el examen desde el mismo navegador.",
+      );
+    }
 
     committedAttemptNumber = freshAssignment.attemptsUsed + 1;
     committedDurationSeconds = calculateAttemptDurationSeconds(committedSession, now);
@@ -297,6 +365,7 @@ async function finalizeGlobalExamAttempt(params: {
       answers: result.answers,
       durationSeconds: committedDurationSeconds,
       completionReason: params.completionReason,
+      sessionId: committedSession.sessionId || params.sessionId || null,
       startedAt: committedSession.startedAt,
       deadlineAt: committedSession.deadlineAt,
       submittedAt: now,
@@ -316,6 +385,7 @@ async function finalizeGlobalExamAttempt(params: {
         status: nextStatus,
         currentAttemptStartedAt: null,
         currentAttemptDeadlineAt: null,
+        currentAttemptSessionId: null,
         updatedById: params.access.uid,
         updatedByName: actorName,
         updatedAt: now,
@@ -452,9 +522,15 @@ export async function GET(
     let session = getAttemptSessionFromAssignment(assignment);
 
     if (access.role === "student") {
+      const sessionId = asTrimmedString(request.nextUrl.searchParams.get("sessionId"));
+      if (!sessionId) {
+        throw new AttemptRouteError(400, "sessionId es requerido para iniciar el intento");
+      }
+
       const ensured = await ensureStudentAttemptSession({
         assignmentId: normalizedAssignmentId,
         assignmentRef,
+        sessionId,
       });
 
       assignment = ensured.assignment;
@@ -469,6 +545,7 @@ export async function GET(
           access,
           answers: {},
           completionReason: "timeout",
+          sessionId,
         });
 
         const refreshed = await loadAssignmentContext(request, normalizedAssignmentId);
@@ -521,6 +598,7 @@ export async function GET(
         attempts,
         session: {
           durationMinutes: GLOBAL_EXAM_DURATION_MINUTES,
+          sessionId: session?.sessionId ?? null,
           startedAt:
             session?.startedAt.toISOString() ??
             new Date().toISOString(),
@@ -531,6 +609,15 @@ export async function GET(
       },
     });
   } catch (error) {
+    if (error instanceof AttemptRouteError) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: error.message,
+        },
+        { status: error.status },
+      );
+    }
     return toGlobalExamRouteErrorResponse(error, "Error preparando intento de examen global");
   }
 }
@@ -580,6 +667,7 @@ export async function POST(
     const body = (await request.json().catch(() => ({}))) as {
       answers?: unknown;
       completionReason?: unknown;
+      sessionId?: unknown;
     };
     const completionReason =
       typeof body.completionReason === "string" && ATTEMPT_COMPLETION_REASONS.has(body.completionReason as GlobalExamAttemptCompletionReason)
@@ -597,6 +685,7 @@ export async function POST(
           ? (body.answers as Record<string, string>)
           : {},
       completionReason,
+      sessionId: asTrimmedString(body.sessionId),
     });
 
     return NextResponse.json({

@@ -1627,6 +1627,11 @@ export default function LiveClassRoomPage() {
       `/api/live/classes/${encodeURIComponent(classId)}/participants${liveClassQuery ? `?${liveClassQuery}` : ""}`,
     [classId, liveClassQuery],
   );
+  const attendancePresenceEndpoint = useMemo(
+    () =>
+      `/api/live/classes/${encodeURIComponent(classId)}/attendance/presence${liveClassQuery ? `?${liveClassQuery}` : ""}`,
+    [classId, liveClassQuery],
+  );
   const recordingEndpoint = useMemo(
     () =>
       `/api/live/classes/${encodeURIComponent(classId)}/recording${liveClassQuery ? `?${liveClassQuery}` : ""}`,
@@ -1658,6 +1663,7 @@ export default function LiveClassRoomPage() {
   const [participantsLoading, setParticipantsLoading] = useState(false);
   const [participantsError, setParticipantsError] = useState<string | null>(null);
   const [participants, setParticipants] = useState<LiveRoomParticipantSummary[]>([]);
+  const [attendancePresenceJoined, setAttendancePresenceJoined] = useState(false);
   const [mutingAll, setMutingAll] = useState(false);
   const [mutingParticipantId, setMutingParticipantId] = useState<string | null>(null);
   const [unmutingParticipantId, setUnmutingParticipantId] = useState<string | null>(null);
@@ -1718,6 +1724,41 @@ export default function LiveClassRoomPage() {
     setRecordingErrorMessage(result?.errorMessage?.trim() || null);
   }, []);
 
+  const sendAttendancePresence = useCallback(
+    async (action: "join" | "leave" | "sync", options?: { keepalive?: boolean }) => {
+      if (!classId || !user) return;
+      try {
+        const idToken = await user.getIdToken();
+        await fetch(attendancePresenceEndpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({ action }),
+          keepalive: options?.keepalive === true,
+        });
+      } catch {
+        // best-effort fallback for attendance presence
+      }
+    },
+    [attendancePresenceEndpoint, classId, user],
+  );
+
+  useEffect(() => {
+    if (!attendancePresenceJoined) return;
+    const handlePageHide = () => {
+      void sendAttendancePresence("leave", { keepalive: true });
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("beforeunload", handlePageHide);
+    return () => {
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("beforeunload", handlePageHide);
+      void sendAttendancePresence("leave", { keepalive: true });
+    };
+  }, [attendancePresenceJoined, sendAttendancePresence]);
+
   const requestToken = useCallback(async () => {
     if (!classId) return;
     if (!user) return;
@@ -1771,15 +1812,23 @@ export default function LiveClassRoomPage() {
       setToken(payload.data.token);
       setLivekitUrl(payload.data.livekitUrl);
       setWaitingReason(null);
+      if (payload.data.asRole === "student") {
+        setAttendancePresenceJoined(true);
+        void sendAttendancePresence("join");
+      }
       setLoading(false);
     } catch (requestError) {
       console.error("No se pudo obtener token de LiveKit", requestError);
       setError(requestError instanceof Error ? requestError.message : "No se pudo abrir la clase");
       setLoading(false);
     }
-  }, [applyRecordingControlResult, classId, courseId, lessonId, user]);
+  }, [applyRecordingControlResult, classId, courseId, lessonId, sendAttendancePresence, user]);
 
   const leaveRoom = useCallback(() => {
+    if (attendancePresenceJoined) {
+      void sendAttendancePresence("leave", { keepalive: true });
+      setAttendancePresenceJoined(false);
+    }
     // Unmounting LiveKitRoom forces a clean disconnect and avoids internal
     // VideoConference paging errors seen during leave.
     setToken(null);
@@ -1793,7 +1842,7 @@ export default function LiveClassRoomPage() {
     setParticipantsError(null);
     setModerationMessage(null);
     setRecordingStatusNotice(null);
-  }, []);
+  }, [attendancePresenceJoined, sendAttendancePresence]);
 
   const pollJoinAccess = useCallback(async () => {
     if (!classId || !user) return;
@@ -1820,6 +1869,10 @@ export default function LiveClassRoomPage() {
       setAsRole(payload.data.asRole ?? null);
       setLiveSessionStatus(payload.data.liveSession?.status ?? null);
       if (!payload.data.joinAllowed) {
+        if (attendancePresenceJoined) {
+          void sendAttendancePresence("leave", { keepalive: true });
+          setAttendancePresenceJoined(false);
+        }
         setWaitingReason(payload.data.waitingReason || "session_ended");
         setToken(null);
         setLivekitUrl(null);
@@ -1828,7 +1881,7 @@ export default function LiveClassRoomPage() {
     } catch {
       // ignore polling transient errors while in-room
     }
-  }, [classId, courseId, lessonId, user]);
+  }, [attendancePresenceJoined, classId, courseId, lessonId, sendAttendancePresence, user]);
 
   const startSession = useCallback(async () => {
     if (!classId || !user || asRole !== "teacher") return;
@@ -2047,6 +2100,7 @@ export default function LiveClassRoomPage() {
         if (payload.data.roomName) {
           setRoomName(payload.data.roomName);
         }
+        void sendAttendancePresence("sync");
       } catch (participantsFetchError) {
         console.error("No se pudo consultar participantes de la sala", participantsFetchError);
         if (!silent) {
@@ -2062,7 +2116,7 @@ export default function LiveClassRoomPage() {
         }
       }
     },
-    [asRole, classId, liveSessionStatus, participantsEndpoint, user],
+    [asRole, classId, liveSessionStatus, participantsEndpoint, sendAttendancePresence, user],
   );
 
   const submitParticipantsAction = useCallback(

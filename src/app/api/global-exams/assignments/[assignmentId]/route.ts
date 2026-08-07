@@ -87,6 +87,7 @@ export async function PATCH(
       status: nextStatus,
       currentAttemptStartedAt: null,
       currentAttemptDeadlineAt: null,
+      currentAttemptSessionId: null,
       updatedById: access.uid,
       updatedByName: actorName,
       updatedAt: now,

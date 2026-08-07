@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as admin from "firebase-admin";
 import { getAdminFirestore } from "@/lib/firebase/admin";
+import {
+  requireAdminTeacherAccess,
+  type AdminTeacherAccessContext,
+} from "@/lib/server/require-admin-teacher-access";
+import {
+  requireTeacherAccess,
+  TeacherAccessError,
+  type TeacherAccessContext,
+} from "@/lib/server/require-teacher-access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -76,7 +85,44 @@ type CourseProcessResult = {
   openCount: number;
 };
 
+type ClosureReviewItem = {
+  groupId: string;
+  groupName: string;
+  courseId: string;
+  courseName: string;
+  teacherId: string;
+  teacherName: string;
+  enabledAt: string;
+  daysSinceEnabled: number;
+  weeksSinceEnabled: number;
+  daysUntilDue: number;
+  due: boolean;
+  closedCount: number;
+  openCount: number;
+  totalCount: number;
+};
+
+type ManualCloseBody = {
+  action?: unknown;
+  groupId?: unknown;
+  courseId?: unknown;
+};
+
+type ClosureActor = {
+  closedByType: "system" | "teacher";
+  closureTrigger: "automatic" | "manual";
+  closedById: string;
+  closedByName: string;
+};
+
+type ClosureReviewAccessContext = TeacherAccessContext & {
+  plantelIds: string[];
+  canClose: boolean;
+};
+
 const DEFAULT_AUTO_CLOSE_DAYS = 40;
+const REVIEW_START_DAYS = 6 * 7;
+const REVIEW_DUE_DAYS = 7 * 7;
 const SYSTEM_CLOSER_ID = "system";
 const SYSTEM_CLOSER_NAME = "Sistema";
 
@@ -184,6 +230,67 @@ function resolveAutoCloseDays(): number {
   return Number.isFinite(configured) && configured > 0
     ? Math.floor(configured)
     : DEFAULT_AUTO_CLOSE_DAYS;
+}
+
+function daysBetween(start: admin.firestore.Timestamp, endMs: number): number {
+  return Math.floor((endMs - start.toMillis()) / (24 * 60 * 60 * 1000));
+}
+
+function asUniqueStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .map((item) => asTrimmedString(item))
+        .filter(Boolean),
+    ),
+  );
+}
+
+function getUserPlantelIds(data: FirestoreRecord): string[] {
+  const plantelIds = asUniqueStringArray(data.plantelIds);
+  if (plantelIds.length > 0) return plantelIds;
+  const legacyPlantelId = asTrimmedString(data.plantelId);
+  return legacyPlantelId ? [legacyPlantelId] : [];
+}
+
+function isAdminReviewRole(role: TeacherAccessContext["role"]): boolean {
+  return role === "adminTeacher" || role === "superAdminTeacher";
+}
+
+function isCoordinatorReviewRole(role: TeacherAccessContext["role"]): boolean {
+  return role === "coordinadorPlantel" || role === "director";
+}
+
+async function requireClosureReviewAccess(request: NextRequest): Promise<ClosureReviewAccessContext> {
+  const context = await requireTeacherAccess(request);
+  if (!isAdminReviewRole(context.role) && !isCoordinatorReviewRole(context.role)) {
+    throw new RouteAccessError(403, "Acceso restringido a administradores y coordinadores");
+  }
+
+  const userSnap = await getAdminFirestore().collection("users").doc(context.uid).get();
+  const userData = (userSnap.data() ?? {}) as FirestoreRecord;
+
+  return {
+    ...context,
+    plantelIds: getUserPlantelIds(userData),
+    canClose: isAdminReviewRole(context.role),
+  };
+}
+
+function canReviewGroup(params: {
+  access: ClosureReviewAccessContext;
+  groupData: FirestoreRecord;
+}): boolean {
+  const { access, groupData } = params;
+  if (access.canClose) return true;
+
+  const plantelId = asTrimmedString(groupData.plantelId);
+  if (plantelId && access.plantelIds.includes(plantelId)) return true;
+
+  const isOnlineGroup = groupData.isInPerson !== true;
+  const coordinatorId = asTrimmedString(groupData.coordinatorId);
+  return isOnlineGroup && coordinatorId === access.uid;
 }
 
 function toGroupCourses(data: FirestoreRecord): CourseEntry[] {
@@ -515,18 +622,30 @@ async function processCourse(params: {
   cutoff: admin.firestore.Timestamp;
   autoCloseDays: number;
   dryRun: boolean;
+  forceEligible?: boolean;
+  actor?: ClosureActor;
 }): Promise<CourseProcessResult> {
   const { db, groupDoc, groupData, course, cutoff, autoCloseDays, dryRun } = params;
+  const actor = params.actor ?? {
+    closedByType: "system",
+    closureTrigger: "automatic",
+    closedById: SYSTEM_CLOSER_ID,
+    closedByName: SYSTEM_CLOSER_NAME,
+  };
   const groupId = groupDoc.id;
   const groupName = asTrimmedString(groupData.groupName) || "Grupo";
   const enabledAtIso = course.enabledAt?.toDate().toISOString() ?? "";
+  const eligible = Boolean(
+    course.enabledAt &&
+      (params.forceEligible === true || course.enabledAt.toMillis() <= cutoff.toMillis()),
+  );
   const baseResult: CourseProcessResult = {
     groupId,
     groupName,
     courseId: course.courseId,
     courseName: course.courseName || "Materia",
     enabledAt: enabledAtIso,
-    eligible: Boolean(course.enabledAt && course.enabledAt.toMillis() <= cutoff.toMillis()),
+    eligible,
     dryRun,
     closedCount: 0,
     alreadyClosedCount: 0,
@@ -604,14 +723,14 @@ async function processCourse(params: {
         manualOverride: calculation.manualOverride,
         pendingUngradedCount: calculation.pendingUngradedCount,
         totalEvaluable: calculation.totalEvaluable,
-        closedByType: "system",
-        closureTrigger: "automatic",
+        closedByType: actor.closedByType,
+        closureTrigger: actor.closureTrigger,
         autoCloseDays,
         courseEnabledAt: course.enabledAt,
-        autoClosedAt: now,
+        autoClosedAt: actor.closureTrigger === "automatic" ? now : null,
         closedAt: now,
-        closedById: SYSTEM_CLOSER_ID,
-        closedByName: SYSTEM_CLOSER_NAME,
+        closedById: actor.closedById,
+        closedByName: actor.closedByName,
         updatedAt: now,
       },
     });
@@ -646,6 +765,160 @@ async function processCourse(params: {
 
   baseResult.closedCount = writes.length;
   return baseResult;
+}
+
+async function resolveAdminDisplayName(adminContext: AdminTeacherAccessContext): Promise<string> {
+  const userSnap = await getAdminFirestore().collection("users").doc(adminContext.uid).get();
+  const userData = (userSnap.data() ?? {}) as FirestoreRecord;
+  return (
+    asTrimmedString(userData.name) ||
+    asTrimmedString(userData.displayName) ||
+    asTrimmedString(adminContext.email) ||
+    "AdminTeacher"
+  );
+}
+
+async function listClosureReviewItems(request: NextRequest): Promise<NextResponse> {
+  const access = await requireClosureReviewAccess(request);
+
+  const db = getAdminFirestore();
+  const autoCloseDays = resolveAutoCloseDays();
+  const nowMs = Date.now();
+  const groupsSnap = await db.collection("groups").where("status", "==", "active").get();
+  const items: ClosureReviewItem[] = [];
+
+  for (const groupDoc of groupsSnap.docs) {
+    const groupData = (groupDoc.data() ?? {}) as FirestoreRecord;
+    if (!canReviewGroup({ access, groupData })) continue;
+
+    const courses = toGroupCourses(groupData);
+    if (courses.length === 0) continue;
+
+    const enrollmentsSnap = await db
+      .collection("studentEnrollments")
+      .where("groupId", "==", groupDoc.id)
+      .get();
+
+    const activeEnrollments = enrollmentsSnap.docs.filter((enrollmentDoc) => {
+      const enrollmentData = enrollmentDoc.data() as FirestoreRecord;
+      const status = asTrimmedString(enrollmentData.status) || "active";
+      return status !== "archived" && status !== "inactive" && status !== "baja";
+    });
+
+    for (const course of courses) {
+      if (!course.enabledAt) continue;
+      let closedCount = 0;
+      let openCount = 0;
+      activeEnrollments.forEach((enrollmentDoc) => {
+        const enrollmentData = enrollmentDoc.data() as FirestoreRecord;
+        const closures = asObject(enrollmentData.courseClosures);
+        const previousClosure = asObject(closures[course.courseId]);
+        if (previousClosure.status === "closed") {
+          closedCount += 1;
+          return;
+        }
+        openCount += 1;
+      });
+
+      if (openCount <= 0) continue;
+
+      const daysSinceEnabled = daysBetween(course.enabledAt, nowMs);
+      if (daysSinceEnabled < REVIEW_START_DAYS) continue;
+
+      const daysUntilDue = REVIEW_DUE_DAYS - daysSinceEnabled;
+      items.push({
+        groupId: groupDoc.id,
+        groupName: asTrimmedString(groupData.groupName) || "Grupo",
+        courseId: course.courseId,
+        courseName: course.courseName || "Materia",
+        teacherId: asTrimmedString(groupData.teacherId),
+        teacherName: asTrimmedString(groupData.teacherName) || "Sin profesor",
+        enabledAt: course.enabledAt.toDate().toISOString(),
+        daysSinceEnabled,
+        weeksSinceEnabled: Math.floor(daysSinceEnabled / 7),
+        daysUntilDue,
+        due: daysUntilDue <= 0,
+        closedCount,
+        openCount,
+        totalCount: closedCount + openCount,
+      });
+    }
+  }
+
+  items.sort((left, right) => {
+    if (left.due !== right.due) return Number(right.due) - Number(left.due);
+    if (left.daysUntilDue !== right.daysUntilDue) return left.daysUntilDue - right.daysUntilDue;
+    return left.groupName.localeCompare(right.groupName, "es-MX", { sensitivity: "base" });
+  });
+
+  return NextResponse.json(
+    {
+      success: true,
+      data: {
+        autoCloseDays,
+        reviewStartDays: REVIEW_START_DAYS,
+        dueDays: REVIEW_DUE_DAYS,
+        canClose: access.canClose,
+        scopeRole: access.role,
+        items,
+      },
+    },
+    { status: 200 },
+  );
+}
+
+async function closeCourseFromReview(request: NextRequest): Promise<NextResponse> {
+  const adminContext = await requireAdminTeacherAccess(request);
+  const body = (await request.json().catch(() => ({}))) as ManualCloseBody;
+  const groupId = asTrimmedString(body.groupId);
+  const courseId = asTrimmedString(body.courseId);
+  if (!groupId || !courseId) {
+    throw new RouteAccessError(400, "groupId y courseId son requeridos");
+  }
+
+  const db = getAdminFirestore();
+  const groupSnap = await db.collection("groups").doc(groupId).get();
+  if (!groupSnap.exists) {
+    throw new RouteAccessError(404, "Grupo no encontrado");
+  }
+
+  const groupData = (groupSnap.data() ?? {}) as FirestoreRecord;
+  const course = toGroupCourses(groupData).find((item) => item.courseId === courseId);
+  if (!course) {
+    throw new RouteAccessError(404, "Materia no encontrada en el grupo");
+  }
+
+  const autoCloseDays = resolveAutoCloseDays();
+  const cutoff = admin.firestore.Timestamp.fromMillis(Date.now() - autoCloseDays * 24 * 60 * 60 * 1000);
+  const adminName = await resolveAdminDisplayName(adminContext);
+  const result = await processCourse({
+    db,
+    groupDoc: groupSnap,
+    groupData,
+    course,
+    cutoff,
+    autoCloseDays,
+    dryRun: false,
+    forceEligible: true,
+    actor: {
+      closedByType: "teacher",
+      closureTrigger: "manual",
+      closedById: adminContext.uid,
+      closedByName: adminName,
+    },
+  });
+
+  return NextResponse.json(
+    {
+      success: true,
+      data: {
+        result,
+        closedById: adminContext.uid,
+        closedByName: adminName,
+      },
+    },
+    { status: 200 },
+  );
 }
 
 async function runAutoClosures(request: NextRequest): Promise<NextResponse> {
@@ -708,6 +981,9 @@ function toErrorResponse(error: unknown): NextResponse {
   if (error instanceof RouteAccessError) {
     return NextResponse.json({ success: false, error: error.message }, { status: error.status });
   }
+  if (error instanceof TeacherAccessError) {
+    return NextResponse.json({ success: false, error: error.message }, { status: error.status });
+  }
   console.error("Error en cierre automatico de materias:", error);
   return NextResponse.json(
     { success: false, error: "No se pudo ejecutar el cierre automatico de materias" },
@@ -717,6 +993,9 @@ function toErrorResponse(error: unknown): NextResponse {
 
 export async function GET(request: NextRequest) {
   try {
+    if (request.nextUrl.searchParams.get("review") === "true") {
+      return await listClosureReviewItems(request);
+    }
     return await runAutoClosures(request);
   } catch (error) {
     return toErrorResponse(error);
@@ -725,6 +1004,10 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    const body = (await request.clone().json().catch(() => null)) as ManualCloseBody | null;
+    if (asTrimmedString(body?.action) === "closeCourse") {
+      return await closeCourseFromReview(request);
+    }
     return await runAutoClosures(request);
   } catch (error) {
     return toErrorResponse(error);

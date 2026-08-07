@@ -24,6 +24,7 @@ export type GlobalExamAttemptPayload = {
   attempts: GlobalExamAttemptRecord[];
   session: {
     durationMinutes: number;
+    sessionId: string | null;
     startedAt: string;
     deadlineAt: string;
   };
@@ -172,8 +173,12 @@ export async function updateGlobalExamAssignment(
 
 export async function fetchGlobalExamAttemptPayload(
   assignmentId: string,
+  sessionId: string,
 ): Promise<GlobalExamAttemptPayload> {
-  return callApi<GlobalExamAttemptPayload>(`/api/global-exams/assignments/${assignmentId}/attempt`);
+  const params = new URLSearchParams({ sessionId });
+  return callApi<GlobalExamAttemptPayload>(
+    `/api/global-exams/assignments/${assignmentId}/attempt?${params.toString()}`,
+  );
 }
 
 export async function submitGlobalExamAttempt(
@@ -181,6 +186,7 @@ export async function submitGlobalExamAttempt(
   answers: Record<string, string>,
   options?: {
     completionReason?: GlobalExamAttemptCompletionReason;
+    sessionId?: string | null;
     token?: string;
     keepalive?: boolean;
   },
@@ -203,6 +209,7 @@ export async function submitGlobalExamAttempt(
   const payload = {
     answers,
     completionReason: options?.completionReason,
+    sessionId: options?.sessionId,
   };
 
   if (options?.token) {

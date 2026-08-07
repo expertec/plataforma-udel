@@ -28,6 +28,34 @@ type StudentGlobalExamsPageProps = {
   profileLabel?: string;
 };
 
+const GLOBAL_EXAM_SESSION_STORAGE_PREFIX = "globalExamAttemptSession";
+
+function createAttemptSessionId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function getAttemptSessionStorageKey(assignmentId: string): string {
+  return `${GLOBAL_EXAM_SESSION_STORAGE_PREFIX}:${assignmentId}`;
+}
+
+function getOrCreateAttemptSessionId(assignmentId: string): string {
+  if (typeof window === "undefined") return createAttemptSessionId();
+  const key = getAttemptSessionStorageKey(assignmentId);
+  const stored = window.localStorage.getItem(key)?.trim();
+  if (stored) return stored;
+  const next = createAttemptSessionId();
+  window.localStorage.setItem(key, next);
+  return next;
+}
+
+function clearAttemptSessionId(assignmentId: string): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(getAttemptSessionStorageKey(assignmentId));
+}
+
 function formatRemainingTime(ms: number): string {
   const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -154,10 +182,14 @@ export default function StudentGlobalExamsPage({
     setOpeningAssignmentId(assignmentId);
     try {
       const fullscreenEnabled = await requestExamFullscreen();
+      const attemptSessionId = getOrCreateAttemptSessionId(assignmentId);
       const [payload, token] = await Promise.all([
-        fetchGlobalExamAttemptPayload(assignmentId),
+        fetchGlobalExamAttemptPayload(assignmentId, attemptSessionId),
         getGlobalExamSessionToken(),
       ]);
+      if (payload.session.sessionId && payload.session.sessionId !== attemptSessionId) {
+        window.localStorage.setItem(getAttemptSessionStorageKey(assignmentId), payload.session.sessionId);
+      }
       setActiveExam(payload);
       setAnswers({});
       setActiveSessionToken(token);
@@ -204,6 +236,7 @@ export default function StudentGlobalExamsPage({
       try {
         const result = await submitGlobalExamAttempt(exam.assignment.id, answersRef.current, {
           completionReason,
+          sessionId: exam.session.sessionId,
           token: options?.keepalive ? activeSessionTokenRef.current ?? undefined : undefined,
           keepalive: options?.keepalive,
         });
@@ -228,6 +261,7 @@ export default function StudentGlobalExamsPage({
           toast.error("El intento se guardo, pero la sincronizacion a kardex quedo pendiente");
         }
 
+        clearAttemptSessionId(exam.assignment.id);
         resetActiveExamState();
         if (options?.shouldReloadAssignments !== false) {
           await loadAssignments();
