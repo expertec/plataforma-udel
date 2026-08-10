@@ -35,7 +35,8 @@ export function RoleGate({ allowedRole, children }: RoleGateProps) {
     const unsub = onAuthStateChanged(auth, async (user) => {
       try {
         if (!user) {
-          router.replace("/");
+          const currentPath = `${window.location.pathname}${window.location.search}`;
+          router.replace(`/?redirectTo=${encodeURIComponent(currentPath)}`);
           return;
         }
 

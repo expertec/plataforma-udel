@@ -116,6 +116,7 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
       { href: "/creator", label: "Dashboard" },
       { href: "/creator/asistencia", label: "Asistencia" },
       { href: "/creator/cursos", label: "Cursos" },
+      { href: "/creator/inducciones", label: "Inducciones" },
       { href: "/creator/grupos", label: "Grupos" },
     ];
     if (userRole === "teacher" || isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole)) {

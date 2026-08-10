@@ -2,6 +2,7 @@ import {
   addDoc,
   collection,
   deleteDoc,
+  type DocumentData,
   doc,
   increment,
   getDocs,
@@ -42,6 +43,7 @@ export type Course = {
   category?: string;
   createdAt?: Date;
   isMentorCourse?: boolean; // Indica si el curso pertenece a un grupo donde el usuario es mentor
+  isInduction?: boolean;
   teacherId?: string; // ID del profesor creador del curso
   mentorIds?: string[];
 };
@@ -147,6 +149,36 @@ const getMentorAllowedCourseIds = (
   return toUniqueStringArray(rawAllowed).filter((courseId) => validGroupIds.has(courseId));
 };
 
+type CourseDocumentLike = {
+  id: string;
+  data: () => DocumentData;
+};
+
+const mapCourseDoc = (
+  courseDoc: CourseDocumentLike,
+  options?: { isMentorCourse?: boolean },
+): Course => {
+  const data = courseDoc.data();
+  return {
+    id: courseDoc.id,
+    title: data.title ?? "Curso sin título",
+    description: data.description ?? "",
+    thumbnail: data.thumbnail ?? "",
+    isArchived: data.isArchived ?? false,
+    isPublished: Boolean(data.isPublished),
+    isInduction: data.isInduction === true,
+    lessonsCount: data.lessonsCount ?? 0,
+    studentsCount: data.studentsCount ?? 0,
+    introVideoUrl: data.introVideoUrl ?? "",
+    program: data.program ?? data.category ?? "",
+    category: data.category ?? data.program ?? "",
+    createdAt: data.createdAt?.toDate?.() ?? undefined,
+    teacherId: data.teacherId,
+    mentorIds: toUniqueStringArray(data.mentorIds),
+    isMentorCourse: options?.isMentorCourse ?? false,
+  };
+};
+
 /**
  * Obtiene los cursos con límite opcional para reducir lecturas de Firestore
  * @param teacherId - ID del profesor (opcional, si no se pasa devuelve todos)
@@ -165,26 +197,7 @@ export async function getCourses(teacherId?: string, maxResults?: number): Promi
     const snap = await getDocs(q);
     return snap.docs
       .filter((doc) => doc.data()?.isProbe !== true)
-      .map((doc) => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        title: data.title ?? "Curso sin título",
-        description: data.description ?? "",
-        thumbnail: data.thumbnail ?? "",
-        isArchived: data.isArchived ?? false,
-        isPublished: Boolean(data.isPublished),
-        lessonsCount: data.lessonsCount ?? 0,
-        studentsCount: data.studentsCount ?? 0,
-        introVideoUrl: data.introVideoUrl ?? "",
-        program: data.program ?? data.category ?? "",
-        category: data.category ?? data.program ?? "",
-        createdAt: data.createdAt?.toDate?.() ?? undefined,
-        teacherId: data.teacherId,
-        mentorIds: toUniqueStringArray(data.mentorIds),
-        isMentorCourse: false,
-      };
-    });
+      .map((doc) => mapCourseDoc(doc));
   }
 
   // Con teacherId: obtener cursos propios + cursos de grupos donde está asignado
@@ -198,26 +211,7 @@ export async function getCourses(teacherId?: string, maxResults?: number): Promi
   const q = query(coursesRef, ...constraints);
 
   const snap = await getDocs(q);
-  const ownCourses = snap.docs.map((doc) => {
-    const data = doc.data();
-    return {
-      id: doc.id,
-      title: data.title ?? "Curso sin título",
-      description: data.description ?? "",
-      thumbnail: data.thumbnail ?? "",
-      isArchived: data.isArchived ?? false,
-      isPublished: Boolean(data.isPublished),
-      lessonsCount: data.lessonsCount ?? 0,
-      studentsCount: data.studentsCount ?? 0,
-      introVideoUrl: data.introVideoUrl ?? "",
-      program: data.program ?? data.category ?? "",
-      category: data.category ?? data.program ?? "",
-      createdAt: data.createdAt?.toDate?.() ?? undefined,
-      teacherId: data.teacherId,
-      mentorIds: toUniqueStringArray(data.mentorIds),
-      isMentorCourse: false,
-    };
-  });
+  const ownCourses = snap.docs.map((doc) => mapCourseDoc(doc));
 
   // Obtener grupos donde es profesor titular y donde es mentor
   const groupsRef = collection(db, "groups");
@@ -276,26 +270,9 @@ export async function getCourses(teacherId?: string, maxResults?: number): Promi
 
     const assignedCoursesSnap = await getDocs(assignedCoursesQuery);
     assignedCoursesSnap.docs.forEach((courseDoc) => {
-      const data = courseDoc.data();
       const isMentorOnlyCourse =
         mentorCourseIds.has(courseDoc.id) && !teacherAssignedCourseIds.has(courseDoc.id);
-      assignedCourses.push({
-        id: courseDoc.id,
-        title: data.title ?? "Curso sin título",
-        description: data.description ?? "",
-        thumbnail: data.thumbnail ?? "",
-        isArchived: data.isArchived ?? false,
-        isPublished: Boolean(data.isPublished),
-        lessonsCount: data.lessonsCount ?? 0,
-        studentsCount: data.studentsCount ?? 0,
-        introVideoUrl: data.introVideoUrl ?? "",
-        program: data.program ?? data.category ?? "",
-        category: data.category ?? data.program ?? "",
-        createdAt: data.createdAt?.toDate?.() ?? undefined,
-        teacherId: data.teacherId,
-        mentorIds: toUniqueStringArray(data.mentorIds),
-        isMentorCourse: isMentorOnlyCourse,
-      });
+      assignedCourses.push(mapCourseDoc(courseDoc, { isMentorCourse: isMentorOnlyCourse }));
     });
   }
 
@@ -315,6 +292,27 @@ export async function getCourses(teacherId?: string, maxResults?: number): Promi
   return allCourses;
 }
 
+export async function getInductionCourses(): Promise<Course[]> {
+  const coursesRef = collection(db, "courses");
+  const q = query(coursesRef, where("isInduction", "==", true));
+  const snap = await getDocs(q);
+  return snap.docs
+    .filter((doc) => doc.data()?.isProbe !== true)
+    .map((doc) => mapCourseDoc(doc))
+    .sort((a, b) => {
+      const dateA = a.createdAt?.getTime() ?? 0;
+      const dateB = b.createdAt?.getTime() ?? 0;
+      return dateB - dateA;
+    });
+}
+
+export async function getCourse(courseId: string): Promise<Course | null> {
+  const courseRef = doc(db, "courses", courseId);
+  const snap = await getDoc(courseRef);
+  if (!snap.exists() || snap.data()?.isProbe === true) return null;
+  return mapCourseDoc(snap);
+}
+
 type CreateCourseInput = {
   title: string;
   description?: string;
@@ -323,6 +321,7 @@ type CreateCourseInput = {
   category?: string; // alias legacy
   teacherId: string;
   teacherName?: string;
+  isInduction?: boolean;
 };
 
 export async function createCourse(input: CreateCourseInput): Promise<string> {
@@ -338,6 +337,7 @@ export async function createCourse(input: CreateCourseInput): Promise<string> {
     teacherName: input.teacherName ?? "",
     isArchived: false,
     isPublished: false,
+    isInduction: input.isInduction === true,
     createdAt: serverTimestamp(),
     lessonsCount: 0,
     studentsCount: 0,
@@ -388,6 +388,7 @@ export async function duplicateCourse(input: DuplicateCourseInput): Promise<stri
     thumbnail: asString(sourceCourse.thumbnail),
     isArchived: false,
     isPublished: false,
+    isInduction: sourceCourse.isInduction === true,
     createdAt: serverTimestamp(),
     lessonsCount: 0,
     studentsCount: 0,
@@ -562,6 +563,7 @@ type UpdateCourseInput = {
     thumbnail?: string;
   isArchived?: boolean;
     isPublished?: boolean;
+    isInduction?: boolean;
   };
 
 export async function updateCourse(courseId: string, data: UpdateCourseInput): Promise<void> {

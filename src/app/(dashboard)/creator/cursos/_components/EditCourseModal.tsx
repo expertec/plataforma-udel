@@ -32,6 +32,7 @@ export function EditCourseModal({
   const [programOptions, setProgramOptions] = useState<string[]>([]);
   const [programLoading, setProgramLoading] = useState(false);
   const [thumbnail, setThumbnail] = useState("");
+  const [isInduction, setIsInduction] = useState(false);
   const [loading, setLoading] = useState(false);
   const [publishLoading, setPublishLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -44,6 +45,7 @@ export function EditCourseModal({
       setIntroVideoUrl(course.introVideoUrl || "");
       setProgram(course.program || course.category || "");
       setThumbnail(course.thumbnail || "");
+      setIsInduction(course.isInduction === true);
       setConfirmName("");
     }
   }, [course]);
@@ -83,6 +85,7 @@ export function EditCourseModal({
         introVideoUrl: introVideoUrl.trim(),
         program,
         thumbnail: thumbnail.trim(),
+        isInduction,
       });
       onUpdated(course.id, {
         title: title.trim(),
@@ -90,6 +93,7 @@ export function EditCourseModal({
         introVideoUrl: introVideoUrl.trim(),
         program,
         thumbnail: thumbnail.trim(),
+        isInduction,
       });
       toast.success("Curso actualizado");
       onClose();
@@ -238,6 +242,21 @@ export function EditCourseModal({
               className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
+
+          <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={isInduction}
+              onChange={(e) => setIsInduction(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-slate-300 accent-blue-500"
+            />
+            <span>
+              <span className="block font-semibold text-slate-900">Marcar como inducción</span>
+              <span className="mt-0.5 block text-xs text-slate-500">
+                Se mostrará en la pestaña de inducciones para profesores, coordinadores y directores.
+              </span>
+            </span>
+          </label>
 
           <div className="flex items-center justify-end gap-3 pt-2">
             <button

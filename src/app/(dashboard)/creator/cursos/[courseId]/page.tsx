@@ -290,6 +290,7 @@ export default function CourseBuilderPage() {
             program: d.program ?? d.category ?? "",
             thumbnail: d.thumbnail ?? "",
             isPublished: d.isPublished ?? false,
+            isInduction: d.isInduction === true,
             createdAt: d.createdAt?.toDate?.() ?? undefined,
             teacherId: d.teacherId ?? "",
             mentorIds: Array.isArray(d.mentorIds)
@@ -1255,6 +1256,7 @@ export default function CourseBuilderPage() {
                     introVideoUrl: courseInfo.introVideoUrl,
                     program: courseInfo.program ?? courseInfo.category,
                     thumbnail: courseInfo.thumbnail,
+                    isInduction: courseInfo.isInduction === true,
                   });
                   toast.success("Información actualizada");
                 } catch (err) {
@@ -1327,6 +1329,26 @@ export default function CourseBuilderPage() {
                   Administra los programas en la pestaña &quot;Programas&quot;.
                 </p>
               </div>
+              <label className="sm:col-span-2 flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={courseInfo.isInduction === true}
+                  disabled={!canEditCourseMetadata}
+                  onChange={(e) =>
+                    setCourseInfo((prev) => ({ ...prev, isInduction: e.target.checked }))
+                  }
+                  className="mt-0.5 h-4 w-4 rounded border-slate-300 accent-blue-500 disabled:opacity-50"
+                />
+                <span>
+                  <span className="block font-semibold text-slate-900">
+                    Marcar como inducción
+                  </span>
+                  <span className="mt-0.5 block text-xs text-slate-500">
+                    Al guardar, este curso aparecerá en la pestaña de inducciones para profesores,
+                    coordinadores y directores.
+                  </span>
+                </span>
+              </label>
               <div className="sm:col-span-2">
                 <label className="text-sm font-medium text-slate-800">Thumbnail (URL)</label>
                 <div className="mt-2 space-y-2">

@@ -33,7 +33,7 @@ export function LoginCard({
   const [resetSent, setResetSent] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
-  const [remember, setRemember] = useState(false);
+  const [remember, setRemember] = useState(true);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 

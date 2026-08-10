@@ -250,6 +250,11 @@ export default function CoursesPage() {
                             Mentor
                           </span>
                         )}
+                        {course.isInduction ? (
+                          <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">
+                            Inducción
+                          </span>
+                        ) : null}
                       </div>
                       <p className="text-sm text-slate-600 line-clamp-2">
                         {course.description || "Sin descripción"}

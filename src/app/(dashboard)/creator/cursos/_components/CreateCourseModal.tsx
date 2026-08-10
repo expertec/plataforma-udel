@@ -18,6 +18,7 @@ export function CreateCourseModal({ open, onClose }: CreateCourseModalProps) {
   const [description, setDescription] = useState("");
   const [introVideoUrl, setIntroVideoUrl] = useState("");
   const [program, setProgram] = useState("");
+  const [isInduction, setIsInduction] = useState(false);
   const [programOptions, setProgramOptions] = useState<string[]>([]);
   const [programLoading, setProgramLoading] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -52,6 +53,7 @@ export function CreateCourseModal({ open, onClose }: CreateCourseModalProps) {
     setDescription("");
     setIntroVideoUrl("");
     setProgram("");
+    setIsInduction(false);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -72,6 +74,7 @@ export function CreateCourseModal({ open, onClose }: CreateCourseModalProps) {
         description: description.trim(),
         introVideoUrl: introVideoUrl.trim(),
         program,
+        isInduction,
         teacherId: user.uid,
         teacherName: user.displayName ?? "",
       });
@@ -141,6 +144,21 @@ export function CreateCourseModal({ open, onClose }: CreateCourseModalProps) {
               placeholder="https://..."
             />
           </div>
+
+          <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={isInduction}
+              onChange={(e) => setIsInduction(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-slate-300 accent-blue-500"
+            />
+            <span>
+              <span className="block font-semibold text-slate-900">Marcar como inducción</span>
+              <span className="mt-0.5 block text-xs text-slate-500">
+                Se mostrará en la pestaña de inducciones para profesores, coordinadores y directores.
+              </span>
+            </span>
+          </label>
 
           <div>
             <label className="text-sm font-medium text-slate-800">
