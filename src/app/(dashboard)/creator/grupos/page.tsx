@@ -25,7 +25,10 @@ import {
   resolveUserRole,
   UserRole,
 } from "@/lib/firebase/roles";
-import { normalizeTeacherProfessionalProfile } from "@/lib/teachers/profile";
+import {
+  normalizeTeacherPayrollDeposit,
+  normalizeTeacherProfessionalProfile,
+} from "@/lib/teachers/profile";
 
 type GroupViewMode = "cards" | "table";
 
@@ -427,6 +430,7 @@ export default function GroupsPage() {
         email: currentUser.email ?? "",
         role: "teacher",
         teacherProfile: normalizeTeacherProfessionalProfile(null),
+        payrollDeposit: normalizeTeacherPayrollDeposit(null),
       },
     ];
   }, [currentUser?.displayName, currentUser?.email, currentUser?.uid, isAdminTeacher, teacherOptions]);

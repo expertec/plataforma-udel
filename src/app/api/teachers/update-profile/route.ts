@@ -6,7 +6,10 @@ import {
   requireAdminTeacherAccess,
   toAdminTeacherRouteErrorResponse,
 } from "@/lib/server/require-admin-teacher-access";
-import { normalizeTeacherProfessionalProfile } from "@/lib/teachers/profile";
+import {
+  normalizeTeacherPayrollDeposit,
+  normalizeTeacherProfessionalProfile,
+} from "@/lib/teachers/profile";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,6 +21,7 @@ type UpdateProfileRequest = {
   newName?: string;
   newPhone?: string;
   teacherProfile?: unknown;
+  payrollDeposit?: unknown;
 };
 
 type TeacherSelfServiceRole =
@@ -31,6 +35,7 @@ type TeacherProfileRequester = {
   uid: string;
   role: TeacherSelfServiceRole;
   canManageAllTeachers: boolean;
+  canManageTeacherPayroll: boolean;
 };
 
 function normalizeText(value: unknown): string {
@@ -39,6 +44,60 @@ function normalizeText(value: unknown): string {
 
 function normalizeEmail(value: unknown): string {
   return normalizeText(value).toLowerCase();
+}
+
+function asUniqueStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean),
+    ),
+  );
+}
+
+function getPlantelIdsFromData(data: Record<string, unknown> | undefined): string[] {
+  if (!data) return [];
+  const explicit = asUniqueStringArray(data.plantelIds);
+  if (explicit.length > 0) return explicit;
+  const legacyPlantelId = normalizeText(data.plantelId);
+  return legacyPlantelId ? [legacyPlantelId] : [];
+}
+
+function hasPlantelIntersection(left: string[], right: string[]): boolean {
+  if (left.length === 0 || right.length === 0) return false;
+  const rightSet = new Set(right);
+  return left.some((plantelId) => rightSet.has(plantelId));
+}
+
+async function teacherHasGroupInPlantels(params: {
+  firestore: ReturnType<typeof getAdminFirestore>;
+  teacherId: string;
+  plantelIds: string[];
+}): Promise<boolean> {
+  const teacherId = params.teacherId.trim();
+  const plantelIds = params.plantelIds.map((plantelId) => plantelId.trim()).filter(Boolean);
+  if (!teacherId || plantelIds.length === 0) return false;
+
+  const results = await Promise.all(
+    plantelIds.map(async (plantelId) => {
+      const snap = await params.firestore
+        .collection("groups")
+        .where("plantelId", "==", plantelId)
+        .get();
+
+      return snap.docs.some((docSnap) => {
+        const groupData = docSnap.data() as Record<string, unknown>;
+        return (
+          normalizeText(groupData.teacherId) === teacherId ||
+          asUniqueStringArray(groupData.assistantTeacherIds).includes(teacherId)
+        );
+      });
+    }),
+  );
+
+  return results.some(Boolean);
 }
 
 function asTeacherSelfServiceRole(value: unknown): TeacherSelfServiceRole | null {
@@ -60,6 +119,7 @@ async function resolveTeacherProfileRequester(
       uid: adminContext.uid,
       role: adminContext.role,
       canManageAllTeachers: true,
+      canManageTeacherPayroll: true,
     };
   } catch (error) {
     if (!(error instanceof AdminTeacherAccessError)) {
@@ -98,6 +158,11 @@ async function resolveTeacherProfileRequester(
     uid: decodedToken.uid,
     role,
     canManageAllTeachers: role === "adminTeacher" || role === "superAdminTeacher",
+    canManageTeacherPayroll:
+      role === "adminTeacher" ||
+      role === "superAdminTeacher" ||
+      role === "coordinadorPlantel" ||
+      role === "director",
   };
 }
 
@@ -115,7 +180,12 @@ export async function POST(request: NextRequest) {
     }
 
     const isSelfUpdate = requester.uid === teacherId;
-    if (!requester.canManageAllTeachers && !isSelfUpdate) {
+    const hasAccountUpdate =
+      body.newEmail !== undefined || body.newName !== undefined || body.newPhone !== undefined;
+    const hasTeacherProfileUpdate = body.teacherProfile !== undefined;
+    const hasPayrollUpdate = body.payrollDeposit !== undefined;
+
+    if (!requester.canManageAllTeachers && !isSelfUpdate && !hasPayrollUpdate) {
       return NextResponse.json(
         { success: false, error: "Solo puedes editar tu propio CV" },
         { status: 403 },
@@ -123,25 +193,85 @@ export async function POST(request: NextRequest) {
     }
 
     const isSelfServiceCvOnly = isSelfUpdate && !requester.canManageAllTeachers;
-    if (
-      isSelfServiceCvOnly &&
-      (body.newEmail !== undefined || body.newName !== undefined || body.newPhone !== undefined)
-    ) {
+    if (isSelfServiceCvOnly && hasAccountUpdate) {
       return NextResponse.json(
         { success: false, error: "Solo puedes actualizar tu CV desde autoservicio" },
         { status: 403 },
       );
     }
-    if (isSelfServiceCvOnly && body.teacherProfile === undefined) {
+    if (isSelfServiceCvOnly && hasPayrollUpdate) {
+      return NextResponse.json(
+        { success: false, error: "No puedes actualizar tus datos de nómina desde autoservicio" },
+        { status: 403 },
+      );
+    }
+    if (isSelfServiceCvOnly && !hasTeacherProfileUpdate) {
       return NextResponse.json(
         { success: false, error: "Debes enviar teacherProfile para actualizar tu CV" },
         { status: 400 },
       );
     }
 
+    const isPayrollManagerOnly = !requester.canManageAllTeachers && !isSelfUpdate && hasPayrollUpdate;
+    if (isPayrollManagerOnly && !requester.canManageTeacherPayroll) {
+      return NextResponse.json(
+        { success: false, error: "No tienes permiso para configurar nómina de mentores" },
+        { status: 403 },
+      );
+    }
+    if (isPayrollManagerOnly && (hasAccountUpdate || hasTeacherProfileUpdate)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Directores y coordinadores solo pueden actualizar datos de nómina",
+        },
+        { status: 403 },
+      );
+    }
+
     const auth = getAdminAuth();
     const firestore = getAdminFirestore();
     const userRecord = await auth.getUser(teacherId);
+    const userRef = firestore.collection("users").doc(teacherId);
+    const userSnap = await userRef.get();
+    const targetUserData = userSnap.data() as Record<string, unknown> | undefined;
+    const targetRole =
+      asTeacherSelfServiceRole(targetUserData?.role) ??
+      asTeacherSelfServiceRole(userRecord.customClaims?.role);
+
+    if (isPayrollManagerOnly && targetRole !== "teacher") {
+      return NextResponse.json(
+        { success: false, error: "Solo puedes configurar nómina de mentores o profesores" },
+        { status: 403 },
+      );
+    }
+    if (
+      isPayrollManagerOnly &&
+      (requester.role === "coordinadorPlantel" || requester.role === "director")
+    ) {
+      const requesterSnap = await firestore.collection("users").doc(requester.uid).get();
+      const requesterPlantelIds = getPlantelIdsFromData(
+        requesterSnap.data() as Record<string, unknown> | undefined,
+      );
+      const targetPlantelIds = getPlantelIdsFromData(targetUserData);
+      const hasDirectPlantelRelation = hasPlantelIntersection(
+        requesterPlantelIds,
+        targetPlantelIds,
+      );
+      const hasGroupPlantelRelation =
+        hasDirectPlantelRelation ||
+        (await teacherHasGroupInPlantels({
+          firestore,
+          teacherId,
+          plantelIds: requesterPlantelIds,
+        }));
+      if (!hasGroupPlantelRelation) {
+        return NextResponse.json(
+          { success: false, error: "Solo puedes configurar nómina de profesores de tus planteles" },
+          { status: 403 },
+        );
+      }
+    }
 
     const currentEmail = normalizeEmail(body.currentEmail);
     const userRecordEmail = normalizeEmail(userRecord.email);
@@ -159,6 +289,17 @@ export async function POST(request: NextRequest) {
       body.teacherProfile !== undefined
         ? normalizeTeacherProfessionalProfile(body.teacherProfile)
         : undefined;
+    const nextPayrollDeposit =
+      body.payrollDeposit !== undefined
+        ? normalizeTeacherPayrollDeposit(body.payrollDeposit)
+        : undefined;
+
+    if (nextPayrollDeposit?.clabe && nextPayrollDeposit.clabe.length !== 18) {
+      return NextResponse.json(
+        { success: false, error: "La CLABE interbancaria debe tener 18 dígitos" },
+        { status: 400 },
+      );
+    }
 
     const authUpdateData: {
       email?: string;
@@ -214,7 +355,11 @@ export async function POST(request: NextRequest) {
       firestoreUpdateData.teacherProfile = nextProfile;
     }
 
-    await firestore.collection("users").doc(teacherId).set(firestoreUpdateData, { merge: true });
+    if (nextPayrollDeposit !== undefined) {
+      firestoreUpdateData.payrollDeposit = nextPayrollDeposit;
+    }
+
+    await userRef.set(firestoreUpdateData, { merge: true });
 
     return NextResponse.json({
       success: true,
@@ -224,6 +369,7 @@ export async function POST(request: NextRequest) {
         name: nextName !== undefined,
         phone: nextPhone !== undefined,
         profile: nextProfile !== undefined,
+        payrollDeposit: nextPayrollDeposit !== undefined,
       },
     });
   } catch (error) {

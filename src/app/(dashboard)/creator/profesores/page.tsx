@@ -5,7 +5,12 @@ import toast from "react-hot-toast";
 import { User, onAuthStateChanged } from "firebase/auth";
 import { useRouter } from "next/navigation";
 import { auth } from "@/lib/firebase/client";
-import { isAdminTeacherRole, resolveUserRole } from "@/lib/firebase/roles";
+import {
+  isAdminTeacherRole,
+  isCampusCoordinatorRole,
+  resolveUserRole,
+  type UserRole,
+} from "@/lib/firebase/roles";
 import {
   createTeacherAccount,
   deactivateTeacher,
@@ -52,6 +57,44 @@ function getTeacherRoleLabel(role: TeacherUser["role"]): string {
 
 function hasDirectorExtraRole(teacher: Pick<TeacherUser, "extraRoles">): boolean {
   return Array.isArray(teacher.extraRoles) && teacher.extraRoles.includes("director");
+}
+
+function getTeacherPayrollSummary(teacher: TeacherUser): string {
+  const payroll = teacher.payrollDeposit;
+  if (payroll.bank && payroll.clabe) return `${payroll.bank} · CLABE ${payroll.clabe}`;
+  if (payroll.clabe) return `CLABE ${payroll.clabe}`;
+  if (payroll.bank) return payroll.bank;
+  return "Sin datos de nómina";
+}
+
+function normalizeClabeInput(value: string): string {
+  return value.replace(/\D/g, "").slice(0, 18);
+}
+
+const BANK_OPTIONS = [
+  "BBVA",
+  "Santander",
+  "Banorte",
+  "Citibanamex",
+  "HSBC",
+  "Scotiabank",
+  "Banco Azteca",
+  "BanCoppel",
+  "Inbursa",
+  "Banco del Bajio",
+  "Banregio",
+  "Afirme",
+  "Hey Banco",
+  "Nu",
+  "Mercado Pago",
+  "STP",
+  "Otro",
+];
+
+function getBankOptions(currentBank: string): string[] {
+  const normalized = currentBank.trim();
+  if (!normalized || BANK_OPTIONS.includes(normalized)) return BANK_OPTIONS;
+  return [normalized, ...BANK_OPTIONS];
 }
 
 const moneyFormatter = new Intl.NumberFormat("es-MX", {
@@ -170,7 +213,8 @@ export default function ProfesoresPage() {
     phone: "",
   });
   const [roleReady, setRoleReady] = useState(false);
-  const [isAdminTeacher, setIsAdminTeacher] = useState(false);
+  const [userRole, setUserRole] = useState<UserRole | null>(null);
+  const [hasTeacherManagementAccess, setHasTeacherManagementAccess] = useState(false);
   const [deletingTeacherId, setDeletingTeacherId] = useState<string | null>(null);
   const router = useRouter();
 
@@ -184,6 +228,9 @@ export default function ProfesoresPage() {
   const [newPhone, setNewPhone] = useState("");
   const [newRole, setNewRole] = useState<EditableTeacherRole>("teacher");
   const [newDirectorExtraRole, setNewDirectorExtraRole] = useState(false);
+  const [payrollBank, setPayrollBank] = useState("");
+  const [payrollClabe, setPayrollClabe] = useState("");
+  const [payrollDepositDetails, setPayrollDepositDetails] = useState("");
   const [planteles, setPlanteles] = useState<Plantel[]>([]);
   const [selectedPlantelIds, setSelectedPlantelIds] = useState<string[]>([]);
   const [newPlantelName, setNewPlantelName] = useState("");
@@ -213,6 +260,10 @@ export default function ProfesoresPage() {
   const [profileExpertiseTopics, setProfileExpertiseTopics] = useState("");
   const [profileCertifications, setProfileCertifications] = useState("");
 
+  const canManageTeacherAdmin = isAdminTeacherRole(userRole);
+  const canManageTeacherPayroll =
+    isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole);
+
   const fetchWithToken = useCallback(
     async (url: string, init?: RequestInit): Promise<Response> => {
       if (!currentUser) {
@@ -230,7 +281,19 @@ export default function ProfesoresPage() {
   const loadTeachers = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await getTeacherUsers(200);
+      const data = canManageTeacherAdmin
+        ? await getTeacherUsers(200)
+        : await (async () => {
+            const response = await fetchWithToken("/api/teachers/payroll?limit=200");
+            const payload = (await response.json().catch(() => ({}))) as {
+              error?: string;
+              teachers?: TeacherUser[];
+            };
+            if (!response.ok) {
+              throw new Error(payload.error || "No se pudieron cargar los profesores");
+            }
+            return Array.isArray(payload.teachers) ? payload.teachers : [];
+          })();
       setTeachers(data);
     } catch (err) {
       console.error(err);
@@ -238,7 +301,7 @@ export default function ProfesoresPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [canManageTeacherAdmin, fetchWithToken]);
 
   const loadPlanteles = useCallback(async () => {
     try {
@@ -266,8 +329,11 @@ export default function ProfesoresPage() {
   }, []);
 
   const refreshTeachersAndReport = useCallback(async () => {
-    await Promise.all([loadTeachers(), loadTeacherWorkloadReport()]);
-  }, [loadTeacherWorkloadReport, loadTeachers]);
+    await Promise.all([
+      loadTeachers(),
+      canManageTeacherAdmin ? loadTeacherWorkloadReport() : Promise.resolve(),
+    ]);
+  }, [canManageTeacherAdmin, loadTeacherWorkloadReport, loadTeachers]);
 
   const handleOpenReportModal = useCallback(() => {
     setReportModalOpen(true);
@@ -282,26 +348,29 @@ export default function ProfesoresPage() {
       if (!user) {
         router.replace("/");
         setRoleReady(true);
-        setIsAdminTeacher(false);
+        setUserRole(null);
+        setHasTeacherManagementAccess(false);
         return;
       }
       try {
         const role = await resolveUserRole(user);
         setRoleReady(true);
+        setUserRole(role);
         if (!role) {
           router.replace("/");
-          setIsAdminTeacher(false);
+          setHasTeacherManagementAccess(false);
           return;
         }
-        if (!isAdminTeacherRole(role)) {
+        if (!isAdminTeacherRole(role) && !isCampusCoordinatorRole(role)) {
           router.replace("/creator");
-          setIsAdminTeacher(false);
+          setHasTeacherManagementAccess(false);
           return;
         }
-        setIsAdminTeacher(true);
+        setHasTeacherManagementAccess(true);
       } catch {
         setRoleReady(true);
-        setIsAdminTeacher(false);
+        setUserRole(null);
+        setHasTeacherManagementAccess(false);
         router.replace("/");
       }
     });
@@ -339,10 +408,12 @@ export default function ProfesoresPage() {
   }, [salaryConfig]);
 
   useEffect(() => {
-    if (!isAdminTeacher) return;
+    if (!hasTeacherManagementAccess) return;
     void loadTeachers();
-    void loadPlanteles();
-  }, [isAdminTeacher, loadPlanteles, loadTeachers]);
+    if (canManageTeacherAdmin) {
+      void loadPlanteles();
+    }
+  }, [canManageTeacherAdmin, hasTeacherManagementAccess, loadPlanteles, loadTeachers]);
 
   const handleCreateTeacher = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -405,6 +476,9 @@ export default function ProfesoresPage() {
     setNewDirectorExtraRole(
       teacher.role === "coordinadorPlantel" && hasDirectorExtraRole(teacher),
     );
+    setPayrollBank(teacher.payrollDeposit.bank);
+    setPayrollClabe(teacher.payrollDeposit.clabe);
+    setPayrollDepositDetails(teacher.payrollDeposit.depositDetails);
     setSelectedPlantelIds(getTeacherPlantelIds(teacher));
     setNewPlantelName("");
     setEditProfileModalOpen(true);
@@ -420,10 +494,14 @@ export default function ProfesoresPage() {
     e.preventDefault();
     if (!selectedTeacher) return;
 
-    const emailChanged = newEmail.trim().toLowerCase() !== selectedTeacher.email.toLowerCase();
-    const nameChanged = newName.trim() !== selectedTeacher.name;
-    const phoneChanged = newPhone.trim() !== (selectedTeacher.phone || "");
+    const emailChanged =
+      canManageTeacherAdmin &&
+      newEmail.trim().toLowerCase() !== selectedTeacher.email.toLowerCase();
+    const nameChanged = canManageTeacherAdmin && newName.trim() !== selectedTeacher.name;
+    const phoneChanged =
+      canManageTeacherAdmin && newPhone.trim() !== (selectedTeacher.phone || "");
     const roleChanged =
+      canManageTeacherAdmin &&
       isEditableTeacherRole(selectedTeacher.role) && newRole !== selectedTeacher.role;
     const roleRequiresPlantelScope =
       newRole === "coordinadorPlantel" || newRole === "director";
@@ -435,11 +513,31 @@ export default function ProfesoresPage() {
         getTeacherPlantelIds(selectedTeacher),
       );
     const directorExtraChanged =
+      canManageTeacherAdmin &&
       newRole === "coordinadorPlantel" &&
       (newDirectorExtraRole !== hasDirectorExtraRole(selectedTeacher));
+    const nextPayrollDeposit = {
+      bank: payrollBank.trim(),
+      clabe: normalizeClabeInput(payrollClabe),
+      depositDetails: payrollDepositDetails.trim(),
+    };
+    const payrollChanged =
+      canManageTeacherPayroll &&
+      (nextPayrollDeposit.bank !== selectedTeacher.payrollDeposit.bank ||
+        nextPayrollDeposit.clabe !== selectedTeacher.payrollDeposit.clabe ||
+        nextPayrollDeposit.depositDetails !== selectedTeacher.payrollDeposit.depositDetails);
 
-    if (roleRequiresPlantelScope && selectedPlanteles.length === 0) {
+    if (
+      canManageTeacherAdmin &&
+      roleRequiresPlantelScope &&
+      selectedPlanteles.length === 0
+    ) {
       toast.error("Selecciona al menos un plantel para el rol seleccionado.");
+      return;
+    }
+
+    if (nextPayrollDeposit.clabe && nextPayrollDeposit.clabe.length !== 18) {
+      toast.error("La CLABE interbancaria debe tener 18 dígitos.");
       return;
     }
 
@@ -449,7 +547,8 @@ export default function ProfesoresPage() {
       !phoneChanged &&
       !roleChanged &&
       !plantelChanged &&
-      !directorExtraChanged
+      !directorExtraChanged &&
+      !payrollChanged
     ) {
       toast("No hay cambios para guardar");
       return;
@@ -493,7 +592,7 @@ export default function ProfesoresPage() {
         }
       }
 
-      if (emailChanged || nameChanged || phoneChanged) {
+      if (emailChanged || nameChanged || phoneChanged || payrollChanged) {
         const profileResponse = await fetchWithToken("/api/teachers/update-profile", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -503,6 +602,7 @@ export default function ProfesoresPage() {
             newEmail: emailChanged ? newEmail.trim() : undefined,
             newName: nameChanged ? newName.trim() : undefined,
             newPhone: phoneChanged ? newPhone.trim() : undefined,
+            payrollDeposit: payrollChanged ? nextPayrollDeposit : undefined,
           }),
         });
 
@@ -516,6 +616,9 @@ export default function ProfesoresPage() {
       setEditProfileModalOpen(false);
       setSelectedTeacher(null);
       setNewDirectorExtraRole(false);
+      setPayrollBank("");
+      setPayrollClabe("");
+      setPayrollDepositDetails("");
       await refreshTeachersAndReport();
     } catch (err: unknown) {
       console.error(err);
@@ -900,11 +1003,14 @@ export default function ProfesoresPage() {
     [profileEvaluations],
   );
 
-  const teacherTabs: { key: "gestion" | "altas" | "reporte"; label: string }[] = [
-    { key: "gestion", label: "Listado y acciones" },
-    { key: "altas", label: "Altas" },
-    { key: "reporte", label: "Reporte" },
-  ];
+  const teacherTabs: { key: "gestion" | "altas" | "reporte"; label: string }[] =
+    canManageTeacherAdmin
+      ? [
+          { key: "gestion", label: "Listado y acciones" },
+          { key: "altas", label: "Altas" },
+          { key: "reporte", label: "Reporte" },
+        ]
+      : [{ key: "gestion", label: "Datos de nómina" }];
 
   return (
     <div className="space-y-4">
@@ -917,8 +1023,9 @@ export default function ProfesoresPage() {
         <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Profesores</p>
         <h1 className="text-2xl font-semibold text-slate-900">Administrar profesores</h1>
         <p className="text-sm text-slate-600">
-          Crea cuentas de profesores y AdminTeacher con acceso por correo y contraseña.
-          Desde editar perfil también puedes cambiar el rol a Coordinador de plantel.
+          {canManageTeacherAdmin
+            ? "Crea cuentas, edita perfiles y configura datos de depósito de nómina."
+            : "Configura los datos de depósito de nómina de mentores y profesores."}
         </p>
       </div>
 
@@ -939,7 +1046,7 @@ export default function ProfesoresPage() {
         ))}
       </div>
 
-      {activeTab === "altas" ? (
+      {activeTab === "altas" && canManageTeacherAdmin ? (
         <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
           <form
             onSubmit={handleCreateTeacher}
@@ -1014,7 +1121,7 @@ export default function ProfesoresPage() {
         </div>
       ) : null}
 
-      {activeTab === "reporte" ? (
+      {activeTab === "reporte" && canManageTeacherAdmin ? (
         <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
@@ -1256,7 +1363,9 @@ export default function ProfesoresPage() {
               {loading ? "Actualizando..." : "Refrescar"}
             </button>
             <span className="text-sm text-slate-600">
-              Listado de profesores, AdminTeacher y Coordinador de plantel.
+              {canManageTeacherAdmin
+                ? "Listado de profesores, AdminTeacher y Coordinador de plantel."
+                : "Listado de mentores y profesores para configurar nómina."}
             </span>
           </div>
 
@@ -1356,39 +1465,50 @@ export default function ProfesoresPage() {
                           </span>
                         ) : null}
                       </span>
-                      <span className="font-medium text-green-600">Activo</span>
+                      <span>
+                        <span className="font-medium text-green-600">Activo</span>
+                        <span className="mt-0.5 block text-[11px] text-slate-500">
+                          {getTeacherPayrollSummary(teacher)}
+                        </span>
+                      </span>
                       <span className="flex flex-wrap justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void handleOpenProfileModal(teacher);
-                          }}
-                          className="rounded-lg border border-emerald-200 px-3 py-1 text-xs font-semibold text-emerald-700 hover:border-emerald-400"
-                        >
-                          Perfil CV
-                        </button>
+                        {canManageTeacherAdmin ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void handleOpenProfileModal(teacher);
+                            }}
+                            className="rounded-lg border border-emerald-200 px-3 py-1 text-xs font-semibold text-emerald-700 hover:border-emerald-400"
+                          >
+                            Perfil CV
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           onClick={() => handleOpenEditProfile(teacher)}
                           className="rounded-lg border border-blue-200 px-3 py-1 text-xs font-semibold text-blue-600 hover:border-blue-400"
                         >
-                          Editar
+                          {canManageTeacherAdmin ? "Editar" : "Nómina"}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => handleOpenChangePassword(teacher)}
-                          className="rounded-lg border border-amber-200 px-3 py-1 text-xs font-semibold text-amber-600 hover:border-amber-400"
-                        >
-                          Cambiar Contraseña
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteTeacher(teacher)}
-                          disabled={deletingTeacherId === teacher.id}
-                          className="rounded-lg border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 hover:border-red-400 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-300"
-                        >
-                          {deletingTeacherId === teacher.id ? "Eliminando..." : "Eliminar"}
-                        </button>
+                        {canManageTeacherAdmin ? (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenChangePassword(teacher)}
+                            className="rounded-lg border border-amber-200 px-3 py-1 text-xs font-semibold text-amber-600 hover:border-amber-400"
+                          >
+                            Cambiar Contraseña
+                          </button>
+                        ) : null}
+                        {canManageTeacherAdmin ? (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteTeacher(teacher)}
+                            disabled={deletingTeacherId === teacher.id}
+                            className="rounded-lg border border-red-200 px-3 py-1 text-xs font-semibold text-red-600 hover:border-red-400 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-300"
+                          >
+                            {deletingTeacherId === teacher.id ? "Eliminando..." : "Eliminar"}
+                          </button>
+                        ) : null}
                       </span>
                     </div>
                   ))}
@@ -1876,66 +1996,75 @@ export default function ProfesoresPage() {
       {/* Modal para editar perfil */}
       {editProfileModalOpen && selectedTeacher && (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 px-4 py-6">
-          <div className="w-full max-w-md max-h-[calc(100vh-3rem)] overflow-y-auto rounded-lg bg-white p-6 shadow-xl">
+          <div className="w-full max-w-2xl max-h-[calc(100vh-3rem)] overflow-y-auto rounded-lg bg-white p-6 shadow-xl">
             <h2 className="mb-4 text-xl font-semibold text-slate-900">
-              Editar Perfil - {selectedTeacher.name}
+              {canManageTeacherAdmin ? "Editar Perfil" : "Datos de nómina"} - {selectedTeacher.name}
             </h2>
             <form onSubmit={handleUpdateProfile} className="space-y-4">
-              <div className="space-y-1">
-                <label className="text-sm font-medium text-slate-700">Nombre</label>
-                <input
-                  type="text"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                  required
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-sm font-medium text-slate-700">Email</label>
-                <input
-                  type="email"
-                  value={newEmail}
-                  onChange={(e) => setNewEmail(e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                  required
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-sm font-medium text-slate-700">Teléfono</label>
-                <input
-                  type="text"
-                  value={newPhone}
-                  onChange={(e) => setNewPhone(e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-sm font-medium text-slate-700">Rol</label>
-                <select
-                  value={newRole}
-                  onChange={(e) => {
-                    const nextRole = e.target.value as EditableTeacherRole;
-                    setNewRole(nextRole);
-                    if (nextRole !== "coordinadorPlantel") {
-                      setNewDirectorExtraRole(false);
-                    }
-                  }}
-                  disabled={!isEditableTeacherRole(selectedTeacher.role)}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none disabled:bg-slate-100 disabled:text-slate-500"
-                >
-                  <option value="teacher">Profesor</option>
-                  <option value="adminTeacher">AdminTeacher</option>
-                  <option value="coordinadorPlantel">Coordinador de plantel</option>
-                  <option value="director">Director de plantel</option>
-                </select>
-                {!isEditableTeacherRole(selectedTeacher.role) ? (
-                  <p className="text-xs text-amber-700">
-                    El rol {getTeacherRoleLabel(selectedTeacher.role)} no se puede modificar desde este panel.
-                  </p>
-                ) : null}
-              </div>
-              {newRole === "coordinadorPlantel" || newRole === "director" ? (
+              {canManageTeacherAdmin ? (
+                <>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">Nombre</label>
+                    <input
+                      type="text"
+                      value={newName}
+                      onChange={(e) => setNewName(e.target.value)}
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">Email</label>
+                    <input
+                      type="email"
+                      value={newEmail}
+                      onChange={(e) => setNewEmail(e.target.value)}
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">Teléfono</label>
+                    <input
+                      type="text"
+                      value={newPhone}
+                      onChange={(e) => setNewPhone(e.target.value)}
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">Rol</label>
+                    <select
+                      value={newRole}
+                      onChange={(e) => {
+                        const nextRole = e.target.value as EditableTeacherRole;
+                        setNewRole(nextRole);
+                        if (nextRole !== "coordinadorPlantel") {
+                          setNewDirectorExtraRole(false);
+                        }
+                      }}
+                      disabled={!isEditableTeacherRole(selectedTeacher.role)}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none disabled:bg-slate-100 disabled:text-slate-500"
+                    >
+                      <option value="teacher">Profesor</option>
+                      <option value="adminTeacher">AdminTeacher</option>
+                      <option value="coordinadorPlantel">Coordinador de plantel</option>
+                      <option value="director">Director de plantel</option>
+                    </select>
+                    {!isEditableTeacherRole(selectedTeacher.role) ? (
+                      <p className="text-xs text-amber-700">
+                        El rol {getTeacherRoleLabel(selectedTeacher.role)} no se puede modificar desde este panel.
+                      </p>
+                    ) : null}
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                  <div className="font-semibold text-slate-900">{selectedTeacher.email || "Sin correo"}</div>
+                  <div>{getTeacherRoleLabel(selectedTeacher.role)}</div>
+                </div>
+              )}
+              {canManageTeacherAdmin && (newRole === "coordinadorPlantel" || newRole === "director") ? (
                 <div className="space-y-2 rounded-lg border border-blue-100 bg-blue-50 p-3">
                   <div className="space-y-1">
                     <label className="text-sm font-medium text-slate-700">Planteles asignados</label>
@@ -1999,6 +2128,59 @@ export default function ProfesoresPage() {
                   </div>
                 </div>
               ) : null}
+              <div className="space-y-3 rounded-lg border border-emerald-100 bg-emerald-50 p-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    Datos de depósito de nómina
+                  </h3>
+                  <p className="text-xs text-slate-600">
+                    Este apartado solo lo configuran administradores, directores y coordinadores.
+                  </p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">Banco</label>
+                    <select
+                      value={payrollBank}
+                      onChange={(e) => setPayrollBank(e.target.value)}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                    >
+                      <option value="">Seleccionar banco</option>
+                      {getBankOptions(payrollBank).map((bank) => (
+                        <option key={bank} value={bank}>
+                          {bank}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">
+                      CLABE interbancaria
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={payrollClabe}
+                      onChange={(e) => setPayrollClabe(normalizeClabeInput(e.target.value))}
+                      maxLength={18}
+                      placeholder="18 dígitos"
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">
+                    Datos adicionales para depósito de nómina
+                  </label>
+                  <textarea
+                    value={payrollDepositDetails}
+                    onChange={(e) => setPayrollDepositDetails(e.target.value)}
+                    rows={4}
+                    placeholder="Titular, número de cuenta u observaciones internas para depósito."
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+              </div>
               <div className="flex gap-3">
                 <button
                   type="button"
@@ -2007,6 +2189,9 @@ export default function ProfesoresPage() {
                     setSelectedTeacher(null);
                     setSelectedPlantelIds([]);
                     setNewDirectorExtraRole(false);
+                    setPayrollBank("");
+                    setPayrollClabe("");
+                    setPayrollDepositDetails("");
                   }}
                   className="flex-1 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                   disabled={updatingProfile}

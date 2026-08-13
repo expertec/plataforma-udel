@@ -14,12 +14,17 @@ import {
   setDoc,
   writeBatch,
 } from "firebase/firestore";
+import { getDownloadURL, getStorage, ref, uploadBytes } from "firebase/storage";
 import toast from "react-hot-toast";
 import { Download } from "lucide-react";
 import { jsPDF } from "jspdf";
 import { db } from "@/lib/firebase/firestore";
 import { auth } from "@/lib/firebase/client";
 import { getGroupStudents } from "@/lib/firebase/groups-service";
+import {
+  GLOBAL_EXAM_DURATION_MINUTES,
+  type GlobalExamTemplateRecord,
+} from "@/lib/global-exams/types";
 import {
   Submission,
   getAllSubmissions,
@@ -94,6 +99,24 @@ type ExtraConceptDraft = {
   defaultPoints: string;
 };
 
+type ExamTemplateKind = "global" | "extraordinary";
+
+type ExamQuestionType = "opcion_multiple" | "seleccion_multiple" | "verdadero_falso" | "respuesta_corta";
+
+type CourseExamTemplate = {
+  kind: ExamTemplateKind;
+  fileName: string;
+  fileSize: number | null;
+  contentType: string;
+  storagePath: string;
+  downloadUrl: string;
+  uploadedAt: Date | null;
+  uploadedById: string | null;
+  uploadedByName: string | null;
+};
+
+type CourseExamTemplates = Partial<Record<ExamTemplateKind, CourseExamTemplate>>;
+
 type ExtraConceptResolution = {
   concepts: ExtraConceptGrade[];
   totalPoints: number;
@@ -138,6 +161,12 @@ type StudentEnrollmentsApiResponse = {
   data?: {
     enrollments?: Array<Record<string, unknown> & { __id: string }>;
   };
+};
+
+type GlobalExamTemplateApiResponse = {
+  success?: boolean;
+  error?: string;
+  data?: GlobalExamTemplateRecord | null;
 };
 
 type EnrollmentRecord = {
@@ -259,6 +288,88 @@ const normalizeExtraConceptDefinitions = (
 const formatDefaultPointsDraftInput = (value?: number | null) =>
   typeof value === "number" && Number.isFinite(value) ? (Math.round(value * 10) / 10).toFixed(1) : "";
 
+const EXAM_TEMPLATE_KIND_LABELS: Record<ExamTemplateKind, string> = {
+  global: "Examen global",
+  extraordinary: "Examen extraordinario",
+};
+
+const EXAM_QUESTION_TYPE_LABELS: Record<ExamQuestionType, string> = {
+  opcion_multiple: "Opción múltiple",
+  seleccion_multiple: "Selección múltiple",
+  verdadero_falso: "Verdadero/Falso",
+  respuesta_corta: "Respuesta corta",
+};
+
+const EXAM_TEMPLATE_ACCEPT =
+  ".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const MAX_EXAM_TEMPLATE_FILE_SIZE = 25 * 1024 * 1024;
+const OPTION_LETTERS = ["A", "B", "C", "D", "E", "F"];
+
+const normalizeTextValue = (value: unknown): string =>
+  typeof value === "string" ? value.trim() : "";
+
+const isWordExamTemplateName = (fileName: string) => {
+  const lowerName = fileName.toLowerCase();
+  return lowerName.endsWith(".doc") || lowerName.endsWith(".docx");
+};
+
+const isWordExamTemplateFile = (file: File) =>
+  isWordExamTemplateName(file.name) ||
+  file.type === "application/msword" ||
+  file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+const formatFileSize = (bytes?: number | null) => {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= 0) return "Tamaño no disponible";
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 102.4) / 10} KB`;
+  return `${Math.round(bytes / 1024 / 102.4) / 10} MB`;
+};
+
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+const normalizeCourseExamTemplate = (
+  value: unknown,
+  kind: ExamTemplateKind,
+): CourseExamTemplate | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const templateData = value as Record<string, unknown>;
+  const fileName =
+    normalizeTextValue(templateData.fileName) || normalizeTextValue(templateData.sourceFileName);
+  const downloadUrl = normalizeTextValue(templateData.downloadUrl);
+  const storagePath = normalizeTextValue(templateData.storagePath);
+  if (!fileName || !downloadUrl || !storagePath || !isWordExamTemplateName(fileName)) return null;
+  const fileSize = typeof templateData.fileSize === "number" && Number.isFinite(templateData.fileSize)
+    ? templateData.fileSize
+    : null;
+
+  return {
+    kind,
+    fileName,
+    fileSize,
+    contentType: normalizeTextValue(templateData.contentType),
+    storagePath,
+    downloadUrl,
+    uploadedAt: toDateOrNull(templateData.uploadedAt),
+    uploadedById: normalizeTextValue(templateData.uploadedById) || null,
+    uploadedByName: normalizeTextValue(templateData.uploadedByName) || null,
+  };
+};
+
+const normalizeCourseExamTemplates = (value: unknown): CourseExamTemplates => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const templates = value as Record<string, unknown>;
+  return {
+    global: normalizeCourseExamTemplate(templates.global, "global") ?? undefined,
+    extraordinary:
+      normalizeCourseExamTemplate(templates.extraordinary, "extraordinary") ?? undefined,
+  };
+};
+
 const toExtraConceptDrafts = (
   concepts?: Array<Pick<ExtraConceptDefinition, "id" | "concept" | "defaultPoints">> | null,
 ): ExtraConceptDraft[] =>
@@ -366,8 +477,13 @@ export function CalificacionesTab({
   const [draftExtraConceptsByCourse, setDraftExtraConceptsByCourse] = useState<Record<string, ExtraConceptDraft[]>>({});
   const [draftExtraPointsByStudent, setDraftExtraPointsByStudent] = useState<Record<string, Record<string, string>>>({});
   const [draftFinalGrades, setDraftFinalGrades] = useState<Record<string, string>>({});
+  const [courseExamTemplatesByCourse, setCourseExamTemplatesByCourse] = useState<Record<string, CourseExamTemplates>>({});
+  const [existingGlobalExamTemplatesByCourse, setExistingGlobalExamTemplatesByCourse] = useState<
+    Record<string, GlobalExamTemplateRecord | null>
+  >({});
   const [extraConceptSuggestions, setExtraConceptSuggestions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [uploadingTemplateKind, setUploadingTemplateKind] = useState<ExamTemplateKind | null>(null);
   const [processingStudentId, setProcessingStudentId] = useState<string | null>(null);
   const [processingNotifyStudentId, setProcessingNotifyStudentId] = useState<string | null>(null);
   const [processingAll, setProcessingAll] = useState(false);
@@ -383,12 +499,14 @@ export function CalificacionesTab({
   const [signatureError, setSignatureError] = useState<string | null>(null);
   const [hasSignatureStroke, setHasSignatureStroke] = useState(false);
   const [confirmationModalContext, setConfirmationModalContext] = useState<ConfirmationModalContext | null>(null);
+  const [examTemplatesModalOpen, setExamTemplatesModalOpen] = useState(false);
 
   const signatureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const drawingSignatureRef = useRef(false);
   const signatureLastPointRef = useRef<{ x: number; y: number } | null>(null);
   const signatureModalResolverRef = useRef<((value: SignatureResult | null) => void) | null>(null);
   const confirmationModalResolverRef = useRef<((value: boolean) => void) | null>(null);
+  const examTemplatesModalResolverRef = useRef<((value: boolean) => void) | null>(null);
   const pdfBackgroundDataUrlRef = useRef<string | null>(null);
   const pdfLogoDataUrlRef = useRef<string | null>(null);
 
@@ -1088,6 +1206,28 @@ export function CalificacionesTab({
 
   const roundGrade = (value: number) => Math.round(value * 10) / 10;
   const getCourseExtraDraftKey = () => selectedCourseId.trim();
+  const selectedCourseExamTemplates = selectedCourseId
+    ? courseExamTemplatesByCourse[selectedCourseId] ?? {}
+    : {};
+  const selectedExistingGlobalExamTemplate = selectedCourseId
+    ? existingGlobalExamTemplatesByCourse[selectedCourseId]
+    : null;
+  const hasGlobalExamTemplateForClosure =
+    Boolean(selectedCourseExamTemplates.global) ||
+    Boolean(selectedExistingGlobalExamTemplate);
+  const hasRequiredExamTemplates =
+    hasGlobalExamTemplateForClosure &&
+    Boolean(selectedCourseExamTemplates.extraordinary);
+  const missingRequiredExamTemplateLabels = [
+    hasGlobalExamTemplateForClosure ? "" : EXAM_TEMPLATE_KIND_LABELS.global,
+    selectedCourseExamTemplates.extraordinary ? "" : EXAM_TEMPLATE_KIND_LABELS.extraordinary,
+  ].filter((label): label is string => label.length > 0);
+
+  const validateExamTemplateFile = (file: File): string | null => {
+    if (!isWordExamTemplateFile(file)) return "Sube un archivo Word .doc o .docx.";
+    if (file.size > MAX_EXAM_TEMPLATE_FILE_SIZE) return "El archivo no debe superar 25 MB.";
+    return null;
+  };
 
   const getCourseExtraConceptDrafts = (): ExtraConceptDraft[] => {
     const key = getCourseExtraDraftKey();
@@ -1158,9 +1298,14 @@ export function CalificacionesTab({
         if (cancelled) return;
 
         let concepts: ExtraConceptDefinition[] = [];
+        let examTemplates: CourseExamTemplates = {};
         if (courseExtrasSnap.exists()) {
-          const data = courseExtrasSnap.data() as { extraConcepts?: unknown };
+          const data = courseExtrasSnap.data() as {
+            extraConcepts?: unknown;
+            examTemplates?: unknown;
+          };
           concepts = normalizeExtraConceptDefinitions(data.extraConcepts, selectedCourseId);
+          examTemplates = normalizeCourseExamTemplates(data.examTemplates);
         }
 
         if (concepts.length === 0) {
@@ -1182,6 +1327,10 @@ export function CalificacionesTab({
         setDraftExtraConceptsByCourse((prev) => ({
           ...prev,
           [key]: toExtraConceptDrafts(concepts),
+        }));
+        setCourseExamTemplatesByCourse((prev) => ({
+          ...prev,
+          [key]: examTemplates,
         }));
       } catch (error) {
         if (!isPermissionDeniedError(error)) {
@@ -1597,6 +1746,234 @@ export function CalificacionesTab({
     }));
   };
 
+  const toPersistableExamTemplate = (template: CourseExamTemplate) => ({
+    kind: template.kind,
+    fileName: template.fileName,
+    fileSize: template.fileSize,
+    contentType: template.contentType,
+    storagePath: template.storagePath,
+    downloadUrl: template.downloadUrl,
+    uploadedAt: template.uploadedAt ?? new Date(),
+    uploadedById: template.uploadedById,
+    uploadedByName: template.uploadedByName,
+  });
+
+  const persistCourseExamTemplate = async (
+    kind: ExamTemplateKind,
+    template: CourseExamTemplate,
+  ) => {
+    if (!selectedCourseId) return;
+    const extrasRef = doc(
+      db,
+      "groups",
+      groupId,
+      "grades",
+      getCourseExtrasDocId(selectedCourseId),
+    );
+    await setDoc(
+      extrasRef,
+      {
+        type: "courseExtras",
+        courseId: selectedCourseId,
+        examTemplates: {
+          [kind]: toPersistableExamTemplate(template),
+        },
+        updatedBy: currentUserId ?? null,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+    setCourseExamTemplatesByCourse((prev) => ({
+      ...prev,
+      [selectedCourseId]: {
+        ...(prev[selectedCourseId] ?? {}),
+        [kind]: template,
+      },
+    }));
+  };
+
+  const fetchExistingGlobalExamTemplate = async (): Promise<GlobalExamTemplateRecord | null> => {
+    if (!selectedCourseId) return null;
+    if (Object.prototype.hasOwnProperty.call(existingGlobalExamTemplatesByCourse, selectedCourseId)) {
+      return existingGlobalExamTemplatesByCourse[selectedCourseId] ?? null;
+    }
+    const token = await auth.currentUser?.getIdToken();
+    if (!token) return null;
+
+    const params = new URLSearchParams({ courseId: selectedCourseId });
+    const response = await fetch(
+      `/api/groups/${encodeURIComponent(groupId)}/global-exam-template?${params.toString()}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        cache: "no-store",
+      },
+    );
+    const payload = (await response.json().catch(() => ({}))) as GlobalExamTemplateApiResponse;
+    if (!response.ok || payload.success !== true) {
+      throw new Error(payload.error || "No se pudo obtener el examen global existente.");
+    }
+    const template = payload.data ?? null;
+    setExistingGlobalExamTemplatesByCourse((prev) => ({
+      ...prev,
+      [selectedCourseId]: template,
+    }));
+    return template;
+  };
+
+  const renderGlobalExamQuestionsHtml = (template: GlobalExamTemplateRecord | null) => {
+    if (!template || template.questions.length === 0) {
+      return `
+  <p><strong>Tipo admitido:</strong> Opción múltiple</p>
+  <p>1. Escribe el enunciado de la pregunta.</p>
+  <p>A) Opción A<br />B) Opción B<br />C) Opción C<br />D) Opción D</p>
+  <p><strong>Respuesta correcta:</strong> A</p>
+  <p><strong>Puntaje:</strong> __ puntos</p>`;
+    }
+
+    return template.questions
+      .map((question, questionIndex) => {
+        const correctIndex = question.options.findIndex((option) => option.id === question.correctOptionId);
+        const correctLetter = correctIndex >= 0 ? OPTION_LETTERS[correctIndex] ?? `${correctIndex + 1}` : "";
+        const optionsHtml = question.options
+          .map((option, optionIndex) => {
+            const letter = OPTION_LETTERS[optionIndex] ?? `${optionIndex + 1}`;
+            return `${letter}) ${escapeHtml(option.text)}`;
+          })
+          .join("<br />");
+        return `
+  <p><strong>Tipo admitido:</strong> Opción múltiple</p>
+  <p>${questionIndex + 1}. ${escapeHtml(question.prompt)}</p>
+  <p>${optionsHtml}</p>
+  <p><strong>Respuesta correcta:</strong> ${escapeHtml(correctLetter)}</p>
+  <p><strong>Puntaje:</strong> ${Math.round(1000 / template.questions.length) / 10} puntos</p>`;
+      })
+      .join("\n");
+  };
+
+  const buildExamTemplateExampleHtml = (
+    kind: ExamTemplateKind,
+    globalTemplate: GlobalExamTemplateRecord | null,
+  ) => {
+    const courseName = globalTemplate?.courseName || selectedCourse?.courseName || "Materia";
+    const title = globalTemplate
+      ? `${EXAM_TEMPLATE_KIND_LABELS[kind]} basado en ${globalTemplate.title}`
+      : EXAM_TEMPLATE_KIND_LABELS[kind];
+    const description = globalTemplate?.description.trim()
+      ? globalTemplate.description.trim()
+      : "Completa esta plantilla en Word y súbela antes de cerrar calificaciones.";
+    return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    body { font-family: Arial, sans-serif; color: #111827; line-height: 1.35; }
+    h1 { font-size: 22px; margin-bottom: 4px; }
+    h2 { border-bottom: 1px solid #cbd5e1; font-size: 16px; margin-top: 22px; padding-bottom: 4px; }
+    table { border-collapse: collapse; width: 100%; }
+    td, th { border: 1px solid #94a3b8; padding: 6px; vertical-align: top; }
+    th { background: #e2e8f0; }
+    .hint { color: #475569; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>${escapeHtml(title)}</h1>
+  <p><strong>Materia:</strong> ${escapeHtml(courseName)}</p>
+  <p class="hint">${escapeHtml(description)}</p>
+
+  <h2>Configuración del Examen</h2>
+  <table>
+    <tr><th>Campo</th><th>Valor</th></tr>
+    <tr><td>Duración</td><td>${GLOBAL_EXAM_DURATION_MINUTES} minutos</td></tr>
+    <tr><td>Puntaje mínimo aprobatorio</td><td>${globalTemplate?.passScore ?? 70} / 100</td></tr>
+    <tr><td>Número de preguntas</td><td>${globalTemplate?.questionCount ?? "__"}</td></tr>
+    <tr><td>Instrucciones para el alumno</td><td>Escribe aquí las instrucciones generales.</td></tr>
+  </table>
+
+  <h2>Preguntas</h2>
+${renderGlobalExamQuestionsHtml(globalTemplate)}
+</body>
+</html>`;
+  };
+
+  const downloadExamTemplateExample = async (kind: ExamTemplateKind) => {
+    let globalTemplate: GlobalExamTemplateRecord | null = null;
+    try {
+      globalTemplate = await fetchExistingGlobalExamTemplate();
+      if (!globalTemplate) {
+        toast("No hay examen global cargado para esta materia; se descargará el formato base.");
+      }
+    } catch (error) {
+      console.warn("No se pudo cargar examen global existente para la plantilla:", error);
+      toast("No se pudo leer el examen global existente; se descargará el formato base.");
+    }
+
+    const html = buildExamTemplateExampleHtml(kind, globalTemplate);
+    const blob = new Blob([html], { type: "application/msword;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `plantilla-${kind === "global" ? "examen-global" : "examen-extraordinario"}.doc`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const buildExamTemplateStoragePath = (kind: ExamTemplateKind, fileName: string) => {
+    const safeFileName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+    return `exam-templates/${groupId}/${selectedCourseId}/${kind}-${Date.now()}-${safeFileName}`;
+  };
+
+  const uploadExamTemplateFile = async (
+    kind: ExamTemplateKind,
+    file: File,
+  ): Promise<CourseExamTemplate> => {
+    const validationError = validateExamTemplateFile(file);
+    if (validationError) throw new Error(validationError);
+
+    const storagePath = buildExamTemplateStoragePath(kind, file.name);
+    const storageRef = ref(getStorage(), storagePath);
+    const snapshot = await uploadBytes(storageRef, file, {
+      contentType: file.type || (file.name.toLowerCase().endsWith(".docx")
+        ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        : "application/msword"),
+    });
+    const downloadUrl = await getDownloadURL(snapshot.ref);
+
+    return {
+      kind,
+      fileName: file.name,
+      fileSize: file.size,
+      contentType: file.type || snapshot.metadata.contentType || "",
+      storagePath,
+      downloadUrl,
+      uploadedAt: new Date(),
+      uploadedById: currentUserId,
+      uploadedByName: auth.currentUser?.displayName ?? auth.currentUser?.email ?? "Profesor",
+    };
+  };
+
+  const handleUploadExamTemplate = async (kind: ExamTemplateKind, file: File | null) => {
+    if (!file || !selectedCourseId) return;
+    if (!canManageClosures || !currentUserId) {
+      toast.error("No tienes permisos para cargar plantillas.");
+      return;
+    }
+    setUploadingTemplateKind(kind);
+    try {
+      const template = await uploadExamTemplateFile(kind, file);
+      await persistCourseExamTemplate(kind, template);
+      toast.success(`${EXAM_TEMPLATE_KIND_LABELS[kind]} cargado correctamente.`);
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "No se pudo cargar la plantilla.");
+    } finally {
+      setUploadingTemplateKind(null);
+    }
+  };
+
   const openExtraConceptModal = () => {
     if (!selectedCourseId) return;
     void fetchConceptSuggestions()
@@ -1819,6 +2196,37 @@ export function CalificacionesTab({
       confirmationModalResolverRef.current = resolve;
       setConfirmationModalContext(context);
     });
+
+  const resolveExamTemplatesModal = (accepted: boolean) => {
+    const resolver = examTemplatesModalResolverRef.current;
+    examTemplatesModalResolverRef.current = null;
+    setExamTemplatesModalOpen(false);
+    resolver?.(accepted);
+  };
+
+  const requestRequiredExamTemplates = async () => {
+    if (hasRequiredExamTemplates) return Promise.resolve(true);
+    let existingGlobalTemplate = selectedExistingGlobalExamTemplate ?? null;
+    if (
+      !selectedCourseExamTemplates.global &&
+      selectedCourseId &&
+      !Object.prototype.hasOwnProperty.call(existingGlobalExamTemplatesByCourse, selectedCourseId)
+    ) {
+      try {
+        existingGlobalTemplate = await fetchExistingGlobalExamTemplate();
+      } catch (error) {
+        console.warn("No se pudo verificar si ya existe examen global para la materia:", error);
+      }
+    }
+    const globalReady = Boolean(selectedCourseExamTemplates.global) || Boolean(existingGlobalTemplate);
+    const extraordinaryReady = Boolean(selectedCourseExamTemplates.extraordinary);
+    if (globalReady && extraordinaryReady) return true;
+
+    setExamTemplatesModalOpen(true);
+    return new Promise<boolean>((resolve) => {
+      examTemplatesModalResolverRef.current = resolve;
+    });
+  };
 
   const confirmDigitalSignature = () => {
     if (!signatureModalContext) return;
@@ -2124,6 +2532,8 @@ export function CalificacionesTab({
       signatureModalResolverRef.current = null;
       confirmationModalResolverRef.current?.(false);
       confirmationModalResolverRef.current = null;
+      examTemplatesModalResolverRef.current?.(false);
+      examTemplatesModalResolverRef.current = null;
     };
   }, []);
 
@@ -2135,13 +2545,15 @@ export function CalificacionesTab({
       toast.error("No tienes permisos para cerrar materias.");
       return;
     }
-
     const finalResolution = resolveFinalGradeForRow(row);
     if (finalResolution.errorMessage || finalResolution.finalGrade === null) {
       toast.error(finalResolution.errorMessage ?? "No se pudo calcular la calificación final.");
       return;
     }
     const { finalGrade, campusGrades, manualOverride, extraConcepts, extraPointsTotal } = finalResolution;
+
+    const templatesReady = await requestRequiredExamTemplates();
+    if (!templatesReady) return;
 
     if (row.pendingUngradedCount > 0) {
       const confirmed = await requestConfirmation({
@@ -2713,7 +3125,6 @@ export function CalificacionesTab({
       toast.error("No tienes permisos para cerrar materias.");
       return;
     }
-
     const openRows = rows.filter((row) => row.closure?.status !== "closed");
     if (!openRows.length) {
       toast("Todas las materias de esta selección ya están cerradas.");
@@ -2743,6 +3154,9 @@ export function CalificacionesTab({
       );
       return;
     }
+
+    const templatesReady = await requestRequiredExamTemplates();
+    if (!templatesReady) return;
 
     const pendingStudents = openRows.filter((row) => row.pendingUngradedCount > 0);
     const pendingTotal = pendingStudents.reduce((acc, row) => acc + row.pendingUngradedCount, 0);
@@ -3919,6 +4333,159 @@ export function CalificacionesTab({
               <p className="text-xs text-slate-500">
                 Solo se suman las actividades que tienen calificación numérica.
               </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {examTemplatesModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 px-4 py-6">
+          <div className="w-full max-w-3xl rounded-xl border border-slate-200 bg-white shadow-2xl">
+            <div className="border-b border-slate-200 px-5 py-4">
+              <h3 className="text-lg font-semibold text-slate-900">Plantillas requeridas para cierre</h3>
+              <p className="mt-1 text-sm text-slate-600">
+                Para cerrar calificaciones de{" "}
+                <span className="font-medium">{selectedCourse?.courseName ?? "la materia"}</span>, carga las
+                plantillas Word de examen global y examen extraordinario.
+              </p>
+            </div>
+
+            <div className="space-y-4 px-5 py-4">
+              {!hasRequiredExamTemplates ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  Pendiente para avanzar: {missingRequiredExamTemplateLabels.join(" y ")}.
+                </div>
+              ) : (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                  Los requisitos de plantillas están cubiertos. Puedes continuar con el cierre.
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2 text-[11px] text-slate-600">
+                {Object.entries(EXAM_QUESTION_TYPE_LABELS).map(([type, label]) => (
+                  <span
+                    key={type}
+                    className="rounded-full border border-slate-200 bg-white px-2 py-1 font-medium"
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => downloadExamTemplateExample("global")}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  Descargar formato global
+                </button>
+                <button
+                  type="button"
+                  onClick={() => downloadExamTemplateExample("extraordinary")}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  Descargar formato extraordinario
+                </button>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                {(["global", "extraordinary"] as ExamTemplateKind[]).map((kind) => {
+                  const template = selectedCourseExamTemplates[kind];
+                  const linkedGlobalTemplate =
+                    kind === "global" ? selectedExistingGlobalExamTemplate ?? null : null;
+                  const isTemplateReady = Boolean(template) || Boolean(linkedGlobalTemplate);
+                  const uploading = uploadingTemplateKind === kind;
+                  return (
+                    <div key={kind} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">
+                            {EXAM_TEMPLATE_KIND_LABELS[kind]}
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {template
+                              ? `${template.fileName} · ${formatFileSize(template.fileSize)}`
+                              : linkedGlobalTemplate
+                                ? `Examen global ligado a la materia: ${linkedGlobalTemplate.title}`
+                              : "Pendiente de carga (.doc o .docx)"}
+                          </p>
+                          {template?.uploadedAt ? (
+                            <p className="mt-1 text-[11px] text-slate-500">
+                              Cargada: {formatDateTime(template.uploadedAt)}
+                            </p>
+                          ) : null}
+                          {template?.downloadUrl ? (
+                            <a
+                              href={template.downloadUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="mt-2 inline-flex text-xs font-semibold text-blue-700 hover:underline"
+                            >
+                              Ver archivo cargado
+                            </a>
+                          ) : null}
+                        </div>
+                        <span
+                          className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
+                            isTemplateReady
+                              ? "bg-emerald-50 text-emerald-700"
+                              : "bg-amber-50 text-amber-700"
+                          }`}
+                        >
+                          {isTemplateReady ? "Lista" : "Falta"}
+                        </span>
+                      </div>
+
+                      {linkedGlobalTemplate && !template ? (
+                        <p className="mt-3 text-xs font-medium text-emerald-700">
+                          No se requiere subir Word para examen global.
+                        </p>
+                      ) : (
+                        <label
+                          className={`mt-3 inline-flex cursor-pointer items-center justify-center rounded-lg border px-3 py-2 text-xs font-semibold ${
+                            canManageClosures
+                              ? "border-blue-200 bg-white text-blue-700 hover:bg-blue-50"
+                              : "cursor-not-allowed border-slate-200 text-slate-400"
+                          }`}
+                        >
+                          {uploading ? "Cargando..." : template ? "Reemplazar Word" : "Subir Word"}
+                          <input
+                            type="file"
+                            accept={EXAM_TEMPLATE_ACCEPT}
+                            className="hidden"
+                            disabled={!canManageClosures || uploadingTemplateKind !== null}
+                            onChange={(event) => {
+                              const file = event.target.files?.[0] ?? null;
+                              void handleUploadExamTemplate(kind, file);
+                              event.target.value = "";
+                            }}
+                          />
+                        </label>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => resolveExamTemplatesModal(false)}
+                disabled={uploadingTemplateKind !== null}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => resolveExamTemplatesModal(true)}
+                disabled={!hasRequiredExamTemplates || uploadingTemplateKind !== null}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+              >
+                Continuar con cierre
+              </button>
             </div>
           </div>
         </div>

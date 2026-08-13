@@ -18,8 +18,10 @@ import {
   type UserRole,
 } from "@/lib/firebase/roles";
 import {
+  normalizeTeacherPayrollDeposit,
   normalizeTeacherProfessionalProfile,
   normalizeTeacherProfileTextList,
+  type TeacherPayrollDeposit,
 } from "@/lib/teachers/profile";
 
 export default function PerfilPage() {
@@ -34,6 +36,9 @@ export default function PerfilPage() {
   const [profileStrengths, setProfileStrengths] = useState("");
   const [profileExpertiseTopics, setProfileExpertiseTopics] = useState("");
   const [profileCertifications, setProfileCertifications] = useState("");
+  const [payrollDeposit, setPayrollDeposit] = useState<TeacherPayrollDeposit>(
+    normalizeTeacherPayrollDeposit(null),
+  );
   const [savingCv, setSavingCv] = useState(false);
 
   useEffect(() => {
@@ -49,6 +54,7 @@ export default function PerfilPage() {
         setProfileStrengths("");
         setProfileExpertiseTopics("");
         setProfileCertifications("");
+        setPayrollDeposit(normalizeTeacherPayrollDeposit(null));
         return;
       }
 
@@ -84,6 +90,7 @@ export default function PerfilPage() {
         setProfileStrengths(teacherProfile.strengths.join("\n"));
         setProfileExpertiseTopics(teacherProfile.expertiseTopics.join("\n"));
         setProfileCertifications(teacherProfile.certifications.join("\n"));
+        setPayrollDeposit(normalizeTeacherPayrollDeposit(userData.payrollDeposit));
       } catch (error) {
         console.error("No se pudo cargar el perfil docente:", error);
       }
@@ -344,6 +351,38 @@ export default function PerfilPage() {
             </button>
           </div>
         </form>
+      </section>
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="space-y-1">
+          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Nómina</p>
+          <h3 className="text-lg font-semibold text-slate-900">
+            Datos de depósito
+          </h3>
+          <p className="text-sm text-slate-600">
+            Información configurada por administración, dirección o coordinación.
+          </p>
+        </div>
+        <dl className="mt-4 grid gap-3 sm:grid-cols-3">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <dt className="text-xs uppercase tracking-[0.2em] text-slate-500">Banco</dt>
+            <dd className="text-sm font-semibold text-slate-900">
+              {payrollDeposit.bank || "Sin banco registrado"}
+            </dd>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <dt className="text-xs uppercase tracking-[0.2em] text-slate-500">CLABE</dt>
+            <dd className="font-mono text-sm text-slate-800">
+              {payrollDeposit.clabe || "Sin CLABE registrada"}
+            </dd>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <dt className="text-xs uppercase tracking-[0.2em] text-slate-500">Depósito</dt>
+            <dd className="whitespace-pre-line text-sm text-slate-800">
+              {payrollDeposit.depositDetails || "Sin datos adicionales"}
+            </dd>
+          </div>
+        </dl>
       </section>
 
       <section className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">

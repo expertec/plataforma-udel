@@ -14,6 +14,8 @@ type ClosureReviewItem = {
   courseName: string;
   teacherId: string;
   teacherName: string;
+  courseMentorIds?: string[];
+  courseMentorNames?: string[];
   enabledAt: string;
   estimatedCloseAt: string;
   daysSinceEnabled: number;
@@ -25,6 +27,27 @@ type ClosureReviewItem = {
   openCount: number;
   totalCount: number;
 };
+
+type OpenCourseWithoutDateItem = {
+  groupId: string;
+  groupName: string;
+  courseId: string;
+  courseName: string;
+  teacherId: string;
+  teacherName: string;
+  courseMentorIds?: string[];
+  courseMentorNames?: string[];
+  groupEndDate: string | null;
+  openedEstimateFrom: string | null;
+  openedEstimateSource: "groupStartDate" | "groupCreatedAt" | "unknown";
+  daysOpenEstimate: number | null;
+  weeksOpenEstimate: number | null;
+  closedCount: number;
+  openCount: number;
+  totalCount: number;
+};
+
+type ActiveTab = "scheduled" | "openWithoutDate";
 
 function formatDate(value: string): string {
   const date = new Date(value);
@@ -49,6 +72,19 @@ function dueLabel(item: ClosureReviewItem): string {
   return `6 semanas, faltan ${item.daysUntilDue} dia${item.daysUntilDue === 1 ? "" : "s"} para 7`;
 }
 
+function openEstimateSourceLabel(source: OpenCourseWithoutDateItem["openedEstimateSource"]): string {
+  if (source === "groupStartDate") return "desde inicio del grupo";
+  if (source === "groupCreatedAt") return "desde creación del grupo";
+  return "sin fecha base";
+}
+
+function daysOpenLabel(item: OpenCourseWithoutDateItem): string {
+  if (typeof item.daysOpenEstimate !== "number") return "Sin estimado";
+  const days = item.daysOpenEstimate;
+  const weeks = item.weeksOpenEstimate ?? Math.floor(days / 7);
+  return `${days} dia${days === 1 ? "" : "s"} (${weeks} sem.)`;
+}
+
 async function readApiError(response: Response): Promise<string> {
   try {
     const payload = (await response.json()) as { error?: unknown };
@@ -63,6 +99,7 @@ export default function CourseClosureReviewPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [authReady, setAuthReady] = useState(Boolean(auth.currentUser));
   const [items, setItems] = useState<ClosureReviewItem[]>([]);
+  const [openWithoutDateItems, setOpenWithoutDateItems] = useState<OpenCourseWithoutDateItem[]>([]);
   const [reviewStartDays, setReviewStartDays] = useState(42);
   const [dueDays, setDueDays] = useState(49);
   const [loading, setLoading] = useState(true);
@@ -70,6 +107,7 @@ export default function CourseClosureReviewPage() {
   const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [canCloseCourse, setCanCloseCourse] = useState(false);
+  const [activeTab, setActiveTab] = useState<ActiveTab>("scheduled");
 
   const loadItems = useCallback(async (user: User) => {
     setLoading(true);
@@ -87,17 +125,20 @@ export default function CourseClosureReviewPage() {
           dueDays?: number;
           canClose?: boolean;
           items?: ClosureReviewItem[];
+          openWithoutDateItems?: OpenCourseWithoutDateItem[];
         };
       };
       setReviewStartDays(payload.data?.reviewStartDays ?? 42);
       setDueDays(payload.data?.dueDays ?? 49);
       setCanCloseCourse(payload.data?.canClose === true);
       setItems(payload.data?.items ?? []);
+      setOpenWithoutDateItems(payload.data?.openWithoutDateItems ?? []);
     } catch (loadError) {
       const message = loadError instanceof Error ? loadError.message : "No se pudo cargar la revision";
       setError(message);
       setCanCloseCourse(false);
       setItems([]);
+      setOpenWithoutDateItems([]);
     } finally {
       setLoading(false);
     }
@@ -120,12 +161,23 @@ export default function CourseClosureReviewPage() {
     const term = search.trim().toLowerCase();
     if (!term) return items;
     return items.filter((item) =>
-      [item.groupName, item.courseName, item.teacherName]
+      [item.groupName, item.courseName, item.teacherName, ...(item.courseMentorNames ?? [])]
         .join(" ")
         .toLowerCase()
         .includes(term),
     );
   }, [items, search]);
+
+  const filteredOpenWithoutDateItems = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) return openWithoutDateItems;
+    return openWithoutDateItems.filter((item) =>
+      [item.groupName, item.courseName, item.teacherName, ...(item.courseMentorNames ?? [])]
+        .join(" ")
+        .toLowerCase()
+        .includes(term),
+    );
+  }, [openWithoutDateItems, search]);
 
   const dueCount = useMemo(() => items.filter((item) => item.due).length, [items]);
   const reviewReadyCount = useMemo(
@@ -133,6 +185,7 @@ export default function CourseClosureReviewPage() {
     [items],
   );
   const estimatedCount = Math.max(items.length - dueCount - reviewReadyCount, 0);
+  const openWithoutDateCount = openWithoutDateItems.length;
 
   const closeCourse = async (item: ClosureReviewItem) => {
     if (!currentUser) return;
@@ -193,7 +246,8 @@ export default function CourseClosureReviewPage() {
             <p className="text-xs uppercase tracking-[0.3em] text-[#9f6e61]">Cierres</p>
             <h1 className="mt-2 text-3xl font-semibold text-[#551b22]">Cierre de materias</h1>
               <p className="mt-1 text-sm text-[#754848]">
-                Materias abiertas con fecha estimada de cierre. Las de {Math.floor(dueDays / 7)} semanas o mas aparecen primero,
+                Materias abiertas con fecha estimada de cierre y reporte separado de materias abiertas sin fecha definida.
+                Las de {Math.floor(dueDays / 7)} semanas o mas aparecen primero,
                 seguidas por las de {Math.floor(reviewStartDays / 7)} semanas.
                 {!canCloseCourse ? " Vista filtrada a tus grupos relacionados." : ""}
               </p>
@@ -215,10 +269,11 @@ export default function CourseClosureReviewPage() {
           </div>
         ) : null}
 
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-4">
           <SummaryCard label="7 semanas o mas" value={dueCount.toString()} tone="danger" />
           <SummaryCard label="6 semanas" value={reviewReadyCount.toString()} tone="warning" />
           <SummaryCard label="Cierre futuro" value={estimatedCount.toString()} tone="neutral" />
+          <SummaryCard label="Abiertas sin fecha" value={openWithoutDateCount.toString()} tone="neutral" />
         </div>
 
         <section className="creator-card overflow-hidden rounded-2xl border">
@@ -238,13 +293,42 @@ export default function CourseClosureReviewPage() {
             </label>
           </div>
 
+          <div className="flex flex-wrap gap-2 border-b border-[#d9b1a1]/60 bg-[#fffaf7] px-5 py-3">
+            <button
+              type="button"
+              onClick={() => setActiveTab("scheduled")}
+              className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                activeTab === "scheduled"
+                  ? "bg-[#6e2d2d] text-white"
+                  : "border border-[#d9b1a1]/70 bg-white text-[#6e2d2d] hover:bg-[#f3e3db]/60"
+              }`}
+            >
+              Con fecha de cierre ({items.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("openWithoutDate")}
+              className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                activeTab === "openWithoutDate"
+                  ? "bg-[#6e2d2d] text-white"
+                  : "border border-[#d9b1a1]/70 bg-white text-[#6e2d2d] hover:bg-[#f3e3db]/60"
+              }`}
+            >
+              Abiertas sin fecha ({openWithoutDateItems.length})
+            </button>
+          </div>
+
           {loading ? (
             <div className="px-5 py-6 text-sm text-[#754848]">Cargando materias...</div>
-          ) : filteredItems.length === 0 ? (
+          ) : activeTab === "scheduled" && filteredItems.length === 0 ? (
             <div className="px-5 py-6 text-sm text-[#754848]">
               No hay materias abiertas con fecha estimada de cierre que coincidan con la busqueda.
             </div>
-          ) : (
+          ) : activeTab === "openWithoutDate" && filteredOpenWithoutDateItems.length === 0 ? (
+            <div className="px-5 py-6 text-sm text-[#754848]">
+              No hay materias abiertas sin fecha definida que coincidan con la busqueda.
+            </div>
+          ) : activeTab === "scheduled" ? (
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-[#d9b1a1]/60 text-left text-sm">
                 <thead className="bg-[#f3e3db]/60 text-xs uppercase tracking-[0.14em] text-[#754848]">
@@ -252,7 +336,7 @@ export default function CourseClosureReviewPage() {
                     <th className="px-5 py-3 font-semibold">Estado</th>
                     <th className="px-5 py-3 font-semibold">Grupo</th>
                     <th className="px-5 py-3 font-semibold">Materia</th>
-                    <th className="px-5 py-3 font-semibold">Profesor</th>
+                    <th className="px-5 py-3 font-semibold">Profesor / mentores</th>
                     <th className="px-5 py-3 font-semibold">Cierre estimado</th>
                     <th className="px-5 py-3 font-semibold">Avance</th>
                     {canCloseCourse ? <th className="px-5 py-3 font-semibold">Accion</th> : null}
@@ -286,7 +370,10 @@ export default function CourseClosureReviewPage() {
                         <td className="min-w-56 px-5 py-4 font-medium text-[#551b22]">
                           {item.courseName}
                         </td>
-                        <td className="min-w-48 px-5 py-4 text-[#754848]">{item.teacherName}</td>
+                        <TeacherMentorsCell
+                          teacherName={item.teacherName}
+                          mentorNames={item.courseMentorNames}
+                        />
                         <td className="px-5 py-4 text-[#754848]">
                           <p className="font-medium text-[#551b22]">{formatDate(item.estimatedCloseAt)}</p>
                           <p className="text-xs">Habilitada: {formatDate(item.enabledAt)}</p>
@@ -310,6 +397,67 @@ export default function CourseClosureReviewPage() {
                             </button>
                           </td>
                         ) : null}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-[#d9b1a1]/60 text-left text-sm">
+                <thead className="bg-[#f3e3db]/60 text-xs uppercase tracking-[0.14em] text-[#754848]">
+                  <tr>
+                    <th className="px-5 py-3 font-semibold">Estado</th>
+                    <th className="px-5 py-3 font-semibold">Grupo</th>
+                    <th className="px-5 py-3 font-semibold">Materia</th>
+                    <th className="px-5 py-3 font-semibold">Profesor / mentores</th>
+                    <th className="px-5 py-3 font-semibold">Tiempo abierta</th>
+                    <th className="px-5 py-3 font-semibold">Fecha definida</th>
+                    <th className="px-5 py-3 font-semibold">Avance</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#d9b1a1]/50 bg-white/60">
+                  {filteredOpenWithoutDateItems.map((item) => {
+                    const key = `${item.groupId}:${item.courseId}`;
+                    return (
+                      <tr key={key} className="align-top">
+                        <td className="px-5 py-4">
+                          <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                            <ShieldCheck size={14} />
+                            Abierta sin fecha
+                          </span>
+                        </td>
+                        <td className="min-w-56 px-5 py-4">
+                          <p className="font-semibold text-[#551b22]">{item.groupName}</p>
+                          <p className="text-xs text-[#754848]">Grupo activo</p>
+                        </td>
+                        <td className="min-w-56 px-5 py-4 font-medium text-[#551b22]">
+                          {item.courseName}
+                        </td>
+                        <TeacherMentorsCell
+                          teacherName={item.teacherName}
+                          mentorNames={item.courseMentorNames}
+                        />
+                        <td className="px-5 py-4 text-[#754848]">
+                          <p className="font-medium text-[#551b22]">{daysOpenLabel(item)}</p>
+                          <p className="text-xs">
+                            {item.openedEstimateFrom ? formatDate(item.openedEstimateFrom) : "Sin fecha"} ·{" "}
+                            {openEstimateSourceLabel(item.openedEstimateSource)}
+                          </p>
+                        </td>
+                        <td className="px-5 py-4 text-[#754848]">
+                          <p className="font-medium text-[#551b22]">
+                            {item.groupEndDate ? formatDate(item.groupEndDate) : "Sin fecha"}
+                          </p>
+                          <p className="text-xs">Sin cierre estimado de materia</p>
+                        </td>
+                        <td className="px-5 py-4 text-[#754848]">
+                          <p className="font-medium text-[#551b22]">
+                            {item.closedCount}/{item.totalCount} cerrados
+                          </p>
+                          <p className="text-xs">{item.openCount} pendientes</p>
+                        </td>
                       </tr>
                     );
                   })}
@@ -345,5 +493,34 @@ function SummaryCard({
         <span className={`rounded-full px-3 py-1 text-sm font-semibold ${toneClass}`}>{value}</span>
       </div>
     </div>
+  );
+}
+
+function TeacherMentorsCell({
+  teacherName,
+  mentorNames,
+}: {
+  teacherName: string;
+  mentorNames?: string[];
+}) {
+  const mentors = Array.from(new Set((mentorNames ?? []).map((name) => name.trim()).filter(Boolean)));
+  return (
+    <td className="min-w-56 px-5 py-4 text-[#754848]">
+      <p className="font-medium text-[#551b22]">{teacherName || "Sin profesor"}</p>
+      {mentors.length > 0 ? (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {mentors.map((mentor) => (
+            <span
+              key={mentor}
+              className="rounded-full border border-[#d9b1a1]/70 bg-[#fffaf7] px-2 py-0.5 text-[11px] font-semibold text-[#6e2d2d]"
+            >
+              Mentor: {mentor}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-1 text-xs text-[#9f6e61]">Sin mentor asignado a la materia</p>
+      )}
+    </td>
   );
 }

@@ -6,6 +6,12 @@ export type TeacherProfessionalProfile = {
   certifications: string[];
 };
 
+export type TeacherPayrollDeposit = {
+  bank: string;
+  clabe: string;
+  depositDetails: string;
+};
+
 export type TeacherEvaluationTopicInsight = {
   id: string;
   label: string;
@@ -76,6 +82,12 @@ const EMPTY_PROFILE: TeacherProfessionalProfile = {
   strengths: [],
   expertiseTopics: [],
   certifications: [],
+};
+
+const EMPTY_PAYROLL_DEPOSIT: TeacherPayrollDeposit = {
+  bank: "",
+  clabe: "",
+  depositDetails: "",
 };
 
 const POSITIVE_TOPIC_RULES: TopicRule[] = [
@@ -187,6 +199,16 @@ export function normalizeTeacherProfessionalProfile(
     strengths: normalizeTeacherProfileTextList(candidate.strengths),
     expertiseTopics: normalizeTeacherProfileTextList(candidate.expertiseTopics),
     certifications: normalizeTeacherProfileTextList(candidate.certifications),
+  };
+}
+
+export function normalizeTeacherPayrollDeposit(value: unknown): TeacherPayrollDeposit {
+  if (!value || typeof value !== "object") return { ...EMPTY_PAYROLL_DEPOSIT };
+  const candidate = value as Record<string, unknown>;
+  return {
+    bank: normalizeText(candidate.bank),
+    clabe: normalizeText(candidate.clabe).replace(/\D/g, "").slice(0, 18),
+    depositDetails: normalizeText(candidate.depositDetails),
   };
 }
 

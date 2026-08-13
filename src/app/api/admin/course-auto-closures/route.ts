@@ -22,6 +22,11 @@ type CourseEntry = {
   enabledAt: admin.firestore.Timestamp | null;
 };
 
+type CourseMentors = {
+  mentorIds: string[];
+  mentorNames: string[];
+};
+
 type Task = {
   id: string;
   lessonId: string;
@@ -92,6 +97,8 @@ type ClosureReviewItem = {
   courseName: string;
   teacherId: string;
   teacherName: string;
+  courseMentorIds: string[];
+  courseMentorNames: string[];
   enabledAt: string;
   estimatedCloseAt: string;
   daysSinceEnabled: number;
@@ -99,6 +106,25 @@ type ClosureReviewItem = {
   daysUntilDue: number;
   due: boolean;
   reviewReady: boolean;
+  closedCount: number;
+  openCount: number;
+  totalCount: number;
+};
+
+type OpenCourseWithoutDateItem = {
+  groupId: string;
+  groupName: string;
+  courseId: string;
+  courseName: string;
+  teacherId: string;
+  teacherName: string;
+  courseMentorIds: string[];
+  courseMentorNames: string[];
+  groupEndDate: string | null;
+  openedEstimateFrom: string | null;
+  openedEstimateSource: "groupStartDate" | "groupCreatedAt" | "unknown";
+  daysOpenEstimate: number | null;
+  weeksOpenEstimate: number | null;
   closedCount: number;
   openCount: number;
   totalCount: number;
@@ -238,6 +264,17 @@ function daysBetween(start: admin.firestore.Timestamp, endMs: number): number {
   return Math.floor((endMs - start.toMillis()) / (24 * 60 * 60 * 1000));
 }
 
+function resolveOpenEstimateStart(groupData: FirestoreRecord): {
+  timestamp: admin.firestore.Timestamp | null;
+  source: OpenCourseWithoutDateItem["openedEstimateSource"];
+} {
+  const startDate = asTimestampOrNull(groupData.startDate);
+  if (startDate) return { timestamp: startDate, source: "groupStartDate" };
+  const createdAt = asTimestampOrNull(groupData.createdAt);
+  if (createdAt) return { timestamp: createdAt, source: "groupCreatedAt" };
+  return { timestamp: null, source: "unknown" };
+}
+
 function asUniqueStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return Array.from(
@@ -254,6 +291,36 @@ function getUserPlantelIds(data: FirestoreRecord): string[] {
   if (plantelIds.length > 0) return plantelIds;
   const legacyPlantelId = asTrimmedString(data.plantelId);
   return legacyPlantelId ? [legacyPlantelId] : [];
+}
+
+function toAssistantTeachers(value: unknown): Array<{ id: string; name: string; email?: string }> {
+  if (!Array.isArray(value)) return [];
+  return value.reduce<Array<{ id: string; name: string; email?: string }>>((acc, teacher) => {
+    if (!teacher || typeof teacher !== "object" || Array.isArray(teacher)) return acc;
+    const raw = teacher as FirestoreRecord;
+    const id = asTrimmedString(raw.id);
+    if (!id) return acc;
+    const item: { id: string; name: string; email?: string } = {
+      id,
+      name: asTrimmedString(raw.name),
+    };
+    const email = asTrimmedString(raw.email);
+    if (email) item.email = email;
+    acc.push(item);
+    return acc;
+  }, []);
+}
+
+function resolveCourseMentors(groupData: FirestoreRecord, courseId: string): CourseMentors {
+  const access = asObject(groupData.mentorCourseAccess);
+  const assistantTeachers = toAssistantTeachers(groupData.assistantTeachers);
+  const mentors = assistantTeachers.filter((teacher) =>
+    asUniqueStringArray(access[teacher.id]).includes(courseId),
+  );
+  return {
+    mentorIds: mentors.map((mentor) => mentor.id),
+    mentorNames: mentors.map((mentor) => mentor.name || mentor.email || mentor.id),
+  };
 }
 
 function isAdminReviewRole(role: TeacherAccessContext["role"]): boolean {
@@ -788,6 +855,7 @@ async function listClosureReviewItems(request: NextRequest): Promise<NextRespons
   const nowMs = Date.now();
   const groupsSnap = await db.collection("groups").where("status", "==", "active").get();
   const items: ClosureReviewItem[] = [];
+  const openWithoutDateItems: OpenCourseWithoutDateItem[] = [];
 
   for (const groupDoc of groupsSnap.docs) {
     const groupData = (groupDoc.data() ?? {}) as FirestoreRecord;
@@ -806,9 +874,14 @@ async function listClosureReviewItems(request: NextRequest): Promise<NextRespons
       const status = asTrimmedString(enrollmentData.status) || "active";
       return status !== "archived" && status !== "inactive" && status !== "baja";
     });
+    const groupEndDate = asTimestampOrNull(groupData.endDate)?.toDate().toISOString() ?? null;
+    const openEstimateStart = resolveOpenEstimateStart(groupData);
+    const daysOpenEstimate = openEstimateStart.timestamp
+      ? Math.max(0, daysBetween(openEstimateStart.timestamp, nowMs))
+      : null;
 
     for (const course of courses) {
-      if (!course.enabledAt) continue;
+      const courseMentors = resolveCourseMentors(groupData, course.courseId);
       let closedCount = 0;
       let openCount = 0;
       activeEnrollments.forEach((enrollmentDoc) => {
@@ -824,6 +897,28 @@ async function listClosureReviewItems(request: NextRequest): Promise<NextRespons
 
       if (openCount <= 0) continue;
 
+      if (!course.enabledAt) {
+        openWithoutDateItems.push({
+          groupId: groupDoc.id,
+          groupName: asTrimmedString(groupData.groupName) || "Grupo",
+          courseId: course.courseId,
+          courseName: course.courseName || "Materia",
+          teacherId: asTrimmedString(groupData.teacherId),
+          teacherName: asTrimmedString(groupData.teacherName) || "Sin profesor",
+          courseMentorIds: courseMentors.mentorIds,
+          courseMentorNames: courseMentors.mentorNames,
+          groupEndDate,
+          openedEstimateFrom: openEstimateStart.timestamp?.toDate().toISOString() ?? null,
+          openedEstimateSource: openEstimateStart.source,
+          daysOpenEstimate,
+          weeksOpenEstimate: daysOpenEstimate === null ? null : Math.floor(daysOpenEstimate / 7),
+          closedCount,
+          openCount,
+          totalCount: closedCount + openCount,
+        });
+        continue;
+      }
+
       const daysSinceEnabled = daysBetween(course.enabledAt, nowMs);
       const daysUntilDue = REVIEW_DUE_DAYS - daysSinceEnabled;
       const estimatedCloseAt = admin.firestore.Timestamp.fromMillis(
@@ -836,6 +931,8 @@ async function listClosureReviewItems(request: NextRequest): Promise<NextRespons
         courseName: course.courseName || "Materia",
         teacherId: asTrimmedString(groupData.teacherId),
         teacherName: asTrimmedString(groupData.teacherName) || "Sin profesor",
+        courseMentorIds: courseMentors.mentorIds,
+        courseMentorNames: courseMentors.mentorNames,
         enabledAt: course.enabledAt.toDate().toISOString(),
         estimatedCloseAt: estimatedCloseAt.toDate().toISOString(),
         daysSinceEnabled,
@@ -856,6 +953,14 @@ async function listClosureReviewItems(request: NextRequest): Promise<NextRespons
     if (left.daysUntilDue !== right.daysUntilDue) return left.daysUntilDue - right.daysUntilDue;
     return left.groupName.localeCompare(right.groupName, "es-MX", { sensitivity: "base" });
   });
+  openWithoutDateItems.sort((left, right) => {
+    const leftDays = left.daysOpenEstimate ?? -1;
+    const rightDays = right.daysOpenEstimate ?? -1;
+    if (leftDays !== rightDays) return rightDays - leftDays;
+    const groupCompare = left.groupName.localeCompare(right.groupName, "es-MX", { sensitivity: "base" });
+    if (groupCompare !== 0) return groupCompare;
+    return left.courseName.localeCompare(right.courseName, "es-MX", { sensitivity: "base" });
+  });
 
   return NextResponse.json(
     {
@@ -867,6 +972,7 @@ async function listClosureReviewItems(request: NextRequest): Promise<NextRespons
         canClose: access.canClose,
         scopeRole: access.role,
         items,
+        openWithoutDateItems,
       },
     },
     { status: 200 },

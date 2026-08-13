@@ -4,7 +4,9 @@ import { createAccountWithRole } from "./user-management";
 import { getAllGroups, Group } from "./groups-service";
 import { getPlantelAssignmentsFromData } from "./planteles-service";
 import {
+  normalizeTeacherPayrollDeposit,
   normalizeTeacherProfessionalProfile,
+  type TeacherPayrollDeposit,
   type TeacherProfessionalProfile,
 } from "@/lib/teachers/profile";
 
@@ -25,6 +27,7 @@ export type TeacherUser = {
   plantelId?: string | null;
   plantelName?: string | null;
   teacherProfile: TeacherProfessionalProfile;
+  payrollDeposit: TeacherPayrollDeposit;
 };
 
 export type TeacherWorkloadReportRow = {
@@ -293,6 +296,7 @@ const getOrCreateAccumulator = (params: {
       role: "teacher",
       phone: null,
       teacherProfile: normalizeTeacherProfessionalProfile(null),
+      payrollDeposit: normalizeTeacherPayrollDeposit(null),
     },
   );
   accumulators.set(normalizedId, next);
@@ -351,17 +355,20 @@ const applyGroupToAccumulator = (params: {
   }
 };
 
-export async function getTeacherUsers(max = 100): Promise<TeacherUser[]> {
+export async function getTeacherUsers(
+  max = 100,
+  roles: TeacherUser["role"][] = [
+    "teacher",
+    "adminTeacher",
+    "superAdminTeacher",
+    "coordinadorPlantel",
+    "director",
+  ],
+): Promise<TeacherUser[]> {
   const usersRef = collection(db, "users");
   const q = query(
     usersRef,
-    where("role", "in", [
-      "teacher",
-      "adminTeacher",
-      "superAdminTeacher",
-      "coordinadorPlantel",
-      "director",
-    ]),
+    where("role", "in", roles),
     orderBy("createdAt", "desc"),
     fbLimit(max),
   );
@@ -389,6 +396,7 @@ export async function getTeacherUsers(max = 100): Promise<TeacherUser[]> {
       plantelId: primaryPlantel?.plantelId ?? null,
       plantelName: primaryPlantel?.plantelName ?? null,
       teacherProfile: normalizeTeacherProfessionalProfile(d.teacherProfile),
+      payrollDeposit: normalizeTeacherPayrollDeposit(d.payrollDeposit),
     };
   });
 }
