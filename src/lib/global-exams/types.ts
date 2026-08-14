@@ -6,8 +6,11 @@ export const GLOBAL_EXAM_DURATION_MINUTES = 40;
 // queda bloqueado hasta que un adminTeacher vuelva a habilitar el examen, lo que
 // concede exactamente un intento adicional.
 export const GLOBAL_EXAM_MAX_ATTEMPTS = 1;
+export const GLOBAL_EXAM_MIN_OPTIONS = 2;
+export const GLOBAL_EXAM_MAX_OPTIONS = 6;
 export const GLOBAL_EXAM_OPTION_COUNT = 4;
 
+export type ExamKind = "global" | "extraordinary";
 export type GlobalExamTemplateStatus = "draft" | "published";
 export type GlobalExamAssignmentStatus = "draft" | "enabled" | "passed" | "failed" | "disabled";
 export type GlobalExamAssignmentReason = "failed_course" | "late_joiner";
@@ -33,6 +36,7 @@ export type StudentVisibleGlobalExamQuestion = Omit<GlobalExamQuestion, "correct
 
 export type GlobalExamTemplateRecord = {
   id: string;
+  examKind: ExamKind;
   title: string;
   description: string;
   status: GlobalExamTemplateStatus;
@@ -52,6 +56,7 @@ export type GlobalExamTemplateRecord = {
 
 export type GlobalExamAssignmentRecord = {
   id: string;
+  examKind: ExamKind;
   templateId: string;
   templateTitle: string;
   courseId: string;
@@ -137,6 +142,10 @@ export function getGlobalExamReasonLabel(reason: GlobalExamAssignmentReason): st
   return reason === "late_joiner" ? "Alumno regularizando ingreso tardio" : "Alumno reprobado";
 }
 
+export function getExamKindLabel(examKind: ExamKind): string {
+  return examKind === "extraordinary" ? "Examen extraordinario" : "Examen global";
+}
+
 export function getGlobalExamStatusLabel(status: GlobalExamAssignmentStatus): string {
   switch (status) {
     case "draft":
@@ -205,9 +214,13 @@ export function normalizeGlobalExamQuestions(value: unknown): GlobalExamQuestion
       throw new Error(`La pregunta ${questionIndex + 1} debe incluir un enunciado`);
     }
 
-    if (!Array.isArray(question.options) || question.options.length !== GLOBAL_EXAM_OPTION_COUNT) {
+    if (
+      !Array.isArray(question.options) ||
+      question.options.length < GLOBAL_EXAM_MIN_OPTIONS ||
+      question.options.length > GLOBAL_EXAM_MAX_OPTIONS
+    ) {
       throw new Error(
-        `La pregunta ${questionIndex + 1} debe incluir exactamente ${GLOBAL_EXAM_OPTION_COUNT} opciones`,
+        `La pregunta ${questionIndex + 1} debe incluir entre ${GLOBAL_EXAM_MIN_OPTIONS} y ${GLOBAL_EXAM_MAX_OPTIONS} opciones`,
       );
     }
 

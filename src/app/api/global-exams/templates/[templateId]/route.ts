@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminFirestore } from "@/lib/firebase/admin";
-import type { GlobalExamTemplateStatus } from "@/lib/global-exams/types";
+import type { ExamKind, GlobalExamTemplateStatus } from "@/lib/global-exams/types";
 import { normalizeGlobalExamQuestions } from "@/lib/global-exams/types";
 import { toGlobalExamTemplateRecord } from "@/lib/server/global-exams";
 import {
@@ -17,6 +17,10 @@ function asTrimmedString(value: unknown): string {
 
 function normalizeTemplateStatus(value: unknown): GlobalExamTemplateStatus {
   return value === "published" ? "published" : "draft";
+}
+
+function normalizeExamKind(value: unknown): ExamKind {
+  return value === "extraordinary" ? "extraordinary" : "global";
 }
 
 export async function PATCH(
@@ -36,6 +40,7 @@ export async function PATCH(
 
     const body = (await request.json().catch(() => ({}))) as {
       title?: unknown;
+      examKind?: unknown;
       description?: unknown;
       courseId?: unknown;
       courseName?: unknown;
@@ -58,6 +63,10 @@ export async function PATCH(
         );
       }
       updates.title = title;
+    }
+
+    if (body.examKind !== undefined) {
+      updates.examKind = normalizeExamKind(body.examKind);
     }
 
     if (body.description !== undefined) {

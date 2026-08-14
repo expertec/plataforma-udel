@@ -1,5 +1,6 @@
 import { auth } from "@/lib/firebase/client";
 import type {
+  ExamKind,
   GlobalExamAssignmentRecord,
   GlobalExamAttemptCompletionReason,
   GlobalExamAttemptRecord,
@@ -18,7 +19,15 @@ export type GlobalExamAttemptPayload = {
   assignment: GlobalExamAssignmentRecord;
   template: Pick<
     GlobalExamTemplateRecord,
-    "id" | "title" | "description" | "courseId" | "courseName" | "questionCount" | "passScore" | "maxAttempts"
+    | "id"
+    | "examKind"
+    | "title"
+    | "description"
+    | "courseId"
+    | "courseName"
+    | "questionCount"
+    | "passScore"
+    | "maxAttempts"
   >;
   questions: StudentVisibleGlobalExamQuestion[];
   attempts: GlobalExamAttemptRecord[];
@@ -69,10 +78,12 @@ export async function fetchGlobalExamTemplates(): Promise<GlobalExamTemplateReco
 }
 
 export async function createGlobalExamTemplate(payload: {
+  examKind?: ExamKind;
   title: string;
   description: string;
   courseId?: string;
   courseName?: string;
+  groupId?: string;
   status: "draft" | "published";
   questions: GlobalExamQuestion[];
 }): Promise<GlobalExamTemplateRecord> {
@@ -89,6 +100,7 @@ export async function updateGlobalExamTemplate(
   templateId: string,
   payload: Partial<{
     title: string;
+    examKind: ExamKind;
     description: string;
     courseId: string;
     courseName: string;

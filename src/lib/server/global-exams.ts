@@ -3,6 +3,7 @@ import {
   GLOBAL_EXAM_DURATION_MINUTES,
   GLOBAL_EXAM_MAX_ATTEMPTS,
   GLOBAL_EXAM_PASS_SCORE,
+  type ExamKind,
   type GlobalExamAssignmentReason,
   type GlobalExamAssignmentRecord,
   type GlobalExamAttemptCompletionReason,
@@ -33,6 +34,7 @@ export type GlobalExamCandidateEnrollment = {
 };
 
 type SyncGlobalExamGradeParams = {
+  examKind?: ExamKind;
   assignmentId: string;
   studentId: string;
   studentName: string;
@@ -72,6 +74,10 @@ function asNumberOrNull(value: unknown): number | null {
 
 function asBoolean(value: unknown, fallback = false): boolean {
   return typeof value === "boolean" ? value : fallback;
+}
+
+function asExamKind(value: unknown): ExamKind {
+  return value === "extraordinary" ? "extraordinary" : "global";
 }
 
 function asObject(value: unknown): FirestoreRecord {
@@ -169,6 +175,7 @@ export function toGlobalExamTemplateRecord(
   const questions = normalizeGlobalExamQuestions(rawData.questions ?? []);
   return {
     id,
+    examKind: asExamKind(rawData.examKind),
     title: asTrimmedString(rawData.title) || "Examen global",
     description: asTrimmedString(rawData.description),
     status: rawData.status === "published" ? "published" : "draft",
@@ -207,6 +214,7 @@ export function toGlobalExamAssignmentRecord(
 
   return {
     id,
+    examKind: asExamKind(rawData.examKind),
     templateId: asTrimmedString(rawData.templateId),
     templateTitle: asTrimmedString(rawData.templateTitle),
     courseId: asTrimmedString(rawData.courseId),
@@ -541,6 +549,25 @@ export async function syncGlobalExamGradeToEnrollments(
   const now = admin.firestore.Timestamp.now();
   const canonicalId = `${params.groupId}_${params.studentId}`;
   const canonicalRef = db.collection("studentEnrollments").doc(canonicalId);
+  const isExtraordinary = params.examKind === "extraordinary";
+  const gradeSource = isExtraordinary ? "extraordinaryRegularizationExam" : "globalRegularizationExam";
+  const examGradeFields = isExtraordinary
+    ? {
+        extraordinaryExamGrade: params.score,
+        extraordinaryExamScore: params.score,
+        extraordinaryExamPassed: params.passed,
+        extraordinaryExamAttemptNumber: params.attemptNumber,
+        extraordinaryExamAssignmentId: params.assignmentId,
+        extraordinaryExamAttemptId: params.attemptId,
+      }
+    : {
+        globalExamGrade: params.score,
+        globalExamScore: params.score,
+        globalExamPassed: params.passed,
+        globalExamAttemptNumber: params.attemptNumber,
+        globalExamAssignmentId: params.assignmentId,
+        globalExamAttemptId: params.attemptId,
+      };
 
   const [canonicalSnap, enrollmentSnap] = await Promise.all([
     canonicalRef.get(),
@@ -566,12 +593,8 @@ export async function syncGlobalExamGradeToEnrollments(
       courseName: params.courseName,
       closedAt: now,
       updatedAt: now,
-      gradeSource: "globalRegularizationExam",
-      globalExamScore: params.score,
-      globalExamPassed: params.passed,
-      globalExamAttemptNumber: params.attemptNumber,
-      globalExamAssignmentId: params.assignmentId,
-      globalExamAttemptId: params.attemptId,
+      gradeSource,
+      ...examGradeFields,
     };
     await canonicalRef.set(
       {
@@ -608,12 +631,8 @@ export async function syncGlobalExamGradeToEnrollments(
         courseName: params.courseName,
         closedAt: now,
         updatedAt: now,
-        gradeSource: "globalRegularizationExam",
-        globalExamScore: params.score,
-        globalExamPassed: params.passed,
-        globalExamAttemptNumber: params.attemptNumber,
-        globalExamAssignmentId: params.assignmentId,
-        globalExamAttemptId: params.attemptId,
+        gradeSource,
+        ...examGradeFields,
       };
 
       const updatePayload: Record<string, unknown> = {

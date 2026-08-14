@@ -14,6 +14,7 @@ import {
   type GlobalExamAttemptPayload,
 } from "@/lib/global-exams/client";
 import {
+  getExamKindLabel,
   getGlobalExamCourseLabel,
   getGlobalExamReasonLabel,
   getGlobalExamStatusLabel,
@@ -137,7 +138,7 @@ export default function StudentGlobalExamsPage({
     } catch (error) {
       console.error(error);
       toast.error(
-        error instanceof Error ? error.message : "No se pudieron cargar tus examenes globales",
+          error instanceof Error ? error.message : "No se pudieron cargar tus examenes",
       );
     } finally {
       setLoading(false);
@@ -382,7 +383,7 @@ export default function StudentGlobalExamsPage({
           <header className="flex flex-col gap-3 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:flex-row sm:items-end sm:justify-between">
             <div className="space-y-2">
               <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Regularizacion</p>
-              <h1 className="text-3xl font-semibold">Mis examenes globales</h1>
+              <h1 className="text-3xl font-semibold">Mis examenes</h1>
               <p className="max-w-2xl text-sm text-slate-600">
                 Aqui veras los examenes habilitados especificamente para ti y el resultado que se
                 sincroniza como calificacion final.
@@ -411,9 +412,12 @@ export default function StudentGlobalExamsPage({
                   <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
                     Examen en curso
                   </p>
-                  <h2 className="text-2xl font-semibold text-slate-900">
-                    {activeExam.template.title}
-                  </h2>
+	                  <h2 className="text-2xl font-semibold text-slate-900">
+	                    {activeExam.template.title}
+	                  </h2>
+	                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">
+	                    {getExamKindLabel(activeExam.assignment.examKind)}
+	                  </p>
                   <p className="text-sm text-slate-600">
                     {getGlobalExamCourseLabel(activeExam.template.courseName)} | Grupo{" "}
                     {activeExam.assignment.groupName}
@@ -542,7 +546,7 @@ export default function StudentGlobalExamsPage({
                 </div>
                 {openAssignments.length === 0 ? (
                   <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
-                    En este momento no tienes examenes globales habilitados.
+	                    En este momento no tienes examenes habilitados.
                   </div>
                 ) : (
                   <div className="mt-4 space-y-3">
@@ -554,11 +558,14 @@ export default function StudentGlobalExamsPage({
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                           <div className="space-y-1">
                             <div className="flex flex-wrap items-center gap-2">
-                              <h3 className="text-lg font-semibold text-slate-900">
-                                {getGlobalExamCourseLabel(assignment.courseName)}
-                              </h3>
-                              <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">
-                                {getGlobalExamStatusLabel(assignment.status)}
+	                              <h3 className="text-lg font-semibold text-slate-900">
+	                                {getGlobalExamCourseLabel(assignment.courseName)}
+	                              </h3>
+	                              <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+	                                {getExamKindLabel(assignment.examKind)}
+	                              </span>
+	                              <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">
+	                                {getGlobalExamStatusLabel(assignment.status)}
                               </span>
                             </div>
                             <p className="text-sm text-slate-600">Grupo {assignment.groupName}</p>
@@ -589,7 +596,7 @@ export default function StudentGlobalExamsPage({
                 </div>
                 {completedAssignments.length === 0 ? (
                   <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
-                    Aun no tienes historico de examenes globales.
+	                    Aun no tienes historico de examenes.
                   </div>
                 ) : (
                   <div className="mt-4 space-y-3">
@@ -601,10 +608,13 @@ export default function StudentGlobalExamsPage({
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                           <div className="space-y-1">
                             <div className="flex flex-wrap items-center gap-2">
-                              <h3 className="text-lg font-semibold text-slate-900">
-                                {getGlobalExamCourseLabel(assignment.courseName)}
-                              </h3>
-                              <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">
+	                              <h3 className="text-lg font-semibold text-slate-900">
+	                                {getGlobalExamCourseLabel(assignment.courseName)}
+	                              </h3>
+	                              <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+	                                {getExamKindLabel(assignment.examKind)}
+	                              </span>
+	                              <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">
                                 {getGlobalExamStatusLabel(assignment.status)}
                               </span>
                             </div>

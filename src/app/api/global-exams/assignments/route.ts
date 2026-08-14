@@ -26,6 +26,41 @@ function normalizeReason(value: unknown): GlobalExamAssignmentReason {
   return value === "late_joiner" ? "late_joiner" : "failed_course";
 }
 
+async function requireTeacherGroupAccess(
+  db: ReturnType<typeof getAdminFirestore>,
+  uid: string,
+  groupId: string,
+) {
+  if (!groupId) {
+    return NextResponse.json(
+      { success: false, error: "groupId es requerido para profesores" },
+      { status: 400 },
+    );
+  }
+
+  const groupSnap = await db.collection("groups").doc(groupId).get();
+  if (!groupSnap.exists) {
+    return NextResponse.json({ success: false, error: "Grupo no encontrado" }, { status: 404 });
+  }
+
+  const groupData = groupSnap.data() ?? {};
+  const teacherId = asTrimmedString(groupData.teacherId);
+  const assistantTeacherIds = Array.isArray(groupData.assistantTeacherIds)
+    ? groupData.assistantTeacherIds
+        .map((value) => asTrimmedString(value))
+        .filter((value) => value.length > 0)
+    : [];
+
+  if (teacherId !== uid && !assistantTeacherIds.includes(uid)) {
+    return NextResponse.json(
+      { success: false, error: "Missing or insufficient permissions." },
+      { status: 403 },
+    );
+  }
+
+  return null;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const access = await requireGlobalExamAccess(request, [
@@ -58,6 +93,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const access = await requireGlobalExamAccess(request, [
+      "teacher",
       "coordinadorPlantel",
       "director",
       "adminTeacher",
@@ -111,11 +147,28 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       );
     }
+    if (access.role === "teacher" && template.examKind !== "extraordinary") {
+      return NextResponse.json(
+        { success: false, error: "Los profesores solo pueden activar examenes extraordinarios" },
+        { status: 403 },
+      );
+    }
+    const templateGroupId = asTrimmedString(templateSnap.data()?.groupId);
+    if (access.role === "teacher" && templateGroupId && templateGroupId !== requestedGroupId) {
+      return NextResponse.json(
+        { success: false, error: "La plantilla extraordinaria no pertenece a este grupo" },
+        { status: 403 },
+      );
+    }
 
-    const coordinatorScopeGroupIds =
-      access.role === "coordinadorPlantel" || access.role === "director"
-        ? new Set(await getCoordinatorScopeGroupIds(access.uid, access.plantelIds))
-        : undefined;
+    let allowedGroupIds: Set<string> | undefined;
+    if (access.role === "coordinadorPlantel" || access.role === "director") {
+      allowedGroupIds = new Set(await getCoordinatorScopeGroupIds(access.uid, access.plantelIds));
+    } else if (access.role === "teacher") {
+      const teacherAccessError = await requireTeacherGroupAccess(db, access.uid, requestedGroupId);
+      if (teacherAccessError) return teacherAccessError;
+      allowedGroupIds = new Set([requestedGroupId]);
+    }
 
     const studentData = studentSnap.data() ?? {};
 
@@ -132,7 +185,7 @@ export async function POST(request: NextRequest) {
       const enrollments = await resolveStudentCourseEnrollments(
         studentId,
         template.courseId,
-        coordinatorScopeGroupIds,
+        allowedGroupIds,
         template.courseName,
       );
       targetEnrollment = enrollments.find((enrollment) => enrollment.groupId === requestedGroupId) ?? null;
@@ -153,13 +206,19 @@ export async function POST(request: NextRequest) {
       const enrollments = await resolveStudentCourseEnrollments(
         studentId,
         template.courseId,
-        coordinatorScopeGroupIds,
+        allowedGroupIds,
         template.courseName,
       );
       targetEnrollment = enrollments[0] ?? null;
     }
 
-    if (!targetEnrollment && coordinatorScopeGroupIds !== undefined) {
+    if (!targetEnrollment && allowedGroupIds !== undefined) {
+      if (access.role === "teacher") {
+        return NextResponse.json(
+          { success: false, error: "El alumno no tiene una inscripcion valida para esa materia dentro de ese grupo" },
+          { status: 400 },
+        );
+      }
       // Sin inscripcion resuelta no hay alcance por grupo, asi que coordinacion
       // solo puede asignar a alumnos de su mismo plantel.
       const studentPlantelIds = Array.isArray(studentData.plantelIds)
@@ -179,7 +238,7 @@ export async function POST(request: NextRequest) {
       const activeEnrollments = await resolveStudentCourseEnrollments(
         studentId,
         undefined,
-        coordinatorScopeGroupIds,
+        allowedGroupIds,
       );
       studyContextEnrollment = activeEnrollments[0] ?? null;
     }
@@ -192,6 +251,8 @@ export async function POST(request: NextRequest) {
     const duplicated = existingAssignmentsSnap.docs.find((docSnap) => {
       const data = docSnap.data();
       if (asTrimmedString(data.groupId) !== resolvedGroupId) return false;
+      const existingExamKind = asTrimmedString(data.examKind) || "global";
+      if (existingExamKind !== template.examKind) return false;
       if (template.courseId) {
         return asTrimmedString(data.courseId) === template.courseId;
       }
@@ -226,6 +287,7 @@ export async function POST(request: NextRequest) {
       : asTrimmedString(studentData.plantelName);
 
     const assignmentRef = await db.collection("globalExamAssignments").add({
+      examKind: template.examKind,
       templateId: template.id,
       templateTitle: template.title,
       courseId: targetEnrollment?.courseId ?? template.courseId,

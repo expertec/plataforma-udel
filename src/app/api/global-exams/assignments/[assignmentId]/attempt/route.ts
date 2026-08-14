@@ -456,6 +456,7 @@ async function finalizeGlobalExamAttempt(params: {
   if (params.assignment.courseId) {
     try {
       await syncGlobalExamGradeToEnrollments({
+        examKind: params.assignment.examKind,
         assignmentId: params.assignment.id,
         studentId: params.assignment.studentId,
         studentName: params.assignment.studentName,
@@ -586,6 +587,7 @@ export async function GET(
         assignment,
         template: {
           id: template.id,
+          examKind: template.examKind,
           title: template.title,
           description: template.description,
           courseId: template.courseId,

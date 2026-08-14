@@ -16,15 +16,21 @@ import {
 } from "firebase/firestore";
 import { getDownloadURL, getStorage, ref, uploadBytes } from "firebase/storage";
 import toast from "react-hot-toast";
-import { Download } from "lucide-react";
+import { Download, ExternalLink, Eye, X } from "lucide-react";
 import { jsPDF } from "jspdf";
 import { db } from "@/lib/firebase/firestore";
 import { auth } from "@/lib/firebase/client";
 import { getGroupStudents } from "@/lib/firebase/groups-service";
 import {
   GLOBAL_EXAM_DURATION_MINUTES,
+  type GlobalExamQuestion,
   type GlobalExamTemplateRecord,
 } from "@/lib/global-exams/types";
+import { createGlobalExamAssignment, createGlobalExamTemplate } from "@/lib/global-exams/client";
+import {
+  parseWordCourseTemplate,
+  type WordImportedQuizQuestion,
+} from "@/lib/course-word-template-parser";
 import {
   Submission,
   getAllSubmissions,
@@ -113,6 +119,7 @@ type CourseExamTemplate = {
   uploadedAt: Date | null;
   uploadedById: string | null;
   uploadedByName: string | null;
+  structuredTemplateId?: string | null;
 };
 
 type CourseExamTemplates = Partial<Record<ExamTemplateKind, CourseExamTemplate>>;
@@ -187,6 +194,19 @@ type StudentCourseRow = {
   closure: CourseClosureState | null;
 };
 
+type AutoExtraordinaryExamAssignmentCandidate = {
+  row: StudentCourseRow;
+  finalGrade: number;
+};
+
+type AutoExtraordinaryExamAssignmentSummary = {
+  candidateCount: number;
+  assignedCount: number;
+  alreadyAssignedCount: number;
+  failedStudentNames: string[];
+  skippedReason: "none" | "no-template" | "unpublished-template";
+};
+
 type ClosureDocumentRow = {
   studentId: string;
   studentName: string;
@@ -219,6 +239,28 @@ type ConfirmationModalContext = {
   tone?: "default" | "warning" | "danger";
 };
 
+type MammothResult = {
+  value: string;
+  messages: Array<{ type: string; message: string }>;
+};
+
+type MammothModule = {
+  extractRawText: (input: { arrayBuffer: ArrayBuffer }) => Promise<MammothResult>;
+};
+
+type ExamTemplatePreviewQuestion = {
+  id: string;
+  prompt: string;
+  options: Array<{ id: string; text: string }>;
+};
+
+type ExamTemplatePreviewState = {
+  template: CourseExamTemplate;
+  questions: ExamTemplatePreviewQuestion[];
+  loading: boolean;
+  error: string | null;
+};
+
 const toConceptComparable = (value: string) =>
   value
     .normalize("NFD")
@@ -239,6 +281,9 @@ const createExtraConceptId = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 const getCourseExtrasDocId = (courseId: string) => `__courseExtras__${courseId}`;
+const EXTRAORDINARY_EXAM_AUTO_ASSIGN_MIN_EXCLUSIVE = 50;
+const EXTRAORDINARY_EXAM_AUTO_ASSIGN_MAX_EXCLUSIVE = 70;
+const EXTRAORDINARY_EXAM_AUTO_ASSIGN_BATCH_SIZE = 10;
 
 const normalizeExtraConcepts = (value: unknown, idPrefix: string): ExtraConceptGrade[] =>
   Array.isArray(value)
@@ -332,6 +377,314 @@ const escapeHtml = (value: string) =>
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 
+const normalizeExamPreviewLine = (value: string): string =>
+  value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+
+const htmlDocumentToPlainText = (html: string): string => {
+  const withBreaks = html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|h[1-6]|li|tr|table)>/gi, "\n")
+    .replace(/<td[^>]*>/gi, "\t")
+    .replace(/<[^>]+>/g, " ");
+  if (typeof window === "undefined") return withBreaks;
+  const textarea = window.document.createElement("textarea");
+  textarea.innerHTML = withBreaks;
+  return textarea.value;
+};
+
+async function extractRawTextFromExamTemplateFile(file: File): Promise<string> {
+  if (file.name.toLowerCase().endsWith(".docx")) {
+    const mammothImport = (await import("mammoth")) as unknown as {
+      default?: MammothModule;
+    } & MammothModule;
+    const mammoth = mammothImport.default ?? mammothImport;
+    const result = await mammoth.extractRawText({
+      arrayBuffer: await file.arrayBuffer(),
+    });
+    return result.value;
+  }
+
+  const rawText = await file.text();
+  return /<html|<body|<p|<table|<br/i.test(rawText)
+    ? htmlDocumentToPlainText(rawText)
+    : rawText;
+}
+
+const isExamQuestionStartLine = (line: string): { prompt: string; consumesNextPrompt: boolean } | null => {
+  const inline = line.match(/^(\d{1,3})[\).]\s+(.+)$/);
+  if (inline) return { prompt: inline[2].trim(), consumesNextPrompt: false };
+  if (/^\d{1,3}$/.test(line)) return { prompt: "", consumesNextPrompt: true };
+  return null;
+};
+
+const parseExamOptionLine = (line: string): { letter: string; text: string } | null => {
+  const match = line.match(/^([A-Fa-f])[\).]\s*(.*)$/);
+  if (!match) return null;
+  return {
+    letter: match[1].toUpperCase(),
+    text: match[2].trim(),
+  };
+};
+
+const isAnswerOrScoreLine = (line: string): boolean =>
+  /^respuesta\s+correcta\s*:/i.test(line) ||
+  /^puntaje\s*:/i.test(line) ||
+  /^tipo\s+admitido\s*:/i.test(line) ||
+  /^correcta$/i.test(line) ||
+  /^\d+(?:[.,]\d+)?\s*(puntos?)?$/i.test(line);
+
+const normalizePreviewOptionId = (index: number): string => OPTION_LETTERS[index]?.toLowerCase() ?? `opcion_${index + 1}`;
+
+function parseExamQuestionsFromLines(lines: string[]): ExamTemplatePreviewQuestion[] {
+  const questions: ExamTemplatePreviewQuestion[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const start = isExamQuestionStartLine(lines[i] ?? "");
+    if (!start) {
+      i += 1;
+      continue;
+    }
+
+    i += 1;
+    const promptLines: string[] = [];
+    if (start.prompt) {
+      promptLines.push(start.prompt);
+    } else if (start.consumesNextPrompt) {
+      while (i < lines.length) {
+        const nextLine = lines[i] ?? "";
+        if (!nextLine || parseExamOptionLine(nextLine) || isAnswerOrScoreLine(nextLine)) break;
+        if (isExamQuestionStartLine(nextLine)) break;
+        promptLines.push(nextLine);
+        i += 1;
+        if (nextLine.includes("?") || nextLine.endsWith(":")) break;
+      }
+    }
+
+    while (i < lines.length) {
+      const line = lines[i] ?? "";
+      if (parseExamOptionLine(line) || isAnswerOrScoreLine(line) || isExamQuestionStartLine(line)) break;
+      promptLines.push(line);
+      i += 1;
+    }
+
+    const options: Array<{ id: string; text: string }> = [];
+    while (i < lines.length) {
+      const line = lines[i] ?? "";
+      if (isExamQuestionStartLine(line)) break;
+      if (isAnswerOrScoreLine(line)) {
+        i += 1;
+        continue;
+      }
+
+      const optionStart = parseExamOptionLine(line);
+      if (!optionStart) {
+        i += 1;
+        continue;
+      }
+
+      i += 1;
+      const optionTextLines = optionStart.text ? [optionStart.text] : [];
+      while (i < lines.length) {
+        const optionLine = lines[i] ?? "";
+        if (
+          parseExamOptionLine(optionLine) ||
+          isAnswerOrScoreLine(optionLine) ||
+          isExamQuestionStartLine(optionLine)
+        ) {
+          break;
+        }
+        optionTextLines.push(optionLine);
+        i += 1;
+      }
+
+      const optionText = optionTextLines.join(" ").trim();
+      if (optionText) {
+        options.push({
+          id: normalizePreviewOptionId(options.length),
+          text: optionText,
+        });
+      }
+    }
+
+    const prompt = promptLines.join(" ").trim();
+    if (prompt && options.length > 0) {
+      questions.push({
+        id: `preview_question_${questions.length + 1}`,
+        prompt,
+        options,
+      });
+    }
+  }
+
+  return questions;
+}
+
+function quizQuestionsToPreviewQuestions(quizQuestions: WordImportedQuizQuestion[]): ExamTemplatePreviewQuestion[] {
+  return quizQuestions
+    .filter((question) => question.prompt.trim() && question.options.length > 0)
+    .map((question, questionIndex) => ({
+      id: `preview_question_${questionIndex + 1}`,
+      prompt: question.prompt.trim(),
+      options: question.options
+        .filter((option) => option.text.trim())
+        .map((option, optionIndex) => ({
+          id: normalizePreviewOptionId(optionIndex),
+          text: option.text.trim(),
+        })),
+    }));
+}
+
+async function parseExamTemplatePreviewQuestions(file: File): Promise<ExamTemplatePreviewQuestion[]> {
+  const rawText = await extractRawTextFromExamTemplateFile(file);
+  const normalizedLines = rawText
+    .split(/\r?\n/)
+    .map(normalizeExamPreviewLine)
+    .filter(Boolean);
+
+  const parsedByExamFormat = parseExamQuestionsFromLines(normalizedLines);
+  if (parsedByExamFormat.length > 0) return parsedByExamFormat;
+
+  const lessons = parseWordCourseTemplate(rawText, "Plantilla de examen");
+  const quizQuestions = lessons.flatMap((lesson) =>
+    lesson.classes.flatMap((classItem) => classItem.quizQuestions ?? []),
+  );
+  return quizQuestionsToPreviewQuestions(quizQuestions);
+}
+
+function parseStructuredExamQuestionsFromLines(lines: string[]): GlobalExamQuestion[] {
+  const questions: GlobalExamQuestion[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const start = isExamQuestionStartLine(lines[i] ?? "");
+    if (!start) {
+      i += 1;
+      continue;
+    }
+
+    i += 1;
+    const promptLines: string[] = [];
+    if (start.prompt) {
+      promptLines.push(start.prompt);
+    } else {
+      while (i < lines.length) {
+        const line = lines[i] ?? "";
+        if (!line || parseExamOptionLine(line) || isAnswerOrScoreLine(line) || isExamQuestionStartLine(line)) break;
+        promptLines.push(line);
+        i += 1;
+        if (line.includes("?") || line.endsWith(":")) break;
+      }
+    }
+
+    while (i < lines.length) {
+      const line = lines[i] ?? "";
+      if (parseExamOptionLine(line) || isAnswerOrScoreLine(line) || isExamQuestionStartLine(line)) break;
+      promptLines.push(line);
+      i += 1;
+    }
+
+    const options: Array<{ id: string; text: string; sourceLetter: string }> = [];
+    let correctLetter = "";
+    while (i < lines.length) {
+      const line = lines[i] ?? "";
+      const nextQuestion = isExamQuestionStartLine(line);
+      if (nextQuestion) break;
+
+      const answerMatch = line.match(/^respuesta\s+correcta\s*:\s*([A-Fa-f])/i);
+      if (answerMatch) {
+        correctLetter = answerMatch[1].toUpperCase();
+        i += 1;
+        continue;
+      }
+
+      const optionStart = parseExamOptionLine(line);
+      if (!optionStart) {
+        i += 1;
+        continue;
+      }
+
+      i += 1;
+      const optionTextLines = optionStart.text ? [optionStart.text] : [];
+      while (i < lines.length) {
+        const optionLine = lines[i] ?? "";
+        if (
+          parseExamOptionLine(optionLine) ||
+          /^respuesta\s+correcta\s*:/i.test(optionLine) ||
+          isAnswerOrScoreLine(optionLine) ||
+          isExamQuestionStartLine(optionLine)
+        ) {
+          break;
+        }
+        optionTextLines.push(optionLine);
+        i += 1;
+      }
+
+      const optionText = optionTextLines.join(" ").trim();
+      if (optionText) {
+        options.push({
+          id: normalizePreviewOptionId(options.length),
+          text: optionText,
+          sourceLetter: optionStart.letter,
+        });
+      }
+    }
+
+    const prompt = promptLines.join(" ").trim();
+    const correctOption =
+      options.find((option) => option.sourceLetter === correctLetter) ?? options[0] ?? null;
+    if (prompt && options.length > 0 && correctOption) {
+      questions.push({
+        id: `question_${questions.length + 1}`,
+        prompt,
+        options: options.map(({ id, text }) => ({ id, text })),
+        correctOptionId: correctOption.id,
+      });
+    }
+  }
+
+  return questions;
+}
+
+function quizQuestionsToGlobalExamQuestions(quizQuestions: WordImportedQuizQuestion[]): GlobalExamQuestion[] {
+  return quizQuestions
+    .map((question, questionIndex): GlobalExamQuestion | null => {
+      const options = question.options
+        .filter((option) => option.text.trim())
+        .map((option, optionIndex) => ({
+          id: normalizePreviewOptionId(optionIndex),
+          text: option.text.trim(),
+          isCorrect: option.isCorrect,
+        }));
+      const correctOption = options.find((option) => option.isCorrect) ?? options[0] ?? null;
+      if (!question.prompt.trim() || options.length === 0 || !correctOption) return null;
+      return {
+        id: `question_${questionIndex + 1}`,
+        prompt: question.prompt.trim(),
+        options: options.map(({ id, text }) => ({ id, text })),
+        correctOptionId: correctOption.id,
+      };
+    })
+    .filter((question): question is GlobalExamQuestion => question !== null);
+}
+
+async function parseGlobalExamQuestionsFromTemplateFile(file: File): Promise<GlobalExamQuestion[]> {
+  const rawText = await extractRawTextFromExamTemplateFile(file);
+  const normalizedLines = rawText
+    .split(/\r?\n/)
+    .map(normalizeExamPreviewLine)
+    .filter(Boolean);
+
+  const parsedByExamFormat = parseStructuredExamQuestionsFromLines(normalizedLines);
+  if (parsedByExamFormat.length > 0) return parsedByExamFormat;
+
+  const lessons = parseWordCourseTemplate(rawText, "Plantilla de examen");
+  const quizQuestions = lessons.flatMap((lesson) =>
+    lesson.classes.flatMap((classItem) => classItem.quizQuestions ?? []),
+  );
+  return quizQuestionsToGlobalExamQuestions(quizQuestions);
+}
+
 const normalizeCourseExamTemplate = (
   value: unknown,
   kind: ExamTemplateKind,
@@ -357,6 +710,7 @@ const normalizeCourseExamTemplate = (
     uploadedAt: toDateOrNull(templateData.uploadedAt),
     uploadedById: normalizeTextValue(templateData.uploadedById) || null,
     uploadedByName: normalizeTextValue(templateData.uploadedByName) || null,
+    structuredTemplateId: normalizeTextValue(templateData.structuredTemplateId) || null,
   };
 };
 
@@ -481,6 +835,9 @@ export function CalificacionesTab({
   const [existingGlobalExamTemplatesByCourse, setExistingGlobalExamTemplatesByCourse] = useState<
     Record<string, GlobalExamTemplateRecord | null>
   >({});
+  const [existingExtraordinaryExamTemplatesByCourse, setExistingExtraordinaryExamTemplatesByCourse] = useState<
+    Record<string, GlobalExamTemplateRecord | null>
+  >({});
   const [extraConceptSuggestions, setExtraConceptSuggestions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploadingTemplateKind, setUploadingTemplateKind] = useState<ExamTemplateKind | null>(null);
@@ -500,6 +857,7 @@ export function CalificacionesTab({
   const [hasSignatureStroke, setHasSignatureStroke] = useState(false);
   const [confirmationModalContext, setConfirmationModalContext] = useState<ConfirmationModalContext | null>(null);
   const [examTemplatesModalOpen, setExamTemplatesModalOpen] = useState(false);
+  const [examTemplatePreview, setExamTemplatePreview] = useState<ExamTemplatePreviewState | null>(null);
 
   const signatureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const drawingSignatureRef = useRef(false);
@@ -1212,15 +1570,16 @@ export function CalificacionesTab({
   const selectedExistingGlobalExamTemplate = selectedCourseId
     ? existingGlobalExamTemplatesByCourse[selectedCourseId]
     : null;
+  const hasLinkedGlobalExamTemplate = Boolean(selectedExistingGlobalExamTemplate);
   const hasGlobalExamTemplateForClosure =
-    Boolean(selectedCourseExamTemplates.global) ||
-    Boolean(selectedExistingGlobalExamTemplate);
+    hasLinkedGlobalExamTemplate ||
+    Boolean(selectedCourseExamTemplates.global);
   const hasRequiredExamTemplates =
     hasGlobalExamTemplateForClosure &&
     Boolean(selectedCourseExamTemplates.extraordinary);
   const missingRequiredExamTemplateLabels = [
-    hasGlobalExamTemplateForClosure ? "" : EXAM_TEMPLATE_KIND_LABELS.global,
     selectedCourseExamTemplates.extraordinary ? "" : EXAM_TEMPLATE_KIND_LABELS.extraordinary,
+    hasGlobalExamTemplateForClosure ? "" : EXAM_TEMPLATE_KIND_LABELS.global,
   ].filter((label): label is string => label.length > 0);
 
   const validateExamTemplateFile = (file: File): string | null => {
@@ -1823,6 +2182,132 @@ export function CalificacionesTab({
     return template;
   };
 
+  const fetchExistingExtraordinaryExamTemplate = async (): Promise<GlobalExamTemplateRecord | null> => {
+    if (!selectedCourseId) return null;
+    if (Object.prototype.hasOwnProperty.call(existingExtraordinaryExamTemplatesByCourse, selectedCourseId)) {
+      return existingExtraordinaryExamTemplatesByCourse[selectedCourseId] ?? null;
+    }
+    const token = await auth.currentUser?.getIdToken();
+    if (!token) return null;
+
+    const params = new URLSearchParams({
+      courseId: selectedCourseId,
+      examKind: "extraordinary",
+    });
+    const response = await fetch(
+      `/api/groups/${encodeURIComponent(groupId)}/global-exam-template?${params.toString()}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        cache: "no-store",
+      },
+    );
+    const payload = (await response.json().catch(() => ({}))) as GlobalExamTemplateApiResponse;
+    if (!response.ok || payload.success !== true) {
+      throw new Error(payload.error || "No se pudo obtener el examen extraordinario existente.");
+    }
+    const template = payload.data ?? null;
+    setExistingExtraordinaryExamTemplatesByCourse((prev) => ({
+      ...prev,
+      [selectedCourseId]: template,
+    }));
+    return template;
+  };
+
+  const ensureExtraordinaryExamAssignmentsForStudents = async (
+    candidates: AutoExtraordinaryExamAssignmentCandidate[],
+  ): Promise<AutoExtraordinaryExamAssignmentSummary> => {
+    const targetCandidates = candidates.filter(
+      ({ finalGrade }) =>
+        Number.isFinite(finalGrade) &&
+        finalGrade > EXTRAORDINARY_EXAM_AUTO_ASSIGN_MIN_EXCLUSIVE &&
+        finalGrade < EXTRAORDINARY_EXAM_AUTO_ASSIGN_MAX_EXCLUSIVE,
+    );
+    const summary: AutoExtraordinaryExamAssignmentSummary = {
+      candidateCount: targetCandidates.length,
+      assignedCount: 0,
+      alreadyAssignedCount: 0,
+      failedStudentNames: [],
+      skippedReason: "none",
+    };
+
+    if (targetCandidates.length === 0) return summary;
+
+    let templateId = selectedCourseExamTemplates.extraordinary?.structuredTemplateId?.trim() ?? "";
+    if (!templateId) {
+      try {
+        const existingTemplate = await fetchExistingExtraordinaryExamTemplate();
+        if (existingTemplate?.status === "published") {
+          templateId = existingTemplate.id;
+        } else if (existingTemplate) {
+          summary.skippedReason = "unpublished-template";
+          return summary;
+        }
+      } catch (error) {
+        console.warn("No se pudo cargar la plantilla extraordinaria existente:", error);
+      }
+    }
+    if (!templateId) {
+      summary.skippedReason = "no-template";
+      return summary;
+    }
+
+    for (let index = 0; index < targetCandidates.length; index += EXTRAORDINARY_EXAM_AUTO_ASSIGN_BATCH_SIZE) {
+      const chunk = targetCandidates.slice(index, index + EXTRAORDINARY_EXAM_AUTO_ASSIGN_BATCH_SIZE);
+      await Promise.all(
+        chunk.map(async ({ row }) => {
+          try {
+            await createGlobalExamAssignment({
+              templateId,
+              studentId: row.studentId,
+              groupId,
+              reason: "failed_course",
+              enabled: true,
+            });
+            summary.assignedCount += 1;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "";
+            if (message.includes("Ya existe una asignacion")) {
+              summary.alreadyAssignedCount += 1;
+              return;
+            }
+            console.warn(`No se pudo asignar examen extraordinario a ${row.studentName}:`, error);
+            summary.failedStudentNames.push(row.studentName);
+          }
+        }),
+      );
+    }
+
+    return summary;
+  };
+
+  const showAutoExtraordinaryExamAssignmentNotice = (summary: AutoExtraordinaryExamAssignmentSummary) => {
+    if (summary.candidateCount === 0) return;
+    if (summary.skippedReason === "no-template") {
+      toast(
+        `No se cargó examen extraordinario a ${summary.candidateCount} alumno(s): la plantilla no quedó estructurada para plataforma.`,
+      );
+      return;
+    }
+    if (summary.skippedReason === "unpublished-template") {
+      toast(`No se cargó examen extraordinario a ${summary.candidateCount} alumno(s): la plantilla no está publicada.`);
+      return;
+    }
+    if (summary.assignedCount > 0) {
+      toast.success(`Examen extraordinario activado para ${summary.assignedCount} alumno(s).`);
+    }
+    if (summary.alreadyAssignedCount > 0) {
+      toast(`Examen extraordinario ya estaba activo para ${summary.alreadyAssignedCount} alumno(s).`);
+    }
+    if (summary.failedStudentNames.length > 0) {
+      const names = summary.failedStudentNames.slice(0, 3).join(", ");
+      const remaining = summary.failedStudentNames.length > 3 ? ` y ${summary.failedStudentNames.length - 3} más` : "";
+      toast.error(`No se pudo activar extraordinario a: ${names}${remaining}.`);
+    }
+  };
+
   const renderGlobalExamQuestionsHtml = (template: GlobalExamTemplateRecord | null) => {
     if (!template || template.questions.length === 0) {
       return `
@@ -1921,6 +2406,46 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
     URL.revokeObjectURL(url);
   };
 
+  const openExamTemplatePreview = async (template: CourseExamTemplate, sourceFile?: File) => {
+    setExamTemplatePreview({
+      template,
+      questions: [],
+      loading: true,
+      error: null,
+    });
+
+    try {
+      const file =
+        sourceFile ??
+        new File(
+          [await (await fetch(template.downloadUrl)).blob()],
+          template.fileName,
+          { type: template.contentType || undefined },
+        );
+      const questions = await parseExamTemplatePreviewQuestions(file);
+      if (questions.length === 0) {
+        throw new Error("No se detectaron preguntas con opciones dentro del archivo.");
+      }
+      setExamTemplatePreview({
+        template,
+        questions,
+        loading: false,
+        error: null,
+      });
+    } catch (error) {
+      console.error(error);
+      setExamTemplatePreview({
+        template,
+        questions: [],
+        loading: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "No se pudieron extraer preguntas de la plantilla.",
+      });
+    }
+  };
+
   const buildExamTemplateStoragePath = (kind: ExamTemplateKind, fileName: string) => {
     const safeFileName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
     return `exam-templates/${groupId}/${selectedCourseId}/${kind}-${Date.now()}-${safeFileName}`;
@@ -1941,6 +2466,28 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
         : "application/msword"),
     });
     const downloadUrl = await getDownloadURL(snapshot.ref);
+    let structuredTemplateId: string | null = null;
+    if (kind === "extraordinary") {
+      const questions = await parseGlobalExamQuestionsFromTemplateFile(file);
+      if (questions.length === 0) {
+        throw new Error("No se detectaron preguntas con respuesta correcta para activar el extraordinario.");
+      }
+      const structuredTemplate = await createGlobalExamTemplate({
+        examKind: "extraordinary",
+        title: `Examen extraordinario - ${selectedCourse?.courseName ?? "Materia"}`,
+        description: "Examen extraordinario generado desde la plantilla de cierre de materia.",
+        courseId: selectedCourseId,
+        courseName: selectedCourse?.courseName ?? "Materia",
+        groupId,
+        status: "published",
+        questions,
+      });
+      structuredTemplateId = structuredTemplate.id;
+      setExistingExtraordinaryExamTemplatesByCourse((prev) => ({
+        ...prev,
+        [selectedCourseId]: structuredTemplate,
+      }));
+    }
 
     return {
       kind,
@@ -1952,6 +2499,7 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
       uploadedAt: new Date(),
       uploadedById: currentUserId,
       uploadedByName: auth.currentUser?.displayName ?? auth.currentUser?.email ?? "Profesor",
+      structuredTemplateId,
     };
   };
 
@@ -1965,6 +2513,7 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
     try {
       const template = await uploadExamTemplateFile(kind, file);
       await persistCourseExamTemplate(kind, template);
+      void openExamTemplatePreview(template, file);
       toast.success(`${EXAM_TEMPLATE_KIND_LABELS[kind]} cargado correctamente.`);
     } catch (error) {
       console.error(error);
@@ -2205,22 +2754,16 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
   };
 
   const requestRequiredExamTemplates = async () => {
-    if (hasRequiredExamTemplates) return Promise.resolve(true);
-    let existingGlobalTemplate = selectedExistingGlobalExamTemplate ?? null;
     if (
-      !selectedCourseExamTemplates.global &&
       selectedCourseId &&
       !Object.prototype.hasOwnProperty.call(existingGlobalExamTemplatesByCourse, selectedCourseId)
     ) {
       try {
-        existingGlobalTemplate = await fetchExistingGlobalExamTemplate();
+        await fetchExistingGlobalExamTemplate();
       } catch (error) {
         console.warn("No se pudo verificar si ya existe examen global para la materia:", error);
       }
     }
-    const globalReady = Boolean(selectedCourseExamTemplates.global) || Boolean(existingGlobalTemplate);
-    const extraordinaryReady = Boolean(selectedCourseExamTemplates.extraordinary);
-    if (globalReady && extraordinaryReady) return true;
 
     setExamTemplatesModalOpen(true);
     return new Promise<boolean>((resolve) => {
@@ -2652,7 +3195,9 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
 
       upsertLocalClosure(row.studentId, selectedCourseId, closurePayload, row.enrollmentId);
       await persistConceptSuggestions(extraConcepts);
+      const autoExtraordinaryExamSummary = await ensureExtraordinaryExamAssignmentsForStudents([{ row, finalGrade }]);
       await downloadSignedClosurePdf(signature);
+      showAutoExtraordinaryExamAssignmentNotice(autoExtraordinaryExamSummary);
       toast.success(`Materia cerrada para ${row.studentName}`);
     } catch (err) {
       console.error(err);
@@ -3293,6 +3838,12 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
       });
       const allConcepts = parsedRows.flatMap(({ extraConcepts }) => extraConcepts ?? []);
       await persistConceptSuggestions(allConcepts);
+      const autoExtraordinaryExamSummary = await ensureExtraordinaryExamAssignmentsForStudents(
+        parsedRows
+          .filter(({ finalGrade }) => typeof finalGrade === "number")
+          .map(({ row, finalGrade }) => ({ row, finalGrade: finalGrade as number })),
+      );
+      showAutoExtraordinaryExamAssignmentNotice(autoExtraordinaryExamSummary);
 
       processStage = "unlinking";
       const currentSessionUser = auth.currentUser;
@@ -3314,7 +3865,7 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
         }),
       });
 
-      let data: { updated?: boolean; error?: string } | null = null;
+      let data: { updated?: boolean; error?: string; message?: string } | null = null;
       try {
         data = await response.json();
       } catch {
@@ -3326,10 +3877,9 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
       }
 
       const unlinked = Boolean(data?.updated);
-      if (!unlinked) {
-        throw new Error(data?.error || "No se aplicó la desvinculación del profesor para esta materia.");
+      if (unlinked) {
+        await onCourseCompletedAndUnlinked?.(selectedCourseId);
       }
-      await onCourseCompletedAndUnlinked?.(selectedCourseId);
 
       processStage = "pdf";
       await downloadSignedClosurePdf(signature);
@@ -3337,6 +3887,9 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
       if (unlinked) {
         toast.success(`Materia cerrada para ${openRows.length} alumno(s) y retirada de tu carga docente.`);
       } else {
+        if (data?.message) {
+          toast(data.message);
+        }
         toast.success(`Materia cerrada para ${openRows.length} alumno(s).`);
       }
     } catch (err) {
@@ -4345,8 +4898,9 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
               <h3 className="text-lg font-semibold text-slate-900">Plantillas requeridas para cierre</h3>
               <p className="mt-1 text-sm text-slate-600">
                 Para cerrar calificaciones de{" "}
-                <span className="font-medium">{selectedCourse?.courseName ?? "la materia"}</span>, carga las
-                plantillas Word de examen global y examen extraordinario.
+                <span className="font-medium">{selectedCourse?.courseName ?? "la materia"}</span>, el examen
+                extraordinario siempre requiere Word. El examen global solo requiere Word si no hay una plantilla global
+                ligada a la materia.
               </p>
             </div>
 
@@ -4375,26 +4929,30 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={() => downloadExamTemplateExample("global")}
-                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                >
-                  Descargar formato global
-                </button>
-                <button
-                  type="button"
                   onClick={() => downloadExamTemplateExample("extraordinary")}
                   className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
                 >
                   Descargar formato extraordinario
                 </button>
+                <button
+                  type="button"
+                  onClick={() => downloadExamTemplateExample("global")}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  Descargar formato global
+                </button>
               </div>
 
               <div className="grid gap-3 md:grid-cols-2">
-                {(["global", "extraordinary"] as ExamTemplateKind[]).map((kind) => {
+                {(["extraordinary", "global"] as ExamTemplateKind[]).map((kind) => {
                   const template = selectedCourseExamTemplates[kind];
                   const linkedGlobalTemplate =
                     kind === "global" ? selectedExistingGlobalExamTemplate ?? null : null;
-                  const isTemplateReady = Boolean(template) || Boolean(linkedGlobalTemplate);
+                  const isGlobalSatisfiedByLinkedTemplate = kind === "global" && Boolean(linkedGlobalTemplate);
+                  const isTemplateReady =
+                    kind === "extraordinary"
+                      ? Boolean(template)
+                      : Boolean(linkedGlobalTemplate) || Boolean(template);
                   const uploading = uploadingTemplateKind === kind;
                   return (
                     <div key={kind} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
@@ -4404,26 +4962,37 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
                             {EXAM_TEMPLATE_KIND_LABELS[kind]}
                           </p>
                           <p className="mt-1 text-xs text-slate-500">
-                            {template
-                              ? `${template.fileName} · ${formatFileSize(template.fileSize)}`
-                              : linkedGlobalTemplate
-                                ? `Examen global ligado a la materia: ${linkedGlobalTemplate.title}`
-                              : "Pendiente de carga (.doc o .docx)"}
+                            {isGlobalSatisfiedByLinkedTemplate
+                                ? `Examen global ligado a la materia: ${linkedGlobalTemplate?.title ?? "Plantilla global"}`
+                                : template
+                                  ? `${template.fileName} · ${formatFileSize(template.fileSize)}`
+                                  : "Pendiente de carga (.doc o .docx)"}
                           </p>
                           {template?.uploadedAt ? (
                             <p className="mt-1 text-[11px] text-slate-500">
                               Cargada: {formatDateTime(template.uploadedAt)}
                             </p>
                           ) : null}
-                          {template?.downloadUrl ? (
-                            <a
-                              href={template.downloadUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="mt-2 inline-flex text-xs font-semibold text-blue-700 hover:underline"
-                            >
-                              Ver archivo cargado
-                            </a>
+                          {!isGlobalSatisfiedByLinkedTemplate && template?.downloadUrl ? (
+                            <div className="mt-2 flex flex-wrap items-center gap-3">
+                              <button
+                                type="button"
+                                onClick={() => void openExamTemplatePreview(template)}
+                                className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700 hover:underline"
+                              >
+                                <Eye size={13} />
+                                Vista alumno
+                              </button>
+                              <a
+                                href={template.downloadUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:underline"
+                              >
+                                <ExternalLink size={13} />
+                                Abrir archivo
+                              </a>
+                            </div>
                           ) : null}
                         </div>
                         <span
@@ -4437,9 +5006,9 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
                         </span>
                       </div>
 
-                      {linkedGlobalTemplate && !template ? (
+                      {isGlobalSatisfiedByLinkedTemplate ? (
                         <p className="mt-3 text-xs font-medium text-emerald-700">
-                          No se requiere subir Word para examen global.
+                          No se requiere subir Word para examen global porque ya existe una plantilla ligada.
                         </p>
                       ) : (
                         <label
@@ -4486,6 +5055,124 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
               >
                 Continuar con cierre
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {examTemplatePreview ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 px-4 py-6">
+          <div className="flex h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                  Vista alumno
+                </p>
+                <h3 className="mt-1 text-lg font-semibold text-slate-900">
+                  {EXAM_TEMPLATE_KIND_LABELS[examTemplatePreview.template.kind]}
+                </h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  {examTemplatePreview.template.fileName} · {formatFileSize(examTemplatePreview.template.fileSize)}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <a
+                  href={examTemplatePreview.template.downloadUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  <ExternalLink size={14} />
+                  Abrir
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setExamTemplatePreview(null)}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-100"
+                  aria-label="Cerrar previsualizacion"
+                >
+                  <X size={17} />
+                </button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto bg-slate-100 p-5">
+              {examTemplatePreview.loading ? (
+                <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">
+                  Extrayendo preguntas del archivo...
+                </div>
+              ) : examTemplatePreview.error ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-800">
+                  <p className="font-semibold">No se pudo generar la vista de preguntas.</p>
+                  <p className="mt-1">{examTemplatePreview.error}</p>
+                  <p className="mt-3 text-xs">
+                    Verifica que el archivo tenga preguntas numeradas, opciones marcadas con letras y una respuesta
+                    correcta indicada, o usa el formato
+                    descargable de la plataforma.
+                  </p>
+                </div>
+              ) : (
+                <section className="mx-auto max-w-4xl rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                        Examen habilitado
+                      </p>
+                      <h2 className="mt-2 text-2xl font-semibold text-slate-900">
+                        {selectedCourse?.courseName ?? "Materia"}
+                      </h2>
+                      <p className="mt-1 text-sm text-slate-600">
+                        {examTemplatePreview.questions.length} pregunta
+                        {examTemplatePreview.questions.length === 1 ? "" : "s"} detectada
+                        {examTemplatePreview.questions.length === 1 ? "" : "s"} desde la plantilla.
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-right">
+                      <p className="text-xs uppercase tracking-[0.14em] text-red-500">Tiempo restante</p>
+                      <p className="text-2xl font-semibold text-red-700">{GLOBAL_EXAM_DURATION_MINUTES}:00</p>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 space-y-4">
+                    {examTemplatePreview.questions.map((question, index) => (
+                      <article
+                        key={question.id}
+                        className="rounded-2xl border border-slate-200 bg-slate-50 p-4"
+                      >
+                        <p className="text-xs uppercase tracking-[0.14em] text-slate-500">
+                          Pregunta {index + 1}
+                        </p>
+                        <h3 className="mt-2 text-base font-semibold text-slate-900">{question.prompt}</h3>
+                        <div className="mt-4 grid gap-3">
+                          {question.options.map((option) => (
+                            <label
+                              key={`${question.id}-${option.id}`}
+                              className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm"
+                            >
+                              <div className="flex items-start gap-3">
+                                <input
+                                  type="radio"
+                                  name={`preview-answer-${question.id}`}
+                                  disabled
+                                  className="mt-1 h-4 w-4 accent-blue-600"
+                                />
+                                <span>{option.text}</span>
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled
+                    className="mt-6 inline-flex cursor-not-allowed items-center justify-center rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white opacity-70"
+                  >
+                    Enviar examen
+                  </button>
+                </section>
+              )}
             </div>
           </div>
         </div>

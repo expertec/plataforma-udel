@@ -153,10 +153,13 @@ export async function GET(
       throw new RouteAccessError(400, "groupId es requerido");
     }
 
-    const courseId = new URL(request.url).searchParams.get("courseId")?.trim() ?? "";
+    const url = new URL(request.url);
+    const courseId = url.searchParams.get("courseId")?.trim() ?? "";
     if (!courseId) {
       throw new RouteAccessError(400, "courseId es requerido");
     }
+    const requestedExamKind =
+      url.searchParams.get("examKind")?.trim() === "extraordinary" ? "extraordinary" : "global";
 
     await resolveAccess(request, groupId);
 
@@ -164,10 +167,23 @@ export async function GET(
       .collection("globalExamTemplates")
       .where("courseId", "==", courseId)
       .get();
-    const templates = snap.docs.sort((left, right) => {
+    const templates = snap.docs.filter((docSnap) => {
+      const data = docSnap.data();
+      const examKind = asTrimmedString(data.examKind);
+      if (requestedExamKind === "extraordinary") {
+        const templateGroupId = asTrimmedString(data.groupId);
+        return examKind === "extraordinary" && (!templateGroupId || templateGroupId === groupId);
+      }
+      return examKind === "" || examKind === "global";
+    }).sort((left, right) => {
       const leftStatusRank = left.data()?.status === "published" ? 1 : 0;
       const rightStatusRank = right.data()?.status === "published" ? 1 : 0;
       if (leftStatusRank !== rightStatusRank) return rightStatusRank - leftStatusRank;
+      if (requestedExamKind === "extraordinary") {
+        const leftGroupRank = asTrimmedString(left.data()?.groupId) === groupId ? 1 : 0;
+        const rightGroupRank = asTrimmedString(right.data()?.groupId) === groupId ? 1 : 0;
+        if (leftGroupRank !== rightGroupRank) return rightGroupRank - leftGroupRank;
+      }
       return toMillis(right.data()?.updatedAt) - toMillis(left.data()?.updatedAt);
     });
 

@@ -3,6 +3,7 @@ import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 
 export type GlobalExamAccessRole =
   | "student"
+  | "teacher"
   | "coordinadorPlantel"
   | "director"
   | "adminTeacher"
@@ -48,6 +49,7 @@ function asUniqueStringArray(value: unknown): string[] {
 
 function asGlobalExamRole(value: unknown): GlobalExamAccessRole | null {
   return value === "student" ||
+    value === "teacher" ||
     value === "coordinadorPlantel" ||
     value === "director" ||
     value === "adminTeacher" ||

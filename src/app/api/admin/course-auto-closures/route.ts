@@ -10,6 +10,11 @@ import {
   TeacherAccessError,
   type TeacherAccessContext,
 } from "@/lib/server/require-teacher-access";
+import { GLOBAL_EXAM_MAX_ATTEMPTS } from "@/lib/global-exams/types";
+import {
+  ensureGlobalExamStudyEnrollment,
+  toGlobalExamTemplateRecord,
+} from "@/lib/server/global-exams";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -88,6 +93,15 @@ type CourseProcessResult = {
   alreadyClosedCount: number;
   skippedInvalidGradeCount: number;
   openCount: number;
+};
+
+type AutoExtraordinaryExamClosureWrite = {
+  studentId: string;
+  studentName: string;
+  studentEmail: string;
+  plantelId: string;
+  plantelName: string;
+  payload: FirestoreRecord;
 };
 
 type ClosureReviewItem = {
@@ -172,6 +186,8 @@ const REVIEW_START_DAYS = 6 * 7;
 const REVIEW_DUE_DAYS = 7 * 7;
 const SYSTEM_CLOSER_ID = "system";
 const SYSTEM_CLOSER_NAME = "Sistema";
+const EXTRAORDINARY_EXAM_AUTO_ASSIGN_MIN_EXCLUSIVE = 50;
+const EXTRAORDINARY_EXAM_AUTO_ASSIGN_MAX_EXCLUSIVE = 70;
 
 class RouteAccessError extends Error {
   status: number;
@@ -737,6 +753,145 @@ function calculateStudentCourse(params: {
   };
 }
 
+function recordTimestampMillis(value: unknown): number {
+  return asTimestampOrNull(value)?.toMillis() ?? 0;
+}
+
+async function loadPublishedExtraordinaryExamTemplateForCourse(
+  db: admin.firestore.Firestore,
+  courseId: string,
+  groupId: string,
+) {
+  if (!courseId) return null;
+  const snap = await db.collection("globalExamTemplates").where("courseId", "==", courseId).get();
+  const publishedTemplates = snap.docs
+    .filter((docSnap) => {
+      const data = docSnap.data() as FirestoreRecord;
+      const templateGroupId = asTrimmedString(data.groupId);
+      return (
+        asTrimmedString(data.status) === "published" &&
+        asTrimmedString(data.examKind) === "extraordinary" &&
+        (!templateGroupId || templateGroupId === groupId)
+      );
+    })
+    .sort(
+      (left, right) => {
+        const leftData = left.data() as FirestoreRecord;
+        const rightData = right.data() as FirestoreRecord;
+        const leftExactGroup = asTrimmedString(leftData.groupId) === groupId ? 1 : 0;
+        const rightExactGroup = asTrimmedString(rightData.groupId) === groupId ? 1 : 0;
+        if (leftExactGroup !== rightExactGroup) return rightExactGroup - leftExactGroup;
+        return recordTimestampMillis(rightData.updatedAt) - recordTimestampMillis(leftData.updatedAt);
+      },
+    );
+  const templateSnap = publishedTemplates[0];
+  if (!templateSnap) return null;
+  return toGlobalExamTemplateRecord(templateSnap.id, templateSnap.data() as FirestoreRecord);
+}
+
+async function ensureAutoExtraordinaryExamAssignmentsForClosureWrites(params: {
+  db: admin.firestore.Firestore;
+  groupId: string;
+  groupName: string;
+  course: CourseEntry;
+  writes: AutoExtraordinaryExamClosureWrite[];
+  actor: ClosureActor;
+}) {
+  const { db, groupId, groupName, course, writes, actor } = params;
+  const failedWrites = writes.filter((write) => {
+    const finalGrade = asNumberOrNull(write.payload.finalGrade);
+    return (
+      finalGrade !== null &&
+      finalGrade > EXTRAORDINARY_EXAM_AUTO_ASSIGN_MIN_EXCLUSIVE &&
+      finalGrade < EXTRAORDINARY_EXAM_AUTO_ASSIGN_MAX_EXCLUSIVE
+    );
+  });
+  if (failedWrites.length === 0) return;
+
+  const template = await loadPublishedExtraordinaryExamTemplateForCourse(db, course.courseId, groupId);
+  if (!template) {
+    console.warn(
+      `No se asignaron examenes extraordinarios automaticos: no hay plantilla publicada para ${course.courseId}`,
+    );
+    return;
+  }
+
+  for (const write of failedWrites) {
+    try {
+      const existingAssignmentsSnap = await db
+        .collection("globalExamAssignments")
+        .where("studentId", "==", write.studentId)
+        .get();
+      const alreadyAssigned = existingAssignmentsSnap.docs.some((docSnap) => {
+        const data = docSnap.data() as FirestoreRecord;
+        return (
+          asTrimmedString(data.groupId) === groupId &&
+          asTrimmedString(data.courseId) === course.courseId &&
+          asTrimmedString(data.examKind) === "extraordinary"
+        );
+      });
+      if (alreadyAssigned) continue;
+
+      const now = admin.firestore.Timestamp.now();
+      const assignmentRef = db.collection("globalExamAssignments").doc();
+      const courseName = course.courseName || template.courseName || "Materia";
+      await assignmentRef.set({
+        examKind: "extraordinary",
+        templateId: template.id,
+        templateTitle: template.title,
+        courseId: course.courseId,
+        courseName,
+        groupId,
+        groupName,
+        plantelId: write.plantelId,
+        plantelName: write.plantelName,
+        studentId: write.studentId,
+        studentName: write.studentName,
+        studentEmail: write.studentEmail,
+        reason: "failed_course",
+        enabled: true,
+        status: "enabled",
+        attemptsAllowed: GLOBAL_EXAM_MAX_ATTEMPTS,
+        attemptsUsed: 0,
+        passScore: template.passScore,
+        latestScore: null,
+        bestScore: null,
+        latestAttemptNumber: 0,
+        latestAttemptId: null,
+        latestAttemptDurationSeconds: null,
+        passed: false,
+        currentAttemptStartedAt: null,
+        currentAttemptDeadlineAt: null,
+        paymentVerifiedAt: now,
+        enabledAt: now,
+        enabledById: actor.closedById,
+        enabledByName: actor.closedByName,
+        createdById: actor.closedById,
+        createdByName: actor.closedByName,
+        updatedById: actor.closedById,
+        updatedByName: actor.closedByName,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      await ensureGlobalExamStudyEnrollment({
+        studentId: write.studentId,
+        studentName: write.studentName,
+        studentEmail: write.studentEmail,
+        courseId: course.courseId,
+        courseName,
+        plantelId: write.plantelId,
+        plantelName: write.plantelName,
+        groupId,
+        groupName,
+        assignmentId: assignmentRef.id,
+      });
+    } catch (error) {
+      console.warn(`No se pudo asignar examen extraordinario automatico a ${write.studentId}:`, error);
+    }
+  }
+}
+
 async function processCourse(params: {
   db: admin.firestore.Firestore;
   groupDoc: admin.firestore.QueryDocumentSnapshot | admin.firestore.DocumentSnapshot;
@@ -788,12 +943,11 @@ async function processCourse(params: {
   ]);
 
   const now = admin.firestore.Timestamp.now();
-  const writes: Array<{
-    ref: admin.firestore.DocumentReference;
-    studentId: string;
-    studentName: string;
-    payload: FirestoreRecord;
-  }> = [];
+  const writes: Array<
+    AutoExtraordinaryExamClosureWrite & {
+      ref: admin.firestore.DocumentReference;
+    }
+  > = [];
 
   enrollmentsSnap.docs.forEach((enrollmentDoc) => {
     const enrollmentData = enrollmentDoc.data() as FirestoreRecord;
@@ -802,6 +956,9 @@ async function processCourse(params: {
     const studentId = asTrimmedString(enrollmentData.studentId);
     if (!studentId) return;
     const studentName = asTrimmedString(enrollmentData.studentName) || "Alumno";
+    const studentEmail = asTrimmedString(enrollmentData.studentEmail);
+    const plantelId = asTrimmedString(enrollmentData.plantelId) || asTrimmedString(groupData.plantelId);
+    const plantelName = asTrimmedString(enrollmentData.plantelName) || asTrimmedString(groupData.plantelName);
     const courseClosures = asObject(enrollmentData.courseClosures);
     const previousClosure = asObject(courseClosures[course.courseId]);
     if (previousClosure.status === "closed") {
@@ -831,6 +988,9 @@ async function processCourse(params: {
       ref: enrollmentDoc.ref,
       studentId,
       studentName,
+      studentEmail,
+      plantelId,
+      plantelName,
       payload: {
         ...previousClosure,
         status: "closed",
@@ -885,6 +1045,15 @@ async function processCourse(params: {
     });
     await batch.commit();
   }
+
+  await ensureAutoExtraordinaryExamAssignmentsForClosureWrites({
+    db,
+    groupId,
+    groupName,
+    course,
+    writes,
+    actor,
+  });
 
   baseResult.closedCount = writes.length;
   return baseResult;

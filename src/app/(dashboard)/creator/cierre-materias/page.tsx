@@ -317,13 +317,13 @@ export default function CourseClosureReviewPage() {
       const margin = 36;
       const lineHeight = 11;
       const columns = [
-        { label: "Fecha cierre", width: 88 },
-        { label: "Grupo", width: 154 },
-        { label: "Materia", width: 166 },
-        { label: "Cerrado por", width: 140 },
-        { label: "Origen", width: 74 },
-        { label: "Alumnos", width: 70 },
-        { label: "Promedio", width: 70 },
+        { label: "Fecha cierre", width: 78, maxLines: 1 },
+        { label: "Grupo", width: 210, maxLines: 2 },
+        { label: "Materia", width: 190, maxLines: 2 },
+        { label: "Cerrado por", width: 125, maxLines: 2 },
+        { label: "Origen", width: 62, maxLines: 1 },
+        { label: "Alumnos", width: 52, maxLines: 1 },
+        { label: "Prom.", width: 52, maxLines: 1 },
       ];
 
       const dateRangeLabel =
@@ -371,6 +371,41 @@ export default function CourseClosureReviewPage() {
         drawHeader();
       };
 
+      const truncateLineToWidth = (line: string, maxWidth: number): string => {
+        const normalized = line.replace(/\s+/g, " ").trim();
+        if (pdf.getTextWidth(normalized) <= maxWidth) return normalized;
+        const ellipsis = "...";
+        let low = 0;
+        let high = normalized.length;
+        let best = ellipsis;
+        while (low <= high) {
+          const mid = Math.floor((low + high) / 2);
+          const candidate = `${normalized.slice(0, mid).trimEnd()}${ellipsis}`;
+          if (pdf.getTextWidth(candidate) <= maxWidth) {
+            best = candidate;
+            low = mid + 1;
+          } else {
+            high = mid - 1;
+          }
+        }
+        return best;
+      };
+
+      const wrapCellText = (text: string, columnIndex: number): string[] => {
+        const column = columns[columnIndex];
+        const availableWidth = column.width - 10;
+        const maxLines = column.maxLines;
+        const normalized = text.replace(/\s+/g, " ").trim() || " ";
+        const lines = (pdf.splitTextToSize(normalized, availableWidth) as string[])
+          .map((line) => line.replace(/\s+/g, " ").trim())
+          .filter(Boolean);
+        const visibleLines = lines.length > 0 ? lines.slice(0, maxLines) : [" "];
+        if (lines.length > maxLines && visibleLines.length > 0) {
+          visibleLines[visibleLines.length - 1] = `${visibleLines[visibleLines.length - 1].replace(/\.+$/, "")}...`;
+        }
+        return visibleLines.map((line) => truncateLineToWidth(line, availableWidth));
+      };
+
       drawHeader();
       pdf.setFont("helvetica", "normal");
       pdf.setFontSize(8);
@@ -385,9 +420,7 @@ export default function CourseClosureReviewPage() {
           `${item.closedCount} / ${item.totalClosedCount}`,
           formatGrade(item.averageFinalGrade),
         ];
-        const wrappedCells = row.map((text, columnIndex) =>
-          pdf.splitTextToSize(text, columns[columnIndex].width - 10) as string[],
-        );
+        const wrappedCells = row.map((text, columnIndex) => wrapCellText(text, columnIndex));
         const rowHeight = Math.max(...wrappedCells.map((lines) => lines.length * lineHeight + 12), 24);
         ensurePageSpace(rowHeight);
 
