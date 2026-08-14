@@ -130,6 +130,25 @@ type OpenCourseWithoutDateItem = {
   totalCount: number;
 };
 
+type ClosedCourseHistoryItem = {
+  groupId: string;
+  groupName: string;
+  groupStatus: string;
+  courseId: string;
+  courseName: string;
+  teacherId: string;
+  teacherName: string;
+  courseMentorIds: string[];
+  courseMentorNames: string[];
+  closedAt: string;
+  closedByType: "teacher" | "system" | null;
+  closureTrigger: "manual" | "automatic" | null;
+  closedByName: string;
+  closedCount: number;
+  totalClosedCount: number;
+  averageFinalGrade: number | null;
+};
+
 type ManualCloseBody = {
   action?: unknown;
   groupId?: unknown;
@@ -262,6 +281,41 @@ function resolveAutoCloseDays(): number {
 
 function daysBetween(start: admin.firestore.Timestamp, endMs: number): number {
   return Math.floor((endMs - start.toMillis()) / (24 * 60 * 60 * 1000));
+}
+
+function parseDateBoundary(value: string | null, endOfDay: boolean): number | null {
+  const raw = asTrimmedString(value);
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null;
+  return Date.UTC(
+    year,
+    month - 1,
+    day,
+    endOfDay ? 23 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 999 : 0,
+  );
+}
+
+function resolveClosureTimestamp(closure: FirestoreRecord): admin.firestore.Timestamp | null {
+  return (
+    asTimestampOrNull(closure.closedAt) ??
+    asTimestampOrNull(closure.autoClosedAt) ??
+    asTimestampOrNull(closure.updatedAt)
+  );
+}
+
+function asClosedByType(value: unknown): ClosedCourseHistoryItem["closedByType"] {
+  return value === "teacher" || value === "system" ? value : null;
+}
+
+function asClosureTrigger(value: unknown): ClosedCourseHistoryItem["closureTrigger"] {
+  return value === "manual" || value === "automatic" ? value : null;
 }
 
 function resolveOpenEstimateStart(groupData: FirestoreRecord): {
@@ -847,15 +901,147 @@ async function resolveAdminDisplayName(adminContext: AdminTeacherAccessContext):
   );
 }
 
+async function loadClosedCourseHistory(params: {
+  db: admin.firestore.Firestore;
+  groupDoc: admin.firestore.QueryDocumentSnapshot;
+  groupData: FirestoreRecord;
+  courses: CourseEntry[];
+  closedFromMs: number | null;
+  closedToMs: number | null;
+}): Promise<ClosedCourseHistoryItem[]> {
+  const { db, groupDoc, groupData, courses, closedFromMs, closedToMs } = params;
+  const courseNames = new Map(courses.map((course) => [course.courseId, course.courseName]));
+  const courseMentorsById = new Map(
+    courses.map((course) => [course.courseId, resolveCourseMentors(groupData, course.courseId)]),
+  );
+  const groupId = groupDoc.id;
+  const groupName = asTrimmedString(groupData.groupName) || "Grupo";
+  const groupStatus = asTrimmedString(groupData.status) || "active";
+  const teacherId = asTrimmedString(groupData.teacherId);
+  const teacherName = asTrimmedString(groupData.teacherName) || "Sin profesor";
+  const [liveEnrollmentsSnap, archivedEnrollmentsSnap] = await Promise.all([
+    db.collection("studentEnrollments").where("groupId", "==", groupId).get(),
+    db.collection("studentEnrollmentsArchive").where("groupId", "==", groupId).get(),
+  ]);
+
+  const totalClosedByCourse = new Map<string, number>();
+  const grouped = new Map<
+    string,
+    ClosedCourseHistoryItem & { finalGradeSum: number; finalGradeCount: number }
+  >();
+
+  const consumeEnrollment = (enrollmentData: FirestoreRecord) => {
+    const closures = asObject(enrollmentData.courseClosures);
+    Object.entries(closures).forEach(([courseIdRaw, closureRaw]) => {
+      const courseId = asTrimmedString(courseIdRaw);
+      const closure = asObject(closureRaw);
+      if (!courseId || closure.status !== "closed") return;
+      totalClosedByCourse.set(courseId, (totalClosedByCourse.get(courseId) ?? 0) + 1);
+
+      const closedAt = resolveClosureTimestamp(closure);
+      if (!closedAt) return;
+      const closedAtMs = closedAt.toMillis();
+      if (closedFromMs !== null && closedAtMs < closedFromMs) return;
+      if (closedToMs !== null && closedAtMs > closedToMs) return;
+
+      const closedByType = asClosedByType(closure.closedByType);
+      const closureTrigger = asClosureTrigger(closure.closureTrigger);
+      const closedById = asTrimmedString(closure.closedById);
+      const closedByName = asTrimmedString(closure.closedByName) || (closedByType === "system" ? "Sistema" : "");
+      const closedDateKey = closedAt.toDate().toISOString().slice(0, 10);
+      const key = [
+        groupId,
+        courseId,
+        closedDateKey,
+        closedByType ?? "",
+        closureTrigger ?? "",
+        closedById,
+        closedByName,
+      ].join(":");
+      const courseMentors =
+        courseMentorsById.get(courseId) ?? resolveCourseMentors(groupData, courseId);
+      const finalGrade = asNumberOrNull(closure.finalGrade);
+      const current = grouped.get(key);
+      if (current) {
+        current.closedCount += 1;
+        current.totalClosedCount = totalClosedByCourse.get(courseId) ?? current.totalClosedCount;
+        if (finalGrade !== null) {
+          current.finalGradeSum += finalGrade;
+          current.finalGradeCount += 1;
+          current.averageFinalGrade = roundGrade(current.finalGradeSum / current.finalGradeCount);
+        }
+        return;
+      }
+
+      grouped.set(key, {
+        groupId,
+        groupName,
+        groupStatus,
+        courseId,
+        courseName:
+          asTrimmedString(closure.courseName) ||
+          courseNames.get(courseId) ||
+          asTrimmedString(enrollmentData.courseName) ||
+          "Materia",
+        teacherId,
+        teacherName,
+        courseMentorIds: courseMentors.mentorIds,
+        courseMentorNames: courseMentors.mentorNames,
+        closedAt: closedAt.toDate().toISOString(),
+        closedByType,
+        closureTrigger,
+        closedByName: closedByName || "Sin registrar",
+        closedCount: 1,
+        totalClosedCount: totalClosedByCourse.get(courseId) ?? 1,
+        averageFinalGrade: finalGrade,
+        finalGradeSum: finalGrade ?? 0,
+        finalGradeCount: finalGrade === null ? 0 : 1,
+      });
+    });
+  };
+
+  liveEnrollmentsSnap.docs.forEach((docSnap) => consumeEnrollment(docSnap.data() as FirestoreRecord));
+  archivedEnrollmentsSnap.docs.forEach((docSnap) => consumeEnrollment(docSnap.data() as FirestoreRecord));
+
+  grouped.forEach((item) => {
+    item.totalClosedCount = totalClosedByCourse.get(item.courseId) ?? item.closedCount;
+  });
+
+  return Array.from(grouped.values()).map((itemWithStats) => {
+    const item: ClosedCourseHistoryItem = {
+      groupId: itemWithStats.groupId,
+      groupName: itemWithStats.groupName,
+      groupStatus: itemWithStats.groupStatus,
+      courseId: itemWithStats.courseId,
+      courseName: itemWithStats.courseName,
+      teacherId: itemWithStats.teacherId,
+      teacherName: itemWithStats.teacherName,
+      courseMentorIds: itemWithStats.courseMentorIds,
+      courseMentorNames: itemWithStats.courseMentorNames,
+      closedAt: itemWithStats.closedAt,
+      closedByType: itemWithStats.closedByType,
+      closureTrigger: itemWithStats.closureTrigger,
+      closedByName: itemWithStats.closedByName,
+      closedCount: itemWithStats.closedCount,
+      totalClosedCount: itemWithStats.totalClosedCount,
+      averageFinalGrade: itemWithStats.averageFinalGrade,
+    };
+    return item;
+  });
+}
+
 async function listClosureReviewItems(request: NextRequest): Promise<NextResponse> {
   const access = await requireClosureReviewAccess(request);
 
   const db = getAdminFirestore();
   const autoCloseDays = resolveAutoCloseDays();
   const nowMs = Date.now();
-  const groupsSnap = await db.collection("groups").where("status", "==", "active").get();
+  const closedFromMs = parseDateBoundary(request.nextUrl.searchParams.get("closedFrom"), false);
+  const closedToMs = parseDateBoundary(request.nextUrl.searchParams.get("closedTo"), true);
+  const groupsSnap = await db.collection("groups").get();
   const items: ClosureReviewItem[] = [];
   const openWithoutDateItems: OpenCourseWithoutDateItem[] = [];
+  const closedHistoryItems: ClosedCourseHistoryItem[] = [];
 
   for (const groupDoc of groupsSnap.docs) {
     const groupData = (groupDoc.data() ?? {}) as FirestoreRecord;
@@ -863,6 +1049,20 @@ async function listClosureReviewItems(request: NextRequest): Promise<NextRespons
 
     const courses = toGroupCourses(groupData);
     if (courses.length === 0) continue;
+
+    closedHistoryItems.push(
+      ...(await loadClosedCourseHistory({
+        db,
+        groupDoc,
+        groupData,
+        courses,
+        closedFromMs,
+        closedToMs,
+      })),
+    );
+
+    const groupStatus = asTrimmedString(groupData.status) || "active";
+    if (groupStatus !== "active") continue;
 
     const enrollmentsSnap = await db
       .collection("studentEnrollments")
@@ -961,6 +1161,14 @@ async function listClosureReviewItems(request: NextRequest): Promise<NextRespons
     if (groupCompare !== 0) return groupCompare;
     return left.courseName.localeCompare(right.courseName, "es-MX", { sensitivity: "base" });
   });
+  closedHistoryItems.sort((left, right) => {
+    const rightClosedAt = new Date(right.closedAt).getTime();
+    const leftClosedAt = new Date(left.closedAt).getTime();
+    if (rightClosedAt !== leftClosedAt) return rightClosedAt - leftClosedAt;
+    const groupCompare = left.groupName.localeCompare(right.groupName, "es-MX", { sensitivity: "base" });
+    if (groupCompare !== 0) return groupCompare;
+    return left.courseName.localeCompare(right.courseName, "es-MX", { sensitivity: "base" });
+  });
 
   return NextResponse.json(
     {
@@ -973,6 +1181,7 @@ async function listClosureReviewItems(request: NextRequest): Promise<NextRespons
         scopeRole: access.role,
         items,
         openWithoutDateItems,
+        closedHistoryItems,
       },
     },
     { status: 200 },
