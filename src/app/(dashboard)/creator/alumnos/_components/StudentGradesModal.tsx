@@ -31,6 +31,8 @@ type CourseClosure = {
   autoGrade?: number | null;
   globalExamGrade?: number | null;
   globalExamScore?: number | null;
+  extraordinaryExamGrade?: number | null;
+  extraordinaryExamScore?: number | null;
   gradeSource?: string;
   pendingUngradedCount?: number;
   closedAt?: unknown;
@@ -48,6 +50,8 @@ type GradeRow = {
   autoGrade: number | null;
   globalExamGrade: number | null;
   globalExamSource: "closure" | "regularization" | null;
+  extraordinaryExamGrade: number | null;
+  extraordinaryExamSource: "closure" | "regularization" | null;
   pendingUngradedCount: number | null;
   closedAt: Date | null;
   updatedAt: Date | null;
@@ -96,6 +100,31 @@ const resolveGlobalExamData = (
   return {
     globalExamGrade: null,
     globalExamSource: null,
+  };
+};
+
+const resolveExtraordinaryExamData = (
+  closure: CourseClosure,
+): Pick<GradeRow, "extraordinaryExamGrade" | "extraordinaryExamSource"> => {
+  const capturedGrade = toNumberOrNull(closure.extraordinaryExamGrade);
+  if (capturedGrade !== null) {
+    return {
+      extraordinaryExamGrade: capturedGrade,
+      extraordinaryExamSource: "closure",
+    };
+  }
+
+  if (closure.gradeSource === "extraordinaryRegularizationExam") {
+    return {
+      extraordinaryExamGrade:
+        toNumberOrNull(closure.extraordinaryExamScore) ?? toNumberOrNull(closure.finalGrade),
+      extraordinaryExamSource: "regularization",
+    };
+  }
+
+  return {
+    extraordinaryExamGrade: null,
+    extraordinaryExamSource: null,
   };
 };
 
@@ -539,6 +568,7 @@ export function StudentGradesModal({
             const closure = closureRaw as CourseClosure;
             if (!closure || typeof closure !== "object") return;
             const globalExamData = resolveGlobalExamData(closure);
+            const extraordinaryExamData = resolveExtraordinaryExamData(closure);
 
             const courseId = courseIdRaw.trim();
             const closureCourseNameRaw = (closure as { courseName?: unknown }).courseName;
@@ -568,6 +598,8 @@ export function StudentGradesModal({
               autoGrade,
               globalExamGrade: globalExamData.globalExamGrade,
               globalExamSource: globalExamData.globalExamSource,
+              extraordinaryExamGrade: extraordinaryExamData.extraordinaryExamGrade,
+              extraordinaryExamSource: extraordinaryExamData.extraordinaryExamSource,
               pendingUngradedCount:
                 typeof closure.pendingUngradedCount === "number"
                   ? closure.pendingUngradedCount
@@ -812,6 +844,8 @@ export function StudentGradesModal({
             autoGrade: agg.numericCount > 0 ? agg.numericSum / agg.numericCount : null,
             globalExamGrade: null,
             globalExamSource: null,
+            extraordinaryExamGrade: null,
+            extraordinaryExamSource: null,
             pendingUngradedCount: Math.max(agg.total - agg.graded, 0),
             closedAt: null,
             updatedAt: agg.latestAt,
@@ -832,6 +866,10 @@ export function StudentGradesModal({
             autoGrade: closureRow.autoGrade ?? current.autoGrade,
             globalExamGrade: closureRow.globalExamGrade ?? current.globalExamGrade,
             globalExamSource: closureRow.globalExamSource ?? current.globalExamSource,
+            extraordinaryExamGrade:
+              closureRow.extraordinaryExamGrade ?? current.extraordinaryExamGrade,
+            extraordinaryExamSource:
+              closureRow.extraordinaryExamSource ?? current.extraordinaryExamSource,
             pendingUngradedCount:
               closureRow.pendingUngradedCount ?? current.pendingUngradedCount,
             closedAt: closureRow.closedAt ?? current.closedAt,
@@ -940,6 +978,7 @@ export function StudentGradesModal({
                     <th className="px-4 py-2 text-left">Materia</th>
                     <th className="px-4 py-2 text-left">Estado</th>
                     <th className="px-4 py-2 text-left">Examen global</th>
+                    <th className="px-4 py-2 text-left">Examen extraordinario</th>
                     <th className="px-4 py-2 text-left">Calificación final</th>
                     <th className="px-4 py-2 text-left">Pendientes</th>
                     <th className="px-4 py-2 text-left">Actualizado</th>
@@ -967,6 +1006,20 @@ export function StudentGradesModal({
                             {row.globalExamGrade === null ? "—" : row.globalExamGrade.toFixed(1)}
                           </span>
                           {row.globalExamSource === "regularization" ? (
+                            <span className="inline-flex w-fit rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-semibold text-sky-700">
+                              Regularizacion
+                            </span>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-slate-700">
+                        <div className="flex flex-col gap-1">
+                          <span>
+                            {row.extraordinaryExamGrade === null
+                              ? "—"
+                              : row.extraordinaryExamGrade.toFixed(1)}
+                          </span>
+                          {row.extraordinaryExamSource === "regularization" ? (
                             <span className="inline-flex w-fit rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-semibold text-sky-700">
                               Regularizacion
                             </span>

@@ -208,6 +208,11 @@ type LiveBrowserInfo = {
   isRecommendedChrome: boolean;
 };
 
+type ScreenShareSupport = {
+  supported: boolean;
+  message: string | null;
+};
+
 const LIVE_VIEW_MODES = [
   {
     id: "speaker",
@@ -375,6 +380,33 @@ function detectLiveBrowser(): LiveBrowserInfo {
     return { label: "Opera", isRecommendedChrome: false };
   }
   return { label: "este navegador", isRecommendedChrome: false };
+}
+
+function detectScreenShareSupport(): ScreenShareSupport {
+  if (typeof navigator === "undefined") {
+    return { supported: true, message: null };
+  }
+
+  const hasDisplayCapture = typeof navigator.mediaDevices?.getDisplayMedia === "function";
+  if (hasDisplayCapture) {
+    return { supported: true, message: null };
+  }
+
+  const ua = navigator.userAgent.toLowerCase();
+  const platform = (navigator as Navigator & { platform?: string }).platform ?? "";
+  const maxTouchPoints = navigator.maxTouchPoints ?? 0;
+  const isAppleMobileDevice =
+    ua.includes("ipad") ||
+    ua.includes("iphone") ||
+    ua.includes("ipod") ||
+    (platform === "MacIntel" && maxTouchPoints > 1);
+
+  return {
+    supported: false,
+    message: isAppleMobileDevice
+      ? "Compartir pantalla no está disponible desde iPad o iPhone. Para presentar, entra desde una computadora con Chrome o Edge."
+      : "Este navegador no permite compartir pantalla. Para presentar, entra desde una computadora con Chrome o Edge.",
+  };
 }
 
 function LiveChromeRecommendationBanner({
@@ -720,6 +752,7 @@ function LiveRoomConference({
 
   const micToggle = useTrackToggle({ source: Track.Source.Microphone });
   const cameraToggle = useTrackToggle({ source: Track.Source.Camera });
+  const screenShareSupport = useMemo(() => detectScreenShareSupport(), []);
 
   const screenShareToggle = useTrackToggle({
     source: Track.Source.ScreenShare,
@@ -1028,7 +1061,7 @@ function LiveRoomConference({
     autoStudentsPipRef.current = false;
     if (!studentsPip.active) return;
     studentsPip.close();
-  }, [screenShareToggle.enabled, screenShareToggle.pending, studentsPip.active, studentsPip.close]);
+  }, [screenShareToggle.enabled, screenShareToggle.pending, studentsPip]);
 
   const handleScreenShareToggle = useCallback(async () => {
     if (screenShareToggle.pending) return;
@@ -1039,6 +1072,10 @@ function LiveRoomConference({
         studentsPip.close();
       }
       await screenShareToggle.toggle(false);
+      return;
+    }
+
+    if (!screenShareSupport.supported) {
       return;
     }
 
@@ -1064,13 +1101,9 @@ function LiveRoomConference({
       console.error("No se pudo alternar el compartir pantalla", error);
     }
   }, [
-    screenShareToggle.enabled,
-    screenShareToggle.pending,
-    screenShareToggle.toggle,
-    studentsPip.active,
-    studentsPip.close,
-    studentsPip.open,
-    studentsPip.supported,
+    screenShareToggle,
+    screenShareSupport.supported,
+    studentsPip,
   ]);
 
   return (
@@ -1187,8 +1220,15 @@ function LiveRoomConference({
                   <LiveBarButton
                     label={screenShareToggle.enabled ? "Detener" : "Pantalla"}
                     active={screenShareToggle.enabled}
-                    disabled={screenShareToggle.pending}
+                    disabled={
+                      screenShareToggle.pending ||
+                      (!screenShareToggle.enabled && !screenShareSupport.supported)
+                    }
                     ariaPressed={screenShareToggle.enabled}
+                    title={
+                      screenShareSupport.message ??
+                      (screenShareToggle.enabled ? "Detener pantalla" : "Compartir pantalla")
+                    }
                     onClick={() => {
                       void handleScreenShareToggle();
                     }}
@@ -1316,6 +1356,11 @@ function LiveRoomConference({
                 </div>
                 <div className="flex min-w-0 items-center justify-end">{rightSlot}</div>
               </div>
+              {canShareScreen && screenShareSupport.message ? (
+                <p className="mx-auto mt-2 max-w-2xl text-center text-[11px] font-medium text-amber-200">
+                  {screenShareSupport.message}
+                </p>
+              ) : null}
             </div>
           </div>
           <LiveRoomChatPanel visible={Boolean(widgetState.showChat)} />

@@ -12,6 +12,8 @@ export type KardexRow = {
   finalGrade: number | null;
   globalExamGrade: number | null;
   globalExamSource: "closure" | "regularization" | null;
+  extraordinaryExamGrade: number | null;
+  extraordinaryExamSource: "closure" | "regularization" | null;
   autoGrade: number | null;
   pendingUngradedCount: number | null;
   closedByType: "teacher" | "system" | null;
@@ -65,6 +67,31 @@ const resolveGlobalExamData = (
   return {
     globalExamGrade: null,
     globalExamSource: null,
+  };
+};
+
+const resolveExtraordinaryExamData = (
+  closure: Record<string, unknown>,
+): Pick<KardexRow, "extraordinaryExamGrade" | "extraordinaryExamSource"> => {
+  const capturedGrade = toNumberOrNull(closure.extraordinaryExamGrade);
+  if (capturedGrade !== null) {
+    return {
+      extraordinaryExamGrade: capturedGrade,
+      extraordinaryExamSource: "closure",
+    };
+  }
+
+  if (closure.gradeSource === "extraordinaryRegularizationExam") {
+    return {
+      extraordinaryExamGrade:
+        toNumberOrNull(closure.extraordinaryExamScore) ?? toNumberOrNull(closure.finalGrade),
+      extraordinaryExamSource: "regularization",
+    };
+  }
+
+  return {
+    extraordinaryExamGrade: null,
+    extraordinaryExamSource: null,
   };
 };
 
@@ -165,6 +192,7 @@ export const loadKardex = async (
       if (!courseId) return;
       const closure = closureValue as Record<string, unknown>;
       const globalExamData = resolveGlobalExamData(closure);
+      const extraordinaryExamData = resolveExtraordinaryExamData(closure);
       const closureCourseName = trimSafeString(closure.courseName);
       rememberCourseName(courseId, closureCourseName, fallbackCourseName);
       if (!courseTitles[courseId] && !rememberedCourseNames.has(courseId)) {
@@ -182,6 +210,8 @@ export const loadKardex = async (
         finalGrade: toNumberOrNull(closure.finalGrade),
         globalExamGrade: globalExamData.globalExamGrade,
         globalExamSource: globalExamData.globalExamSource,
+        extraordinaryExamGrade: extraordinaryExamData.extraordinaryExamGrade,
+        extraordinaryExamSource: extraordinaryExamData.extraordinaryExamSource,
         autoGrade: toNumberOrNull(closure.autoGrade),
         pendingUngradedCount: toNumberOrNull(closure.pendingUngradedCount),
         closedByType:
@@ -217,6 +247,8 @@ export const loadKardex = async (
         finalGrade,
         globalExamGrade: null,
         globalExamSource: null,
+        extraordinaryExamGrade: null,
+        extraordinaryExamSource: null,
         autoGrade: null,
         pendingUngradedCount: null,
         closedByType: null,

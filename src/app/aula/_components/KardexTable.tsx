@@ -15,7 +15,7 @@ function GradeBadge({ grade }: { grade: number | null }) {
   );
 }
 
-function GlobalExamBadge({
+function ExamGradeBadge({
   grade,
   source,
 }: {
@@ -67,7 +67,7 @@ export function KardexTable({ rows, loading }: { rows: KardexRow[]; loading: boo
 
   return (
     <div className="overflow-x-auto rounded-2xl border border-[var(--aula-border)] bg-[var(--aula-surface)]">
-      <table className="w-full min-w-[760px] text-left text-sm">
+      <table className="w-full min-w-[880px] text-left text-sm">
         <thead className="border-b border-[var(--aula-border)] text-[var(--aula-text-muted)]">
           <tr>
             <th className="px-4 py-3 font-medium">Materia</th>
@@ -75,6 +75,7 @@ export function KardexTable({ rows, loading }: { rows: KardexRow[]; loading: boo
             <th className="px-4 py-3 font-medium">Estado</th>
             <th className="px-4 py-3 font-medium">Cierre</th>
             <th className="px-4 py-3 text-right font-medium">Examen global</th>
+            <th className="px-4 py-3 text-right font-medium">Examen extraordinario</th>
             <th className="px-4 py-3 text-right font-medium">Calificación final</th>
           </tr>
         </thead>
@@ -119,7 +120,13 @@ export function KardexTable({ rows, loading }: { rows: KardexRow[]; loading: boo
                 )}
               </td>
               <td className="px-4 py-3 text-right">
-                <GlobalExamBadge grade={row.globalExamGrade} source={row.globalExamSource} />
+                <ExamGradeBadge grade={row.globalExamGrade} source={row.globalExamSource} />
+              </td>
+              <td className="px-4 py-3 text-right">
+                <ExamGradeBadge
+                  grade={row.extraordinaryExamGrade}
+                  source={row.extraordinaryExamSource}
+                />
               </td>
               <td className="px-4 py-3 text-right">
                 {row.status === "closed" ? (
