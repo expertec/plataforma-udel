@@ -55,6 +55,15 @@ function asAllowedRole(value: unknown): AllowedRole | null {
     : null;
 }
 
+function isLegacyAdminTeacherRole(value: unknown): boolean {
+  return (
+    value === "adminteacher" ||
+    value === "superadminteacher" ||
+    value === "admin_teacher" ||
+    value === "super_admin_teacher"
+  );
+}
+
 function getUserPlantelIds(data: Record<string, unknown>): string[] {
   const plantelIds = asUniqueStringArray(data.plantelIds);
   if (plantelIds.length > 0) return plantelIds;
@@ -110,10 +119,8 @@ async function resolveAccessContext(request: NextRequest, groupId: string) {
   const uid = decodedToken.uid;
   const userSnap = await getAdminFirestore().collection("users").doc(uid).get();
   const userData = (userSnap.data() ?? {}) as Record<string, unknown>;
-  const role = asAllowedRole(userData.role) ?? asAllowedRole(decodedToken.role);
-  if (!role) {
-    throw new RouteAccessError(403, "Missing or insufficient permissions.");
-  }
+  const rawRole = userData.role ?? decodedToken.role;
+  const role = asAllowedRole(rawRole);
 
   const groupSnap = await getAdminFirestore().collection("groups").doc(groupId).get();
   if (!groupSnap.exists) {
@@ -132,7 +139,8 @@ async function resolveAccessContext(request: NextRequest, groupId: string) {
   const canRead =
     role === "adminTeacher" ||
     role === "superAdminTeacher" ||
-    (role === "teacher" && (teacherId === uid || assistantTeacherIds.includes(uid))) ||
+    isLegacyAdminTeacherRole(rawRole) ||
+    ((role === "teacher" || !role) && (teacherId === uid || assistantTeacherIds.includes(uid))) ||
     ((role === "coordinadorPlantel" || role === "director") &&
       ((groupPlantelId.length > 0 && plantelIds.includes(groupPlantelId)) ||
         (isOnlineGroup && coordinatorId === uid)));

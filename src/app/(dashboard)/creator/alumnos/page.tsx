@@ -875,7 +875,8 @@ export default function AlumnosPage() {
 
   const isAdmin = isAdminTeacherRole(userRole);
   const isCoordinator = isCampusCoordinatorRole(userRole);
-  const canOpenStudentActionMenu = isAdmin || isCoordinator;
+  const canOpenStudentActionMenu = userRole === "teacher" || isAdmin || isCoordinator;
+  const canArchiveStudentFromMenu = isAdmin || isCoordinator;
   const hasCoordinatorPlantel = !isCoordinator || coordinatorPlantelId.length > 0;
   const canViewRiskReport = isAdmin || (isCoordinator && hasCoordinatorPlantel);
   const canViewAllStudents = isAdmin || isCoordinator;
@@ -2113,7 +2114,7 @@ export default function AlumnosPage() {
                     Contraseña
                   </button>
                 ) : null}
-                {canOpenStudentActionMenu ? (
+                {canArchiveStudentFromMenu ? (
                   <button
                     type="button"
                     onClick={() => {
@@ -2384,6 +2385,7 @@ export default function AlumnosPage() {
           studentEmail={selectedStudentForGrades.email}
           scopePlantelId={isCoordinator ? coordinatorPlantelId || "" : ""}
           scopeGroupIds={isCoordinator ? coordinatorScopeGroupIds : []}
+          useServerGrades={userRole === "teacher" || isCoordinator}
           isOpen={gradesModalOpen}
           onClose={() => {
             setGradesModalOpen(false);

@@ -13,6 +13,7 @@ import {
 } from "firebase/firestore";
 import toast from "react-hot-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { auth } from "@/lib/firebase/client";
 import { db } from "@/lib/firebase/firestore";
 
 type Props = {
@@ -21,6 +22,7 @@ type Props = {
   studentEmail: string;
   scopePlantelId?: string;
   scopeGroupIds?: string[];
+  useServerGrades?: boolean;
   isOpen: boolean;
   onClose: () => void;
 };
@@ -55,6 +57,19 @@ type GradeRow = {
   pendingUngradedCount: number | null;
   closedAt: Date | null;
   updatedAt: Date | null;
+};
+
+type ApiGradeRow = Omit<GradeRow, "closedAt" | "updatedAt"> & {
+  closedAt: string | null;
+  updatedAt: string | null;
+};
+
+type StudentGradesApiResponse = {
+  success?: boolean;
+  error?: string;
+  data?: {
+    rows?: ApiGradeRow[];
+  };
 };
 
 const toDateOrNull = (value: unknown): Date | null => {
@@ -193,12 +208,25 @@ const isPermissionDeniedError = (error: unknown): boolean =>
   "code" in error &&
   (error as { code?: unknown }).code === "permission-denied";
 
+const parseApiDate = (value: string | null): Date | null => {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const toClientGradeRow = (row: ApiGradeRow): GradeRow => ({
+  ...row,
+  closedAt: parseApiDate(row.closedAt),
+  updatedAt: parseApiDate(row.updatedAt),
+});
+
 export function StudentGradesModal({
   studentId,
   studentName,
   studentEmail,
   scopePlantelId = "",
   scopeGroupIds = [],
+  useServerGrades = false,
   isOpen,
   onClose,
 }: Props) {
@@ -218,6 +246,30 @@ export function StudentGradesModal({
         const normalizedScopePlantelId = scopePlantelId.trim();
         const isScopedAccess =
           normalizedScopeGroupIds.length > 0 || normalizedScopePlantelId.length > 0;
+
+        if (useServerGrades || isScopedAccess) {
+          const token = await auth.currentUser?.getIdToken();
+          if (!token) {
+            throw new Error("No hay sesión activa para consultar calificaciones");
+          }
+
+          const response = await fetch(`/api/students/${encodeURIComponent(studentId)}/grades`, {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+            cache: "no-store",
+          });
+          const payload = (await response.json().catch(() => ({}))) as StudentGradesApiResponse;
+          if (!response.ok || payload.success !== true) {
+            throw new Error(payload.error || "No se pudo cargar el kardex de calificaciones");
+          }
+
+          if (!active) return;
+          setRows((payload.data?.rows ?? []).map(toClientGradeRow));
+          return;
+        }
+
         let enrollmentPermissionDenied = false;
         let enrollmentDocs:
           | Array<Awaited<ReturnType<typeof getDoc>>>
@@ -910,7 +962,7 @@ export function StudentGradesModal({
     return () => {
       active = false;
     };
-  }, [isOpen, scopeGroupIds, scopePlantelId, studentId]);
+  }, [isOpen, scopeGroupIds, scopePlantelId, studentId, useServerGrades]);
 
   const summary = useMemo(() => {
     const closed = rows.filter((row) => row.status === "closed");
