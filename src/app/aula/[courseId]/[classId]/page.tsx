@@ -6,13 +6,22 @@ import { CheckCircle2, MessagesSquare } from "lucide-react";
 import toast from "react-hot-toast";
 import { useAulaData } from "../../_lib/AulaDataContext";
 import { sanitizeClassContent } from "../../_lib/sanitize";
-import { buildLockedMessage } from "../../_lib/gating";
+import { buildLockedMessageForTarget } from "../../_lib/gating";
 import { ClassStage } from "../../_components/ClassStage";
 import { ClassPanel } from "../../_components/ClassPanel";
 import { CurriculumPanel } from "../../_components/CurriculumPanel";
 import { Topbar } from "../../_components/Topbar";
 
 type TabId = "comentarios" | "foro" | "tarea";
+
+function getDefaultTabForClass(cls: {
+  hasAssignment?: boolean;
+  forumEnabled?: boolean;
+} | null): TabId {
+  if (cls?.hasAssignment) return "tarea";
+  if (cls?.forumEnabled) return "foro";
+  return "comentarios";
+}
 
 export default function ClassPage({
   params,
@@ -32,12 +41,11 @@ export default function ClassPage({
   } = useAulaData();
 
   const [curriculumOpen, setCurriculumOpen] = useState(false);
-  // La pestaña se guarda junto a su clase: al cambiar de clase vuelve a comentarios.
+  // La pestaña se guarda junto a su clase; al cambiar de clase entra por la acción principal.
   const [tabState, setTabState] = useState<{ classId: string; tab: TabId }>({
-    classId,
+    classId: "",
     tab: "comentarios",
   });
-  const activeTab: TabId = tabState.classId === classId ? tabState.tab : "comentarios";
   const setActiveTab = useCallback(
     (tab: TabId) => setTabState({ classId, tab }),
     [classId],
@@ -45,6 +53,8 @@ export default function ClassPage({
 
   const index = indexOfClass(classId);
   const cls = index >= 0 ? classes[index] : null;
+  const activeTab: TabId =
+    tabState.classId === classId ? tabState.tab : getDefaultTabForClass(cls);
   const course = curriculum.find((entry) => entry.courseId === courseId);
 
   const locked = index >= 0 && isLockedAt(index);
@@ -52,7 +62,7 @@ export default function ClassPage({
   // Una clase bloqueada no se abre por URL: se regresa a la portada del curso.
   useEffect(() => {
     if (index < 0 || !locked) return;
-    toast.error(buildLockedMessage(classes[index]));
+    toast.error(buildLockedMessageForTarget(classes, index));
     router.replace(`/aula/${courseId}`);
   }, [index, locked, classes, courseId, router]);
 

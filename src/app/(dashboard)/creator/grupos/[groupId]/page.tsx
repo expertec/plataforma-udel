@@ -1019,6 +1019,7 @@ export default function GroupDetailPage() {
                   <CalificacionesTab
                     groupId={group.id}
                     courses={visibleCoursesForCurrentUser}
+                    groupProgram={group.program ?? ""}
                     groupTeacherId={group.teacherId}
                     currentUserId={currentUserId}
                     userRole={userRole}

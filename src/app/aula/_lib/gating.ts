@@ -112,10 +112,18 @@ export const isClassLocked = (
 };
 
 export const buildLockedMessage = (cls: FeedClass) => {
+  if (cls.hasAssignment) {
+    return cls.assignmentSubmissionType === "audio"
+      ? "Entrega el audio de la tarea anterior para continuar."
+      : "Completa la tarea anterior para continuar.";
+  }
   if (cls.type === "quiz") return "Completa el quiz anterior para continuar.";
   if (cls.forumEnabled) return "Participa en el foro de la clase anterior para continuar.";
   return "Completa la clase anterior para continuar.";
 };
+
+export const buildLockedMessageForTarget = (classes: FeedClass[], targetIdx: number) =>
+  buildLockedMessage(getPrevSameCourse(classes, targetIdx) ?? classes[targetIdx]);
 
 export const buildLiveClassHref = (params: {
   classId: string;

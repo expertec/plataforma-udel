@@ -4692,7 +4692,7 @@ export default function StudentFeedPageClient() {
         </div>
         <div
           ref={containerRef}
-          className={`relative flex ${feedContainerHeightClass} snap-y snap-mandatory flex-col overflow-y-scroll scroll-smooth no-scrollbar overscroll-contain`}
+          className={`relative flex ${feedContainerHeightClass} snap-y snap-mandatory flex-col overflow-y-scroll scroll-smooth overscroll-contain`}
         >
           {mobileClassesOpen ? (
             <div
@@ -5883,15 +5883,6 @@ export default function StudentFeedPageClient() {
             </div>
           </div>
         )}
-        <style jsx global>{`
-          .no-scrollbar {
-            -ms-overflow-style: none;
-            scrollbar-width: none;
-          }
-          .no-scrollbar::-webkit-scrollbar {
-            display: none;
-          }
-        `}</style>
       </main>
     </div>
   );
@@ -9792,10 +9783,8 @@ function ImageCarousel({
       {/* Contenedor con scroll horizontal */}
       <div
         ref={containerRef}
-        className="flex h-full w-full overflow-x-scroll snap-x snap-mandatory scroll-smooth no-scrollbar"
+        className="flex h-full w-full overflow-x-scroll snap-x snap-mandatory scroll-smooth"
         style={{
-          scrollbarWidth: 'none',
-          msOverflowStyle: 'none',
           WebkitOverflowScrolling: 'touch',
           touchAction: 'pan-x',
         }}

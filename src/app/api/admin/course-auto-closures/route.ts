@@ -15,6 +15,7 @@ import {
   ensureGlobalExamStudyEnrollment,
   toGlobalExamTemplateRecord,
 } from "@/lib/server/global-exams";
+import { isExamOptionalProgram } from "@/lib/program-level";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,6 +25,7 @@ type FirestoreRecord = Record<string, unknown>;
 type CourseEntry = {
   courseId: string;
   courseName: string;
+  program?: string;
   enabledAt: admin.firestore.Timestamp | null;
 };
 
@@ -443,6 +445,7 @@ function toGroupCourses(data: FirestoreRecord): CourseEntry[] {
         return {
           courseId,
           courseName: asTrimmedString(course.courseName),
+          program: asTrimmedString(course.program),
           enabledAt: asTimestampOrNull(course.enabledAt),
         };
       })
@@ -456,9 +459,33 @@ function toGroupCourses(data: FirestoreRecord): CourseEntry[] {
     {
       courseId: legacyCourseId,
       courseName: asTrimmedString(data.courseName),
+      program: asTrimmedString(data.program),
       enabledAt: asTimestampOrNull(data.courseEnabledAt),
     },
   ];
+}
+
+async function resolveCourseProgramForExamPolicy(params: {
+  db: admin.firestore.Firestore;
+  course: CourseEntry;
+  groupData: FirestoreRecord;
+}): Promise<string> {
+  const directProgram = asTrimmedString(params.course.program);
+  if (directProgram) return directProgram;
+
+  const groupProgram = asTrimmedString(params.groupData.program);
+  try {
+    const courseSnap = await params.db.collection("courses").doc(params.course.courseId).get();
+    const courseData = (courseSnap.data() ?? {}) as FirestoreRecord;
+    return (
+      asTrimmedString(courseData.program) ||
+      asTrimmedString(courseData.category) ||
+      groupProgram
+    );
+  } catch (error) {
+    console.warn(`No se pudo resolver programa de la materia ${params.course.courseId}:`, error);
+    return groupProgram;
+  }
 }
 
 async function loadCourseTasks(
@@ -1046,14 +1073,17 @@ async function processCourse(params: {
     await batch.commit();
   }
 
-  await ensureAutoExtraordinaryExamAssignmentsForClosureWrites({
-    db,
-    groupId,
-    groupName,
-    course,
-    writes,
-    actor,
-  });
+  const courseProgram = await resolveCourseProgramForExamPolicy({ db, course, groupData });
+  if (!isExamOptionalProgram(courseProgram)) {
+    await ensureAutoExtraordinaryExamAssignmentsForClosureWrites({
+      db,
+      groupId,
+      groupName,
+      course,
+      writes,
+      actor,
+    });
+  }
 
   baseResult.closedCount = writes.length;
   return baseResult;

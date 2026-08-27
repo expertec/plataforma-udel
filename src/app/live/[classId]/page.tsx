@@ -24,6 +24,7 @@ import {
   usePreviewTracks,
   type LocalUserChoices,
   type TrackReference,
+  type TrackReferenceOrPlaceholder,
   type WidgetState,
   useTracks,
 } from "@livekit/components-react";
@@ -53,6 +54,7 @@ import {
   MicOff,
   MonitorUp,
   MonitorX,
+  MoreHorizontal,
   PhoneOff,
   Presentation,
   Radio,
@@ -186,6 +188,24 @@ type LiveSignalPayload =
       senderId: string;
       senderName: string;
       timestamp: number;
+    }
+  | {
+      type: "screen-share-request";
+      eventId: string;
+      requestId: string;
+      senderId: string;
+      senderName: string;
+      timestamp: number;
+    }
+  | {
+      type: "screen-share-response";
+      eventId: string;
+      requestId: string;
+      approved: boolean;
+      targetId: string;
+      senderId: string;
+      senderName: string;
+      timestamp: number;
     };
 
 type LiveReactionEvent = {
@@ -198,6 +218,13 @@ type LiveReactionEvent = {
 };
 
 type RaisedHandEntry = {
+  senderId: string;
+  senderName: string;
+  timestamp: number;
+};
+
+type ScreenShareRequestEntry = {
+  requestId: string;
   senderId: string;
   senderName: string;
   timestamp: number;
@@ -217,13 +244,13 @@ const LIVE_VIEW_MODES = [
   {
     id: "speaker",
     label: "Orador",
-    description: "Un participante destacado con miniaturas",
+    description: "Destacado con participantes a la izquierda",
     icon: Presentation,
   },
   {
     id: "gallery",
     label: "Galería",
-    description: "Todos en cuadrícula por igual",
+    description: "Todos en cuadrícula, sin lista lateral",
     icon: LayoutGrid,
   },
   {
@@ -276,6 +303,21 @@ function isLiveSignalPayload(value: unknown): value is LiveSignalPayload {
   if (data.type === "mic-control") {
     return (
       data.action === "unmute" &&
+      typeof data.targetId === "string" &&
+      data.targetId.trim().length > 0
+    );
+  }
+  if (data.type === "screen-share-request") {
+    return (
+      typeof data.requestId === "string" &&
+      data.requestId.trim().length > 0
+    );
+  }
+  if (data.type === "screen-share-response") {
+    return (
+      typeof data.requestId === "string" &&
+      data.requestId.trim().length > 0 &&
+      typeof data.approved === "boolean" &&
       typeof data.targetId === "string" &&
       data.targetId.trim().length > 0
     );
@@ -466,7 +508,7 @@ function LiveBarButton({
   title?: string;
 }) {
   return (
-    <div className="flex flex-col items-center gap-1">
+    <div className="flex w-12 shrink-0 flex-col items-center gap-1 sm:w-[4.35rem] lg:w-[4.85rem]">
       <button
         type="button"
         onClick={onClick}
@@ -476,7 +518,7 @@ function LiveBarButton({
         aria-controls={ariaControls}
         aria-expanded={ariaExpanded}
         aria-pressed={ariaPressed}
-        className={`relative flex h-10 w-10 items-center justify-center rounded-xl transition disabled:cursor-not-allowed disabled:opacity-40 [&_svg]:h-[18px] [&_svg]:w-[18px] sm:h-12 sm:w-12 sm:rounded-2xl sm:[&_svg]:h-5 sm:[&_svg]:w-5 ${
+        className={`relative flex h-10 w-10 items-center justify-center rounded-xl transition disabled:cursor-not-allowed disabled:opacity-40 [&_svg]:h-[18px] [&_svg]:w-[18px] lg:h-12 lg:w-12 lg:rounded-2xl lg:[&_svg]:h-5 lg:[&_svg]:w-5 ${
           danger
             ? "bg-rose-600 text-white shadow-lg shadow-rose-900/30 hover:bg-rose-500"
             : active
@@ -491,7 +533,9 @@ function LiveBarButton({
           </span>
         ) : null}
       </button>
-      <span className="text-[9px] font-medium text-slate-300 sm:text-[10px]">{label}</span>
+      <span className="hidden max-w-full text-center text-[9px] font-medium leading-tight text-slate-300 sm:block sm:text-[10px]">
+        {label}
+      </span>
     </div>
   );
 }
@@ -514,7 +558,7 @@ function LiveDeviceControl({
   offIcon: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center gap-1">
+    <div className="flex w-[4.25rem] shrink-0 flex-col items-center gap-1 sm:w-[4.85rem] lg:w-[5.25rem]">
       <div
         className={`relative flex items-center rounded-xl transition sm:rounded-2xl ${
           enabled
@@ -529,7 +573,7 @@ function LiveDeviceControl({
           title={enabled ? `Desactivar ${label.toLowerCase()}` : `Activar ${label.toLowerCase()}`}
           aria-label={label}
           aria-pressed={enabled}
-          className="flex h-10 w-10 items-center justify-center rounded-xl text-white transition disabled:cursor-not-allowed disabled:opacity-40 [&_svg]:h-[18px] [&_svg]:w-[18px] sm:h-12 sm:w-12 sm:rounded-2xl sm:[&_svg]:h-5 sm:[&_svg]:w-5"
+          className="flex h-10 w-10 items-center justify-center rounded-xl text-white transition disabled:cursor-not-allowed disabled:opacity-40 [&_svg]:h-[18px] [&_svg]:w-[18px] lg:h-12 lg:w-12 lg:rounded-2xl lg:[&_svg]:h-5 lg:[&_svg]:w-5"
         >
           {enabled ? onIcon : offIcon}
         </button>
@@ -537,7 +581,9 @@ function LiveDeviceControl({
           <MediaDeviceMenu kind={kind} />
         </div>
       </div>
-      <span className="text-[9px] font-medium text-slate-300 sm:text-[10px]">{label}</span>
+      <span className="hidden max-w-full text-center text-[9px] font-medium leading-tight text-slate-300 sm:block sm:text-[10px]">
+        {label}
+      </span>
     </div>
   );
 }
@@ -716,17 +762,25 @@ function LiveRoomConference({
   });
   const [raisedHands, setRaisedHands] = useState<Record<string, RaisedHandEntry>>({});
   const [handRaised, setHandRaised] = useState(false);
+  const [screenShareRequests, setScreenShareRequests] = useState<
+    Record<string, ScreenShareRequestEntry>
+  >({});
+  const [screenShareRequestStatus, setScreenShareRequestStatus] = useState<
+    "idle" | "pending" | "approved" | "denied"
+  >("idle");
   const [showReactionBar, setShowReactionBar] = useState(false);
   const [showOnlyActiveCameras, setShowOnlyActiveCameras] = useState(false);
   const [viewMode, setViewMode] = useState<LiveViewMode>("speaker");
   const [showViewMenu, setShowViewMenu] = useState(false);
+  const [showMoreControlsMenu, setShowMoreControlsMenu] = useState(false);
   const viewMenuRef = useRef<HTMLDivElement>(null);
+  const moreControlsMenuRef = useRef<HTMLDivElement>(null);
   const [activeReactions, setActiveReactions] = useState<LiveReactionEvent[]>([]);
   const processedSignalIdsRef = useRef<string[]>([]);
   const previousParticipantsCountRef = useRef(0);
   const autoStudentsPipRef = useRef(false);
   const canPublishCamera = viewerRole === "teacher" || viewerRole === "student";
-  const canShareScreen = viewerRole === "teacher";
+  const canUseScreenShareButton = viewerRole === "teacher" || viewerRole === "student";
 
   const localParticipant = useMemo(
     () => participants.find((participant) => participant.isLocal),
@@ -789,25 +843,46 @@ function LiveRoomConference({
   }, [tracks]);
 
   // In a live class the focused tile should always stay on the teacher's camera,
-  // regardless of who is speaking (speaker detection is too noise-sensitive).
-  const teacherCameraTrack = useMemo(() => {
+  // including its placeholder when the camera is off.
+  const teacherCameraTrack = useMemo<TrackReferenceOrPlaceholder | null>(() => {
     const teacherCameraTracks = tracks.filter(
-      (track): track is TrackReference =>
-        isTrackReference(track) &&
+      (track): track is TrackReferenceOrPlaceholder =>
         track.source === Track.Source.Camera &&
         isTeacherLikeLiveRole(parseParticipantRoleFromMetadata(track.participant.metadata)),
     );
-    const subscribed = teacherCameraTracks.find((track) => track.publication.isSubscribed);
+    const subscribed = teacherCameraTracks.find(
+      (track) => isTrackReference(track) && track.publication.isSubscribed,
+    );
     return subscribed ?? teacherCameraTracks[0] ?? null;
   }, [tracks]);
 
-  // Speaker view focuses on the teacher (or screen share); gallery view shows
-  // everyone in an even grid, only forcing a focused tile for screen shares so
-  // shared content is never hidden.
+  const localCameraTrack = useMemo<TrackReferenceOrPlaceholder | null>(() => {
+    const localCameraTracks = tracks.filter(
+      (track): track is TrackReferenceOrPlaceholder =>
+        track.source === Track.Source.Camera && track.participant.isLocal,
+    );
+    const subscribed = localCameraTracks.find(
+      (track) => isTrackReference(track) && track.publication.isSubscribed,
+    );
+    return subscribed ?? localCameraTracks[0] ?? null;
+  }, [tracks]);
+
+  const firstCameraTrack = useMemo<TrackReferenceOrPlaceholder | null>(() => {
+    const cameraTracks = tracks.filter(
+      (track): track is TrackReferenceOrPlaceholder => track.source === Track.Source.Camera,
+    );
+    const subscribed = cameraTracks.find(
+      (track) => isTrackReference(track) && track.publication.isSubscribed,
+    );
+    return subscribed ?? cameraTracks[0] ?? null;
+  }, [tracks]);
+
+  // Speaker/focus views keep one primary tile. Gallery is rendered explicitly
+  // below so it cannot be overridden by teacher or screen-share focus.
   const focusTrack =
     viewMode === "gallery"
-      ? (screenShareTrack ?? null)
-      : (screenShareTrack ?? teacherCameraTrack ?? null);
+      ? null
+      : (screenShareTrack ?? teacherCameraTrack ?? localCameraTrack ?? firstCameraTrack ?? null);
 
   // When "solo cámaras activas" is enabled we keep screen shares and camera
   // tracks that are actually publishing video (not muted/off), and drop the
@@ -832,19 +907,24 @@ function LiveRoomConference({
     if (!showOnlyActiveCameras) return focusTrack;
     if (!focusTrack) return null;
     if (focusTrack.source === Track.Source.ScreenShare) return focusTrack;
+    if (!isTrackReference(focusTrack)) return null;
     return !focusTrack.publication.isMuted ? focusTrack : null;
   }, [focusTrack, showOnlyActiveCameras]);
 
+  const getVisibleTrackKey = useCallback((track: TrackReferenceOrPlaceholder): string => {
+    if (!isTrackReference(track)) {
+      return `placeholder:${track.participant.identity}:${track.source}`;
+    }
+    return track.publication.trackSid
+      ? `track:${track.publication.trackSid}`
+      : `track:${track.participant.identity}:${track.source}`;
+  }, []);
+
   const nonFocusedTracks = useMemo(() => {
     if (!effectiveFocusTrack) return visibleTracks;
-    const focusedTrackKey = `track:${effectiveFocusTrack.publication.trackSid}`;
-    return visibleTracks.filter((track) => {
-      const trackKey = isTrackReference(track)
-        ? `track:${track.publication.trackSid}`
-        : `placeholder:${track.participant.identity}:${track.source}`;
-      return trackKey !== focusedTrackKey;
-    });
-  }, [effectiveFocusTrack, visibleTracks]);
+    const focusedTrackKey = getVisibleTrackKey(effectiveFocusTrack);
+    return visibleTracks.filter((track) => getVisibleTrackKey(track) !== focusedTrackKey);
+  }, [effectiveFocusTrack, getVisibleTrackKey, visibleTracks]);
 
   const rememberSignalId = useCallback((eventId: string): boolean => {
     const normalized = eventId.trim();
@@ -902,6 +982,30 @@ function LiveRoomConference({
     [localParticipantId],
   );
 
+  const applyScreenShareRequest = useCallback(
+    (payload: LiveSignalPayload & { type: "screen-share-request" }) => {
+      if (viewerRole !== "teacher") return;
+      setScreenShareRequests((current) => ({
+        ...current,
+        [payload.requestId]: {
+          requestId: payload.requestId,
+          senderId: payload.senderId,
+          senderName: payload.senderName,
+          timestamp: payload.timestamp,
+        },
+      }));
+    },
+    [viewerRole],
+  );
+
+  const applyScreenShareResponse = useCallback(
+    (payload: LiveSignalPayload & { type: "screen-share-response" }) => {
+      if (payload.targetId !== localParticipantId) return;
+      setScreenShareRequestStatus(payload.approved ? "approved" : "denied");
+    },
+    [localParticipantId],
+  );
+
   const handleSignalMessage = useCallback(
     (rawMessage: { payload: Uint8Array }) => {
       try {
@@ -915,6 +1019,14 @@ function LiveRoomConference({
         }
         if (parsed.type === "hand") {
           applyRaisedHand(parsed);
+          return;
+        }
+        if (parsed.type === "screen-share-request") {
+          applyScreenShareRequest(parsed);
+          return;
+        }
+        if (parsed.type === "screen-share-response") {
+          applyScreenShareResponse(parsed);
           return;
         }
         if (parsed.type === "mic-control") {
@@ -933,7 +1045,15 @@ function LiveRoomConference({
         // ignore malformed or non-JSON payloads
       }
     },
-    [applyRaisedHand, applyReaction, localParticipantId, micToggle, rememberSignalId],
+    [
+      applyRaisedHand,
+      applyReaction,
+      applyScreenShareRequest,
+      applyScreenShareResponse,
+      localParticipantId,
+      micToggle,
+      rememberSignalId,
+    ],
   );
 
   const { send: sendSignal } = useDataChannel(LIVE_SIGNAL_TOPIC, handleSignalMessage);
@@ -998,6 +1118,74 @@ function LiveRoomConference({
     void broadcastHandState(!handRaised);
   }, [broadcastHandState, handRaised]);
 
+  const requestScreenShareApproval = useCallback(async () => {
+    if (viewerRole !== "student") return;
+    if (!localParticipantId) return;
+    if (screenShareToggle.enabled) {
+      await screenShareToggle.toggle(false);
+      setScreenShareRequestStatus("idle");
+      return;
+    }
+    if (screenShareRequestStatus === "approved") {
+      if (screenShareToggle.pending || !screenShareSupport.supported) return;
+      await screenShareToggle.toggle(true);
+      return;
+    }
+    if (screenShareToggle.pending || screenShareRequestStatus === "pending") return;
+    if (!screenShareSupport.supported) return;
+
+    const requestId = `screen-share-${localParticipantId}-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+    const payload: LiveSignalPayload = {
+      type: "screen-share-request",
+      eventId: `${requestId}-request`,
+      requestId,
+      senderId: localParticipantId,
+      senderName: localParticipantName,
+      timestamp: Date.now(),
+    };
+    if (rememberSignalId(payload.eventId)) return;
+    setScreenShareRequestStatus("pending");
+    const sent = await publishSignal(payload, true);
+    if (!sent) {
+      setScreenShareRequestStatus("idle");
+    }
+  }, [
+    localParticipantId,
+    localParticipantName,
+    publishSignal,
+    rememberSignalId,
+    screenShareRequestStatus,
+    screenShareSupport.supported,
+    screenShareToggle,
+    viewerRole,
+  ]);
+
+  const respondToScreenShareRequest = useCallback(
+    async (request: ScreenShareRequestEntry, approved: boolean) => {
+      if (viewerRole !== "teacher" || !localParticipantId) return;
+      const payload: LiveSignalPayload = {
+        type: "screen-share-response",
+        eventId: `screen-share-response-${request.requestId}-${approved ? "approved" : "denied"}-${Date.now()}`,
+        requestId: request.requestId,
+        approved,
+        targetId: request.senderId,
+        senderId: localParticipantId,
+        senderName: localParticipantName,
+        timestamp: Date.now(),
+      };
+      if (rememberSignalId(payload.eventId)) return;
+      setScreenShareRequests((current) => {
+        const next = { ...current };
+        delete next[request.requestId];
+        return next;
+      });
+      await publishSignal(payload, true);
+    },
+    [localParticipantId, localParticipantName, publishSignal, rememberSignalId, viewerRole],
+  );
+
   const resendRaisedHandPresence = useCallback(async () => {
     if (!localParticipantId || !handRaised) return;
     const payload: LiveSignalPayload = {
@@ -1025,6 +1213,53 @@ function LiveRoomConference({
     [raisedHands],
   );
 
+  const screenShareRequestsList = useMemo(
+    () =>
+      Object.values(screenShareRequests).sort((left, right) => {
+        if (left.timestamp !== right.timestamp) {
+          return left.timestamp - right.timestamp;
+        }
+        return left.senderName.localeCompare(right.senderName, "es-MX", {
+          sensitivity: "base",
+        });
+      }),
+    [screenShareRequests],
+  );
+
+  const screenShareButtonLabel = useMemo(() => {
+    if (screenShareToggle.enabled) return "Detener";
+    if (viewerRole === "student") {
+      if (screenShareRequestStatus === "pending") return "Esperando";
+      if (screenShareRequestStatus === "approved") return "Compartir";
+      if (screenShareRequestStatus === "denied") return "Reintentar";
+      return "Solicitar";
+    }
+    return "Pantalla";
+  }, [screenShareRequestStatus, screenShareToggle.enabled, viewerRole]);
+
+  const screenShareButtonTitle = useMemo(() => {
+    if (screenShareSupport.message) return screenShareSupport.message;
+    if (screenShareToggle.enabled) return "Detener pantalla";
+    if (viewerRole === "student") {
+      if (screenShareRequestStatus === "pending") {
+        return "Esperando autorización del profesor";
+      }
+      if (screenShareRequestStatus === "approved") {
+        return "Autorizado. Haz clic para compartir pantalla.";
+      }
+      if (screenShareRequestStatus === "denied") {
+        return "El profesor rechazó la solicitud. Puedes volver a solicitar.";
+      }
+      return "Solicitar autorización para compartir pantalla";
+    }
+    return "Compartir pantalla";
+  }, [
+    screenShareRequestStatus,
+    screenShareSupport.message,
+    screenShareToggle.enabled,
+    viewerRole,
+  ]);
+
   useEffect(() => {
     const timer = window.setInterval(() => {
       const now = Date.now();
@@ -1043,6 +1278,17 @@ function LiveRoomConference({
     document.addEventListener("mousedown", handlePointerDown);
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, [showViewMenu]);
+
+  useEffect(() => {
+    if (!showMoreControlsMenu) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!moreControlsMenuRef.current?.contains(event.target as Node)) {
+        setShowMoreControlsMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [showMoreControlsMenu]);
 
   useEffect(() => {
     const currentCount = participants.length;
@@ -1133,6 +1379,41 @@ function LiveRoomConference({
           ))}
         </div>
       ) : null}
+      {viewerRole === "teacher" && screenShareRequestsList.length > 0 ? (
+        <div className="pointer-events-none absolute right-3 top-20 z-30 flex w-[22rem] max-w-[calc(100vw-1.5rem)] flex-col gap-2">
+          {screenShareRequestsList.slice(0, 3).map((request) => (
+            <div
+              key={request.requestId}
+              className="pointer-events-auto rounded-xl border border-sky-400/30 bg-slate-900/95 p-3 text-white shadow-2xl backdrop-blur"
+            >
+              <p className="text-sm font-semibold">Solicitud de pantalla</p>
+              <p className="mt-1 text-xs text-slate-300">
+                {request.senderName} quiere compartir pantalla.
+              </p>
+              <div className="mt-3 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void respondToScreenShareRequest(request, false);
+                  }}
+                  className="rounded-lg border border-slate-600 px-3 py-1.5 text-xs font-semibold text-slate-100 hover:bg-slate-800"
+                >
+                  Rechazar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void respondToScreenShareRequest(request, true);
+                  }}
+                  className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+                >
+                  Autorizar
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
       {showReactionBar ? (
         <div className="pointer-events-none absolute bottom-20 left-1/2 z-20 flex w-full -translate-x-1/2 justify-center px-3">
           <div
@@ -1167,6 +1448,12 @@ function LiveRoomConference({
                   <VideoOff className="h-8 w-8 opacity-50" />
                   <p className="text-sm">No hay cámaras encendidas en este momento.</p>
                 </div>
+              ) : viewMode === "gallery" ? (
+                <div className="lk-grid-layout-wrapper min-h-0 flex-1">
+                  <GridLayout tracks={visibleTracks} className="h-full">
+                    <ParticipantTile />
+                  </GridLayout>
+                </div>
               ) : viewMode === "focus" && effectiveFocusTrack ? (
                 <div className="lk-focus-layout-wrapper min-h-0 flex-1">
                   <FocusLayout trackRef={effectiveFocusTrack} className="h-full" />
@@ -1189,176 +1476,297 @@ function LiveRoomConference({
               )}
             </div>
             <div className="border-t border-white/5 bg-slate-950/90 px-2 py-2 backdrop-blur sm:px-3 sm:py-2.5">
-              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1 sm:gap-2">
-                <div className="flex min-w-0 items-center justify-start">{leftSlot}</div>
-                <div className="flex flex-wrap items-start justify-center gap-1.5 sm:gap-3">
-                <LiveDeviceControl
-                  label="Micrófono"
-                  kind="audioinput"
-                  enabled={micToggle.enabled}
-                  pending={micToggle.pending}
-                  onToggle={() => {
-                    void micToggle.toggle();
-                  }}
-                  onIcon={<Mic className="h-5 w-5" />}
-                  offIcon={<MicOff className="h-5 w-5" />}
-                />
-                {canPublishCamera ? (
-                  <LiveDeviceControl
-                    label="Cámara"
-                    kind="videoinput"
-                    enabled={cameraToggle.enabled}
-                    pending={cameraToggle.pending}
-                    onToggle={() => {
-                      void cameraToggle.toggle();
-                    }}
-                    onIcon={<Video className="h-5 w-5" />}
-                    offIcon={<VideoOff className="h-5 w-5" />}
-                  />
-                ) : null}
-                {canShareScreen ? (
-                  <LiveBarButton
-                    label={screenShareToggle.enabled ? "Detener" : "Pantalla"}
-                    active={screenShareToggle.enabled}
-                    disabled={
-                      screenShareToggle.pending ||
-                      (!screenShareToggle.enabled && !screenShareSupport.supported)
-                    }
-                    ariaPressed={screenShareToggle.enabled}
-                    title={
-                      screenShareSupport.message ??
-                      (screenShareToggle.enabled ? "Detener pantalla" : "Compartir pantalla")
-                    }
-                    onClick={() => {
-                      void handleScreenShareToggle();
-                    }}
-                    icon={
-                      screenShareToggle.enabled ? (
-                        <MonitorX className="h-5 w-5" />
-                      ) : (
-                        <MonitorUp className="h-5 w-5" />
-                      )
-                    }
-                  />
-                ) : null}
-                <LiveBarButton
-                  label="Reacciones"
-                  icon={<Smile className="h-5 w-5" />}
-                  active={showReactionBar}
-                  ariaControls="live-reactions-panel"
-                  ariaExpanded={showReactionBar}
-                  onClick={() => {
-                    setShowReactionBar((current) => !current);
-                  }}
-                />
-                <LiveBarButton
-                  label={handRaised ? "Bajar mano" : "Mano"}
-                  icon={<Hand className="h-5 w-5" />}
-                  active={handRaised}
-                  ariaPressed={handRaised}
-                  onClick={toggleHandRaised}
-                />
-                {(() => {
-                  const activeMode =
-                    LIVE_VIEW_MODES.find((mode) => mode.id === viewMode) ?? LIVE_VIEW_MODES[0];
-                  const ActiveIcon = activeMode.icon;
-                  return (
-                    <div className="relative flex flex-col items-center gap-1" ref={viewMenuRef}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowViewMenu((current) => !current);
+              <div>
+                <div className="2xl:grid 2xl:grid-cols-[minmax(12rem,1fr)_auto_minmax(12rem,1fr)] 2xl:items-center 2xl:gap-3">
+                  <div className="hidden min-w-0 items-center justify-start 2xl:flex">{leftSlot}</div>
+                  <div className="relative min-w-0">
+                    <div className="flex min-w-0 items-start justify-center gap-1.5 sm:gap-2">
+                      <LiveDeviceControl
+                        label="Micrófono"
+                        kind="audioinput"
+                        enabled={micToggle.enabled}
+                        pending={micToggle.pending}
+                        onToggle={() => {
+                          void micToggle.toggle();
                         }}
-                        aria-haspopup="menu"
-                        aria-expanded={showViewMenu}
-                        title="Cambiar vista"
-                        className={`flex h-10 items-center justify-center gap-1 rounded-xl px-2.5 transition sm:h-12 sm:rounded-2xl sm:px-3 ${
-                          showViewMenu
-                            ? "bg-sky-600 text-white"
-                            : "bg-white/10 text-slate-100 hover:bg-white/20"
-                        }`}
-                      >
-                        <ActiveIcon className="h-[18px] w-[18px] sm:h-5 sm:w-5" />
-                        <ChevronUp
-                          className={`h-3 w-3 transition-transform sm:h-3.5 sm:w-3.5 ${
-                            showViewMenu ? "" : "rotate-180"
-                          }`}
+                        onIcon={<Mic className="h-5 w-5" />}
+                        offIcon={<MicOff className="h-5 w-5" />}
+                      />
+                      {canPublishCamera ? (
+                        <LiveDeviceControl
+                          label="Cámara"
+                          kind="videoinput"
+                          enabled={cameraToggle.enabled}
+                          pending={cameraToggle.pending}
+                          onToggle={() => {
+                            void cameraToggle.toggle();
+                          }}
+                          onIcon={<Video className="h-5 w-5" />}
+                          offIcon={<VideoOff className="h-5 w-5" />}
                         />
-                      </button>
-                      <span className="text-[9px] font-medium text-slate-300 sm:text-[10px]">
-                        {activeMode.label}
-                      </span>
-                      {showViewMenu ? (
-                        <div
-                          role="menu"
-                          className="absolute bottom-full left-1/2 z-30 mb-2 w-60 -translate-x-1/2 rounded-xl border border-white/10 bg-slate-900/95 p-1 shadow-2xl backdrop-blur"
-                        >
-                          {LIVE_VIEW_MODES.map((mode) => {
-                            const ModeIcon = mode.icon;
-                            const isActiveMode = mode.id === viewMode;
-                            return (
-                              <button
-                                key={mode.id}
-                                type="button"
-                                role="menuitemradio"
-                                aria-checked={isActiveMode}
-                                onClick={() => {
-                                  setViewMode(mode.id);
-                                  setShowViewMenu(false);
-                                }}
-                                className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition ${
-                                  isActiveMode
-                                    ? "bg-sky-600 text-white"
-                                    : "text-slate-100 hover:bg-white/10"
-                                }`}
-                              >
-                                <ModeIcon className="h-4 w-4 shrink-0" />
-                                <span className="flex-1">
-                                  <span className="block text-sm font-medium">{mode.label}</span>
-                                  <span className="block text-[11px] opacity-70">
-                                    {mode.description}
-                                  </span>
-                                </span>
-                                {isActiveMode ? <Check className="h-4 w-4 shrink-0" /> : null}
-                              </button>
-                            );
-                          })}
-                        </div>
                       ) : null}
+                      {canUseScreenShareButton ? (
+                        <LiveBarButton
+                          label={screenShareButtonLabel}
+                          active={
+                            screenShareToggle.enabled ||
+                            (viewerRole === "student" && screenShareRequestStatus === "pending")
+                          }
+                          disabled={
+                            screenShareToggle.pending ||
+                            (viewerRole === "student" && screenShareRequestStatus === "pending") ||
+                            (!screenShareToggle.enabled && !screenShareSupport.supported)
+                          }
+                          ariaPressed={screenShareToggle.enabled}
+                          title={screenShareButtonTitle}
+                          onClick={() => {
+                            if (viewerRole === "student") {
+                              void requestScreenShareApproval();
+                              return;
+                            }
+                            void handleScreenShareToggle();
+                          }}
+                          icon={
+                            screenShareToggle.enabled ? (
+                              <MonitorX className="h-5 w-5" />
+                            ) : (
+                              <MonitorUp className="h-5 w-5" />
+                            )
+                          }
+                        />
+                      ) : null}
+                      <div className="relative 2xl:hidden" ref={moreControlsMenuRef}>
+                        <LiveBarButton
+                          label="Más"
+                          icon={<MoreHorizontal className="h-5 w-5" />}
+                          active={showMoreControlsMenu}
+                          ariaExpanded={showMoreControlsMenu}
+                          title="Más controles"
+                          onClick={() => {
+                            setShowMoreControlsMenu((current) => !current);
+                          }}
+                        />
+                        {showMoreControlsMenu ? (
+                          <div
+                            role="menu"
+                            className="absolute bottom-full left-1/2 z-30 mb-2 w-72 max-w-[calc(100vw-1rem)] -translate-x-1/2 rounded-xl border border-white/10 bg-slate-900/95 p-2 text-white shadow-2xl backdrop-blur"
+                          >
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => {
+                                setShowReactionBar((current) => !current);
+                                setShowMoreControlsMenu(false);
+                              }}
+                              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium hover:bg-white/10"
+                            >
+                              <Smile className="h-4 w-4" />
+                              Reacciones
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => {
+                                toggleHandRaised();
+                                setShowMoreControlsMenu(false);
+                              }}
+                              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium hover:bg-white/10"
+                            >
+                              <Hand className="h-4 w-4" />
+                              {handRaised ? "Bajar mano" : "Levantar mano"}
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => {
+                                setShowOnlyActiveCameras((current) => !current);
+                                setShowMoreControlsMenu(false);
+                              }}
+                              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium hover:bg-white/10"
+                            >
+                              <Eye className="h-4 w-4" />
+                              {showOnlyActiveCameras ? "Mostrar a todos" : "Solo cámaras activas"}
+                            </button>
+                            <div className="my-1 h-px bg-white/10" />
+                            {LIVE_VIEW_MODES.map((mode) => {
+                              const ModeIcon = mode.icon;
+                              const isActiveMode = mode.id === viewMode;
+                              return (
+                                <button
+                                  key={mode.id}
+                                  type="button"
+                                  role="menuitemradio"
+                                  aria-checked={isActiveMode}
+                                  onClick={() => {
+                                    setViewMode(mode.id);
+                                    setShowMoreControlsMenu(false);
+                                  }}
+                                  className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium hover:bg-white/10 ${
+                                    isActiveMode ? "bg-sky-600 text-white" : ""
+                                  }`}
+                                >
+                                  <ModeIcon className="h-4 w-4" />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block">{mode.label}</span>
+                                    <span className="block truncate text-[11px] font-normal text-slate-300">
+                                      {mode.description}
+                                    </span>
+                                  </span>
+                                  {isActiveMode ? <Check className="ml-auto h-4 w-4" /> : null}
+                                </button>
+                              );
+                            })}
+                            <div className="mt-2 flex flex-wrap items-center justify-end gap-1.5 border-t border-white/10 pt-2 2xl:hidden">
+                              {rightSlot}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="hidden 2xl:contents">
+                      <LiveBarButton
+                        label="Reacciones"
+                        icon={<Smile className="h-5 w-5" />}
+                        active={showReactionBar}
+                        ariaControls="live-reactions-panel"
+                        ariaExpanded={showReactionBar}
+                        onClick={() => {
+                          setShowReactionBar((current) => !current);
+                        }}
+                      />
+                      </div>
+                      <div className="hidden 2xl:contents">
+                      <LiveBarButton
+                        label={handRaised ? "Bajar mano" : "Mano"}
+                        icon={<Hand className="h-5 w-5" />}
+                        active={handRaised}
+                        ariaPressed={handRaised}
+                        onClick={toggleHandRaised}
+                      />
+                      </div>
+                      <div className="hidden 2xl:contents">
+                      {(() => {
+                        const activeMode =
+                          LIVE_VIEW_MODES.find((mode) => mode.id === viewMode) ?? LIVE_VIEW_MODES[0];
+                        const ActiveIcon = activeMode.icon;
+                        return (
+                          <div className="relative flex w-[4.35rem] shrink-0 flex-col items-center gap-1 sm:w-[4.85rem]" ref={viewMenuRef}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowViewMenu((current) => !current);
+                              }}
+                              aria-haspopup="menu"
+                              aria-expanded={showViewMenu}
+                              title="Cambiar vista"
+                              className={`flex h-9 items-center justify-center gap-0.5 rounded-xl px-2 transition sm:h-10 lg:h-11 lg:rounded-2xl lg:px-2.5 ${
+                                showViewMenu
+                                  ? "bg-sky-600 text-white"
+                                  : "bg-white/10 text-slate-100 hover:bg-white/20"
+                              }`}
+                            >
+                              <ActiveIcon className="h-[17px] w-[17px] sm:h-[18px] sm:w-[18px] lg:h-5 lg:w-5" />
+                              <ChevronUp
+                                className={`h-3 w-3 transition-transform sm:h-3.5 sm:w-3.5 ${
+                                  showViewMenu ? "" : "rotate-180"
+                                }`}
+                              />
+                            </button>
+                            <span className="max-w-full text-center text-[9px] font-medium leading-tight text-slate-300 sm:text-[10px]">
+                              {activeMode.label}
+                            </span>
+                            {showViewMenu ? (
+                              <div
+                                role="menu"
+                                className="absolute bottom-full left-1/2 z-30 mb-2 w-60 -translate-x-1/2 rounded-xl border border-white/10 bg-slate-900/95 p-1 shadow-2xl backdrop-blur"
+                              >
+                                {LIVE_VIEW_MODES.map((mode) => {
+                                  const ModeIcon = mode.icon;
+                                  const isActiveMode = mode.id === viewMode;
+                                  return (
+                                    <button
+                                      key={mode.id}
+                                      type="button"
+                                      role="menuitemradio"
+                                      aria-checked={isActiveMode}
+                                      onClick={() => {
+                                        setViewMode(mode.id);
+                                        setShowViewMenu(false);
+                                      }}
+                                      className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition ${
+                                        isActiveMode
+                                          ? "bg-sky-600 text-white"
+                                          : "text-slate-100 hover:bg-white/10"
+                                      }`}
+                                    >
+                                      <ModeIcon className="h-4 w-4 shrink-0" />
+                                      <span className="flex-1">
+                                        <span className="block text-sm font-medium">{mode.label}</span>
+                                        <span className="block text-[11px] opacity-70">
+                                          {mode.description}
+                                        </span>
+                                      </span>
+                                      {isActiveMode ? <Check className="h-4 w-4 shrink-0" /> : null}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })()}
+                      </div>
+                      <div className="hidden 2xl:contents">
+                      <LiveBarButton
+                        label={showOnlyActiveCameras ? "Ver todos" : "Solo cámaras"}
+                        icon={<Eye className="h-5 w-5" />}
+                        active={showOnlyActiveCameras}
+                        ariaPressed={showOnlyActiveCameras}
+                        title={
+                          showOnlyActiveCameras
+                            ? "Mostrar a todos los participantes"
+                            : "Mostrar solo participantes con cámara encendida"
+                        }
+                        onClick={() => {
+                          setShowOnlyActiveCameras((current) => !current);
+                        }}
+                      />
+                      </div>
+                      <div className="flex w-12 shrink-0 flex-col items-center gap-1 sm:w-[4.35rem] lg:w-[4.85rem]">
+                        <ChatToggle className="live-chat-toggle">
+                          <MessageSquare className="h-5 w-5" />
+                          {widgetState.unreadMessages ? (
+                            <span className="live-chat-toggle__badge">
+                              {widgetState.unreadMessages > 9 ? "9+" : widgetState.unreadMessages}
+                            </span>
+                          ) : null}
+                        </ChatToggle>
+                        <span className="hidden text-center text-[9px] font-medium leading-tight text-slate-300 sm:block sm:text-[10px]">
+                          Chat
+                        </span>
+                      </div>
                     </div>
-                  );
-                })()}
-                <LiveBarButton
-                  label={showOnlyActiveCameras ? "Ver todos" : "Solo cámaras"}
-                  icon={<Eye className="h-5 w-5" />}
-                  active={showOnlyActiveCameras}
-                  ariaPressed={showOnlyActiveCameras}
-                  title={
-                    showOnlyActiveCameras
-                      ? "Mostrar a todos los participantes"
-                      : "Mostrar solo participantes con cámara encendida"
-                  }
-                  onClick={() => {
-                    setShowOnlyActiveCameras((current) => !current);
-                  }}
-                />
-                <div className="flex flex-col items-center gap-1">
-                  <ChatToggle className="live-chat-toggle">
-                    <MessageSquare className="h-5 w-5" />
-                    {widgetState.unreadMessages ? (
-                      <span className="live-chat-toggle__badge">
-                        {widgetState.unreadMessages > 9 ? "9+" : widgetState.unreadMessages}
-                      </span>
-                    ) : null}
-                  </ChatToggle>
-                  <span className="text-[9px] font-medium text-slate-300 sm:text-[10px]">Chat</span>
+                  </div>
+                  <div className="hidden min-w-0 items-center justify-end 2xl:flex">{rightSlot}</div>
                 </div>
-                </div>
-                <div className="flex min-w-0 items-center justify-end">{rightSlot}</div>
               </div>
-              {canShareScreen && screenShareSupport.message ? (
+              {canUseScreenShareButton && screenShareSupport.message ? (
                 <p className="mx-auto mt-2 max-w-2xl text-center text-[11px] font-medium text-amber-200">
                   {screenShareSupport.message}
+                </p>
+              ) : null}
+              {viewerRole === "student" && screenShareRequestStatus === "pending" ? (
+                <p className="mx-auto mt-2 max-w-2xl text-center text-[11px] font-medium text-sky-200">
+                  Solicitud enviada. Espera autorización del profesor.
+                </p>
+              ) : null}
+              {viewerRole === "student" && screenShareRequestStatus === "approved" ? (
+                <p className="mx-auto mt-2 max-w-2xl text-center text-[11px] font-medium text-emerald-200">
+                  Solicitud autorizada. Haz clic en Compartir para elegir tu pantalla.
+                </p>
+              ) : null}
+              {viewerRole === "student" && screenShareRequestStatus === "denied" ? (
+                <p className="mx-auto mt-2 max-w-2xl text-center text-[11px] font-medium text-amber-200">
+                  El profesor rechazó la solicitud para compartir pantalla.
                 </p>
               ) : null}
             </div>
@@ -2508,7 +2916,7 @@ export default function LiveClassRoomPage() {
   }
 
   const bottomLeftSlot = (
-    <div className="flex items-center gap-2">
+    <div className="flex min-w-0 items-center gap-2">
       <span className="flex shrink-0 items-center gap-1.5 rounded-full bg-rose-600 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-white">
         <span className="relative flex h-2 w-2">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white/80" />
@@ -2540,7 +2948,7 @@ export default function LiveClassRoomPage() {
   );
 
   const bottomRightSlot = (
-    <div className="flex items-center gap-1.5">
+    <div className="flex max-w-full flex-wrap items-center justify-end gap-1.5">
       {canManageClass && recordingStatus !== "recording" && recordingStatus !== "processing" ? (
         <button
           type="button"
@@ -2549,14 +2957,14 @@ export default function LiveClassRoomPage() {
             void controlRecording("start");
           }}
           title="Iniciar grabación"
-          className="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20 disabled:opacity-50"
+          className="flex h-8 items-center gap-1.5 rounded-full bg-white/10 px-2.5 text-xs font-semibold text-white transition hover:bg-white/20 disabled:opacity-50 sm:px-3"
         >
           {recordingActionLoading === "start" ? (
             <Loader2 className="h-4 w-4 animate-spin" />
           ) : (
             <Circle className="h-4 w-4 fill-rose-500 text-rose-500" />
           )}
-          <span className="hidden sm:inline">Grabar</span>
+          <span className="hidden md:inline">Grabar</span>
         </button>
       ) : null}
       {canManageClass && recordingStatus === "recording" ? (
@@ -2567,23 +2975,23 @@ export default function LiveClassRoomPage() {
             void controlRecording("stop");
           }}
           title="Detener grabación"
-          className="flex items-center gap-1.5 rounded-full bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-rose-500 disabled:opacity-50"
+          className="flex h-8 items-center gap-1.5 rounded-full bg-rose-600 px-2.5 text-xs font-semibold text-white transition hover:bg-rose-500 disabled:opacity-50 sm:px-3"
         >
           {recordingActionLoading === "stop" ? (
             <Loader2 className="h-4 w-4 animate-spin" />
           ) : (
             <Square className="h-4 w-4 fill-current" />
           )}
-          <span className="hidden sm:inline">Detener</span>
+          <span className="hidden md:inline">Detener</span>
         </button>
       ) : null}
       {canManageClass && recordingStoppedDisplay ? (
         <span
           title="Grabación detenida. Se procesa en segundo plano y quedará disponible en la plataforma."
-          className="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-slate-200"
+          className="flex h-8 items-center gap-1.5 rounded-full bg-white/10 px-2.5 text-xs font-semibold text-slate-200 sm:px-3"
         >
           <Square className="h-4 w-4 fill-current text-slate-300" />
-          <span className="hidden sm:inline">Detenido</span>
+          <span className="hidden md:inline">Detenido</span>
         </span>
       ) : null}
       {canManageClass ? (
@@ -2593,14 +3001,14 @@ export default function LiveClassRoomPage() {
             setShowModerationPanel((current) => !current);
           }}
           title="Moderar audio"
-          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+          className={`flex h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold transition sm:px-3 ${
             showModerationPanel
               ? "bg-sky-600 text-white hover:bg-sky-500"
               : "bg-white/10 text-white hover:bg-white/20"
           }`}
         >
           <Users className="h-4 w-4" />
-          <span className="hidden sm:inline">Moderar</span>
+          <span className="hidden md:inline">Moderar</span>
         </button>
       ) : null}
       {canManageClass ? (
@@ -2609,10 +3017,10 @@ export default function LiveClassRoomPage() {
           disabled={endingSession}
           onClick={requestEndSessionConfirmation}
           title="Terminar sesión"
-          className="flex items-center gap-1.5 rounded-full bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-amber-500 disabled:opacity-60"
+          className="flex h-8 items-center gap-1.5 rounded-full bg-amber-600 px-2.5 text-xs font-semibold text-white transition hover:bg-amber-500 disabled:opacity-60 sm:px-3"
         >
           <PhoneOff className="h-4 w-4" />
-          <span className="hidden sm:inline">{endingSession ? "Terminando..." : "Terminar"}</span>
+          <span className="hidden md:inline">{endingSession ? "Terminando..." : "Terminar"}</span>
         </button>
       ) : null}
       {asRole !== "teacher" ? (
@@ -2620,10 +3028,10 @@ export default function LiveClassRoomPage() {
           type="button"
           onClick={leaveRoom}
           title="Salir de la sala"
-          className="flex items-center gap-1.5 rounded-full bg-red-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-red-500"
+          className="flex h-8 items-center gap-1.5 rounded-full bg-red-600 px-2.5 text-xs font-semibold text-white transition hover:bg-red-500 sm:px-3"
         >
           <LogOut className="h-4 w-4" />
-          <span className="hidden sm:inline">Salir</span>
+          <span className="hidden md:inline">Salir</span>
         </button>
       ) : null}
     </div>

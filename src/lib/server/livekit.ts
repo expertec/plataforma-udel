@@ -616,14 +616,12 @@ export async function createJoinToken(params: {
     room: params.roomName,
     roomAdmin: params.isTeacher,
     canPublish: true,
-    canPublishSources: params.isTeacher
-      ? [
-          TrackSource.CAMERA,
-          TrackSource.MICROPHONE,
-          TrackSource.SCREEN_SHARE,
-          TrackSource.SCREEN_SHARE_AUDIO,
-        ]
-      : [TrackSource.CAMERA, TrackSource.MICROPHONE],
+    canPublishSources: [
+      TrackSource.CAMERA,
+      TrackSource.MICROPHONE,
+      TrackSource.SCREEN_SHARE,
+      TrackSource.SCREEN_SHARE_AUDIO,
+    ],
     canSubscribe: true,
     canPublishData: true,
   });

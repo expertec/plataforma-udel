@@ -223,7 +223,7 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
           />
         ) : null}
 
-        <main className={`flex-1 overflow-auto px-4 py-6 sm:px-6 ${open ? "lg:pl-80 lg:pr-8" : "lg:px-8"}`}>
+        <main className={`h-screen flex-1 overflow-x-auto overflow-y-scroll px-4 py-6 sm:px-6 ${open ? "lg:pl-80 lg:pr-8" : "lg:px-8"}`}>
           <div className="creator-panel mb-4 flex items-center gap-4 rounded-[1.75rem] px-4 py-4 sm:px-5">
             <button
               type="button"

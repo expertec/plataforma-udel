@@ -42,6 +42,32 @@ body {
   color: var(--creator-text);
 }
 
+.creator-shell,
+.creator-shell * {
+  scrollbar-width: auto;
+  scrollbar-color: #b67a68 #f7f0eb;
+}
+
+.creator-shell *::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.creator-shell *::-webkit-scrollbar-thumb {
+  background: #b67a68;
+  border: 2px solid #f7f0eb;
+  border-radius: 9999px;
+}
+
+.creator-shell *::-webkit-scrollbar-thumb:hover {
+  background: #8a1f28;
+  border: 2px solid #f7f0eb;
+}
+
+.creator-shell *::-webkit-scrollbar-track {
+  background: #f7f0eb;
+}
+
 .creator-shell .creator-panel {
   background: linear-gradient(180deg, rgba(255, 250, 247, 0.96), rgba(250, 242, 236, 0.98));
   border: 1px solid rgba(181, 122, 104, 0.24);
@@ -217,17 +243,32 @@ html {
   scroll-behavior: smooth;
 }
 
-/* Ocultar scrollbar en todos los navegadores */
-html::-webkit-scrollbar,
-body::-webkit-scrollbar,
-*::-webkit-scrollbar {
-  display: none;
-}
-
 html,
 body {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: #9ca3af transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #9ca3af;
+  border: 2px solid transparent;
+  border-radius: 9999px;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* ---- Sala de clase en vivo: botones tipo Zoom/Teams ---- */
@@ -236,8 +277,8 @@ body {
 button.live-chat-toggle {
   position: relative;
   display: flex;
-  height: 2.5rem;
-  width: 2.5rem;
+  height: 2.25rem;
+  width: 2.25rem;
   align-items: center;
   justify-content: center;
   border: none;
@@ -248,15 +289,27 @@ button.live-chat-toggle {
 }
 
 button.live-chat-toggle svg {
-  width: 18px;
-  height: 18px;
+  width: 17px;
+  height: 17px;
 }
 
 @media (min-width: 640px) {
   button.live-chat-toggle {
-    height: 3rem;
-    width: 3rem;
+    height: 2.5rem;
+    width: 2.5rem;
     border-radius: 1rem;
+  }
+
+  button.live-chat-toggle svg {
+    width: 18px;
+    height: 18px;
+  }
+}
+
+@media (min-width: 1024px) {
+  button.live-chat-toggle {
+    height: 2.75rem;
+    width: 2.75rem;
   }
 
   button.live-chat-toggle svg {
@@ -359,7 +412,7 @@ button.live-chat-toggle[data-lk-active="true"] {
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
 
-/* El scrollbar está oculto globalmente; dentro del aula sí queremos verlo. */
+/* Scrollbars visibles dentro del aula para usuarios con mouse/trackpad tradicional. */
 .aula-shell *::-webkit-scrollbar {
   display: block;
   width: 8px;

@@ -16,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { useAulaData } from "../_lib/AulaDataContext";
-import { buildLockedMessage } from "../_lib/gating";
+import { buildLockedMessageForTarget } from "../_lib/gating";
 import type { CurriculumCourse } from "../_lib/types";
 
 const typeIcon = (type: string) => {
@@ -57,7 +57,7 @@ export function CurriculumPanel({
     const index = indexOfClass(classId);
     if (index < 0) return;
     if (isLockedAt(index)) {
-      toast.error(buildLockedMessage(classes[index]));
+      toast.error(buildLockedMessageForTarget(classes, index));
       return;
     }
     onClose();

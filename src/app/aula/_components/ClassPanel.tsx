@@ -10,6 +10,12 @@ import type { FeedClass } from "../_lib/types";
 
 type TabId = "comentarios" | "foro" | "tarea";
 
+function getDefaultTabForClass(cls: FeedClass): TabId {
+  if (cls.hasAssignment) return "tarea";
+  if (cls.forumEnabled) return "foro";
+  return "comentarios";
+}
+
 /**
  * El ForumPanel del feed clásico está posicionado `fixed`. `positionClass` es su
  * escape de estilos, así que lo anclamos al panel en lugar de a la pantalla.
@@ -54,25 +60,32 @@ export function ClassPanel({
     return list;
   }, [cls.forumEnabled, cls.hasAssignment, commentsCount, forumPending]);
 
-  // Si la clase actual no tiene la pestaña abierta, vuelve a comentarios.
+  // Si la clase actual no tiene la pestaña abierta, entra por la acción principal.
   useEffect(() => {
-    if (!tabs.some((tab) => tab.id === activeTab)) onTabChange("comentarios");
-  }, [tabs, activeTab, onTabChange]);
+    if (!tabs.some((tab) => tab.id === activeTab)) onTabChange(getDefaultTabForClass(cls));
+  }, [tabs, activeTab, onTabChange, cls]);
 
   return (
     <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-[var(--aula-border)] bg-[var(--aula-surface)]">
       <nav className="flex shrink-0 border-b border-[var(--aula-border)]">
         {tabs.map((tab) => {
           const active = tab.id === activeTab;
+          const attention = tab.id === "tarea" || tab.id === "foro";
           return (
             <button
               key={tab.id}
               type="button"
               onClick={() => onTabChange(tab.id)}
-              className={`flex flex-1 items-center justify-center gap-2 border-b-2 px-3 py-3.5 text-sm font-medium transition-colors ${
+              className={`relative flex flex-1 items-center justify-center gap-2 border-b-2 px-3 py-3.5 text-sm font-medium transition-colors ${
                 active
                   ? "border-[var(--aula-accent)] text-[var(--aula-text)]"
                   : "border-transparent text-[var(--aula-text-muted)] hover:text-[var(--aula-text)]"
+              } ${
+                attention
+                  ? active
+                    ? "bg-[rgba(138,31,40,0.18)] shadow-[0_0_22px_rgba(227,134,143,0.30)]"
+                    : "bg-[rgba(227,134,143,0.05)] shadow-[inset_0_0_18px_rgba(227,134,143,0.08)] hover:bg-[rgba(227,134,143,0.10)] hover:shadow-[0_0_18px_rgba(227,134,143,0.18)]"
+                  : ""
               }`}
             >
               <tab.icon size={16} className={active ? "text-[var(--aula-accent-soft)]" : undefined} />

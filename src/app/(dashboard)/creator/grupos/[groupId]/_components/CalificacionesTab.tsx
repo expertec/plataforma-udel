@@ -39,10 +39,12 @@ import {
 } from "@/lib/firebase/submissions-service";
 import { getForumPosts } from "@/lib/firebase/forum-service";
 import { UserRole, isAdminTeacherRole } from "@/lib/firebase/roles";
+import { isExamOptionalProgram } from "@/lib/program-level";
 
 type CalificacionesTabProps = {
   groupId: string;
-  courses: Array<{ courseId: string; courseName: string }>;
+  courses: Array<{ courseId: string; courseName: string; program?: string }>;
+  groupProgram?: string;
   groupTeacherId: string;
   currentUserId: string | null;
   userRole: UserRole | null;
@@ -808,6 +810,7 @@ const isPermissionDeniedError = (error: unknown): boolean =>
 export function CalificacionesTab({
   groupId,
   courses,
+  groupProgram = "",
   groupTeacherId,
   currentUserId,
   userRole,
@@ -832,6 +835,7 @@ export function CalificacionesTab({
   const [draftExtraPointsByStudent, setDraftExtraPointsByStudent] = useState<Record<string, Record<string, string>>>({});
   const [draftFinalGrades, setDraftFinalGrades] = useState<Record<string, string>>({});
   const [courseExamTemplatesByCourse, setCourseExamTemplatesByCourse] = useState<Record<string, CourseExamTemplates>>({});
+  const [courseProgramsByCourse, setCourseProgramsByCourse] = useState<Record<string, string>>({});
   const [existingGlobalExamTemplatesByCourse, setExistingGlobalExamTemplatesByCourse] = useState<
     Record<string, GlobalExamTemplateRecord | null>
   >({});
@@ -888,6 +892,86 @@ export function CalificacionesTab({
     () => courses.find((course) => course.courseId === selectedCourseId) ?? null,
     [courses, selectedCourseId],
   );
+  const selectedCourseProgram =
+    selectedCourse?.program?.trim() ||
+    (selectedCourseId ? courseProgramsByCourse[selectedCourseId]?.trim() : "") ||
+    groupProgram.trim();
+  const selectedCourseSkipsExamTemplates = isExamOptionalProgram(selectedCourseProgram);
+
+  const resolveSelectedCourseProgram = useCallback(async (): Promise<string> => {
+    const courseId = selectedCourseId.trim();
+    const directProgram = selectedCourse?.program?.trim();
+    if (directProgram) return directProgram;
+    if (!courseId) return groupProgram.trim();
+    if (Object.prototype.hasOwnProperty.call(courseProgramsByCourse, courseId)) {
+      return courseProgramsByCourse[courseId]?.trim() || groupProgram.trim();
+    }
+
+    try {
+      const courseSnap = await getDoc(doc(db, "courses", courseId));
+      const data = courseSnap.data() as { program?: unknown; category?: unknown } | undefined;
+      const program =
+        typeof data?.program === "string"
+          ? data.program.trim()
+          : typeof data?.category === "string"
+            ? data.category.trim()
+            : "";
+      setCourseProgramsByCourse((prev) => ({
+        ...prev,
+        [courseId]: program,
+      }));
+      return program || groupProgram.trim();
+    } catch (error) {
+      if (!isPermissionDeniedError(error)) {
+        console.warn("No se pudo cargar el programa de la materia:", error);
+      }
+      setCourseProgramsByCourse((prev) => ({
+        ...prev,
+        [courseId]: "",
+      }));
+      return groupProgram.trim();
+    }
+  }, [courseProgramsByCourse, groupProgram, selectedCourse?.program, selectedCourseId]);
+
+  useEffect(() => {
+    const courseId = selectedCourseId.trim();
+    if (!courseId) return;
+    if (selectedCourse?.program?.trim()) return;
+    if (Object.prototype.hasOwnProperty.call(courseProgramsByCourse, courseId)) return;
+
+    let cancelled = false;
+    const loadCourseProgram = async () => {
+      try {
+        const courseSnap = await getDoc(doc(db, "courses", courseId));
+        if (cancelled) return;
+        const data = courseSnap.data() as { program?: unknown; category?: unknown } | undefined;
+        const program =
+          typeof data?.program === "string"
+            ? data.program.trim()
+            : typeof data?.category === "string"
+              ? data.category.trim()
+              : "";
+        setCourseProgramsByCourse((prev) => ({
+          ...prev,
+          [courseId]: program,
+        }));
+      } catch (error) {
+        if (!isPermissionDeniedError(error)) {
+          console.warn("No se pudo cargar el programa de la materia:", error);
+        }
+        if (!cancelled) {
+          setCourseProgramsByCourse((prev) => ({
+            ...prev,
+            [courseId]: "",
+          }));
+        }
+      }
+    };
+    void loadCourseProgram();
+    return () => {
+      cancelled = true;
+    };
+  }, [courseProgramsByCourse, selectedCourse?.program, selectedCourseId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1575,11 +1659,18 @@ export function CalificacionesTab({
     hasLinkedGlobalExamTemplate ||
     Boolean(selectedCourseExamTemplates.global);
   const hasRequiredExamTemplates =
-    hasGlobalExamTemplateForClosure &&
-    Boolean(selectedCourseExamTemplates.extraordinary);
+    selectedCourseSkipsExamTemplates ||
+    (
+      hasGlobalExamTemplateForClosure &&
+      Boolean(selectedCourseExamTemplates.extraordinary)
+    );
   const missingRequiredExamTemplateLabels = [
-    selectedCourseExamTemplates.extraordinary ? "" : EXAM_TEMPLATE_KIND_LABELS.extraordinary,
-    hasGlobalExamTemplateForClosure ? "" : EXAM_TEMPLATE_KIND_LABELS.global,
+    selectedCourseSkipsExamTemplates || selectedCourseExamTemplates.extraordinary
+      ? ""
+      : EXAM_TEMPLATE_KIND_LABELS.extraordinary,
+    selectedCourseSkipsExamTemplates || hasGlobalExamTemplateForClosure
+      ? ""
+      : EXAM_TEMPLATE_KIND_LABELS.global,
   ].filter((label): label is string => label.length > 0);
 
   const validateExamTemplateFile = (file: File): string | null => {
@@ -2219,6 +2310,18 @@ export function CalificacionesTab({
   const ensureExtraordinaryExamAssignmentsForStudents = async (
     candidates: AutoExtraordinaryExamAssignmentCandidate[],
   ): Promise<AutoExtraordinaryExamAssignmentSummary> => {
+    const resolvedProgram = selectedCourseSkipsExamTemplates
+      ? selectedCourseProgram
+      : await resolveSelectedCourseProgram();
+    if (isExamOptionalProgram(resolvedProgram)) {
+      return {
+        candidateCount: 0,
+        assignedCount: 0,
+        alreadyAssignedCount: 0,
+        failedStudentNames: [],
+        skippedReason: "none",
+      };
+    }
     const targetCandidates = candidates.filter(
       ({ finalGrade }) =>
         Number.isFinite(finalGrade) &&
@@ -2754,6 +2857,11 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
   };
 
   const requestRequiredExamTemplates = async () => {
+    const resolvedProgram = selectedCourseSkipsExamTemplates
+      ? selectedCourseProgram
+      : await resolveSelectedCourseProgram();
+    if (isExamOptionalProgram(resolvedProgram)) return true;
+
     if (
       selectedCourseId &&
       !Object.prototype.hasOwnProperty.call(existingGlobalExamTemplatesByCourse, selectedCourseId)
@@ -4253,6 +4361,13 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
           </span>
         </div>
       </div>
+
+      {selectedCourseSkipsExamTemplates ? (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+          Esta materia está clasificada como maestría o diplomado; no requiere cargar examen global ni extraordinario
+          para cerrar calificaciones.
+        </div>
+      ) : null}
 
       {selectedCourseTasks.length === 0 ? (
         <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">

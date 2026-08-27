@@ -26,12 +26,67 @@ type AttendanceReportRow = {
   lastLeftAt: string | null;
 };
 
+type AttendanceGroupContext = {
+  groupId: string;
+  groupName: string;
+};
+
 function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
 function asPositiveNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function asUniqueStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .map((item) => asTrimmedString(item))
+        .filter((item) => item.length > 0),
+    ),
+  );
+}
+
+function getGroupCourseIds(groupData: Record<string, unknown>): string[] {
+  const explicitIds = asUniqueStringArray(groupData.courseIds);
+  if (explicitIds.length > 0) return explicitIds;
+
+  if (Array.isArray(groupData.courses)) {
+    const ids = groupData.courses
+      .map((course) => {
+        if (!course || typeof course !== "object" || Array.isArray(course)) return "";
+        return asTrimmedString((course as Record<string, unknown>).courseId);
+      })
+      .filter((courseId) => courseId.length > 0);
+    if (ids.length > 0) return Array.from(new Set(ids));
+  }
+
+  const legacyCourseId = asTrimmedString(groupData.courseId);
+  return legacyCourseId ? [legacyCourseId] : [];
+}
+
+function getMentorAllowedCourseIds(
+  groupData: Record<string, unknown>,
+  mentorId: string,
+): string[] {
+  const groupCourseIds = getGroupCourseIds(groupData);
+  const mentorAccess = groupData.mentorCourseAccess;
+  if (!mentorAccess || typeof mentorAccess !== "object" || Array.isArray(mentorAccess)) {
+    return [];
+  }
+  if (!Object.prototype.hasOwnProperty.call(mentorAccess, mentorId)) {
+    return [];
+  }
+  const rawAllowed = (mentorAccess as Record<string, unknown>)[mentorId];
+  const validCourseIds = new Set(groupCourseIds);
+  return asUniqueStringArray(rawAllowed).filter((courseId) => validCourseIds.has(courseId));
+}
+
+function isCoordinatorRole(role: string | null | undefined): boolean {
+  return role === "coordinadorPlantel" || role === "director";
 }
 
 function toMillis(value: unknown): number | null {
@@ -100,6 +155,98 @@ async function loadLinkedGroupStudents(groupId: string): Promise<AttendanceRepor
     .filter((row): row is AttendanceReportRow => row !== null);
 }
 
+async function loadGroupContext(groupId: string): Promise<AttendanceGroupContext | null> {
+  const groupSnap = await getAdminFirestore().collection("groups").doc(groupId).get();
+  if (!groupSnap.exists) return null;
+  const groupData = (groupSnap.data() ?? {}) as Record<string, unknown>;
+  return {
+    groupId: groupSnap.id,
+    groupName: asTrimmedString(groupData.groupName) || "Grupo",
+  };
+}
+
+async function resolveAttendanceGroups(params: {
+  linkedGroupId: string;
+  courseId: string;
+  user: {
+    uid: string;
+    role: string | null;
+    plantelIds: string[];
+  };
+}): Promise<AttendanceGroupContext[]> {
+  const db = getAdminFirestore();
+  if (params.linkedGroupId) {
+    const linkedGroup = await loadGroupContext(params.linkedGroupId);
+    return linkedGroup ? [linkedGroup] : [];
+  }
+
+  const groupsById = new Map<string, AttendanceGroupContext>();
+  const addIfCourseMatches = (docs: FirebaseFirestore.QueryDocumentSnapshot[]) => {
+    docs.forEach((groupDoc) => {
+      if (groupsById.has(groupDoc.id)) return;
+      const groupData = (groupDoc.data() ?? {}) as Record<string, unknown>;
+      if (!getGroupCourseIds(groupData).includes(params.courseId)) return;
+      groupsById.set(groupDoc.id, {
+        groupId: groupDoc.id,
+        groupName: asTrimmedString(groupData.groupName) || "Grupo",
+      });
+    });
+  };
+
+  if (isCoordinatorRole(params.user.role)) {
+    const plantelIds = asUniqueStringArray(params.user.plantelIds);
+    const [plantelGroupSnaps, assignedOnlineGroupsSnap] = await Promise.all([
+      Promise.all(
+        plantelIds.map((plantelId) =>
+          db.collection("groups").where("plantelId", "==", plantelId).get(),
+        ),
+      ),
+      db
+        .collection("groups")
+        .where("isInPerson", "==", false)
+        .where("coordinatorId", "==", params.user.uid)
+        .get(),
+    ]);
+    plantelGroupSnaps.forEach((snap) => addIfCourseMatches(snap.docs));
+    addIfCourseMatches(assignedOnlineGroupsSnap.docs);
+    return Array.from(groupsById.values());
+  }
+
+  const [principalGroupsSnap, assistantGroupsSnap] = await Promise.all([
+    db.collection("groups").where("teacherId", "==", params.user.uid).get(),
+    db.collection("groups").where("assistantTeacherIds", "array-contains", params.user.uid).get(),
+  ]);
+  addIfCourseMatches(principalGroupsSnap.docs);
+  assistantGroupsSnap.docs.forEach((groupDoc) => {
+    if (groupsById.has(groupDoc.id)) return;
+    const groupData = (groupDoc.data() ?? {}) as Record<string, unknown>;
+    if (!getMentorAllowedCourseIds(groupData, params.user.uid).includes(params.courseId)) return;
+    groupsById.set(groupDoc.id, {
+      groupId: groupDoc.id,
+      groupName: asTrimmedString(groupData.groupName) || "Grupo",
+    });
+  });
+  return Array.from(groupsById.values());
+}
+
+async function loadRosterRowsForGroups(groups: AttendanceGroupContext[]): Promise<AttendanceReportRow[]> {
+  const rowsByStudentId = new Map<string, AttendanceReportRow>();
+  const groupRows = await Promise.all(groups.map((group) => loadLinkedGroupStudents(group.groupId)));
+  groupRows.flat().forEach((row) => {
+    if (rowsByStudentId.has(row.studentId)) return;
+    rowsByStudentId.set(row.studentId, row);
+  });
+  return Array.from(rowsByStudentId.values());
+}
+
+function formatGroupLabel(groups: AttendanceGroupContext[]): string | null {
+  if (groups.length === 0) return null;
+  const names = Array.from(new Set(groups.map((group) => group.groupName).filter(Boolean)));
+  if (names.length === 0) return null;
+  if (names.length === 1) return names[0];
+  return `Múltiples grupos: ${names.join(", ")}`;
+}
+
 export async function GET(
   request: NextRequest,
   context: { params: Promise<{ classId: string }> },
@@ -146,7 +293,16 @@ export async function GET(
     }
 
     const linkedGroupId = asTrimmedString(access.classContext.classData.linkedGroupId);
-    const rosterRows = await loadLinkedGroupStudents(linkedGroupId);
+    const attendanceGroups = await resolveAttendanceGroups({
+      linkedGroupId,
+      courseId: access.classContext.courseId,
+      user: {
+        uid: access.user.uid,
+        role: access.user.role,
+        plantelIds: access.user.plantelIds,
+      },
+    });
+    const rosterRows = await loadRosterRowsForGroups(attendanceGroups);
     const rowsByStudentId = new Map<string, AttendanceReportRow>();
     rosterRows.forEach((row) => rowsByStudentId.set(row.studentId, row));
 
@@ -198,7 +354,9 @@ export async function GET(
           lessonId: access.classContext.lessonId,
           title: asTrimmedString(access.classContext.classData.title) || "Clase en vivo",
           linkedGroupId: linkedGroupId || null,
-          linkedGroupName: asTrimmedString(access.classContext.classData.linkedGroupName) || null,
+          linkedGroupName:
+            asTrimmedString(access.classContext.classData.linkedGroupName) ||
+            formatGroupLabel(attendanceGroups),
           roomName: liveSession.roomName,
           startedAt: liveSession.lastStartedAt,
           endedAt: liveSession.lastEndedAt,

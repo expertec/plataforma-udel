@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import { ChevronDown, SkipBack, SkipForward } from "lucide-react";
 import { useAulaData } from "../_lib/AulaDataContext";
-import { buildLockedMessage } from "../_lib/gating";
+import { buildLockedMessageForTarget } from "../_lib/gating";
 import type { FeedClass } from "../_lib/types";
 
 export function Topbar({
@@ -37,7 +37,7 @@ export function Topbar({
     const targetIndex = neighbourInCourse(direction);
     if (targetIndex < 0) return;
     if (isLockedAt(targetIndex)) {
-      toast.error(buildLockedMessage(classes[targetIndex]));
+      toast.error(buildLockedMessageForTarget(classes, targetIndex));
       return;
     }
     const target = classes[targetIndex];
