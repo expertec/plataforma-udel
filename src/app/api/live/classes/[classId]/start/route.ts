@@ -347,6 +347,10 @@ export async function POST(
         status: "live" as const,
         teacherActive: true,
         lastStartedAt: startedAtIso,
+        waitingRoom: {
+          enabled: session.waitingRoom.enabled,
+          participants: wasAlreadyLive ? session.waitingRoom.participants : {},
+        },
       };
 
       shouldNotifyStudents = !wasAlreadyLive;

@@ -61,6 +61,8 @@ import {
   Send,
   Smile,
   Square,
+  UserCheck,
+  UserX,
   Users,
   Video,
   VideoOff,
@@ -135,11 +137,23 @@ type LiveRoomParticipantSummary = {
   };
 };
 
+type LiveWaitingRoomParticipantSummary = {
+  uid: string;
+  displayName: string;
+  email: string;
+  status: "pending" | "admitted" | "rejected";
+  requestedAt: string | null;
+  decidedAt: string | null;
+  decidedBy: string | null;
+  updatedAt: string | null;
+};
+
 type LiveParticipantsResponse = {
   success?: boolean;
   data?: {
     roomName?: string;
     participants?: LiveRoomParticipantSummary[];
+    waitingParticipants?: LiveWaitingRoomParticipantSummary[];
   };
   error?: string;
 };
@@ -159,6 +173,8 @@ type LiveParticipantsActionResponse = {
       mutedParticipants?: number;
       mutedMicrophoneTracks?: number;
     };
+    waitingParticipant?: LiveWaitingRoomParticipantSummary;
+    waitingParticipants?: LiveWaitingRoomParticipantSummary[];
   };
   error?: string;
 };
@@ -2116,10 +2132,13 @@ export default function LiveClassRoomPage() {
   const [participantsLoading, setParticipantsLoading] = useState(false);
   const [participantsError, setParticipantsError] = useState<string | null>(null);
   const [participants, setParticipants] = useState<LiveRoomParticipantSummary[]>([]);
+  const [waitingParticipants, setWaitingParticipants] = useState<LiveWaitingRoomParticipantSummary[]>([]);
   const [attendancePresenceJoined, setAttendancePresenceJoined] = useState(false);
   const [mutingAll, setMutingAll] = useState(false);
   const [mutingParticipantId, setMutingParticipantId] = useState<string | null>(null);
   const [unmutingParticipantId, setUnmutingParticipantId] = useState<string | null>(null);
+  const [waitingParticipantActionId, setWaitingParticipantActionId] = useState<string | null>(null);
+  const [admittingAllWaiting, setAdmittingAllWaiting] = useState(false);
   const [moderationMessage, setModerationMessage] = useState<string | null>(null);
   const [recordingStatus, setRecordingStatus] = useState<LiveRecordingControlStatus>("idle");
   const [recordingErrorMessage, setRecordingErrorMessage] = useState<string | null>(null);
@@ -2212,13 +2231,19 @@ export default function LiveClassRoomPage() {
     };
   }, [attendancePresenceJoined, sendAttendancePresence]);
 
-  const requestToken = useCallback(async () => {
+  const requestToken = useCallback(async (options?: {
+    silent?: boolean;
+    admissionRetry?: boolean;
+  }) => {
     if (!classId) return;
     if (!user) return;
 
-    setLoading(true);
-    setError(null);
-    setLivekitError(null);
+    const silent = options?.silent === true;
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+      setLivekitError(null);
+    }
     try {
       const idToken = await user.getIdToken();
       const response = await fetch("/api/livekit/token", {
@@ -2231,6 +2256,7 @@ export default function LiveClassRoomPage() {
           classId,
           courseId: courseId || undefined,
           lessonId: lessonId || undefined,
+          admissionRetry: options?.admissionRetry === true,
         }),
       });
       const payload = (await response.json().catch(() => null)) as LiveTokenResponse | null;
@@ -2256,9 +2282,12 @@ export default function LiveClassRoomPage() {
         setWaitingReason(payload.data.waitingReason || "waiting_teacher");
         setShowModerationPanel(false);
         setParticipants([]);
+        setWaitingParticipants([]);
         setParticipantsError(null);
         setModerationMessage(null);
-        setLoading(false);
+        if (!silent) {
+          setLoading(false);
+        }
         return;
       }
 
@@ -2272,8 +2301,12 @@ export default function LiveClassRoomPage() {
       setLoading(false);
     } catch (requestError) {
       console.error("No se pudo obtener token de LiveKit", requestError);
-      setError(requestError instanceof Error ? requestError.message : "No se pudo abrir la clase");
-      setLoading(false);
+      if (!silent) {
+        setError(
+          requestError instanceof Error ? requestError.message : "No se pudo abrir la clase",
+        );
+        setLoading(false);
+      }
     }
   }, [applyRecordingControlResult, classId, courseId, lessonId, sendAttendancePresence, user]);
 
@@ -2292,8 +2325,11 @@ export default function LiveClassRoomPage() {
     setShowEndSessionConfirm(false);
     setShowModerationPanel(false);
     setParticipants([]);
+    setWaitingParticipants([]);
     setParticipantsError(null);
     setModerationMessage(null);
+    setWaitingParticipantActionId(null);
+    setAdmittingAllWaiting(false);
     setRecordingStatusNotice(null);
   }, [attendancePresenceJoined, sendAttendancePresence]);
 
@@ -2424,8 +2460,11 @@ export default function LiveClassRoomPage() {
       setLoading(false);
       setShowModerationPanel(false);
       setParticipants([]);
+      setWaitingParticipants([]);
       setParticipantsError(null);
       setModerationMessage(null);
+      setWaitingParticipantActionId(null);
+      setAdmittingAllWaiting(false);
     } catch (endError) {
       console.error("No se pudo terminar la sesión", endError);
       setError(endError instanceof Error ? endError.message : "No se pudo terminar la sesión");
@@ -2550,6 +2589,7 @@ export default function LiveClassRoomPage() {
         }
 
         setParticipants(payload.data.participants ?? []);
+        setWaitingParticipants(payload.data.waitingParticipants ?? []);
         if (payload.data.roomName) {
           setRoomName(payload.data.roomName);
         }
@@ -2694,6 +2734,92 @@ export default function LiveClassRoomPage() {
     }
   }, [fetchParticipants, submitParticipantsAction]);
 
+  const updateWaitingParticipant = useCallback(
+    async (waitingParticipantId: string, action: "admit_waiting_student" | "reject_waiting_student") => {
+      if (!waitingParticipantId) return;
+      setParticipantsError(null);
+      setModerationMessage(null);
+      setWaitingParticipantActionId(waitingParticipantId);
+      try {
+        const idToken = await user?.getIdToken();
+        if (!idToken) {
+          throw new Error("No tienes una sesión activa.");
+        }
+        const response = await fetch(participantsEndpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({
+            action,
+            waitingParticipantId,
+          }),
+        });
+        const payload = (await response.json().catch(() => null)) as
+          | LiveParticipantsActionResponse
+          | null;
+        if (!response.ok || !payload?.success) {
+          throw new Error(payload?.error || "No se pudo actualizar la sala de espera");
+        }
+        setModerationMessage(
+          action === "admit_waiting_student"
+            ? "Alumno admitido. Entrará automáticamente en unos segundos."
+            : "Alumno rechazado.",
+        );
+        await fetchParticipants({ silent: true });
+      } catch (waitingError) {
+        setParticipantsError(
+          waitingError instanceof Error
+            ? waitingError.message
+            : "No se pudo actualizar la sala de espera",
+        );
+      } finally {
+        setWaitingParticipantActionId(null);
+      }
+    },
+    [fetchParticipants, participantsEndpoint, user],
+  );
+
+  const admitAllWaitingParticipants = useCallback(async () => {
+    setParticipantsError(null);
+    setModerationMessage(null);
+    setAdmittingAllWaiting(true);
+    try {
+      const idToken = await user?.getIdToken();
+      if (!idToken) {
+        throw new Error("No tienes una sesión activa.");
+      }
+      const response = await fetch(participantsEndpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ action: "admit_all_waiting" }),
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | LiveParticipantsActionResponse
+        | null;
+      if (!response.ok || !payload?.success) {
+        throw new Error(payload?.error || "No se pudo admitir a todos");
+      }
+      const admittedCount = payload.data?.waitingParticipants?.length ?? 0;
+      setModerationMessage(
+        admittedCount === 1
+          ? "1 alumno admitido. Entrará automáticamente en unos segundos."
+          : `${admittedCount} alumnos admitidos. Entrarán automáticamente en unos segundos.`,
+      );
+      await fetchParticipants({ silent: true });
+    } catch (waitingError) {
+      setParticipantsError(
+        waitingError instanceof Error ? waitingError.message : "No se pudo admitir a todos",
+      );
+    } finally {
+      setAdmittingAllWaiting(false);
+    }
+  }, [fetchParticipants, participantsEndpoint, user]);
+
   useEffect(() => {
     if (!user || !classId) return;
     requestToken();
@@ -2701,11 +2827,11 @@ export default function LiveClassRoomPage() {
 
   useEffect(() => {
     if (!user || !classId) return;
-    if (token || waitingReason !== "waiting_teacher") return;
+    if (token || (waitingReason !== "waiting_teacher" && waitingReason !== "waiting_approval")) return;
     if (asRole === "teacher") return;
     const timer = window.setInterval(() => {
-      requestToken();
-    }, 8000);
+      requestToken({ silent: true });
+    }, waitingReason === "waiting_approval" ? 4000 : 8000);
     return () => window.clearInterval(timer);
   }, [asRole, classId, requestToken, token, user, waitingReason]);
 
@@ -2744,12 +2870,26 @@ export default function LiveClassRoomPage() {
   }, [asRole, fetchParticipants, liveSessionStatus, livekitUrl, showModerationPanel, token]);
 
   useEffect(() => {
+    if (showModerationPanel || asRole !== "teacher") return;
+    if (liveSessionStatus !== "live") return;
+    if (!token || !livekitUrl) return;
+    void fetchParticipants({ silent: true });
+    const timer = window.setInterval(() => {
+      void fetchParticipants({ silent: true });
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [asRole, fetchParticipants, liveSessionStatus, livekitUrl, showModerationPanel, token]);
+
+  useEffect(() => {
     if (asRole === "teacher") return;
     setShowEndSessionConfirm(false);
     setShowModerationPanel(false);
     setParticipants([]);
+    setWaitingParticipants([]);
     setParticipantsError(null);
     setModerationMessage(null);
+    setWaitingParticipantActionId(null);
+    setAdmittingAllWaiting(false);
     setRecordingActionLoading(null);
     setRecordingStatusLoading(false);
     setRecordingStatusNotice(null);
@@ -2759,8 +2899,11 @@ export default function LiveClassRoomPage() {
     if (liveSessionStatus === "live") return;
     setShowModerationPanel(false);
     setParticipants([]);
+    setWaitingParticipants([]);
     setParticipantsError(null);
     setModerationMessage(null);
+    setWaitingParticipantActionId(null);
+    setAdmittingAllWaiting(false);
     setRecordingActionLoading(null);
     setRecordingStatusLoading(false);
     setRecordingStatusNotice(null);
@@ -2803,6 +2946,18 @@ export default function LiveClassRoomPage() {
     (recordingStatus === "recording" || recordingStatus === "processing") &&
     recordingActionLoading === null &&
     !recordingStatusLoading;
+  const waitingRoomStatusText =
+    waitingReason === "session_ended"
+      ? "La sesión terminó. Si la grabación está lista podrás verla desde la plataforma."
+      : waitingReason === "left_room"
+        ? "Saliste de la sala. Puedes volver a entrar cuando quieras."
+        : waitingReason === "waiting_approval"
+          ? "El profesor ya inició la clase. Estás en la lista de espera y entrarás automáticamente cuando te acepte."
+          : waitingReason === "admission_rejected"
+            ? "El profesor no aceptó tu entrada a la sala en este momento."
+            : asRole === "teacher"
+              ? "La sesión todavía no está iniciada."
+              : "El profesor aún no inicia la sesión. Esta pantalla se actualizará automáticamente.";
 
   if (authLoading) {
     return <div className="flex min-h-screen items-center justify-center bg-slate-950 text-white">Verificando sesión...</div>;
@@ -2826,7 +2981,9 @@ export default function LiveClassRoomPage() {
         <p>{error}</p>
         <button
           type="button"
-          onClick={requestToken}
+          onClick={() => {
+            void requestToken();
+          }}
           className="rounded-lg border border-white/30 px-4 py-2 text-sm font-semibold text-white"
         >
           Reintentar
@@ -2856,13 +3013,7 @@ export default function LiveClassRoomPage() {
         <p className="text-xs uppercase tracking-[0.2em] text-sky-300">Sala de espera</p>
         <h1 className="text-2xl font-semibold">{classTitle}</h1>
         <p className="max-w-lg text-sm text-slate-200">
-          {waitingReason === "session_ended"
-            ? "La sesión terminó. Si la grabación está lista podrás verla desde la plataforma."
-            : waitingReason === "left_room"
-              ? "Saliste de la sala. Puedes volver a entrar cuando quieras."
-              : asRole === "teacher"
-                ? "La sesión todavía no está iniciada."
-                : "El profesor aún no inicia la sesión. Esta pantalla se actualizará automáticamente."}
+          {waitingRoomStatusText}
         </p>
         {scheduledStartAt ? (
           <p className="text-xs text-slate-300">
@@ -2891,10 +3042,16 @@ export default function LiveClassRoomPage() {
         ) : (
           <button
             type="button"
-            onClick={requestToken}
+            onClick={() => {
+              void requestToken({ admissionRetry: waitingReason === "admission_rejected" });
+            }}
             className="rounded-lg border border-slate-400 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
           >
-            {waitingReason === "left_room" ? "Volver a entrar" : "Actualizar estado"}
+            {waitingReason === "left_room"
+              ? "Volver a entrar"
+              : waitingReason === "admission_rejected"
+                ? "Solicitar entrada de nuevo"
+                : "Actualizar estado"}
           </button>
         )}
       </div>
@@ -3008,7 +3165,14 @@ export default function LiveClassRoomPage() {
           }`}
         >
           <Users className="h-4 w-4" />
-          <span className="hidden md:inline">Moderar</span>
+          <span className="hidden md:inline">
+            {waitingParticipants.length > 0 ? `Espera (${waitingParticipants.length})` : "Moderar"}
+          </span>
+          {waitingParticipants.length > 0 ? (
+            <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 text-[10px] font-bold text-white md:hidden">
+              {waitingParticipants.length}
+            </span>
+          ) : null}
         </button>
       ) : null}
       {canManageClass ? (
@@ -3096,8 +3260,11 @@ export default function LiveClassRoomPage() {
           setShowEndSessionConfirm(false);
           setShowModerationPanel(false);
           setParticipants([]);
+          setWaitingParticipants([]);
           setParticipantsError(null);
           setModerationMessage(null);
+          setWaitingParticipantActionId(null);
+          setAdmittingAllWaiting(false);
           setRecordingStatusNotice(null);
         }}
         data-lk-theme="default"
@@ -3159,8 +3326,8 @@ export default function LiveClassRoomPage() {
           <div className="pointer-events-auto max-h-[72vh] w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-900/95 shadow-2xl backdrop-blur">
             <div className="flex items-center justify-between border-b border-slate-700 px-3 py-2">
               <div>
-                <p className="text-sm font-semibold text-white">Moderar audio</p>
-                <p className="text-[11px] text-slate-300">Anfitrión y mentores pueden silenciar participantes.</p>
+                <p className="text-sm font-semibold text-white">Sala y participantes</p>
+                <p className="text-[11px] text-slate-300">Acepta alumnos en espera y modera audio.</p>
               </div>
               <button
                 type="button"
@@ -3175,7 +3342,13 @@ export default function LiveClassRoomPage() {
             <div className="flex items-center gap-2 border-b border-slate-800 px-3 py-2">
               <button
                 type="button"
-                disabled={participantsLoading || mutingAll || mutingParticipantId !== null}
+                disabled={
+                  participantsLoading ||
+                  mutingAll ||
+                  mutingParticipantId !== null ||
+                  waitingParticipantActionId !== null ||
+                  admittingAllWaiting
+                }
                 onClick={() => {
                   void fetchParticipants();
                 }}
@@ -3189,6 +3362,8 @@ export default function LiveClassRoomPage() {
                   participantsLoading ||
                   mutingAll ||
                   mutingParticipantId !== null ||
+                  waitingParticipantActionId !== null ||
+                  admittingAllWaiting ||
                   participants.length === 0
                 }
                 onClick={() => {
@@ -3198,6 +3373,22 @@ export default function LiveClassRoomPage() {
               >
                 {mutingAll ? "Silenciando..." : "Silenciar a todos"}
               </button>
+              {waitingParticipants.length > 0 ? (
+                <button
+                  type="button"
+                  disabled={
+                    participantsLoading ||
+                    waitingParticipantActionId !== null ||
+                    admittingAllWaiting
+                  }
+                  onClick={() => {
+                    void admitAllWaitingParticipants();
+                  }}
+                  className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
+                >
+                  {admittingAllWaiting ? "Aceptando..." : "Aceptar todos"}
+                </button>
+              ) : null}
             </div>
             {participantsError ? (
               <p className="border-b border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-100">
@@ -3210,6 +3401,95 @@ export default function LiveClassRoomPage() {
               </p>
             ) : null}
             <div className="max-h-[52vh] overflow-y-auto">
+              <div className="border-b border-slate-800 bg-slate-950/40 px-3 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-300">
+                    Lista de espera
+                  </p>
+                  <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
+                    {waitingParticipants.length}
+                  </span>
+                </div>
+              </div>
+              {waitingParticipants.length === 0 ? (
+                <p className="border-b border-slate-800 px-3 py-3 text-xs text-slate-400">
+                  No hay alumnos esperando autorización.
+                </p>
+              ) : (
+                waitingParticipants.map((waitingParticipant) => {
+                  const actionBusy =
+                    participantsLoading ||
+                    waitingParticipantActionId !== null ||
+                    admittingAllWaiting;
+                  const isUpdating = waitingParticipantActionId === waitingParticipant.uid;
+                  return (
+                    <div
+                      key={waitingParticipant.uid}
+                      className="border-b border-slate-800 px-3 py-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-white">
+                            {waitingParticipant.displayName || "Alumno"}
+                          </p>
+                          {waitingParticipant.email ? (
+                            <p className="truncate text-[11px] text-slate-400">
+                              {waitingParticipant.email}
+                            </p>
+                          ) : null}
+                          {waitingParticipant.requestedAt ? (
+                            <p className="mt-1 text-[11px] text-slate-500">
+                              Desde{" "}
+                              {formatEsMxDateTime(waitingParticipant.requestedAt, {
+                                timeZone: timezone,
+                              })}
+                            </p>
+                          ) : null}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <button
+                            type="button"
+                            disabled={actionBusy}
+                            onClick={() => {
+                              void updateWaitingParticipant(
+                                waitingParticipant.uid,
+                                "admit_waiting_student",
+                              );
+                            }}
+                            title="Aceptar alumno"
+                            className="flex h-8 w-8 items-center justify-center rounded-md bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50"
+                          >
+                            {isUpdating ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <UserCheck className="h-4 w-4" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={actionBusy}
+                            onClick={() => {
+                              void updateWaitingParticipant(
+                                waitingParticipant.uid,
+                                "reject_waiting_student",
+                              );
+                            }}
+                            title="Rechazar alumno"
+                            className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-600 text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                          >
+                            <UserX className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+              <div className="border-b border-slate-800 bg-slate-950/40 px-3 py-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-300">
+                  En sala
+                </p>
+              </div>
               {participantsLoading && participants.length === 0 ? (
                 <p className="px-3 py-4 text-xs text-slate-300">Cargando participantes...</p>
               ) : participants.length === 0 ? (
@@ -3227,7 +3507,9 @@ export default function LiveClassRoomPage() {
                     participantsLoading ||
                     mutingAll ||
                     mutingParticipantId !== null ||
-                    unmutingParticipantId !== null;
+                    unmutingParticipantId !== null ||
+                    waitingParticipantActionId !== null ||
+                    admittingAllWaiting;
                   return (
                     <div key={participant.identity} className="border-b border-slate-800 px-3 py-3">
                       <div className="flex items-start justify-between gap-2">

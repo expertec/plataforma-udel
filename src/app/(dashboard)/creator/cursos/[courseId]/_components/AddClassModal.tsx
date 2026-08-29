@@ -466,6 +466,10 @@ export function AddClassModal({
             }),
             timezone: normalizedLiveTimezone,
             teacherActive: currentLiveSession?.teacherActive ?? false,
+            waitingRoom: currentLiveSession?.waitingRoom ?? {
+              enabled: true,
+              participants: {},
+            },
             recording: {
               auto: false,
               egressId: currentLiveSession?.recording.egressId ?? null,

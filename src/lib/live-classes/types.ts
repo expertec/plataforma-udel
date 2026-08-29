@@ -1,5 +1,6 @@
 export type LiveSessionStatus = "scheduled" | "live" | "ended" | "recording_ready";
 export type LiveRecordingStatus = "idle" | "recording" | "processing" | "ready" | "failed";
+export type LiveWaitingRoomParticipantStatus = "pending" | "admitted" | "rejected";
 
 const DEFAULT_RECORDING_MAX_RETRY_COUNT = 1;
 
@@ -19,6 +20,22 @@ export type LiveRecordingData = {
   lastRetryAt: string | null;
 };
 
+export type LiveWaitingRoomParticipant = {
+  uid: string;
+  displayName: string;
+  email: string;
+  status: LiveWaitingRoomParticipantStatus;
+  requestedAt: string | null;
+  decidedAt: string | null;
+  decidedBy: string | null;
+  updatedAt: string | null;
+};
+
+export type LiveWaitingRoomData = {
+  enabled: boolean;
+  participants: Record<string, LiveWaitingRoomParticipant>;
+};
+
 export type LiveClassSession = {
   provider: "livekit";
   roomName: string;
@@ -27,6 +44,7 @@ export type LiveClassSession = {
   scheduledEndAt: string | null;
   timezone: string;
   teacherActive: boolean;
+  waitingRoom: LiveWaitingRoomData;
   recording: LiveRecordingData;
   lastStartedAt?: string | null;
   lastEndedAt?: string | null;
@@ -99,6 +117,57 @@ function asRecordingStatus(value: unknown): LiveRecordingStatus {
   return "idle";
 }
 
+function asWaitingRoomStatus(value: unknown): LiveWaitingRoomParticipantStatus {
+  if (value === "admitted" || value === "rejected") return value;
+  return "pending";
+}
+
+function normalizeWaitingRoomParticipant(
+  uid: string,
+  value: unknown,
+): LiveWaitingRoomParticipant | null {
+  if (!uid || !value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  return {
+    uid,
+    displayName: asTrimmedString(raw.displayName) || asTrimmedString(raw.name) || "Alumno",
+    email: asTrimmedString(raw.email),
+    status: asWaitingRoomStatus(raw.status),
+    requestedAt: asNullableString(raw.requestedAt),
+    decidedAt: asNullableString(raw.decidedAt),
+    decidedBy: asNullableString(raw.decidedBy),
+    updatedAt: asNullableString(raw.updatedAt),
+  };
+}
+
+function normalizeWaitingRoom(value: unknown): LiveWaitingRoomData {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      enabled: true,
+      participants: {},
+    };
+  }
+
+  const raw = value as Record<string, unknown>;
+  const participantsRaw =
+    raw.participants && typeof raw.participants === "object" && !Array.isArray(raw.participants)
+      ? (raw.participants as Record<string, unknown>)
+      : {};
+  const participants: Record<string, LiveWaitingRoomParticipant> = {};
+  Object.entries(participantsRaw).forEach(([uid, participantRaw]) => {
+    const normalizedUid = asTrimmedString(uid);
+    const participant = normalizeWaitingRoomParticipant(normalizedUid, participantRaw);
+    if (participant) {
+      participants[normalizedUid] = participant;
+    }
+  });
+
+  return {
+    enabled: raw.enabled !== false,
+    participants,
+  };
+}
+
 export function createDefaultLiveSession(params?: {
   roomName?: string;
   scheduledStartAt?: string | null;
@@ -113,6 +182,10 @@ export function createDefaultLiveSession(params?: {
     scheduledEndAt: asNullableString(params?.scheduledEndAt),
     timezone: asTrimmedString(params?.timezone ?? "") || "America/Monterrey",
     teacherActive: false,
+    waitingRoom: {
+      enabled: true,
+      participants: {},
+    },
     recording: {
       auto: false,
       egressId: null,
@@ -152,6 +225,7 @@ export function normalizeLiveSession(value: unknown): LiveClassSession | null {
     scheduledEndAt: asNullableString(raw.scheduledEndAt),
     timezone,
     teacherActive: raw.teacherActive === true,
+    waitingRoom: normalizeWaitingRoom(raw.waitingRoom),
     recording: {
       auto: recordingRaw.auto === true,
       egressId: asNullableString(recordingRaw.egressId),
@@ -206,6 +280,7 @@ export function createLiveSessionForClass(params: {
       // Auto-recording is intentionally disabled project-wide to control LiveKit egress costs.
       auto: false,
     },
+    waitingRoom: normalized?.waitingRoom ?? base.waitingRoom,
   };
 }
 
@@ -238,6 +313,7 @@ export function mergeTeacherEditableLiveSession(params: {
     scheduledStartAt: incoming ? incoming.scheduledStartAt : current.scheduledStartAt,
     scheduledEndAt: incoming ? incoming.scheduledEndAt : current.scheduledEndAt,
     timezone: incoming?.timezone || current.timezone || "America/Monterrey",
+    waitingRoom: current.waitingRoom,
     recording: {
       ...current.recording,
       // Keep disabled even if legacy payloads still send `recording.auto = true`.
