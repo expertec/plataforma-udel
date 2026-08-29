@@ -195,6 +195,7 @@ export async function POST(request: NextRequest) {
       courseId: courseId || undefined,
       lessonId: lessonId || undefined,
       requireTeacher: false,
+      allowLiveLinkStudentFallback: true,
     });
 
     const currentSession = access.classContext.liveSession;

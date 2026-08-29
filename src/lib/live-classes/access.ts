@@ -64,6 +64,21 @@ const TEACHER_ROLES = new Set<UserRole>([
   "director",
 ]);
 
+function isLiveSessionFinalized(session: LiveClassSession | null): boolean {
+  return (
+    Boolean(session?.lastEndedAt) ||
+    session?.status === "ended" ||
+    session?.status === "recording_ready"
+  );
+}
+
+function isLiveSessionJoinable(session: LiveClassSession | null): boolean {
+  return (
+    !isLiveSessionFinalized(session) &&
+    (session?.status === "live" || session?.teacherActive === true)
+  );
+}
+
 function extractBearerToken(authorizationHeader: string | null): string | null {
   if (!authorizationHeader) return null;
   const trimmed = authorizationHeader.trim();
@@ -527,6 +542,7 @@ export async function resolveAuthorizedLiveClassAccess(params: {
   lessonId?: string;
   requireTeacher?: boolean;
   allowCoordinatorAccess?: boolean;
+  allowLiveLinkStudentFallback?: boolean;
 }): Promise<{
   user: AuthenticatedUser;
   classContext: LiveClassContext;
@@ -577,6 +593,19 @@ export async function resolveAuthorizedLiveClassAccess(params: {
 
   const expectedStudent =
     user.role === "student" || user.role === null || !TEACHER_ROLES.has(user.role);
+  if (
+    expectedStudent &&
+    params.allowLiveLinkStudentFallback === true &&
+    isLiveSessionJoinable(classContext.liveSession)
+  ) {
+    return {
+      user,
+      classContext,
+      accessRole: "student",
+      enrollmentIds: [`live-link:${classContext.classId}`],
+    };
+  }
+
   if (expectedStudent) {
     throw new LiveAccessError(403, "No estás inscrito en esta materia.");
   }
