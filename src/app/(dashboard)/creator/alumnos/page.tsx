@@ -42,6 +42,7 @@ import { normalizeSearchText } from "@/lib/search";
 import { StudentAllSubmissionsModal } from "./_components/StudentAllSubmissionsModal";
 import { StudentGradesModal } from "./_components/StudentGradesModal";
 import { StudentDropoutRiskTab } from "./_components/StudentDropoutRiskTab";
+import { StudentProgressHistoryModal } from "./_components/StudentProgressHistoryModal";
 
 type ParsedStudentRow = {
   row: number;
@@ -225,6 +226,8 @@ export default function AlumnosPage() {
   const [selectedStudentForSubmissions, setSelectedStudentForSubmissions] = useState<StudentUser | null>(null);
   const [gradesModalOpen, setGradesModalOpen] = useState(false);
   const [selectedStudentForGrades, setSelectedStudentForGrades] = useState<StudentUser | null>(null);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [selectedStudentForHistory, setSelectedStudentForHistory] = useState<StudentUser | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -443,6 +446,7 @@ export default function AlumnosPage() {
     setSelectedStudent((prev) => (prev?.id === studentId ? { ...prev, ...patch } : prev));
     setSelectedStudentForGrades((prev) => (prev?.id === studentId ? { ...prev, ...patch } : prev));
     setSelectedStudentForSubmissions((prev) => (prev?.id === studentId ? { ...prev, ...patch } : prev));
+    setSelectedStudentForHistory((prev) => (prev?.id === studentId ? { ...prev, ...patch } : prev));
   }, []);
 
   const handleCreateStudent = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -2085,6 +2089,17 @@ export default function AlumnosPage() {
                   type="button"
                   onClick={() => {
                     setOpenActionMenu(null);
+                    setSelectedStudentForHistory(actionMenuStudent);
+                    setHistoryModalOpen(true);
+                  }}
+                  className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Historial
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenActionMenu(null);
                     handleOpenGradesModal(actionMenuStudent);
                   }}
                   className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-blue-700 hover:bg-blue-50"
@@ -2375,6 +2390,20 @@ export default function AlumnosPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Modal para ver historial y progreso del alumno */}
+      {historyModalOpen && selectedStudentForHistory && (
+        <StudentProgressHistoryModal
+          studentId={selectedStudentForHistory.id}
+          studentName={selectedStudentForHistory.name}
+          studentEmail={selectedStudentForHistory.email}
+          isOpen={historyModalOpen}
+          onClose={() => {
+            setHistoryModalOpen(false);
+            setSelectedStudentForHistory(null);
+          }}
+        />
       )}
 
       {/* Modal para ver calificaciones del alumno */}

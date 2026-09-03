@@ -57,6 +57,19 @@ export function LoginCard({
         return;
       }
 
+      if (role === "student") {
+        try {
+          const token = await cred.user.getIdToken();
+          await fetch("/api/students/activity-log", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+            keepalive: true,
+          });
+        } catch (err) {
+          console.warn("No se pudo registrar el inicio de sesión del alumno:", err);
+        }
+      }
+
       const destination =
         redirectTo && redirectTo.startsWith("/")
           ? redirectTo

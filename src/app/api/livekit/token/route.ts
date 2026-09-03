@@ -11,6 +11,10 @@ import {
   type LiveClassSession,
 } from "@/lib/live-classes/types";
 import {
+  loadWaitingRoomParticipant,
+  upsertWaitingRoomParticipant,
+} from "@/lib/live-classes/waiting-room";
+import {
   createJoinToken,
   ensureLiveKitRoom,
   getLiveKitConfig,
@@ -68,109 +72,100 @@ async function resolveStudentWaitingRoomGate(params: {
     waitingReason: "waiting_teacher",
   };
 
-  await db.runTransaction(async (tx) => {
-    const classSnap = await tx.get(access.classContext.classRef);
-    if (!classSnap.exists) {
-      throw new Error("Clase no encontrada");
-    }
-    const classData = (classSnap.data() ?? {}) as Record<string, unknown>;
-    const latestSession =
-      normalizeLiveSession(classData.liveSession) ??
-      createLiveSessionForClass({
-        courseId: access.classContext.courseId,
-        lessonId: access.classContext.lessonId,
-        classId: access.classContext.classId,
-        input: fallbackSession,
-      });
+  const classSnap = await db.doc(access.classContext.classRef.path).get();
+  if (!classSnap.exists) {
+    throw new Error("Clase no encontrada");
+  }
+  const classData = (classSnap.data() ?? {}) as Record<string, unknown>;
+  const latestSession =
+    normalizeLiveSession(classData.liveSession) ??
+    createLiveSessionForClass({
+      courseId: access.classContext.courseId,
+      lessonId: access.classContext.lessonId,
+      classId: access.classContext.classId,
+      input: fallbackSession,
+    });
 
-    if (isLiveSessionFinalized(latestSession)) {
-      result = {
-        session: latestSession,
-        joinAllowed: false,
-        waitingReason: "session_ended",
-      };
-      return;
-    }
-
-    if (!isLiveSessionJoinable(latestSession)) {
-      result = {
-        session: latestSession,
-        joinAllowed: false,
-        waitingReason: "waiting_teacher",
-      };
-      return;
-    }
-
-    if (!latestSession.waitingRoom.enabled) {
-      result = {
-        session: latestSession,
-        joinAllowed: true,
-        waitingReason: null,
-      };
-      return;
-    }
-
-    const currentRequest = latestSession.waitingRoom.participants[access.user.uid];
-    if (currentRequest?.status === "admitted") {
-      const nextSession = {
-        ...latestSession,
-        waitingRoom: {
-          ...latestSession.waitingRoom,
-          participants: {
-            ...latestSession.waitingRoom.participants,
-            [access.user.uid]: {
-              ...currentRequest,
-              displayName: access.user.displayName || currentRequest.displayName,
-              email: access.user.email || currentRequest.email,
-              updatedAt: nowIso,
-            },
-          },
-        },
-      };
-      tx.set(access.classContext.classRef, { liveSession: nextSession }, { merge: true });
-      result = {
-        session: nextSession,
-        joinAllowed: true,
-        waitingReason: null,
-      };
-      return;
-    }
-
-    if (currentRequest?.status === "rejected" && !retryRejectedRequest) {
-      result = {
-        session: latestSession,
-        joinAllowed: false,
-        waitingReason: "admission_rejected",
-      };
-      return;
-    }
-
-    const nextSession = {
-      ...latestSession,
-      waitingRoom: {
-        ...latestSession.waitingRoom,
-        participants: {
-          ...latestSession.waitingRoom.participants,
-          [access.user.uid]: {
-            uid: access.user.uid,
-            displayName: access.user.displayName || currentRequest?.displayName || "Alumno",
-            email: access.user.email || currentRequest?.email || "",
-            status: "pending" as const,
-            requestedAt: retryRejectedRequest ? nowIso : currentRequest?.requestedAt ?? nowIso,
-            decidedAt: null,
-            decidedBy: null,
-            updatedAt: nowIso,
-          },
-        },
-      },
+  if (isLiveSessionFinalized(latestSession)) {
+    return {
+      session: latestSession,
+      joinAllowed: false,
+      waitingReason: "session_ended",
     };
-    tx.set(access.classContext.classRef, { liveSession: nextSession }, { merge: true });
-    result = {
-      session: nextSession,
+  }
+
+  if (!isLiveSessionJoinable(latestSession)) {
+    return {
+      session: latestSession,
+      joinAllowed: false,
+      waitingReason: "waiting_teacher",
+    };
+  }
+
+  if (!latestSession.waitingRoom.enabled) {
+    return {
+      session: latestSession,
+      joinAllowed: true,
+      waitingReason: null,
+    };
+  }
+
+  const currentRequest = await loadWaitingRoomParticipant({
+    classRef: access.classContext.classRef,
+    uid: access.user.uid,
+    session: latestSession,
+  });
+  if (currentRequest?.status === "admitted") {
+    await upsertWaitingRoomParticipant({
+      classRef: access.classContext.classRef,
+      participant: {
+        ...currentRequest,
+        displayName: access.user.displayName || currentRequest.displayName,
+        email: access.user.email || currentRequest.email,
+        updatedAt: nowIso,
+      },
+    });
+    return {
+      session: latestSession,
+      joinAllowed: true,
+      waitingReason: null,
+    };
+  }
+
+  if (currentRequest?.status === "rejected" && !retryRejectedRequest) {
+    return {
+      session: latestSession,
+      joinAllowed: false,
+      waitingReason: "admission_rejected",
+    };
+  }
+
+  if (currentRequest?.status === "pending" && !retryRejectedRequest) {
+    return {
+      session: latestSession,
       joinAllowed: false,
       waitingReason: "waiting_approval",
     };
+  }
+
+  await upsertWaitingRoomParticipant({
+    classRef: access.classContext.classRef,
+    participant: {
+      uid: access.user.uid,
+      displayName: access.user.displayName || currentRequest?.displayName || "Alumno",
+      email: access.user.email || currentRequest?.email || "",
+      status: "pending",
+      requestedAt: retryRejectedRequest ? nowIso : currentRequest?.requestedAt ?? nowIso,
+      decidedAt: null,
+      decidedBy: null,
+      updatedAt: nowIso,
+    },
   });
+  result = {
+    session: latestSession,
+    joinAllowed: false,
+    waitingReason: "waiting_approval",
+  };
 
   return result;
 }

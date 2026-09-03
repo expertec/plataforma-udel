@@ -393,8 +393,8 @@ function detectLiveBrowser(): LiveBrowserInfo {
     return { label: "tu navegador", isRecommendedChrome: true };
   }
 
-  const ua = navigator.userAgent.toLowerCase();
-  const vendor = navigator.vendor.toLowerCase();
+  const ua = (navigator.userAgent ?? "").toLowerCase();
+  const vendor = (navigator.vendor ?? "").toLowerCase();
   const userAgentData = (
     navigator as Navigator & {
       userAgentData?: {
@@ -403,7 +403,7 @@ function detectLiveBrowser(): LiveBrowserInfo {
     }
   ).userAgentData;
   const brands = Array.isArray(userAgentData?.brands)
-    ? userAgentData.brands.map((brand) => brand.brand.toLowerCase())
+    ? userAgentData.brands.map((brand) => (brand.brand ?? "").toLowerCase())
     : [];
 
   const isEdge = ua.includes("edg/");
@@ -450,7 +450,7 @@ function detectScreenShareSupport(): ScreenShareSupport {
     return { supported: true, message: null };
   }
 
-  const ua = navigator.userAgent.toLowerCase();
+  const ua = (navigator.userAgent ?? "").toLowerCase();
   const platform = (navigator as Navigator & { platform?: string }).platform ?? "";
   const maxTouchPoints = navigator.maxTouchPoints ?? 0;
   const isAppleMobileDevice =

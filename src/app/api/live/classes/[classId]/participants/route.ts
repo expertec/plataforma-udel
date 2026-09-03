@@ -11,8 +11,13 @@ import {
   normalizeLiveSession,
   type LiveClassSession,
   type LiveWaitingRoomParticipant,
-  type LiveWaitingRoomParticipantStatus,
 } from "@/lib/live-classes/types";
+import {
+  admitAllWaitingRoomParticipantDocs,
+  listPendingWaitingRoomParticipantSummaries,
+  updateWaitingRoomParticipantStatus,
+  type LiveWaitingRoomParticipantSummary,
+} from "@/lib/live-classes/waiting-room";
 import {
   isLiveKitNotFoundError,
   listLiveKitRoomParticipants,
@@ -30,17 +35,6 @@ type LiveParticipantsActionBody = {
   waitingParticipantId?: unknown;
   includeTeacherParticipants?: unknown;
   excludeSelf?: unknown;
-};
-
-type LiveWaitingRoomParticipantSummary = {
-  uid: string;
-  displayName: string;
-  email: string;
-  status: LiveWaitingRoomParticipantStatus;
-  requestedAt: string | null;
-  decidedAt: string | null;
-  decidedBy: string | null;
-  updatedAt: string | null;
 };
 
 function asTrimmedString(value: unknown): string {
@@ -93,18 +87,13 @@ function toWaitingRoomParticipantSummary(
   };
 }
 
-function listPendingWaitingRoomParticipants(
-  session: LiveClassSession | null,
-): LiveWaitingRoomParticipantSummary[] {
-  if (!session?.waitingRoom.enabled) return [];
-  return Object.values(session.waitingRoom.participants)
-    .filter((participant) => participant.status === "pending")
-    .map(toWaitingRoomParticipantSummary)
-    .sort((left, right) => {
-      const leftMs = left.requestedAt ? new Date(left.requestedAt).getTime() : 0;
-      const rightMs = right.requestedAt ? new Date(right.requestedAt).getTime() : 0;
-      return leftMs - rightMs;
-    });
+async function listPendingWaitingRoomParticipants(
+  access: Awaited<ReturnType<typeof resolveAuthorizedLiveClassAccess>>,
+): Promise<LiveWaitingRoomParticipantSummary[]> {
+  return listPendingWaitingRoomParticipantSummaries({
+    classRef: access.classContext.classRef,
+    session: access.classContext.liveSession,
+  });
 }
 
 async function updateWaitingRoomParticipant(params: {
@@ -112,6 +101,14 @@ async function updateWaitingRoomParticipant(params: {
   waitingParticipantId: string;
   nextStatus: "admitted" | "rejected";
 }): Promise<LiveWaitingRoomParticipantSummary> {
+  const documentParticipant = await updateWaitingRoomParticipantStatus({
+    classRef: params.access.classContext.classRef,
+    uid: params.waitingParticipantId,
+    nextStatus: params.nextStatus,
+    decidedBy: params.access.user.uid,
+  });
+  if (documentParticipant) return documentParticipant;
+
   const db = getAdminFirestore();
   const nowIso = new Date().toISOString();
   let updatedParticipant: LiveWaitingRoomParticipantSummary | null = null;
@@ -170,6 +167,10 @@ async function updateWaitingRoomParticipant(params: {
 async function admitAllWaitingRoomParticipants(params: {
   access: Awaited<ReturnType<typeof resolveAuthorizedLiveClassAccess>>;
 }): Promise<LiveWaitingRoomParticipantSummary[]> {
+  const documentParticipants = await admitAllWaitingRoomParticipantDocs({
+    classRef: params.access.classContext.classRef,
+    decidedBy: params.access.user.uid,
+  });
   const db = getAdminFirestore();
   const nowIso = new Date().toISOString();
   let updatedParticipants: LiveWaitingRoomParticipantSummary[] = [];
@@ -218,7 +219,7 @@ async function admitAllWaitingRoomParticipants(params: {
     tx.set(params.access.classContext.classRef, { liveSession: nextSession }, { merge: true });
   });
 
-  return updatedParticipants;
+  return [...documentParticipants, ...updatedParticipants];
 }
 
 export async function GET(
@@ -246,6 +247,7 @@ export async function GET(
 
     try {
       const participants = await listLiveKitRoomParticipants(roomName);
+      const waitingParticipants = await listPendingWaitingRoomParticipants(access);
       return NextResponse.json(
         {
           success: true,
@@ -253,7 +255,7 @@ export async function GET(
             classId: access.classContext.classId,
             roomName,
             participants,
-            waitingParticipants: listPendingWaitingRoomParticipants(access.classContext.liveSession),
+            waitingParticipants,
           },
         },
         { status: 200 },
@@ -262,6 +264,7 @@ export async function GET(
       if (!isLiveKitNotFoundError(error)) {
         throw error;
       }
+      const waitingParticipants = await listPendingWaitingRoomParticipants(access);
       return NextResponse.json(
         {
           success: true,
@@ -269,7 +272,7 @@ export async function GET(
             classId: access.classContext.classId,
             roomName,
             participants: [],
-            waitingParticipants: listPendingWaitingRoomParticipants(access.classContext.liveSession),
+            waitingParticipants,
           },
         },
         { status: 200 },
