@@ -356,7 +356,11 @@ export default function CoursesPage() {
         </>
       )}
 
-      <CreateCourseModal open={modalOpen} onClose={() => setModalOpen(false)} />
+      <CreateCourseModal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        canLinkGlobalExam={isAdminTeacherRole(userRole)}
+      />
       <EditCourseModal
         open={editModalOpen}
         onClose={() => {

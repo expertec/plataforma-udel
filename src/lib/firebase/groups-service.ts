@@ -414,6 +414,35 @@ export async function createGroup(data: CreateGroupData): Promise<string> {
   return docRef.id;
 }
 
+export async function updateGroupName(params: {
+  groupId: string;
+  groupName: string;
+}): Promise<void> {
+  const groupId = params.groupId.trim();
+  const groupName = params.groupName.trim();
+  if (!groupId || !groupName) {
+    throw new Error("Grupo y nombre son requeridos");
+  }
+
+  const groupRef = doc(db, "groups", groupId);
+  const enrollmentsSnap = await getDocs(
+    query(collection(db, "studentEnrollments"), where("groupId", "==", groupId)),
+  );
+
+  const batch = writeBatch(db);
+  batch.update(groupRef, {
+    groupName,
+    updatedAt: serverTimestamp(),
+  });
+  enrollmentsSnap.docs.forEach((enrollmentDoc) => {
+    batch.update(enrollmentDoc.ref, {
+      groupName,
+      updatedAt: serverTimestamp(),
+    });
+  });
+  await batch.commit();
+}
+
 export async function updateGroupCampusGradeSettings(params: {
   groupId: string;
   enableCampusTasksGrade: boolean;

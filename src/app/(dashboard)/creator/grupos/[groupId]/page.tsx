@@ -16,6 +16,7 @@ import {
   updateGroupCampusGradeSettings,
   updateGroupCoordinator,
   updateGroupInPersonMode,
+  updateGroupName,
   updateGroupPlantel,
   updateGroupTeacher,
 } from "@/lib/firebase/groups-service";
@@ -62,6 +63,8 @@ export default function GroupDetailPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [accessResolved, setAccessResolved] = useState(false);
+  const [groupNameDraft, setGroupNameDraft] = useState("");
+  const [savingGroupName, setSavingGroupName] = useState(false);
   const [plantelAssignments, setPlantelAssignments] = useState<PlantelAssignment[]>([]);
   const [planteles, setPlanteles] = useState<Plantel[]>([]);
   const [selectedPlantelId, setSelectedPlantelId] = useState("");
@@ -222,6 +225,7 @@ export default function GroupDetailPage() {
       enableExtraordinaryExamGrade: group.enableExtraordinaryExamGrade === true,
     });
     setInPersonMode(group.isInPerson === true);
+    setGroupNameDraft(group.groupName);
     setSelectedPlantelId(group.plantelId ?? "");
     setSelectedCoordinatorId(group.coordinatorId ?? "");
     setSelectedPrincipalTeacherId(group.teacherId ?? "");
@@ -350,6 +354,7 @@ export default function GroupDetailPage() {
   const canManageCampusGradeConfig = isAdminTeacherRole(userRole);
   const canManageInPersonMode = canManageMentors;
   const canManageGroupPlantel = isAdminTeacherRole(userRole);
+  const canEditGroupName = userRole === "adminTeacher";
   const hasFullGroupVisibility = isAdminTeacherRole(userRole);
   const isCurrentUserAssistant = Boolean(
     group &&
@@ -423,6 +428,7 @@ export default function GroupDetailPage() {
   const inPersonModeChanged = Boolean(
     group && inPersonMode !== (group.isInPerson === true),
   );
+  const groupNameChanged = Boolean(group && groupNameDraft.trim() !== group.groupName.trim());
   const principalTeacherOptionsWithCurrent = useMemo(() => {
     if (!group) return principalTeacherOptions;
     if (principalTeacherOptions.some((teacher) => teacher.id === group.teacherId)) {
@@ -761,6 +767,35 @@ export default function GroupDetailPage() {
     }
   };
 
+  const handleSaveGroupName = async () => {
+    if (!group) return;
+    if (!canEditGroupName) {
+      toast.error("Solo adminTeacher puede cambiar el nombre del grupo.");
+      return;
+    }
+    const nextName = groupNameDraft.trim();
+    if (!nextName) {
+      toast.error("El nombre del grupo es obligatorio.");
+      return;
+    }
+    if (nextName === group.groupName.trim()) return;
+
+    setSavingGroupName(true);
+    try {
+      await updateGroupName({
+        groupId: group.id,
+        groupName: nextName,
+      });
+      setGroup((prev) => (prev ? { ...prev, groupName: nextName } : prev));
+      toast.success("Nombre del grupo actualizado.");
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo actualizar el nombre del grupo.");
+    } finally {
+      setSavingGroupName(false);
+    }
+  };
+
   const handleSavePlantel = async () => {
     if (!group) return;
     if (!canManageGroupPlantel) {
@@ -1049,6 +1084,53 @@ export default function GroupDetailPage() {
 
             <TabsContent value="config">
               <div className="rounded-lg bg-white p-6 shadow-sm space-y-4">
+                {isAdminTeacherRole(userRole) ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                          Nombre del grupo
+                        </p>
+                        <h3 className="mt-1 text-lg font-semibold text-slate-900">
+                          Editar nombre visible
+                        </h3>
+                      </div>
+                      {!canEditGroupName ? (
+                        <span className="inline-flex w-fit rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
+                          Solo adminTeacher
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                      <input
+                        type="text"
+                        value={groupNameDraft}
+                        onChange={(event) => setGroupNameDraft(event.target.value)}
+                        disabled={!canEditGroupName}
+                        className="min-w-72 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+                        placeholder="Nombre del grupo"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleSaveGroupName}
+                        disabled={
+                          !canEditGroupName ||
+                          !groupNameChanged ||
+                          savingGroupName ||
+                          !groupNameDraft.trim()
+                        }
+                        className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {savingGroupName ? "Guardando..." : "Guardar nombre"}
+                      </button>
+                    </div>
+                    {!canEditGroupName ? (
+                      <p className="mt-2 text-xs text-slate-500">
+                        Tu cuenta puede ver la configuración, pero solo una cuenta adminTeacher puede cambiar este nombre.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
                 {canManageGroupPlantel ? (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
                     <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Plantel</p>

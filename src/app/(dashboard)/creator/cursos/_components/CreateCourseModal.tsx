@@ -6,13 +6,23 @@ import toast from "react-hot-toast";
 import { createCourse } from "@/lib/firebase/courses-service";
 import { auth } from "@/lib/firebase/client";
 import { getPrograms } from "@/lib/firebase/programs-service";
+import { fetchGlobalExamTemplates, updateGlobalExamTemplate } from "@/lib/global-exams/client";
+import {
+  getGlobalExamTemplateStatusLabel,
+  type GlobalExamTemplateRecord,
+} from "@/lib/global-exams/types";
 
 type CreateCourseModalProps = {
   open: boolean;
   onClose: () => void;
+  canLinkGlobalExam?: boolean;
 };
 
-export function CreateCourseModal({ open, onClose }: CreateCourseModalProps) {
+export function CreateCourseModal({
+  open,
+  onClose,
+  canLinkGlobalExam = false,
+}: CreateCourseModalProps) {
   const router = useRouter();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -21,6 +31,9 @@ export function CreateCourseModal({ open, onClose }: CreateCourseModalProps) {
   const [isInduction, setIsInduction] = useState(false);
   const [programOptions, setProgramOptions] = useState<string[]>([]);
   const [programLoading, setProgramLoading] = useState(false);
+  const [globalExamTemplates, setGlobalExamTemplates] = useState<GlobalExamTemplateRecord[]>([]);
+  const [globalExamTemplatesLoading, setGlobalExamTemplatesLoading] = useState(false);
+  const [selectedGlobalExamTemplateId, setSelectedGlobalExamTemplateId] = useState("");
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -48,12 +61,50 @@ export function CreateCourseModal({ open, onClose }: CreateCourseModalProps) {
     };
   }, [open]);
 
+  useEffect(() => {
+    if (!open || !canLinkGlobalExam) {
+      setGlobalExamTemplates([]);
+      setSelectedGlobalExamTemplateId("");
+      return;
+    }
+
+    let active = true;
+    const loadGlobalExamTemplates = async () => {
+      setGlobalExamTemplatesLoading(true);
+      try {
+        const templates = await fetchGlobalExamTemplates();
+        if (!active) return;
+        setGlobalExamTemplates(
+          templates.filter(
+            (template) =>
+              template.examKind === "global" &&
+              template.courseId.trim().length === 0,
+          ),
+        );
+      } catch (err) {
+        console.error(err);
+        if (active) {
+          setGlobalExamTemplates([]);
+          toast.error("No se pudieron cargar los exámenes globales disponibles");
+        }
+      } finally {
+        if (active) setGlobalExamTemplatesLoading(false);
+      }
+    };
+
+    void loadGlobalExamTemplates();
+    return () => {
+      active = false;
+    };
+  }, [open, canLinkGlobalExam]);
+
   const resetForm = () => {
     setTitle("");
     setDescription("");
     setIntroVideoUrl("");
     setProgram("");
     setIsInduction(false);
+    setSelectedGlobalExamTemplateId("");
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -78,7 +129,20 @@ export function CreateCourseModal({ open, onClose }: CreateCourseModalProps) {
         teacherId: user.uid,
         teacherName: user.displayName ?? "",
       });
-      toast.success("Curso creado");
+      if (selectedGlobalExamTemplateId) {
+        try {
+          await updateGlobalExamTemplate(selectedGlobalExamTemplateId, {
+            courseId,
+            courseName: title.trim(),
+          });
+          toast.success("Curso creado y examen global vinculado");
+        } catch (linkError) {
+          console.error(linkError);
+          toast.error("Curso creado, pero no se pudo vincular el examen global");
+        }
+      } else {
+        toast.success("Curso creado");
+      }
       resetForm();
       onClose();
       router.push(`/creator/cursos/${courseId}`);
@@ -185,6 +249,34 @@ export function CreateCourseModal({ open, onClose }: CreateCourseModalProps) {
               Administra los programas en la pestaña &quot;Programas&quot;.
             </p>
           </div>
+
+          {canLinkGlobalExam ? (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <label className="text-sm font-medium text-slate-800">
+                Vincular examen global existente
+              </label>
+              <select
+                className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                value={selectedGlobalExamTemplateId}
+                onChange={(e) => setSelectedGlobalExamTemplateId(e.target.value)}
+                disabled={globalExamTemplatesLoading}
+              >
+                <option value="">
+                  {globalExamTemplatesLoading
+                    ? "Cargando exámenes..."
+                    : "Sin examen vinculado"}
+                </option>
+                {globalExamTemplates.map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.title} · {getGlobalExamTemplateStatusLabel(template.status)}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-slate-500">
+                Se muestran exámenes globales que todavía no están ligados a una materia.
+              </p>
+            </div>
+          ) : null}
 
           <div className="flex items-center justify-end gap-3 pt-2">
             <button

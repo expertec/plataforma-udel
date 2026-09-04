@@ -4,7 +4,6 @@ import "@livekit/components-styles";
 import {
   CarouselLayout,
   ChatToggle,
-  FocusLayout,
   FocusLayoutContainer,
   GridLayout,
   isTrackReference,
@@ -20,6 +19,7 @@ import {
   useDataChannel,
   useLocalParticipantPermissions,
   useMaybeLayoutContext,
+  useMaybeTrackRefContext,
   useParticipants,
   usePreviewTracks,
   type LocalUserChoices,
@@ -237,6 +237,7 @@ type RaisedHandEntry = {
   senderId: string;
   senderName: string;
   timestamp: number;
+  expiresAt: number;
 };
 
 type ScreenShareRequestEntry = {
@@ -280,7 +281,8 @@ const LIVE_VIEW_MODES = [
 type LiveViewMode = (typeof LIVE_VIEW_MODES)[number]["id"];
 
 const LIVE_SIGNAL_TOPIC = "udx.live.signal";
-const LIVE_REACTION_TTL_MS = 4500;
+const LIVE_REACTION_TTL_MS = 2000;
+const LIVE_RAISED_HAND_TTL_MS = 20_000;
 const LIVE_REACTIONS = ["👍", "👏", "🎉", "🔥", "❤️", "😂"];
 const RECORDING_STATUS_LABEL: Record<LiveRecordingControlStatus, string> = {
   idle: "No grabando",
@@ -750,6 +752,38 @@ function LiveRoomChatPanel({ visible }: { visible: boolean }) {
   );
 }
 
+function LiveParticipantTile({
+  raisedHands,
+  trackRef,
+}: {
+  raisedHands: Record<string, RaisedHandEntry>;
+  trackRef?: TrackReferenceOrPlaceholder;
+}) {
+  const contextTrackRef = useMaybeTrackRefContext();
+  const effectiveTrackRef = trackRef ?? contextTrackRef;
+  const participantId = effectiveTrackRef?.participant.identity.trim() ?? "";
+  const handEntry = participantId ? raisedHands[participantId] : undefined;
+  const showHandBadge = effectiveTrackRef?.source === Track.Source.Camera && Boolean(handEntry);
+
+  return (
+    <div
+      className="relative h-full min-h-0 overflow-hidden rounded-[var(--lk-border-radius)]"
+      data-live-raised-hand={showHandBadge ? "true" : undefined}
+    >
+      <ParticipantTile trackRef={trackRef} className="h-full w-full" />
+      {showHandBadge && handEntry ? (
+        <div
+          className="pointer-events-none absolute left-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-amber-200/80 bg-amber-400 text-amber-950 shadow-lg shadow-black/25"
+          title={`${handEntry.senderName} levantó la mano`}
+          aria-label={`${handEntry.senderName} levantó la mano`}
+        >
+          <Hand className="h-4 w-4" />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function LiveRoomConference({
   viewerRole,
   leftSlot,
@@ -977,6 +1011,7 @@ function LiveRoomConference({
   const applyRaisedHand = useCallback(
     (payload: LiveSignalPayload & { type: "hand" }) => {
       setRaisedHands((current) => {
+        const now = Date.now();
         if (!payload.raised) {
           const next = { ...current };
           delete next[payload.senderId];
@@ -988,6 +1023,7 @@ function LiveRoomConference({
             senderId: payload.senderId,
             senderName: payload.senderName,
             timestamp: payload.timestamp,
+            expiresAt: now + LIVE_RAISED_HAND_TTL_MS,
           },
         };
       });
@@ -1285,6 +1321,28 @@ function LiveRoomConference({
   }, []);
 
   useEffect(() => {
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setRaisedHands((current) => {
+        const nextEntries = Object.entries(current).filter(
+          ([, entry]) => entry.expiresAt > now,
+        );
+        if (nextEntries.length === Object.keys(current).length) return current;
+        return Object.fromEntries(nextEntries) as Record<string, RaisedHandEntry>;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!handRaised) return;
+    const timer = window.setTimeout(() => {
+      void broadcastHandState(false);
+    }, LIVE_RAISED_HAND_TTL_MS);
+    return () => window.clearTimeout(timer);
+  }, [broadcastHandState, handRaised]);
+
+  useEffect(() => {
     if (!showViewMenu) return;
     const handlePointerDown = (event: MouseEvent) => {
       if (!viewMenuRef.current?.contains(event.target as Node)) {
@@ -1370,25 +1428,12 @@ function LiveRoomConference({
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
-      {raisedHandsList.length > 0 ? (
-        <div className="pointer-events-none absolute left-3 top-20 z-20 flex max-w-[70vw] flex-wrap gap-2">
-          {raisedHandsList.map((entry) => (
-            <span
-              key={entry.senderId}
-              className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-amber-300/60 bg-amber-500/90 px-3 py-1 text-xs font-semibold text-amber-950 shadow-lg"
-            >
-              <Hand className="h-3.5 w-3.5" />
-              {entry.senderName}
-            </span>
-          ))}
-        </div>
-      ) : null}
       {activeReactions.length > 0 ? (
-        <div className="pointer-events-none absolute left-1/2 top-12 z-20 flex -translate-x-1/2 flex-col items-center gap-2">
+        <div className="pointer-events-none absolute right-3 top-20 z-20 flex max-w-[min(18rem,calc(100vw-1.5rem))] flex-col items-end gap-1.5">
           {activeReactions.slice(-5).map((reaction) => (
             <span
               key={reaction.eventId}
-              className="rounded-full bg-black/65 px-3 py-1 text-sm font-semibold text-white shadow"
+              className="max-w-full truncate rounded-full bg-black/65 px-3 py-1 text-xs font-semibold text-white shadow"
             >
               {reaction.emoji} {reaction.senderName}
             </span>
@@ -1467,26 +1512,26 @@ function LiveRoomConference({
               ) : viewMode === "gallery" ? (
                 <div className="lk-grid-layout-wrapper min-h-0 flex-1">
                   <GridLayout tracks={visibleTracks} className="h-full">
-                    <ParticipantTile />
+                    <LiveParticipantTile raisedHands={raisedHands} />
                   </GridLayout>
                 </div>
               ) : viewMode === "focus" && effectiveFocusTrack ? (
                 <div className="lk-focus-layout-wrapper min-h-0 flex-1">
-                  <FocusLayout trackRef={effectiveFocusTrack} className="h-full" />
+                  <LiveParticipantTile raisedHands={raisedHands} trackRef={effectiveFocusTrack} />
                 </div>
               ) : !effectiveFocusTrack ? (
                 <div className="lk-grid-layout-wrapper min-h-0 flex-1">
                   <GridLayout tracks={visibleTracks} className="h-full">
-                    <ParticipantTile />
+                    <LiveParticipantTile raisedHands={raisedHands} />
                   </GridLayout>
                 </div>
               ) : (
                 <div className="lk-focus-layout-wrapper min-h-0 flex-1">
                   <FocusLayoutContainer className="h-full">
                     <CarouselLayout tracks={nonFocusedTracks}>
-                      <ParticipantTile />
+                      <LiveParticipantTile raisedHands={raisedHands} />
                     </CarouselLayout>
-                    <FocusLayout trackRef={effectiveFocusTrack} />
+                    <LiveParticipantTile raisedHands={raisedHands} trackRef={effectiveFocusTrack} />
                   </FocusLayoutContainer>
                 </div>
               )}
@@ -1556,6 +1601,7 @@ function LiveRoomConference({
                           label="Más"
                           icon={<MoreHorizontal className="h-5 w-5" />}
                           active={showMoreControlsMenu}
+                          badge={raisedHandsList.length}
                           ariaExpanded={showMoreControlsMenu}
                           title="Más controles"
                           onClick={() => {
@@ -1655,6 +1701,7 @@ function LiveRoomConference({
                         label={handRaised ? "Bajar mano" : "Mano"}
                         icon={<Hand className="h-5 w-5" />}
                         active={handRaised}
+                        badge={raisedHandsList.length}
                         ariaPressed={handRaised}
                         onClick={toggleHandRaised}
                       />

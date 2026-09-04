@@ -38,6 +38,18 @@ service cloud.firestore {
     }
     function isSuperAdmin() { return isSignedIn() && userRole() == 'superAdmin'; }
     function isAdmin() { return isSignedIn() && (userRole() == 'admin' || userRole() == 'superAdmin'); }
+    function canUpdateGroupNameField() {
+      return isSignedIn() &&
+        (
+          userRole() == 'adminTeacher' ||
+          userRole() == 'adminteacher' ||
+          userRole() == 'admin_teacher'
+        );
+    }
+    function groupNameFieldIsUnchanged() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['groupName']) ||
+        canUpdateGroupNameField();
+    }
     // Admin-level teachers (including super-admin teachers) share elevated permissions.
     function isAdminTeacher() {
       return isSignedIn() &&
@@ -548,15 +560,18 @@ service cloud.firestore {
           request.resource.data.plantelId is string &&
           userHasPlantelId(request.resource.data.plantelId)
         );
-      allow update: if isAdmin() || isAdminTeacher() ||
+      allow update: if groupNameFieldIsUnchanged() &&
         (
-          isCampusCoordinator() &&
-          isGroupDataInUserPlantel(resource.data) &&
-          request.resource.data.plantelId == resource.data.plantelId &&
-          resource.data.teacherId == request.auth.uid
-        ) ||
-        canTeacherLinkCourseToGroup() ||
-        canTeacherUnlinkCourseFromGroup(/databases/$(database)/documents/groups/$(groupId));
+          isAdmin() || isAdminTeacher() ||
+          (
+            isCampusCoordinator() &&
+            isGroupDataInUserPlantel(resource.data) &&
+            request.resource.data.plantelId == resource.data.plantelId &&
+            resource.data.teacherId == request.auth.uid
+          ) ||
+          canTeacherLinkCourseToGroup() ||
+          canTeacherUnlinkCourseFromGroup(/databases/$(database)/documents/groups/$(groupId))
+        );
       allow delete: if isAdmin() || isAdminTeacher() ||
         (
           isCampusCoordinator() &&
@@ -681,15 +696,18 @@ service cloud.firestore {
         request.resource.data.groupId is string &&
         canAccessEnrollmentGroup(request.resource.data.groupId)
       );
-      allow update: if isAdmin() || isAdminTeacher() || (
-        resource.data.studentId is string &&
-        resource.data.studentId == request.auth.uid &&
-        request.resource.data.studentId is string &&
-        request.resource.data.studentId == request.auth.uid
-      ) || (
-        resource.data.groupId is string &&
-        canAccessEnrollmentGroup(resource.data.groupId)
-      );
+      allow update: if groupNameFieldIsUnchanged() &&
+        (
+          isAdmin() || isAdminTeacher() || (
+            resource.data.studentId is string &&
+            resource.data.studentId == request.auth.uid &&
+            request.resource.data.studentId is string &&
+            request.resource.data.studentId == request.auth.uid
+          ) || (
+            resource.data.groupId is string &&
+            canAccessEnrollmentGroup(resource.data.groupId)
+          )
+        );
       allow delete: if isAdmin() || isAdminTeacher() || (
         resource.data.studentId is string &&
         resource.data.studentId == request.auth.uid
