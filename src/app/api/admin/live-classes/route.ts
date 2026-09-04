@@ -143,6 +143,7 @@ function parseLessonPath(path: string): { courseId: string; lessonId: string } |
 
 function isSessionFinalized(session: LiveClassSession | null): boolean {
   if (!session) return false;
+  if (session.status === "live" || session.teacherActive === true) return false;
   return (
     Boolean(session.lastEndedAt) ||
     session.status === "ended" ||

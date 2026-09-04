@@ -48,6 +48,8 @@ export type LiveClassSession = {
   recording: LiveRecordingData;
   lastStartedAt?: string | null;
   lastEndedAt?: string | null;
+  lastEndedById?: string | null;
+  lastEndedByName?: string | null;
 };
 
 const LIVE_ROOM_MAX_LENGTH = 128;
@@ -203,6 +205,8 @@ export function createDefaultLiveSession(params?: {
     },
     lastStartedAt: null,
     lastEndedAt: null,
+    lastEndedById: null,
+    lastEndedByName: null,
   };
 }
 
@@ -246,6 +250,8 @@ export function normalizeLiveSession(value: unknown): LiveClassSession | null {
     },
     lastStartedAt: asNullableString(raw.lastStartedAt),
     lastEndedAt: asNullableString(raw.lastEndedAt),
+    lastEndedById: asNullableString(raw.lastEndedById),
+    lastEndedByName: asNullableString(raw.lastEndedByName),
   };
 }
 

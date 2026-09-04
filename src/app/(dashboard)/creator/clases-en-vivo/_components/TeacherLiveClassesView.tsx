@@ -46,6 +46,8 @@ type TeacherLiveClassItem = {
   timezone: string;
   lastStartedAt: string | null;
   lastEndedAt: string | null;
+  lastEndedById: string | null;
+  lastEndedByName: string | null;
   playbackReadyAt: string | null;
   durationSec: number | null;
   recordingGenerated: boolean;
@@ -1257,6 +1259,10 @@ export function TeacherLiveClassesView({
                 <div>
                   <span className="font-medium text-[#551b22]">Estado de grabación:</span>{" "}
                   {detailsItem.recordingStatus || "N/D"}
+                </div>
+                <div className="sm:col-span-2">
+                  <span className="font-medium text-[#551b22]">Finalizada por:</span>{" "}
+                  {detailsItem.lastEndedByName || "Sin registrar"}
                 </div>
                 {detailsItem.playbackReadyAt ? (
                   <div className="sm:col-span-2">

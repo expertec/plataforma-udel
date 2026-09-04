@@ -213,6 +213,7 @@ function buildRecordingControlResult(
 }
 
 function isLiveSessionFinalized(session: LiveClassSession): boolean {
+  if (session.status === "live" || session.teacherActive === true) return false;
   return (
     Boolean(session.lastEndedAt) ||
     session.status === "ended" ||

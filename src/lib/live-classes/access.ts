@@ -65,6 +65,7 @@ const TEACHER_ROLES = new Set<UserRole>([
 ]);
 
 function isLiveSessionFinalized(session: LiveClassSession | null): boolean {
+  if (session?.status === "live" || session?.teacherActive === true) return false;
   return (
     Boolean(session?.lastEndedAt) ||
     session?.status === "ended" ||

@@ -347,6 +347,9 @@ export async function POST(
         status: "live" as const,
         teacherActive: true,
         lastStartedAt: startedAtIso,
+        lastEndedAt: null,
+        lastEndedById: null,
+        lastEndedByName: null,
         waitingRoom: {
           enabled: session.waitingRoom.enabled,
           participants: wasAlreadyLive ? session.waitingRoom.participants : {},

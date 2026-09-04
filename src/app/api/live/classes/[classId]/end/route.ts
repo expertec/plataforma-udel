@@ -34,6 +34,7 @@ export async function POST(
     const db = getAdminFirestore();
     const classRef = access.classContext.classRef;
     const endedAtIso = new Date().toISOString();
+    const endedByName = access.user.displayName || access.user.email || "Profesor";
     let egressId: string | null = null;
     let roomName = "";
     let shouldStopEgress = false;
@@ -65,6 +66,8 @@ export async function POST(
         ...session,
         teacherActive: false,
         lastEndedAt: endedAtIso,
+        lastEndedById: access.user.uid,
+        lastEndedByName: endedByName,
         status: session.recording.status === "ready" ? ("recording_ready" as const) : ("ended" as const),
         recording: {
           ...session.recording,

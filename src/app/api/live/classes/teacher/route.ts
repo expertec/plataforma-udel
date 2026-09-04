@@ -384,6 +384,8 @@ export async function GET(request: NextRequest) {
       timezone: string;
       lastStartedAt: string | null;
       lastEndedAt: string | null;
+      lastEndedById: string | null;
+      lastEndedByName: string | null;
       playbackReadyAt: string | null;
       durationSec: number | null;
       recordingGenerated: boolean;
@@ -465,6 +467,8 @@ export async function GET(request: NextRequest) {
                 timezone: liveSession?.timezone ?? "America/Monterrey",
                 lastStartedAt: liveSession?.lastStartedAt ?? null,
                 lastEndedAt: liveSession?.lastEndedAt ?? null,
+                lastEndedById: liveSession?.lastEndedById ?? null,
+                lastEndedByName: liveSession?.lastEndedByName ?? null,
                 playbackReadyAt: liveSession?.recording.playbackReadyAt ?? null,
                 durationSec: liveSession?.recording.durationSec ?? null,
                 recordingGenerated:
