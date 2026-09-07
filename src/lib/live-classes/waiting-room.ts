@@ -176,10 +176,8 @@ export async function listPendingWaitingRoomParticipantSummaries(params: {
   classRef: FirebaseFirestore.DocumentReference;
   session: LiveClassSession | null;
 }): Promise<LiveWaitingRoomParticipantSummary[]> {
-  if (!params.session?.waitingRoom.enabled) return [];
-
   const participantsByUid = new Map<string, LiveWaitingRoomParticipant>();
-  Object.values(params.session.waitingRoom.participants)
+  Object.values(params.session?.waitingRoom.participants ?? {})
     .filter((participant) => participant.status === "pending")
     .forEach((participant) => {
       participantsByUid.set(participant.uid, participant);

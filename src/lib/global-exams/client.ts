@@ -117,6 +117,14 @@ export async function updateGlobalExamTemplate(
   });
 }
 
+export async function duplicateGlobalExamTemplate(
+  templateId: string,
+): Promise<GlobalExamTemplateRecord> {
+  return callApi<GlobalExamTemplateRecord>(`/api/global-exams/templates/${templateId}`, {
+    method: "POST",
+  });
+}
+
 export async function fetchGlobalExamAssignments(): Promise<GlobalExamAssignmentRecord[]> {
   return callApi<GlobalExamAssignmentRecord[]>("/api/global-exams/assignments");
 }

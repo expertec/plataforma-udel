@@ -328,14 +328,29 @@ export async function POST(
         current: classData.liveSession,
       });
 
+      const isActive = session.status === "live" || session.teacherActive === true;
       const isFinalized =
-        Boolean(session.lastEndedAt) ||
-        session.status === "ended" ||
+        !isActive &&
+        (Boolean(session.lastEndedAt) ||
+          session.status === "ended" ||
+          session.status === "recording_ready");
+      const hasLockedRecording =
+        session.recording.status === "recording" ||
+        session.recording.status === "processing" ||
+        session.recording.status === "ready" ||
         session.status === "recording_ready";
-      if (isFinalized) {
+      const canReactivateFinalized =
+        access.user.role === "adminTeacher" || access.user.role === "superAdminTeacher";
+      if (isFinalized && !canReactivateFinalized) {
+        throw new LiveAccessError(
+          403,
+          "Solo adminTeacher puede reactivar una clase finalizada.",
+        );
+      }
+      if (isFinalized && hasLockedRecording) {
         throw new LiveAccessError(
           409,
-          "Esta clase en vivo ya fue finalizada y no puede volver a iniciarse.",
+          "Esta clase en vivo ya fue finalizada con grabación y no puede volver a iniciarse.",
         );
       }
 
@@ -346,12 +361,12 @@ export async function POST(
         ...session,
         status: "live" as const,
         teacherActive: true,
-        lastStartedAt: startedAtIso,
+        lastStartedAt: wasAlreadyLive ? session.lastStartedAt ?? startedAtIso : startedAtIso,
         lastEndedAt: null,
         lastEndedById: null,
         lastEndedByName: null,
         waitingRoom: {
-          enabled: session.waitingRoom.enabled,
+          enabled: true,
           participants: wasAlreadyLive ? session.waitingRoom.participants : {},
         },
       };

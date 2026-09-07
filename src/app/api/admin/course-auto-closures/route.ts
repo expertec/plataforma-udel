@@ -15,7 +15,7 @@ import {
   ensureGlobalExamStudyEnrollment,
   toGlobalExamTemplateRecord,
 } from "@/lib/server/global-exams";
-import { isExamOptionalProgram } from "@/lib/program-level";
+import { isExamOptionalForCourse } from "@/lib/program-level";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -1074,7 +1074,7 @@ async function processCourse(params: {
   }
 
   const courseProgram = await resolveCourseProgramForExamPolicy({ db, course, groupData });
-  if (!isExamOptionalProgram(courseProgram)) {
+  if (!isExamOptionalForCourse({ program: courseProgram, courseName: course.courseName })) {
     await ensureAutoExtraordinaryExamAssignmentsForClosureWrites({
       db,
       groupId,

@@ -30,6 +30,8 @@ type TokenRequestBody = {
   admissionRetry?: unknown;
 };
 
+const STUDENT_FREE_ACCESS_TOLERANCE_MS = 10 * 60 * 1000;
+
 function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -49,6 +51,18 @@ function isLiveSessionFinalized(session: LiveClassSession): boolean {
 
 function isLiveSessionJoinable(session: LiveClassSession): boolean {
   return session.status === "live" || session.teacherActive;
+}
+
+function parseIsoDateMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function isWithinStudentFreeAccessTolerance(session: LiveClassSession): boolean {
+  const startedAtMs = parseIsoDateMs(session.lastStartedAt);
+  if (startedAtMs === null) return false;
+  return Date.now() - startedAtMs < STUDENT_FREE_ACCESS_TOLERANCE_MS;
 }
 
 async function resolveStudentWaitingRoomGate(params: {
@@ -103,7 +117,7 @@ async function resolveStudentWaitingRoomGate(params: {
     };
   }
 
-  if (!latestSession.waitingRoom.enabled) {
+  if (isWithinStudentFreeAccessTolerance(latestSession)) {
     return {
       session: latestSession,
       joinAllowed: true,

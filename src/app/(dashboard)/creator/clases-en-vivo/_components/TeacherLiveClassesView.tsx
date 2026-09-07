@@ -119,6 +119,13 @@ type TeacherLiveClassesViewProps = {
   authReady: boolean;
 };
 
+type TeacherLiveViewerRole =
+  | "teacher"
+  | "adminTeacher"
+  | "superAdminTeacher"
+  | "coordinadorPlantel"
+  | "director";
+
 type ScheduleFormState = {
   groupId: string;
   courseId: string;
@@ -327,6 +334,7 @@ export function TeacherLiveClassesView({
   const [items, setItems] = useState<TeacherLiveClassItem[]>([]);
   const [scheduleGroups, setScheduleGroups] = useState<ScheduleGroupOption[]>([]);
   const [canScheduleClasses, setCanScheduleClasses] = useState(true);
+  const [viewerRole, setViewerRole] = useState<TeacherLiveViewerRole | null>(null);
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | TeacherLiveStatus>("all");
@@ -334,6 +342,7 @@ export function TeacherLiveClassesView({
   const [submitting, setSubmitting] = useState(false);
   const [recordingLoadingClassId, setRecordingLoadingClassId] = useState<string | null>(null);
   const [attendanceLoadingClassId, setAttendanceLoadingClassId] = useState<string | null>(null);
+  const [reactivatingClassId, setReactivatingClassId] = useState<string | null>(null);
   const [detailsItem, setDetailsItem] = useState<TeacherLiveClassItem | null>(null);
   const [openActionsClassId, setOpenActionsClassId] = useState<string | null>(null);
   const [groupSearch, setGroupSearch] = useState("");
@@ -365,6 +374,7 @@ export function TeacherLiveClassesView({
       setItems(payload.data.items ?? []);
       setScheduleGroups(nextGroups);
       setCanScheduleClasses(payload.data.canSchedule ?? true);
+      setViewerRole(payload.data.viewerRole ?? null);
       setFetchedAt(payload.data.fetchedAt ?? new Date().toISOString());
       setForm((current) => {
         if (current.groupId || current.courseId) return current;
@@ -404,6 +414,8 @@ export function TeacherLiveClassesView({
   );
 
   const selectedGroupName = selectedGroup?.groupName ?? "";
+  const canReactivateLiveClasses =
+    viewerRole === "adminTeacher" || viewerRole === "superAdminTeacher";
 
   const selectedGroupCourses = useMemo(
     () => selectedGroup?.courses ?? [],
@@ -681,6 +693,77 @@ export function TeacherLiveClassesView({
     }
   }, []);
 
+  const reactivateLiveClass = useCallback(
+    async (item: TeacherLiveClassItem) => {
+      if (!currentUser) return;
+      if (!canReactivateLiveClasses) {
+        toast.error("Solo adminTeacher puede reactivar sesiones finalizadas.");
+        return;
+      }
+      if (item.liveStatus === "ready" || item.recordingStatus === "ready" || item.recordingStatus === "processing") {
+        toast.error("No se puede reactivar una clase con grabación lista o en proceso.");
+        return;
+      }
+
+      const confirmed = window.confirm(
+        `¿Reactivar la sesión "${item.title}" para permitir la entrada nuevamente?`,
+      );
+      if (!confirmed) return;
+
+      setReactivatingClassId(item.classId);
+      try {
+        const token = await currentUser.getIdToken();
+        const params = new URLSearchParams();
+        if (item.courseId) params.set("courseId", item.courseId);
+        if (item.lessonId) params.set("lessonId", item.lessonId);
+        const query = params.toString();
+        const response = await fetch(
+          `/api/live/classes/${encodeURIComponent(item.classId)}/start${query ? `?${query}` : ""}`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          },
+        );
+        const payload = (await response.json().catch(() => null)) as
+          | { success?: boolean; error?: string }
+          | null;
+        if (!response.ok || !payload?.success) {
+          throw new Error(payload?.error || "No se pudo reactivar la sesión");
+        }
+
+        const nowIso = new Date().toISOString();
+        const updatedItem: TeacherLiveClassItem = {
+          ...item,
+          liveStatus: "live",
+          sessionStatus: "live",
+          lastStartedAt: nowIso,
+          lastEndedAt: null,
+          lastEndedById: null,
+          lastEndedByName: null,
+          lastRelevantAt: nowIso,
+        };
+        setItems((current) =>
+          current.map((candidate) =>
+            candidate.classId === item.classId ? updatedItem : candidate,
+          ),
+        );
+        setDetailsItem((current) =>
+          current?.classId === item.classId ? updatedItem : current,
+        );
+        toast.success("Sesión reactivada. Ya pueden entrar.");
+        await fetchTeacherLiveClasses();
+      } catch (error) {
+        console.error(error);
+        toast.error(error instanceof Error ? error.message : "No se pudo reactivar la sesión");
+      } finally {
+        setReactivatingClassId(null);
+      }
+    },
+    [canReactivateLiveClasses, currentUser, fetchTeacherLiveClasses],
+  );
+
   const downloadAttendanceReport = useCallback(
     async (item: TeacherLiveClassItem) => {
       if (!currentUser) return;
@@ -914,6 +997,19 @@ export function TeacherLiveClassesView({
                                   >
                                     Entrar
                                   </Link>
+                                  {canReactivateLiveClasses && item.liveStatus === "finalized" ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setOpenActionsClassId(null);
+                                        void reactivateLiveClass(item);
+                                      }}
+                                      disabled={reactivatingClassId === item.classId}
+                                      className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm font-semibold text-[#551b22] hover:bg-[#f3e3db] disabled:cursor-not-allowed disabled:text-[#b99a90]"
+                                    >
+                                      {reactivatingClassId === item.classId ? "Reactivando..." : "Reactivar sesión"}
+                                    </button>
+                                  ) : null}
                                   <button
                                     type="button"
                                     onClick={() => {
@@ -1289,12 +1385,24 @@ export function TeacherLiveClassesView({
                   Cerrar
                 </button>
                 {canScheduleClasses ? (
-                  <Link
-                    href={buildLiveHref(detailsItem)}
-                    className="rounded-lg bg-[#6e2d2d] px-4 py-2 text-sm font-semibold text-white hover:bg-[#551b22]"
-                  >
-                    Entrar
-                  </Link>
+                  <>
+                    {canReactivateLiveClasses && detailsItem.liveStatus === "finalized" ? (
+                      <button
+                        type="button"
+                        onClick={() => void reactivateLiveClass(detailsItem)}
+                        disabled={reactivatingClassId === detailsItem.classId}
+                        className="rounded-lg border border-[#6e2d2d] px-4 py-2 text-sm font-semibold text-[#6e2d2d] hover:bg-[#fff7f7] disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {reactivatingClassId === detailsItem.classId ? "Reactivando..." : "Reactivar sesión"}
+                      </button>
+                    ) : null}
+                    <Link
+                      href={buildLiveHref(detailsItem)}
+                      className="rounded-lg bg-[#6e2d2d] px-4 py-2 text-sm font-semibold text-white hover:bg-[#551b22]"
+                    >
+                      Entrar
+                    </Link>
+                  </>
                 ) : null}
               </div>
             </div>

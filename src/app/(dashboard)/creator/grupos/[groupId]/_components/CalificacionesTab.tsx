@@ -39,7 +39,7 @@ import {
 } from "@/lib/firebase/submissions-service";
 import { getForumPosts } from "@/lib/firebase/forum-service";
 import { UserRole, isAdminTeacherRole } from "@/lib/firebase/roles";
-import { isExamOptionalProgram } from "@/lib/program-level";
+import { isExamOptionalForCourse } from "@/lib/program-level";
 
 type CalificacionesTabProps = {
   groupId: string;
@@ -896,7 +896,10 @@ export function CalificacionesTab({
     selectedCourse?.program?.trim() ||
     (selectedCourseId ? courseProgramsByCourse[selectedCourseId]?.trim() : "") ||
     groupProgram.trim();
-  const selectedCourseSkipsExamTemplates = isExamOptionalProgram(selectedCourseProgram);
+  const selectedCourseSkipsExamTemplates = isExamOptionalForCourse({
+    program: selectedCourseProgram,
+    courseName: selectedCourse?.courseName,
+  });
 
   const resolveSelectedCourseProgram = useCallback(async (): Promise<string> => {
     const courseId = selectedCourseId.trim();
@@ -2313,7 +2316,10 @@ export function CalificacionesTab({
     const resolvedProgram = selectedCourseSkipsExamTemplates
       ? selectedCourseProgram
       : await resolveSelectedCourseProgram();
-    if (isExamOptionalProgram(resolvedProgram)) {
+    if (isExamOptionalForCourse({
+      program: resolvedProgram,
+      courseName: selectedCourse?.courseName,
+    })) {
       return {
         candidateCount: 0,
         assignedCount: 0,
@@ -2860,7 +2866,10 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
     const resolvedProgram = selectedCourseSkipsExamTemplates
       ? selectedCourseProgram
       : await resolveSelectedCourseProgram();
-    if (isExamOptionalProgram(resolvedProgram)) return true;
+    if (isExamOptionalForCourse({
+      program: resolvedProgram,
+      courseName: selectedCourse?.courseName,
+    })) return true;
 
     if (
       selectedCourseId &&
@@ -4364,8 +4373,7 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
 
       {selectedCourseSkipsExamTemplates ? (
         <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-          Esta materia está clasificada como maestría o diplomado; no requiere cargar examen global ni extraordinario
-          para cerrar calificaciones.
+          Esta materia no requiere examen global ni extraordinario como condición de cierre por su programa o nombre.
         </div>
       ) : null}
 

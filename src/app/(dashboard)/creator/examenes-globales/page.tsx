@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Pencil, Plus, Search, X } from "lucide-react";
+import { Copy, Pencil, Plus, Search, X } from "lucide-react";
 import toast from "react-hot-toast";
 import { onAuthStateChanged } from "firebase/auth";
 import { type DocumentSnapshot } from "firebase/firestore";
@@ -11,6 +11,7 @@ import { Course, getCourses } from "@/lib/firebase/courses-service";
 import {
   createGlobalExamAssignment,
   createGlobalExamTemplate,
+  duplicateGlobalExamTemplate,
   fetchGlobalExamAssignments,
   fetchGlobalExamTemplates,
   resolveGlobalExamCandidateEnrollments,
@@ -129,6 +130,7 @@ export default function GlobalExamsPage() {
   const [templateStatus, setTemplateStatus] = useState<"draft" | "published">("draft");
   const [templateQuestions, setTemplateQuestions] = useState<QuestionFormState[]>(createInitialQuestions);
   const [savingTemplate, setSavingTemplate] = useState(false);
+  const [duplicatingTemplateId, setDuplicatingTemplateId] = useState<string | null>(null);
 
   const [showAssignmentForm, setShowAssignmentForm] = useState(false);
   const [assignmentTemplateId, setAssignmentTemplateId] = useState("");
@@ -142,6 +144,7 @@ export default function GlobalExamsPage() {
 
   const isAdmin = isAdminTeacherRole(userRole);
   const isCoordinator = isCampusCoordinatorRole(userRole);
+  const canDuplicateTemplates = userRole === "superAdminTeacher";
   const isStudentSearchActive = studentSearch.trim().length > 0;
 
   const STUDENT_RESULTS_LIMIT = 50;
@@ -561,6 +564,25 @@ export default function GlobalExamsPage() {
     } catch (error) {
       console.error(error);
       toast.error(error instanceof Error ? error.message : "No se pudo actualizar la plantilla");
+    }
+  };
+
+  const handleDuplicateTemplate = async (template: GlobalExamTemplateRecord) => {
+    if (!canDuplicateTemplates) {
+      toast.error("Solo superAdminTeacher puede duplicar plantillas");
+      return;
+    }
+
+    setDuplicatingTemplateId(template.id);
+    try {
+      const duplicated = await duplicateGlobalExamTemplate(template.id);
+      setTemplates((prev) => [duplicated, ...prev]);
+      toast.success("Plantilla duplicada en borrador");
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "No se pudo duplicar la plantilla");
+    } finally {
+      setDuplicatingTemplateId(null);
     }
   };
 
@@ -1054,6 +1076,17 @@ export default function GlobalExamsPage() {
                               <Pencil className="h-3.5 w-3.5" />
                               Editar
                             </button>
+                            {canDuplicateTemplates ? (
+                              <button
+                                type="button"
+                                onClick={() => void handleDuplicateTemplate(template)}
+                                disabled={duplicatingTemplateId === template.id}
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-blue-300 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                <Copy className="h-3.5 w-3.5" />
+                                {duplicatingTemplateId === template.id ? "Duplicando..." : "Duplicar"}
+                              </button>
+                            ) : null}
                             <button
                               type="button"
                               onClick={() => void handleToggleTemplateStatus(template)}
