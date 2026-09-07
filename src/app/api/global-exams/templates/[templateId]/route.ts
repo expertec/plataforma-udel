@@ -36,7 +36,7 @@ export async function POST(
   context: { params: Promise<{ templateId: string }> },
 ) {
   try {
-    const access = await requireGlobalExamAccess(request, ["superAdminTeacher"]);
+    const access = await requireGlobalExamAccess(request, ["adminTeacher", "superAdminTeacher"]);
     const { templateId } = await context.params;
     const normalizedTemplateId = templateId.trim();
     if (!normalizedTemplateId) {

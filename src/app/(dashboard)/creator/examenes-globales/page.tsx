@@ -144,7 +144,7 @@ export default function GlobalExamsPage() {
 
   const isAdmin = isAdminTeacherRole(userRole);
   const isCoordinator = isCampusCoordinatorRole(userRole);
-  const canDuplicateTemplates = userRole === "superAdminTeacher";
+  const canDuplicateTemplates = isAdmin;
   const isStudentSearchActive = studentSearch.trim().length > 0;
 
   const STUDENT_RESULTS_LIMIT = 50;
@@ -569,7 +569,7 @@ export default function GlobalExamsPage() {
 
   const handleDuplicateTemplate = async (template: GlobalExamTemplateRecord) => {
     if (!canDuplicateTemplates) {
-      toast.error("Solo superAdminTeacher puede duplicar plantillas");
+      toast.error("Solo adminTeacher puede duplicar plantillas");
       return;
     }
 
