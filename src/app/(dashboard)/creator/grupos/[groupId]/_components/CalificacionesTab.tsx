@@ -218,6 +218,35 @@ type ClosureDocumentRow = {
   totalEvaluable: number;
 };
 
+function compareStudentCourseRowsByName(left: StudentCourseRow, right: StudentCourseRow): number {
+  const nameCompare = (left.studentName || "Sin nombre").localeCompare(
+    right.studentName || "Sin nombre",
+    "es-MX",
+    { numeric: true, sensitivity: "base" },
+  );
+  if (nameCompare !== 0) return nameCompare;
+  return left.studentId.localeCompare(right.studentId, "es-MX", {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+function compareClosureDocumentRowsByName(
+  left: ClosureDocumentRow,
+  right: ClosureDocumentRow,
+): number {
+  const nameCompare = (left.studentName || "Sin nombre").localeCompare(
+    right.studentName || "Sin nombre",
+    "es-MX",
+    { numeric: true, sensitivity: "base" },
+  );
+  if (nameCompare !== 0) return nameCompare;
+  return left.studentId.localeCompare(right.studentId, "es-MX", {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
 type SignatureModalContext = {
   scope: "single" | "all";
   courseId: string;
@@ -1558,7 +1587,7 @@ export function CalificacionesTab({
         totalEvaluable: selectedCourseTasks.length,
         closure,
       };
-    });
+    }).sort(compareStudentCourseRowsByName);
   }, [allSubmissions, enrollmentByStudent, groupId, quizConfigByClass, selectedCourseId, selectedCourseTasks, students]);
 
   const openRowsCount = useMemo(
@@ -3031,7 +3060,7 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
     let y = topStart;
     const bgImage = await loadPdfBackgroundDataUrl();
 
-    const rows = signature.context.rows;
+    const rows = [...signature.context.rows].sort(compareClosureDocumentRowsByName);
     const avgFinalGrade =
       rows.length > 0
         ? rows.reduce((acc, row) => acc + row.finalGrade, 0) / rows.length
@@ -4112,7 +4141,8 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
       const generatedAt = new Date();
       const generatedAtLabel = formatDateTime(generatedAt);
       const logoDataUrl = await loadPdfLogoDataUrl();
-      const avgFinalGradeRows = rows
+      const exportRows = [...rows].sort(compareStudentCourseRowsByName);
+      const avgFinalGradeRows = exportRows
         .map((row) => row.closure?.finalGrade)
         .filter((grade): grade is number => typeof grade === "number" && Number.isFinite(grade));
       const avgFinalGrade =
@@ -4142,7 +4172,7 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
         pdf.setTextColor(15, 23, 42);
         pdf.setFont("helvetica", "bold");
         pdf.setFontSize(10);
-        pdf.text(`Alumnos: ${rows.length}`, marginX, 120);
+        pdf.text(`Alumnos: ${exportRows.length}`, marginX, 120);
         pdf.text(
           `Promedio final: ${avgFinalGrade === null ? "N/D" : avgFinalGrade.toFixed(1)}`,
           marginX + 96,
@@ -4187,7 +4217,7 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
 
       startPage();
 
-      rows.forEach((row, index) => {
+      exportRows.forEach((row, index) => {
         if (y + rowHeight > tableBottom) {
           addPage();
         }

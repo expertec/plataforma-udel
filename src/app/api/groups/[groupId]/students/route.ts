@@ -103,6 +103,23 @@ function toMillis(value: unknown): number | undefined {
   return undefined;
 }
 
+function compareStudentsByName(left: GroupStudentPayload, right: GroupStudentPayload): number {
+  const nameCompare = (left.studentName || "Sin nombre").localeCompare(
+    right.studentName || "Sin nombre",
+    "es-MX",
+    { numeric: true, sensitivity: "base" },
+  );
+  if (nameCompare !== 0) return nameCompare;
+
+  const emailCompare = left.studentEmail.localeCompare(right.studentEmail, "es-MX", {
+    numeric: true,
+    sensitivity: "base",
+  });
+  if (emailCompare !== 0) return emailCompare;
+
+  return left.id.localeCompare(right.id, "es-MX", { numeric: true, sensitivity: "base" });
+}
+
 async function resolveAccessContext(request: NextRequest, groupId: string) {
   const token = extractBearerToken(request.headers.get("authorization"));
   if (!token) {
@@ -205,7 +222,8 @@ export async function GET(request: NextRequest, context: RouteContext) {
           enrolledAtMs: toMillis(data.enrolledAt),
         };
       })
-      .filter((student) => isStudentStatusActive(student.status));
+      .filter((student) => isStudentStatusActive(student.status))
+      .sort(compareStudentsByName);
 
     return NextResponse.json(
       {

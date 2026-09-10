@@ -944,6 +944,23 @@ export type GroupStudent = {
   enrolledAt?: Date;
 };
 
+function compareGroupStudentsByName(left: GroupStudent, right: GroupStudent): number {
+  const nameCompare = (left.studentName || "Sin nombre").localeCompare(
+    right.studentName || "Sin nombre",
+    "es-MX",
+    { numeric: true, sensitivity: "base" },
+  );
+  if (nameCompare !== 0) return nameCompare;
+
+  const emailCompare = left.studentEmail.localeCompare(right.studentEmail, "es-MX", {
+    numeric: true,
+    sensitivity: "base",
+  });
+  if (emailCompare !== 0) return emailCompare;
+
+  return left.id.localeCompare(right.id, "es-MX", { numeric: true, sensitivity: "base" });
+}
+
 type GroupStudentsApiResponse = {
   success?: boolean;
   error?: string;
@@ -994,7 +1011,8 @@ export async function getGroupStudents(groupId: string): Promise<GroupStudent[]>
 
     return (payload.data?.students ?? [])
       .map(toGroupStudentFromApi)
-      .filter((student) => isStudentStatusActive(student.status));
+      .filter((student) => isStudentStatusActive(student.status))
+      .sort(compareGroupStudentsByName);
   }
 
   const ref = collection(db, "groups", groupId, "students");
@@ -1011,7 +1029,8 @@ export async function getGroupStudents(groupId: string): Promise<GroupStudent[]>
         enrolledAt: d.enrolledAt?.toDate?.(),
       };
     })
-    .filter((student) => isStudentStatusActive(student.status));
+    .filter((student) => isStudentStatusActive(student.status))
+    .sort(compareGroupStudentsByName);
 }
 
 /**
