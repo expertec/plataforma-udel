@@ -254,6 +254,7 @@ type ExamTemplatePreviewQuestion = {
   id: string;
   prompt: string;
   options: Array<{ id: string; text: string }>;
+  feedback?: string;
 };
 
 type ExamTemplatePreviewState = {
@@ -428,10 +429,19 @@ const parseExamOptionLine = (line: string): { letter: string; text: string } | n
   };
 };
 
+const parseFeedbackLine = (line: string): string | null => {
+  const match = line.match(/^(retroalimentaci[oó]n|retro|feedback|explicaci[oó]n)\s*:\s*(.*)$/i);
+  if (!match) return null;
+  return match[2].trim();
+};
+
+const isFeedbackLine = (line: string): boolean => parseFeedbackLine(line) !== null;
+
 const isAnswerOrScoreLine = (line: string): boolean =>
   /^respuesta\s+correcta\s*:/i.test(line) ||
   /^puntaje\s*:/i.test(line) ||
   /^tipo\s+admitido\s*:/i.test(line) ||
+  isFeedbackLine(line) ||
   /^correcta$/i.test(line) ||
   /^\d+(?:[.,]\d+)?\s*(puntos?)?$/i.test(line);
 
@@ -471,9 +481,24 @@ function parseExamQuestionsFromLines(lines: string[]): ExamTemplatePreviewQuesti
     }
 
     const options: Array<{ id: string; text: string }> = [];
+    const feedbackLines: string[] = [];
     while (i < lines.length) {
       const line = lines[i] ?? "";
       if (isExamQuestionStartLine(line)) break;
+      const feedbackStart = parseFeedbackLine(line);
+      if (feedbackStart !== null) {
+        if (feedbackStart) feedbackLines.push(feedbackStart);
+        i += 1;
+        while (i < lines.length) {
+          const feedbackLine = lines[i] ?? "";
+          if (isExamQuestionStartLine(feedbackLine) || parseExamOptionLine(feedbackLine) || isAnswerOrScoreLine(feedbackLine)) {
+            break;
+          }
+          feedbackLines.push(feedbackLine);
+          i += 1;
+        }
+        continue;
+      }
       if (isAnswerOrScoreLine(line)) {
         i += 1;
         continue;
@@ -515,6 +540,7 @@ function parseExamQuestionsFromLines(lines: string[]): ExamTemplatePreviewQuesti
         id: `preview_question_${questions.length + 1}`,
         prompt,
         options,
+        feedback: feedbackLines.join(" ").trim() || undefined,
       });
     }
   }
@@ -534,6 +560,7 @@ function quizQuestionsToPreviewQuestions(quizQuestions: WordImportedQuizQuestion
           id: normalizePreviewOptionId(optionIndex),
           text: option.text.trim(),
         })),
+      feedback: question.explanation?.trim() || undefined,
     }));
 }
 
@@ -588,10 +615,31 @@ function parseStructuredExamQuestionsFromLines(lines: string[]): GlobalExamQuest
 
     const options: Array<{ id: string; text: string; sourceLetter: string }> = [];
     let correctLetter = "";
+    const feedbackLines: string[] = [];
     while (i < lines.length) {
       const line = lines[i] ?? "";
       const nextQuestion = isExamQuestionStartLine(line);
       if (nextQuestion) break;
+
+      const feedbackStart = parseFeedbackLine(line);
+      if (feedbackStart !== null) {
+        if (feedbackStart) feedbackLines.push(feedbackStart);
+        i += 1;
+        while (i < lines.length) {
+          const feedbackLine = lines[i] ?? "";
+          if (
+            isExamQuestionStartLine(feedbackLine) ||
+            parseExamOptionLine(feedbackLine) ||
+            /^respuesta\s+correcta\s*:/i.test(feedbackLine) ||
+            isAnswerOrScoreLine(feedbackLine)
+          ) {
+            break;
+          }
+          feedbackLines.push(feedbackLine);
+          i += 1;
+        }
+        continue;
+      }
 
       const answerMatch = line.match(/^respuesta\s+correcta\s*:\s*([A-Fa-f])/i);
       if (answerMatch) {
@@ -641,6 +689,7 @@ function parseStructuredExamQuestionsFromLines(lines: string[]): GlobalExamQuest
         prompt,
         options: options.map(({ id, text }) => ({ id, text })),
         correctOptionId: correctOption.id,
+        feedback: feedbackLines.join(" ").trim(),
       });
     }
   }
@@ -665,6 +714,7 @@ function quizQuestionsToGlobalExamQuestions(quizQuestions: WordImportedQuizQuest
         prompt: question.prompt.trim(),
         options: options.map(({ id, text }) => ({ id, text })),
         correctOptionId: correctOption.id,
+        feedback: question.explanation?.trim() || "",
       };
     })
     .filter((question): question is GlobalExamQuestion => question !== null);
@@ -2424,6 +2474,7 @@ export function CalificacionesTab({
   <p>1. Escribe el enunciado de la pregunta.</p>
   <p>A) Opción A<br />B) Opción B<br />C) Opción C<br />D) Opción D</p>
   <p><strong>Respuesta correcta:</strong> A</p>
+  <p><strong>Retroalimentación:</strong> Explica aquí por qué la respuesta correcta es la adecuada.</p>
   <p><strong>Puntaje:</strong> __ puntos</p>`;
     }
 
@@ -2442,6 +2493,7 @@ export function CalificacionesTab({
   <p>${questionIndex + 1}. ${escapeHtml(question.prompt)}</p>
   <p>${optionsHtml}</p>
   <p><strong>Respuesta correcta:</strong> ${escapeHtml(correctLetter)}</p>
+  <p><strong>Retroalimentación:</strong> ${escapeHtml(question.feedback ?? "")}</p>
   <p><strong>Puntaje:</strong> ${Math.round(1000 / template.questions.length) / 10} puntos</p>`;
       })
       .join("\n");
@@ -5283,6 +5335,14 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
                             </label>
                           ))}
                         </div>
+                        {question.feedback ? (
+                          <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-blue-700">
+                              Retroalimentación detectada
+                            </p>
+                            <p className="mt-1">{question.feedback}</p>
+                          </div>
+                        ) : null}
                       </article>
                     ))}
                   </div>

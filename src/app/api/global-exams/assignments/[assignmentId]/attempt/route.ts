@@ -3,6 +3,7 @@ import type { DocumentData, DocumentReference } from "firebase-admin/firestore";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import {
   GLOBAL_EXAM_DURATION_MINUTES,
+  buildGlobalExamQuestionReview,
   calculateGlobalExamResult,
   sanitizeGlobalExamQuestionsForStudent,
   type GlobalExamAttemptCompletionReason,
@@ -286,6 +287,7 @@ async function finalizeGlobalExamAttempt(params: {
     params.answers,
     params.assignment.passScore,
   );
+  const answerReview = buildGlobalExamQuestionReview(params.template.questions, result.answers);
   const actorName = params.access.displayName || params.access.email || "Alumno";
   const attemptRef = params.assignmentRef.collection("attempts").doc();
 
@@ -363,6 +365,7 @@ async function finalizeGlobalExamAttempt(params: {
       correctAnswers: result.correctAnswers,
       totalQuestions: result.totalQuestions,
       answers: result.answers,
+      answerReview,
       durationSeconds: committedDurationSeconds,
       completionReason: params.completionReason,
       sessionId: committedSession.sessionId || params.sessionId || null,
@@ -380,6 +383,7 @@ async function finalizeGlobalExamAttempt(params: {
         latestAttemptNumber: committedAttemptNumber,
         latestAttemptId: attemptRef.id,
         latestAttemptDurationSeconds: committedDurationSeconds,
+        latestAttemptReview: answerReview,
         passed: result.passed,
         enabled: nextStatus === "enabled",
         status: nextStatus,

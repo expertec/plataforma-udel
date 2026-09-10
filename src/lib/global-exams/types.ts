@@ -30,9 +30,21 @@ export type GlobalExamQuestion = {
   prompt: string;
   options: GlobalExamQuestionOption[];
   correctOptionId: string;
+  feedback?: string;
 };
 
-export type StudentVisibleGlobalExamQuestion = Omit<GlobalExamQuestion, "correctOptionId">;
+export type StudentVisibleGlobalExamQuestion = Omit<GlobalExamQuestion, "correctOptionId" | "feedback">;
+
+export type GlobalExamQuestionReview = {
+  questionId: string;
+  prompt: string;
+  selectedOptionId: string | null;
+  selectedOptionText: string | null;
+  correctOptionId: string;
+  correctOptionText: string;
+  isCorrect: boolean;
+  feedback: string;
+};
 
 export type GlobalExamTemplateRecord = {
   id: string;
@@ -79,6 +91,7 @@ export type GlobalExamAssignmentRecord = {
   latestAttemptNumber: number;
   latestAttemptId: string | null;
   latestAttemptDurationSeconds: number | null;
+  latestAttemptReview?: GlobalExamQuestionReview[];
   passed: boolean;
   currentAttemptStartedAt?: string | null;
   currentAttemptDeadlineAt?: string | null;
@@ -103,6 +116,7 @@ export type GlobalExamAttemptRecord = {
   correctAnswers: number;
   totalQuestions: number;
   answers: Record<string, string>;
+  answerReview?: GlobalExamQuestionReview[];
   durationSeconds?: number | null;
   completionReason?: GlobalExamAttemptCompletionReason | null;
   startedAt?: string | null;
@@ -136,6 +150,34 @@ function normalizeOptionId(value: unknown, index: number): string {
   const direct = asTrimmedString(value);
   if (direct) return direct;
   return `option_${index + 1}`;
+}
+
+export function normalizeGlobalExamQuestionReview(value: unknown): GlobalExamQuestionReview[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const review = value
+    .map((rawItem): GlobalExamQuestionReview | null => {
+      if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) return null;
+      const item = rawItem as Record<string, unknown>;
+      const questionId = asTrimmedString(item.questionId);
+      const prompt = asTrimmedString(item.prompt);
+      const correctOptionId = asTrimmedString(item.correctOptionId);
+      const correctOptionText = asTrimmedString(item.correctOptionText);
+      if (!questionId || !prompt || !correctOptionId) return null;
+      const selectedOptionId = asTrimmedString(item.selectedOptionId);
+      const selectedOptionText = asTrimmedString(item.selectedOptionText);
+      return {
+        questionId,
+        prompt,
+        selectedOptionId: selectedOptionId || null,
+        selectedOptionText: selectedOptionText || null,
+        correctOptionId,
+        correctOptionText: correctOptionText || "Respuesta correcta no disponible",
+        isCorrect: item.isCorrect === true,
+        feedback: asTrimmedString(item.feedback),
+      };
+    })
+    .filter((item): item is GlobalExamQuestionReview => item !== null);
+  return review.length > 0 ? review : undefined;
 }
 
 export function getGlobalExamReasonLabel(reason: GlobalExamAssignmentReason): string {
@@ -208,6 +250,8 @@ export function normalizeGlobalExamQuestions(value: unknown): GlobalExamQuestion
       prompt?: unknown;
       options?: unknown;
       correctOptionId?: unknown;
+      feedback?: unknown;
+      explanation?: unknown;
     };
     const prompt = asTrimmedString(question.prompt).replace(/\s+/g, " ");
     if (!prompt) {
@@ -258,6 +302,28 @@ export function normalizeGlobalExamQuestions(value: unknown): GlobalExamQuestion
       prompt,
       options,
       correctOptionId,
+      feedback: asTrimmedString(question.feedback ?? question.explanation).replace(/\s+/g, " "),
+    };
+  });
+}
+
+export function buildGlobalExamQuestionReview(
+  questions: GlobalExamQuestion[],
+  answers: Record<string, string>,
+): GlobalExamQuestionReview[] {
+  return questions.map((question) => {
+    const selectedOptionId = answers[question.id] ?? null;
+    const selectedOption = question.options.find((option) => option.id === selectedOptionId) ?? null;
+    const correctOption = question.options.find((option) => option.id === question.correctOptionId);
+    return {
+      questionId: question.id,
+      prompt: question.prompt,
+      selectedOptionId,
+      selectedOptionText: selectedOption?.text ?? null,
+      correctOptionId: question.correctOptionId,
+      correctOptionText: correctOption?.text ?? "Respuesta correcta no disponible",
+      isCorrect: selectedOptionId === question.correctOptionId,
+      feedback: question.feedback?.trim() ?? "",
     };
   });
 }

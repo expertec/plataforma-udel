@@ -2405,11 +2405,15 @@ export default function LiveClassRoomPage() {
       setAsRole(payload.data.asRole ?? null);
       setLiveSessionStatus(payload.data.liveSession?.status ?? null);
       if (!payload.data.joinAllowed) {
+        const nextWaitingReason = payload.data.waitingReason || "session_ended";
+        if (nextWaitingReason !== "session_ended") {
+          return;
+        }
         if (attendancePresenceJoined) {
           void sendAttendancePresence("leave", { keepalive: true });
           setAttendancePresenceJoined(false);
         }
-        setWaitingReason(payload.data.waitingReason || "session_ended");
+        setWaitingReason(nextWaitingReason);
         setToken(null);
         setLivekitUrl(null);
         setLoading(false);

@@ -11,6 +11,7 @@ import {
   type GlobalExamAttemptRecord,
   type GlobalExamTemplateRecord,
   normalizeGlobalExamQuestions,
+  normalizeGlobalExamQuestionReview,
 } from "@/lib/global-exams/types";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import {
@@ -237,6 +238,7 @@ export function toGlobalExamAssignmentRecord(
     latestAttemptNumber: asNumberOrNull(rawData.latestAttemptNumber) ?? 0,
     latestAttemptId: asTrimmedString(rawData.latestAttemptId) || null,
     latestAttemptDurationSeconds: asNumberOrNull(rawData.latestAttemptDurationSeconds),
+    latestAttemptReview: normalizeGlobalExamQuestionReview(rawData.latestAttemptReview),
     passed: asBoolean(rawData.passed, false),
     currentAttemptStartedAt: toIsoString(rawData.currentAttemptStartedAt),
     currentAttemptDeadlineAt:
@@ -300,6 +302,7 @@ export function toGlobalExamAttemptRecord(
       acc[normalizedQuestionId] = normalizedAnswer;
       return acc;
     }, {}),
+    answerReview: normalizeGlobalExamQuestionReview(rawData.answerReview),
     completionReason,
     durationSeconds: asNumberOrNull(rawData.durationSeconds) ?? calculatedDurationSeconds,
     startedAt,

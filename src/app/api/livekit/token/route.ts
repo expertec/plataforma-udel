@@ -117,19 +117,12 @@ async function resolveStudentWaitingRoomGate(params: {
     };
   }
 
-  if (isWithinStudentFreeAccessTolerance(latestSession)) {
-    return {
-      session: latestSession,
-      joinAllowed: true,
-      waitingReason: null,
-    };
-  }
-
   const currentRequest = await loadWaitingRoomParticipant({
     classRef: access.classContext.classRef,
     uid: access.user.uid,
     session: latestSession,
   });
+
   if (currentRequest?.status === "admitted") {
     await upsertWaitingRoomParticipant({
       classRef: access.classContext.classRef,
@@ -137,6 +130,27 @@ async function resolveStudentWaitingRoomGate(params: {
         ...currentRequest,
         displayName: access.user.displayName || currentRequest.displayName,
         email: access.user.email || currentRequest.email,
+        updatedAt: nowIso,
+      },
+    });
+    return {
+      session: latestSession,
+      joinAllowed: true,
+      waitingReason: null,
+    };
+  }
+
+  if (isWithinStudentFreeAccessTolerance(latestSession)) {
+    await upsertWaitingRoomParticipant({
+      classRef: access.classContext.classRef,
+      participant: {
+        uid: access.user.uid,
+        displayName: access.user.displayName || currentRequest?.displayName || "Alumno",
+        email: access.user.email || currentRequest?.email || "",
+        status: "admitted",
+        requestedAt: currentRequest?.requestedAt ?? nowIso,
+        decidedAt: currentRequest?.decidedAt ?? nowIso,
+        decidedBy: currentRequest?.decidedBy ?? "auto_free_access",
         updatedAt: nowIso,
       },
     });

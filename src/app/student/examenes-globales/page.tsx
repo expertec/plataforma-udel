@@ -20,6 +20,7 @@ import {
   getGlobalExamStatusLabel,
   type GlobalExamAttemptCompletionReason,
   type GlobalExamAssignmentRecord,
+  type GlobalExamQuestionReview,
 } from "@/lib/global-exams/types";
 
 type StudentGlobalExamsPageProps = {
@@ -90,6 +91,7 @@ export default function StudentGlobalExamsPage({
   const [submitting, setSubmitting] = useState(false);
   const [timeLeftMs, setTimeLeftMs] = useState(0);
   const [activeSessionToken, setActiveSessionToken] = useState<string | null>(null);
+  const [expandedReviewAssignmentId, setExpandedReviewAssignmentId] = useState<string | null>(null);
 
   const activeExamRef = useRef<GlobalExamAttemptPayload | null>(null);
   const answersRef = useRef<Record<string, string>>({});
@@ -640,6 +642,26 @@ export default function StudentGlobalExamsPage({
                             </p>
                           </div>
                         </div>
+                        {assignment.latestAttemptReview && assignment.latestAttemptReview.length > 0 ? (
+                          <div className="mt-4 border-t border-slate-200 pt-4">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedReviewAssignmentId((current) =>
+                                  current === assignment.id ? null : assignment.id,
+                                )
+                              }
+                              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-blue-300 hover:text-blue-700"
+                            >
+                              {expandedReviewAssignmentId === assignment.id
+                                ? "Ocultar retroalimentación"
+                                : "Ver retroalimentación"}
+                            </button>
+                            {expandedReviewAssignmentId === assignment.id ? (
+                              <ExamAttemptReview questions={assignment.latestAttemptReview} />
+                            ) : null}
+                          </div>
+                        ) : null}
                       </article>
                     ))}
                   </div>
@@ -650,5 +672,56 @@ export default function StudentGlobalExamsPage({
         </div>
       </div>
     </RoleGate>
+  );
+}
+
+function ExamAttemptReview({ questions }: { questions: GlobalExamQuestionReview[] }) {
+  return (
+    <div className="mt-4 space-y-3">
+      {questions.map((question, index) => (
+        <article
+          key={`${question.questionId}-${index}`}
+          className={`rounded-2xl border p-4 ${
+            question.isCorrect
+              ? "border-emerald-200 bg-emerald-50"
+              : "border-amber-200 bg-amber-50"
+          }`}
+        >
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.14em] text-slate-500">
+                Pregunta {index + 1}
+              </p>
+              <h3 className="mt-1 text-sm font-semibold text-slate-900">{question.prompt}</h3>
+            </div>
+            <span
+              className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${
+                question.isCorrect
+                  ? "bg-emerald-100 text-emerald-700"
+                  : "bg-amber-100 text-amber-700"
+              }`}
+            >
+              {question.isCorrect ? "Correcta" : "Incorrecta"}
+            </span>
+          </div>
+          <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
+            <div className="rounded-xl bg-white/70 px-3 py-2">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Tu respuesta</p>
+              <p className="mt-1">{question.selectedOptionText ?? "Sin respuesta"}</p>
+            </div>
+            <div className="rounded-xl bg-white/70 px-3 py-2">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Respuesta correcta</p>
+              <p className="mt-1">{question.correctOptionText}</p>
+            </div>
+          </div>
+          {question.feedback ? (
+            <div className="mt-3 rounded-xl border border-blue-100 bg-white/80 px-3 py-2 text-sm text-slate-700">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-700">Retroalimentación</p>
+              <p className="mt-1">{question.feedback}</p>
+            </div>
+          ) : null}
+        </article>
+      ))}
+    </div>
   );
 }

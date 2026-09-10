@@ -60,6 +60,7 @@ type QuestionFormState = {
   prompt: string;
   options: GlobalExamQuestionOption[];
   correctOptionId: string;
+  feedback: string;
 };
 
 const BASE_OPTION_IDS = ["a", "b", "c", "d"];
@@ -74,6 +75,7 @@ function createBlankQuestion(index: number): QuestionFormState {
     prompt: "",
     options,
     correctOptionId: options[0].id,
+    feedback: "",
   };
 }
 
@@ -90,6 +92,7 @@ function cloneTemplateQuestions(questions: GlobalExamQuestion[]): QuestionFormSt
       text: option.text,
     })),
     correctOptionId: question.correctOptionId,
+    feedback: question.feedback ?? "",
   }));
 }
 
@@ -500,6 +503,7 @@ export default function GlobalExamsPage() {
       prompt: question.prompt,
       options: question.options,
       correctOptionId: question.correctOptionId,
+      feedback: question.feedback,
     }));
 
     setSavingTemplate(true);
@@ -998,6 +1002,21 @@ export default function GlobalExamsPage() {
                               </label>
                             ))}
                           </div>
+
+                          <label className="mt-4 block space-y-2 text-sm">
+                            <span className="font-medium text-slate-700">Retroalimentación</span>
+                            <textarea
+                              value={question.feedback}
+                              onChange={(event) =>
+                                handleQuestionChange(question.id, (current) => ({
+                                  ...current,
+                                  feedback: event.target.value,
+                                }))
+                              }
+                              rows={2}
+                              className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
+                            />
+                          </label>
                         </article>
                       ))}
                     </div>
