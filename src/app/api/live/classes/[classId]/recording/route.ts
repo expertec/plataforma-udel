@@ -27,6 +27,8 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const RECORDING_PLAYBACK_URL_TTL_MS = 6 * 60 * 60 * 1000;
+
 function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -685,7 +687,7 @@ export async function GET(
     }
 
     const bucket = getAdminApp().storage().bucket(objectLocation.bucketName);
-    const expiresAt = Date.now() + 10 * 60 * 1000;
+    const expiresAt = Date.now() + RECORDING_PLAYBACK_URL_TTL_MS;
     const [signedUrl] = await bucket.file(objectLocation.objectPath).getSignedUrl({
       action: "read",
       expires: expiresAt,

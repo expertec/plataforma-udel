@@ -463,7 +463,9 @@ export function TeacherLiveClassesView({
         item.title,
         item.courseTitle,
         item.lessonTitle,
+        item.linkedGroupId ?? "",
         item.linkedGroupName ?? "",
+        ...item.sharedGroupNames,
         item.roomName ?? "",
       ]
         .join(" ")

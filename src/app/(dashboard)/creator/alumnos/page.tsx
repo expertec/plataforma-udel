@@ -30,7 +30,13 @@ import {
   reactivateStudent,
   updateStudentPlantelAssignment,
 } from "@/lib/firebase/students-service";
-import { getGroupStudents, getGroupsForTeacher } from "@/lib/firebase/groups-service";
+import {
+  getAllGroups,
+  getGroupStudents,
+  getGroupsByPlantel,
+  getGroupsForTeacher,
+  type Group,
+} from "@/lib/firebase/groups-service";
 import {
   getPlanteles,
   getUserPlantelAssignment,
@@ -88,6 +94,26 @@ type ActionMenuState = {
 };
 
 type StudentsTab = "gestion" | "altas" | "passwords" | "riesgo" | "bajas";
+
+type StudentCourseLoadEnrollment = {
+  enrollmentId: string;
+  groupId: string;
+  groupName: string;
+  isCourseOverride: boolean;
+  excludedCourseIds: string[];
+  courses: Array<{
+    courseId: string;
+    courseName: string;
+    checked: boolean;
+  }>;
+};
+
+type StudentCourseLoadResponse = ApiErrorResponse & {
+  success?: boolean;
+  data?: {
+    enrollments?: StudentCourseLoadEnrollment[];
+  };
+};
 
 const DROPOUT_TYPES: StudentDropoutType[] = ["Baja Voluntaria", "Baja involuntaria"];
 
@@ -228,6 +254,10 @@ export default function AlumnosPage() {
   const [selectedStudentForGrades, setSelectedStudentForGrades] = useState<StudentUser | null>(null);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [selectedStudentForHistory, setSelectedStudentForHistory] = useState<StudentUser | null>(null);
+  const [extraCourseModalOpen, setExtraCourseModalOpen] = useState(false);
+  const [selectedStudentForExtraCourse, setSelectedStudentForExtraCourse] = useState<StudentUser | null>(null);
+  const [courseLoadModalOpen, setCourseLoadModalOpen] = useState(false);
+  const [selectedStudentForCourseLoad, setSelectedStudentForCourseLoad] = useState<StudentUser | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -2117,6 +2147,32 @@ export default function AlumnosPage() {
                 >
                   Entregas
                 </button>
+                {isAdmin || isCoordinator || userRole === "teacher" ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpenActionMenu(null);
+                      setSelectedStudentForCourseLoad(actionMenuStudent);
+                      setCourseLoadModalOpen(true);
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-sky-700 hover:bg-sky-50"
+                  >
+                    Materias
+                  </button>
+                ) : null}
+                {isAdmin || isCoordinator || userRole === "teacher" ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpenActionMenu(null);
+                      setSelectedStudentForExtraCourse(actionMenuStudent);
+                      setExtraCourseModalOpen(true);
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-cyan-700 hover:bg-cyan-50"
+                  >
+                    Materia extra
+                  </button>
+                ) : null}
                 {isAdmin ? (
                   <button
                     type="button"
@@ -2439,6 +2495,526 @@ export default function AlumnosPage() {
           }}
         />
       )}
+
+      {extraCourseModalOpen && selectedStudentForExtraCourse && (
+        <AssignExtraCourseToStudentModal
+          student={selectedStudentForExtraCourse}
+          currentUser={currentUser}
+          userRole={userRole}
+          coordinatorPlantelId={isCoordinator ? coordinatorPlantelId : ""}
+          isOpen={extraCourseModalOpen}
+          onClose={() => {
+            setExtraCourseModalOpen(false);
+            setSelectedStudentForExtraCourse(null);
+          }}
+        />
+      )}
+
+      {courseLoadModalOpen && selectedStudentForCourseLoad && (
+        <StudentCourseLoadModal
+          student={selectedStudentForCourseLoad}
+          currentUser={currentUser}
+          isOpen={courseLoadModalOpen}
+          onClose={() => {
+            setCourseLoadModalOpen(false);
+            setSelectedStudentForCourseLoad(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+type AssignExtraCourseToStudentModalProps = {
+  student: StudentUser;
+  currentUser: User | null;
+  userRole: UserRole | null;
+  coordinatorPlantelId: string;
+  isOpen: boolean;
+  onClose: () => void;
+};
+
+function getGroupCourseOptions(group: Group): Array<{ courseId: string; courseName: string }> {
+  const fromArray = (group.courses ?? [])
+    .map((course) => ({
+      courseId: course.courseId?.trim() ?? "",
+      courseName: course.courseName?.trim() ?? "",
+    }))
+    .filter((course) => course.courseId.length > 0);
+  if (fromArray.length > 0) return fromArray;
+  return group.courseId
+    ? [{ courseId: group.courseId, courseName: group.courseName || "Materia" }]
+    : [];
+}
+
+function AssignExtraCourseToStudentModal({
+  student,
+  currentUser,
+  userRole,
+  coordinatorPlantelId,
+  isOpen,
+  onClose,
+}: AssignExtraCourseToStudentModalProps) {
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [loadingGroups, setLoadingGroups] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [groupSearch, setGroupSearch] = useState("");
+  const [selectedGroupId, setSelectedGroupId] = useState("");
+  const [selectedCourseId, setSelectedCourseId] = useState("");
+
+  useEffect(() => {
+    if (!isOpen || !currentUser?.uid || !userRole) return;
+    let cancelled = false;
+
+    const loadGroups = async () => {
+      setLoadingGroups(true);
+      try {
+        let nextGroups: Group[] = [];
+        if (isAdminTeacherRole(userRole)) {
+          nextGroups = await getAllGroups(300);
+        } else if (isCampusCoordinatorRole(userRole)) {
+          nextGroups = coordinatorPlantelId ? await getGroupsByPlantel(coordinatorPlantelId, 300) : [];
+        } else {
+          nextGroups = await getGroupsForTeacher(currentUser.uid, 300);
+        }
+
+        const withCourses = nextGroups.filter((group) => getGroupCourseOptions(group).length > 0);
+        if (cancelled) return;
+        const firstGroup = withCourses[0] ?? null;
+        setGroups(withCourses);
+        setSelectedGroupId(firstGroup?.id ?? "");
+        setSelectedCourseId(firstGroup ? getGroupCourseOptions(firstGroup)[0]?.courseId ?? "" : "");
+      } catch (error) {
+        console.error(error);
+        if (!cancelled) {
+          setGroups([]);
+          toast.error("No se pudieron cargar los grupos disponibles");
+        }
+      } finally {
+        if (!cancelled) setLoadingGroups(false);
+      }
+    };
+
+    void loadGroups();
+    return () => {
+      cancelled = true;
+    };
+  }, [coordinatorPlantelId, currentUser?.uid, isOpen, userRole]);
+
+  const filteredGroups = useMemo(() => {
+    const term = normalizeSearchText(groupSearch);
+    if (!term) return groups;
+    return groups.filter((group) =>
+      normalizeSearchText(
+        [
+          group.groupName,
+          group.program ?? "",
+          group.plantelName ?? "",
+          group.teacherName ?? "",
+          ...getGroupCourseOptions(group).map((course) => course.courseName),
+        ].join(" "),
+      ).includes(term),
+    );
+  }, [groupSearch, groups]);
+
+  const selectedGroup = useMemo(
+    () => groups.find((group) => group.id === selectedGroupId) ?? null,
+    [groups, selectedGroupId],
+  );
+
+  const courseOptions = useMemo(
+    () => (selectedGroup ? getGroupCourseOptions(selectedGroup) : []),
+    [selectedGroup],
+  );
+
+  useEffect(() => {
+    if (!selectedGroup) {
+      setSelectedCourseId("");
+      return;
+    }
+    const options = getGroupCourseOptions(selectedGroup);
+    if (options.some((course) => course.courseId === selectedCourseId)) return;
+    setSelectedCourseId(options[0]?.courseId ?? "");
+  }, [selectedCourseId, selectedGroup]);
+
+  const handleSave = async () => {
+    if (!currentUser) {
+      toast.error("Tu sesión expiró. Inicia sesión nuevamente.");
+      return;
+    }
+    if (!selectedGroupId || !selectedCourseId) {
+      toast.error("Selecciona grupo y materia.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const token = await currentUser.getIdToken();
+      const response = await fetch(`/api/groups/${encodeURIComponent(selectedGroupId)}/course-enrollments`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          courseId: selectedCourseId,
+          studentIds: [student.id],
+        }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        success?: boolean;
+        error?: string;
+        data?: { assignedCount?: number; skippedGroupMemberIds?: string[] };
+      };
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.error || "No se pudo asignar la materia");
+      }
+
+      if ((payload.data?.skippedGroupMemberIds ?? []).includes(student.id)) {
+        toast("El alumno ya está inscrito en ese grupo; ya debería ver sus materias.");
+      } else {
+        toast.success("Materia extra asignada al alumno");
+      }
+      onClose();
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "No se pudo asignar la materia");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 px-4 py-6">
+      <div className="w-full max-w-2xl rounded-xl bg-white p-6 shadow-2xl">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Materia extra</p>
+            <h2 className="text-xl font-semibold text-slate-900">Asignar materia a alumno</h2>
+            <p className="text-sm text-slate-600">
+              Alumno: <span className="font-medium">{student.name}</span>
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+          >
+            Cerrar
+          </button>
+        </div>
+
+        <div className="mt-4 space-y-4">
+          <input
+            type="text"
+            value={groupSearch}
+            onChange={(event) => setGroupSearch(event.target.value)}
+            placeholder="Buscar grupo por nombre, plantel, profesor o materia"
+            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+
+          <label className="block text-sm font-medium text-slate-700">
+            Grupo
+            <select
+              value={selectedGroupId}
+              onChange={(event) => setSelectedGroupId(event.target.value)}
+              disabled={loadingGroups || filteredGroups.length === 0}
+              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+            >
+              <option value="">
+                {loadingGroups ? "Cargando grupos..." : "Seleccionar grupo"}
+              </option>
+              {filteredGroups.map((group) => (
+                <option key={group.id} value={group.id}>
+                  {group.groupName}
+                  {group.plantelName ? ` · ${group.plantelName}` : ""}
+                  {group.teacherName ? ` · ${group.teacherName}` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="block text-sm font-medium text-slate-700">
+            Materia
+            <select
+              value={selectedCourseId}
+              onChange={(event) => setSelectedCourseId(event.target.value)}
+              disabled={!selectedGroup || courseOptions.length === 0}
+              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+            >
+              <option value="">Seleccionar materia</option>
+              {courseOptions.map((course) => (
+                <option key={course.courseId} value={course.courseId}>
+                  {course.courseName || course.courseId}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {groups.length === 0 && !loadingGroups ? (
+            <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+              No hay grupos con materias disponibles para tu usuario.
+            </div>
+          ) : null}
+
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={saving}
+              className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving || !selectedGroupId || !selectedCourseId}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {saving ? "Asignando..." : "Asignar materia"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type StudentCourseLoadModalProps = {
+  student: StudentUser;
+  currentUser: User | null;
+  isOpen: boolean;
+  onClose: () => void;
+};
+
+function StudentCourseLoadModal({
+  student,
+  currentUser,
+  isOpen,
+  onClose,
+}: StudentCourseLoadModalProps) {
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [enrollments, setEnrollments] = useState<StudentCourseLoadEnrollment[]>([]);
+  const [checkedByEnrollment, setCheckedByEnrollment] = useState<Record<string, Record<string, boolean>>>({});
+
+  const loadCourseLoad = useCallback(async () => {
+    if (!currentUser || !isOpen) return;
+    setLoading(true);
+    try {
+      const token = await currentUser.getIdToken();
+      const response = await fetch(`/api/students/${encodeURIComponent(student.id)}/course-load`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+      const payload = (await response.json().catch(() => ({}))) as StudentCourseLoadResponse;
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.error || "No se pudo cargar la carga académica");
+      }
+      const nextEnrollments = payload.data?.enrollments ?? [];
+      setEnrollments(nextEnrollments);
+      setCheckedByEnrollment(
+        Object.fromEntries(
+          nextEnrollments.map((enrollment) => [
+            enrollment.enrollmentId,
+            Object.fromEntries(
+              enrollment.courses.map((course) => [course.courseId, course.checked]),
+            ),
+          ]),
+        ),
+      );
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "No se pudo cargar la carga académica");
+      setEnrollments([]);
+      setCheckedByEnrollment({});
+    } finally {
+      setLoading(false);
+    }
+  }, [currentUser, isOpen, student.id]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    void loadCourseLoad();
+  }, [isOpen, loadCourseLoad]);
+
+  const hasChanges = useMemo(
+    () =>
+      enrollments.some((enrollment) =>
+        enrollment.courses.some(
+          (course) =>
+            checkedByEnrollment[enrollment.enrollmentId]?.[course.courseId] !== course.checked,
+        ),
+      ),
+    [checkedByEnrollment, enrollments],
+  );
+
+  const toggleCourse = (enrollmentId: string, courseId: string) => {
+    setCheckedByEnrollment((prev) => ({
+      ...prev,
+      [enrollmentId]: {
+        ...(prev[enrollmentId] ?? {}),
+        [courseId]: !(prev[enrollmentId]?.[courseId] ?? false),
+      },
+    }));
+  };
+
+  const handleSave = async () => {
+    if (!currentUser) {
+      toast.error("Tu sesión expiró. Inicia sesión nuevamente.");
+      return;
+    }
+    const updates = enrollments.map((enrollment) => {
+      const checkedMap = checkedByEnrollment[enrollment.enrollmentId] ?? {};
+      const excludedCourseIds = enrollment.courses
+        .filter((course) => checkedMap[course.courseId] === false)
+        .map((course) => course.courseId);
+      return {
+        enrollmentId: enrollment.enrollmentId,
+        excludedCourseIds,
+      };
+    });
+
+    setSaving(true);
+    try {
+      const token = await currentUser.getIdToken();
+      const response = await fetch(`/api/students/${encodeURIComponent(student.id)}/course-load`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ updates }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as StudentCourseLoadResponse;
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.error || "No se pudieron guardar las materias");
+      }
+      const nextEnrollments = payload.data?.enrollments ?? [];
+      setEnrollments(nextEnrollments);
+      setCheckedByEnrollment(
+        Object.fromEntries(
+          nextEnrollments.map((enrollment) => [
+            enrollment.enrollmentId,
+            Object.fromEntries(
+              enrollment.courses.map((course) => [course.courseId, course.checked]),
+            ),
+          ]),
+        ),
+      );
+      toast.success("Materias del alumno actualizadas");
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "No se pudieron guardar las materias");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 px-4 py-6">
+      <div className="w-full max-w-3xl rounded-xl bg-white p-6 shadow-2xl">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Materias</p>
+            <h2 className="text-xl font-semibold text-slate-900">Carga académica del alumno</h2>
+            <p className="text-sm text-slate-600">
+              Alumno: <span className="font-medium">{student.name}</span>
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+          >
+            Cerrar
+          </button>
+        </div>
+
+        <div className="mt-4 space-y-3">
+          {loading ? (
+            <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
+              Cargando materias...
+            </div>
+          ) : enrollments.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
+              Este alumno no tiene materias cargadas en los grupos disponibles para tu usuario.
+            </div>
+          ) : (
+            enrollments.map((enrollment) => (
+              <div key={enrollment.enrollmentId} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900">{enrollment.groupName}</h3>
+                    <p className="text-xs text-slate-500">
+                      {enrollment.isCourseOverride ? "Inscripción por materia" : "Inscripción de grupo"}
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-slate-600">
+                    {enrollment.courses.filter(
+                      (course) =>
+                        checkedByEnrollment[enrollment.enrollmentId]?.[course.courseId] !== false,
+                    ).length}
+                    /{enrollment.courses.length} activas
+                  </span>
+                </div>
+
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {enrollment.courses.map((course) => {
+                    const checked =
+                      checkedByEnrollment[enrollment.enrollmentId]?.[course.courseId] ?? false;
+                    return (
+                      <label
+                        key={`${enrollment.enrollmentId}-${course.courseId}`}
+                        className={`flex items-center gap-3 rounded-lg border px-3 py-2 text-sm transition ${
+                          checked
+                            ? "border-blue-200 bg-white text-slate-900"
+                            : "border-slate-200 bg-slate-100 text-slate-500"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleCourse(enrollment.enrollmentId, course.courseId)}
+                          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span>{course.courseName || course.courseId}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ))
+          )}
+
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={saving}
+              className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving || loading || !hasChanges}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {saving ? "Guardando..." : "Guardar cambios"}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

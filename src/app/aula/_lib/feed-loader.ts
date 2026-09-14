@@ -84,6 +84,27 @@ export type StudentEnrollments = {
 const isStudyOnlyEnrollment = (data: DocumentData) =>
   data.studyOnly === true || trimSafeString(data.source) === "globalExamStudy";
 
+const isCourseScopedEnrollment = (data: DocumentData) =>
+  data.isCourseOverride === true ||
+  data.scope === "course" ||
+  trimSafeString(data.source) === "courseOverride" ||
+  trimSafeString(data.source) === "extraCourse";
+
+const getEnrollmentCourseIds = (data: DocumentData): string[] => {
+  const fromArray = Array.isArray(data.courseIds)
+    ? data.courseIds.map((courseId) => trimSafeString(courseId)).filter(Boolean)
+    : [];
+  const courseId = trimSafeString(data.courseId);
+  return Array.from(new Set([...(courseId ? [courseId] : []), ...fromArray]));
+};
+
+const getExcludedCourseIds = (data: DocumentData): Set<string> =>
+  new Set(
+    Array.isArray(data.excludedCourseIds)
+      ? data.excludedCourseIds.map((courseId) => trimSafeString(courseId)).filter(Boolean)
+      : [],
+  );
+
 /**
  * Primer paso: las inscripciones del alumno. Se separa del contenido para que el
  * progreso (que solo necesita los enrollmentIds) pueda cargarse en paralelo con
@@ -363,8 +384,14 @@ export const loadStudentCourses = async (
         : groupData.courseId
           ? [{ courseId: groupData.courseId, courseName: groupData.courseName ?? "" }]
           : [];
+    const scopedCourseIds = isCourseScopedEnrollment(enrollmentDoc.data())
+      ? new Set(getEnrollmentCourseIds(enrollmentDoc.data()))
+      : null;
+    const excludedCourseIds = getExcludedCourseIds(enrollmentDoc.data());
 
     coursesArray.forEach((courseEntry) => {
+      if (scopedCourseIds && !scopedCourseIds.has(courseEntry.courseId)) return;
+      if (excludedCourseIds.has(courseEntry.courseId)) return;
       const assignedTeacher = resolveTeacherAssignmentForCourse({
         groupData: groupData as Record<string, unknown>,
         courseId: courseEntry.courseId,

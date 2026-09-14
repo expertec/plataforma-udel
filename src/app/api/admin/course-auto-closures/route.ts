@@ -358,6 +358,30 @@ function asUniqueStringArray(value: unknown): string[] {
   );
 }
 
+function getEnrollmentCourseIds(enrollmentData: FirestoreRecord): string[] {
+  const ids = new Set<string>();
+  const courseId = asTrimmedString(enrollmentData.courseId);
+  if (courseId) ids.add(courseId);
+  asUniqueStringArray(enrollmentData.courseIds).forEach((id) => ids.add(id));
+  return Array.from(ids);
+}
+
+function isCourseOverrideEnrollment(enrollmentData: FirestoreRecord): boolean {
+  const source = asTrimmedString(enrollmentData.source);
+  return (
+    enrollmentData.isCourseOverride === true ||
+    enrollmentData.scope === "course" ||
+    source === "courseOverride" ||
+    source === "extraCourse"
+  );
+}
+
+function enrollmentAppliesToCourse(enrollmentData: FirestoreRecord, courseId: string): boolean {
+  if (asUniqueStringArray(enrollmentData.excludedCourseIds).includes(courseId)) return false;
+  if (!isCourseOverrideEnrollment(enrollmentData)) return true;
+  return getEnrollmentCourseIds(enrollmentData).includes(courseId);
+}
+
 function getUserPlantelIds(data: FirestoreRecord): string[] {
   const plantelIds = asUniqueStringArray(data.plantelIds);
   if (plantelIds.length > 0) return plantelIds;
@@ -980,6 +1004,7 @@ async function processCourse(params: {
     const enrollmentData = enrollmentDoc.data() as FirestoreRecord;
     const status = asTrimmedString(enrollmentData.status) || "active";
     if (status === "archived" || status === "inactive" || status === "baja") return;
+    if (!enrollmentAppliesToCourse(enrollmentData, course.courseId)) return;
     const studentId = asTrimmedString(enrollmentData.studentId);
     if (!studentId) return;
     const studentName = asTrimmedString(enrollmentData.studentName) || "Alumno";
@@ -1133,6 +1158,7 @@ async function loadClosedCourseHistory(params: {
     const closures = asObject(enrollmentData.courseClosures);
     Object.entries(closures).forEach(([courseIdRaw, closureRaw]) => {
       const courseId = asTrimmedString(courseIdRaw);
+      if (!enrollmentAppliesToCourse(enrollmentData, courseId)) return;
       const closure = asObject(closureRaw);
       if (!courseId || closure.status !== "closed") return;
       totalClosedByCourse.set(courseId, (totalClosedByCourse.get(courseId) ?? 0) + 1);
@@ -1285,6 +1311,7 @@ async function listClosureReviewItems(request: NextRequest): Promise<NextRespons
       let openCount = 0;
       activeEnrollments.forEach((enrollmentDoc) => {
         const enrollmentData = enrollmentDoc.data() as FirestoreRecord;
+        if (!enrollmentAppliesToCourse(enrollmentData, course.courseId)) return;
         const closures = asObject(enrollmentData.courseClosures);
         const previousClosure = asObject(closures[course.courseId]);
         if (previousClosure.status === "closed") {

@@ -26,6 +26,10 @@ type LiveClassMonitorItem = {
   title: string;
   courseTitle: string;
   lessonTitle: string;
+  linkedGroupId: string | null;
+  linkedGroupName: string | null;
+  sharedGroupIds: string[];
+  sharedGroupNames: string[];
   docPath: string;
   roomName: string | null;
   sessionStatus: string;
@@ -597,8 +601,14 @@ export default function CreatorLiveClassesPage() {
         item.title,
         item.courseTitle,
         item.lessonTitle,
+        item.linkedGroupId ?? "",
+        item.linkedGroupName ?? "",
+        ...(item.sharedGroupIds ?? []),
+        ...(item.sharedGroupNames ?? []),
         item.roomName ?? "",
         item.classId,
+        item.courseId,
+        item.lessonId,
         item.storagePath ?? "",
         item.backupManifestPath ?? "",
       ]
@@ -798,7 +808,7 @@ export default function CreatorLiveClassesPage() {
                   <input
                     value={monitorSearch}
                     onChange={(event) => setMonitorSearch(event.target.value)}
-                    placeholder="Buscar por clase, curso, lesson, room o storagePath"
+                    placeholder="Buscar por clase, grupo, curso, lesson, room o storagePath"
                     className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400"
                   />
                   <select
@@ -841,9 +851,17 @@ export default function CreatorLiveClassesPage() {
                           <div className="mt-1 text-slate-600">
                             {item.courseTitle} / {item.lessonTitle}
                           </div>
+                          <div className="mt-1 text-xs text-slate-500">
+                            Grupo:{" "}
+                            {item.linkedGroupName ||
+                              item.linkedGroupId ||
+                              item.sharedGroupNames?.join(", ") ||
+                              "N/D"}
+                          </div>
                           <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-500">
                             <span>ID clase: {item.classId}</span>
                             <span>Curso: {item.courseId}</span>
+                            {item.linkedGroupId ? <span>Grupo ID: {item.linkedGroupId}</span> : null}
                           </div>
                           <Link
                             href={`/creator/cursos/${item.courseId}`}

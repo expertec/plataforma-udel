@@ -129,6 +129,37 @@ function normalizeComparableText(value: unknown): string {
     .toLowerCase();
 }
 
+function asUniqueStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(value.map((item) => asTrimmedString(item)).filter(Boolean)),
+  );
+}
+
+function getEnrollmentCourseIds(enrollmentData: FirestoreRecord): string[] {
+  const ids = new Set<string>();
+  const courseId = asTrimmedString(enrollmentData.courseId);
+  if (courseId) ids.add(courseId);
+  asUniqueStringArray(enrollmentData.courseIds).forEach((id) => ids.add(id));
+  return Array.from(ids);
+}
+
+function isCourseOverrideEnrollment(enrollmentData: FirestoreRecord): boolean {
+  const source = asTrimmedString(enrollmentData.source);
+  return (
+    enrollmentData.isCourseOverride === true ||
+    enrollmentData.scope === "course" ||
+    source === "courseOverride" ||
+    source === "extraCourse"
+  );
+}
+
+function enrollmentAppliesToCourse(enrollmentData: FirestoreRecord, courseId: string): boolean {
+  if (asUniqueStringArray(enrollmentData.excludedCourseIds).includes(courseId)) return false;
+  if (!courseId || !isCourseOverrideEnrollment(enrollmentData)) return true;
+  return getEnrollmentCourseIds(enrollmentData).includes(courseId);
+}
+
 function getGroupCourses(
   groupData: FirestoreRecord,
 ): Array<{ courseId: string; courseName: string }> {
@@ -406,6 +437,9 @@ export async function resolveStudentCourseEnrollments(
         : undefined;
     const enrollmentCourseId = asTrimmedString(enrollmentData.courseId);
     const enrollmentCourseName = asTrimmedString(enrollmentData.courseName);
+    if (filterByCourse && !enrollmentAppliesToCourse(enrollmentData, normalizedCourseId)) {
+      return null;
+    }
     const historicalCourseMatch =
       filterByCourse &&
       (
@@ -487,6 +521,7 @@ export async function resolveStudentCourseEnrollments(
     const courseIds = groupCourses.map((course) => course.courseId);
     const enrollmentCourseId = asTrimmedString(enrollmentData.courseId);
     const enrollmentCourseName = asTrimmedString(enrollmentData.courseName);
+    if (!enrollmentAppliesToCourse(enrollmentData, normalizedCourseId)) return;
     const hasHistoricalMatch =
       courseIds.includes(normalizedCourseId) ||
       enrollmentCourseId === normalizedCourseId ||

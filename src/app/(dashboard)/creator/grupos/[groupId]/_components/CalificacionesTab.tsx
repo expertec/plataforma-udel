@@ -56,7 +56,7 @@ type CalificacionesTabProps = {
   onCourseCompletedAndUnlinked?: (courseId: string) => Promise<void> | void;
 };
 
-type Student = { id: string; name: string };
+type Student = { id: string; name: string; courseIds?: string[]; excludedCourseIds?: string[] };
 
 type Task = {
   id: string;
@@ -180,6 +180,9 @@ type GlobalExamTemplateApiResponse = {
 
 type EnrollmentRecord = {
   id: string;
+  courseIds: string[];
+  excludedCourseIds: string[];
+  isCourseOverride: boolean;
   courseClosures: Record<string, CourseClosureState>;
   studentName?: string;
 };
@@ -337,6 +340,41 @@ const normalizeExtraConcepts = (value: unknown, idPrefix: string): ExtraConceptG
         })
         .filter((entry): entry is ExtraConceptGrade => entry !== null)
     : [];
+
+function getCourseIdsFromEnrollmentData(data: Record<string, unknown>): string[] {
+  const ids = new Set<string>();
+  const courseId = typeof data.courseId === "string" ? data.courseId.trim() : "";
+  if (courseId) ids.add(courseId);
+  if (Array.isArray(data.courseIds)) {
+    data.courseIds.forEach((item) => {
+      if (typeof item !== "string") return;
+      const id = item.trim();
+      if (id) ids.add(id);
+    });
+  }
+  return Array.from(ids);
+}
+
+function getExcludedCourseIdsFromEnrollmentData(data: Record<string, unknown>): string[] {
+  if (!Array.isArray(data.excludedCourseIds)) return [];
+  return Array.from(
+    new Set(
+      data.excludedCourseIds
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean),
+    ),
+  );
+}
+
+function isCourseOverrideEnrollment(data: Record<string, unknown>): boolean {
+  const source = typeof data.source === "string" ? data.source.trim() : "";
+  return (
+    data.isCourseOverride === true ||
+    data.scope === "course" ||
+    source === "courseOverride" ||
+    source === "extraCourse"
+  );
+}
 
 const normalizeExtraConceptDefinitions = (
   value: unknown,
@@ -1061,11 +1099,14 @@ export function CalificacionesTab({
     const load = async () => {
       setLoading(true);
       try {
-        const nextStudents = (await getGroupStudents(groupId)).map((student) => ({
-          id: student.id,
-          name: student.studentName ?? "",
-        }));
-        const studentIdSet = new Set(nextStudents.map((student) => student.id));
+        const nextStudentMap = new Map<string, Student>();
+        (await getGroupStudents(groupId)).forEach((student) => {
+          nextStudentMap.set(student.id, {
+            id: student.id,
+            name: student.studentName ?? "",
+          });
+        });
+        const studentIdSet = new Set(nextStudentMap.keys());
 
         let permissionWarningShown = false;
         let submissions: Submission[] = [];
@@ -1122,6 +1163,9 @@ export function CalificacionesTab({
           const canonicalId = `${groupId}_${studentId}`;
           const existing = enrollmentsMap[studentId];
           if (existing && existing.id === canonicalId) return;
+          const enrollmentCourseIds = getCourseIdsFromEnrollmentData(data);
+          const excludedCourseIds = getExcludedCourseIdsFromEnrollmentData(data);
+          const isOverrideEnrollment = isCourseOverrideEnrollment(data);
 
           const rawClosures: Record<string, unknown> = {
             ...((data.courseClosures ?? {}) as Record<string, unknown>),
@@ -1218,12 +1262,33 @@ export function CalificacionesTab({
 
           const record: EnrollmentRecord = {
             id: enrollmentDocId,
+            courseIds: enrollmentCourseIds,
+            excludedCourseIds,
+            isCourseOverride: isOverrideEnrollment,
             courseClosures: normalizedClosures,
             studentName: data.studentName,
           };
 
           if (!existing || enrollmentDocId === canonicalId) {
             enrollmentsMap[studentId] = record;
+          }
+          const existingStudent = nextStudentMap.get(studentId);
+          if (existingStudent && excludedCourseIds.length > 0) {
+            nextStudentMap.set(studentId, {
+              ...existingStudent,
+              excludedCourseIds,
+            });
+          }
+          if (isOverrideEnrollment && enrollmentCourseIds.length > 0 && !nextStudentMap.has(studentId)) {
+            nextStudentMap.set(studentId, {
+              id: studentId,
+              name:
+                (typeof data.studentName === "string" && data.studentName.trim()) ||
+                "Sin nombre",
+              courseIds: enrollmentCourseIds,
+              excludedCourseIds,
+            });
+            studentIdSet.add(studentId);
           }
         });
 
@@ -1331,7 +1396,7 @@ export function CalificacionesTab({
         const mergedSubmissions = [...submissions, ...forumSubmissionsByClass.flat()];
 
         if (cancelled) return;
-        setStudents(nextStudents);
+        setStudents(Array.from(nextStudentMap.values()));
         setAllSubmissions(mergedSubmissions);
         setEnrollmentByStudent(enrollmentsMap);
         setTasksByCourse(Object.fromEntries(courseTasksEntries));
@@ -1456,7 +1521,11 @@ export function CalificacionesTab({
     if (!selectedCourseId) return [];
     const classIdSet = new Set(selectedCourseTasks.map((t) => t.id));
 
-    return students.map((student) => {
+    return students.filter((student) => {
+      if (student.excludedCourseIds?.includes(selectedCourseId)) return false;
+      if (!student.courseIds || student.courseIds.length === 0) return true;
+      return student.courseIds.includes(selectedCourseId);
+    }).map((student) => {
       const latestByClass = new Map<string, Submission>();
       allSubmissions.forEach((submission) => {
         if (submission.studentId !== student.id) return;
@@ -2809,7 +2878,13 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
     enrollmentId: string,
   ) => {
     setEnrollmentByStudent((prev) => {
-      const current = prev[studentId] ?? { id: enrollmentId, courseClosures: {} };
+      const current = prev[studentId] ?? {
+        id: enrollmentId,
+        courseIds: [],
+        excludedCourseIds: [],
+        isCourseOverride: false,
+        courseClosures: {},
+      };
       return {
         ...prev,
         [studentId]: {
@@ -4000,7 +4075,13 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
         parsedRows.forEach(({ row, finalGrade, campusGrades, manualOverride, extraConcepts, extraPointsTotal }) => {
           if (typeof finalGrade !== "number") return;
           const previousClosure = row.closure ?? null;
-          const current = next[row.studentId] ?? { id: row.enrollmentId, courseClosures: {} };
+          const current = next[row.studentId] ?? {
+            id: row.enrollmentId,
+            courseIds: [],
+            excludedCourseIds: [],
+            isCourseOverride: false,
+            courseClosures: {},
+          };
           next[row.studentId] = {
             ...current,
             id: row.enrollmentId,

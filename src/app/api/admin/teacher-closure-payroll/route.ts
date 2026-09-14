@@ -327,6 +327,30 @@ function shouldCountEnrollment(enrollmentData: FirestoreRecord): boolean {
   return status !== "inactive" && status !== "baja";
 }
 
+function getEnrollmentCourseIds(enrollmentData: FirestoreRecord): string[] {
+  const ids = new Set<string>();
+  const courseId = asTrimmedString(enrollmentData.courseId);
+  if (courseId) ids.add(courseId);
+  asUniqueStringArray(enrollmentData.courseIds).forEach((id) => ids.add(id));
+  return Array.from(ids);
+}
+
+function isCourseOverrideEnrollment(enrollmentData: FirestoreRecord): boolean {
+  const source = asTrimmedString(enrollmentData.source);
+  return (
+    enrollmentData.isCourseOverride === true ||
+    enrollmentData.scope === "course" ||
+    source === "courseOverride" ||
+    source === "extraCourse"
+  );
+}
+
+function enrollmentAppliesToCourse(enrollmentData: FirestoreRecord, courseId: string): boolean {
+  if (asUniqueStringArray(enrollmentData.excludedCourseIds).includes(courseId)) return false;
+  if (!isCourseOverrideEnrollment(enrollmentData)) return true;
+  return getEnrollmentCourseIds(enrollmentData).includes(courseId);
+}
+
 async function loadTeachersById(db: admin.firestore.Firestore): Promise<Map<string, TeacherSnapshot>> {
   const usersSnap = await db.collection("users").get();
   const map = new Map<string, TeacherSnapshot>();
@@ -431,8 +455,11 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
     for (const course of courses) {
       const closedClosures: EnrollmentCourseClosure[] = [];
       let totalClosedCount = 0;
+      let totalStudents = 0;
 
       enrollmentsByStudent.forEach((enrollmentData) => {
+        if (!enrollmentAppliesToCourse(enrollmentData, course.courseId)) return;
+        totalStudents += 1;
         const closures = asObject(enrollmentData.courseClosures);
         const closure = normalizeClosure(closures[course.courseId]);
         if (!closure) return;
@@ -445,7 +472,6 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
 
       if (closedClosures.length === 0) continue;
 
-      const totalStudents = enrollmentsByStudent.size;
       const openCount = Math.max(totalStudents - totalClosedCount, 0);
       const sourceKey = `${groupDoc.id}:${course.courseId}`;
       const paid = await alreadyPaidForSourceKey(db, sourceKey);

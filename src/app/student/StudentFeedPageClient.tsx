@@ -397,6 +397,27 @@ const toSafeString = (value: unknown) => {
 
 const trimSafeString = (value: unknown) => toSafeString(value).trim();
 
+const isCourseScopedEnrollment = (data: Record<string, unknown>) =>
+  data.isCourseOverride === true ||
+  data.scope === "course" ||
+  trimSafeString(data.source) === "courseOverride" ||
+  trimSafeString(data.source) === "extraCourse";
+
+const getEnrollmentCourseIds = (data: Record<string, unknown>) => {
+  const courseIds = Array.isArray(data.courseIds)
+    ? data.courseIds.map((courseId) => trimSafeString(courseId)).filter(Boolean)
+    : [];
+  const courseId = trimSafeString(data.courseId);
+  return Array.from(new Set([...(courseId ? [courseId] : []), ...courseIds]));
+};
+
+const getExcludedCourseIds = (data: Record<string, unknown>) =>
+  new Set(
+    Array.isArray(data.excludedCourseIds)
+      ? data.excludedCourseIds.map((courseId) => trimSafeString(courseId)).filter(Boolean)
+      : [],
+  );
+
 const normalizeQuizPointValue = (value: unknown): number => {
   const parsed =
     typeof value === "number"
@@ -2811,7 +2832,6 @@ export default function StudentFeedPageClient() {
             const groupData = groupDoc.data();
             const currentGroupName = groupData.groupName ?? "Grupo";
             const isGroupInPerson = groupData.isInPerson === true;
-            groupNames.add(currentGroupName);
 
             const coursesArray: Array<{ courseId: string; courseName: string }> =
               Array.isArray(groupData.courses) && groupData.courses.length > 0
@@ -2819,28 +2839,40 @@ export default function StudentFeedPageClient() {
                 : groupData.courseId
                   ? [{ courseId: groupData.courseId, courseName: groupData.courseName ?? "" }]
                   : [];
+            const scopedCourseIds = isCourseScopedEnrollment(enrollment)
+              ? new Set(getEnrollmentCourseIds(enrollment))
+              : null;
+            const excludedCourseIds = getExcludedCourseIds(enrollment);
 
             // 3) Iterar sobre cursos del grupo (con manejo de errores por curso)
             for (const courseEntry of coursesArray) {
               try {
-                const studyCourseKey = `${currentGroupId}::${courseEntry.courseId}`;
+                const courseId = trimSafeString(courseEntry.courseId);
+                if (!courseId) continue;
+                if (scopedCourseIds && !scopedCourseIds.has(courseId)) continue;
+                if (excludedCourseIds.has(courseId)) continue;
+
+                const studyCourseKey = `${currentGroupId}::${courseId}`;
                 const isStudyOnlyCourse = globalExamStudyCourseKeys.has(studyCourseKey);
                 const assignedTeacher = resolveTeacherAssignmentForCourse({
                   groupData: groupData as Record<string, unknown>,
-                  courseId: courseEntry.courseId,
+                  courseId,
                 });
-                await processCourseContent({
+                const courseWasLoaded = await processCourseContent({
                   currentGroupId,
                   currentGroupName,
                   currentEnrollmentId,
                   isGroupInPerson,
-                  courseId: courseEntry.courseId,
+                  courseId,
                   courseName: courseEntry.courseName ?? "",
                   teacherId: assignedTeacher.teacherId,
                   teacherName: assignedTeacher.teacherName,
                   isStudyOnlyCourse,
                 });
-                renderedRegularCourseIds.add(courseEntry.courseId);
+                if (courseWasLoaded) {
+                  renderedRegularCourseIds.add(courseId);
+                  groupNames.add(currentGroupName);
+                }
               } catch (courseErr) {
                 console.warn(`Error cargando curso ${courseEntry.courseId}, continuando...`, courseErr);
               }
@@ -2860,7 +2892,7 @@ export default function StudentFeedPageClient() {
             const enrollment = enrollmentDoc.data();
             const currentEnrollmentId = enrollmentDoc.id;
             const courseId = trimSafeString(enrollment.courseId);
-            if (!courseId || renderedRegularCourseIds.has(courseId)) {
+            if (!courseId || getExcludedCourseIds(enrollment).has(courseId) || renderedRegularCourseIds.has(courseId)) {
               captureEnrollmentClosures(enrollment, currentEnrollmentId);
               continue;
             }
@@ -2873,9 +2905,8 @@ export default function StudentFeedPageClient() {
 
             const currentGroupId = trimSafeString(enrollment.groupId) || `globalExamStudy:${courseId}`;
             const currentGroupName = trimSafeString(enrollment.groupName) || "Modo estudio";
-            groupNames.add(currentGroupName);
 
-            await processCourseContent({
+            const courseWasLoaded = await processCourseContent({
               currentGroupId,
               currentGroupName,
               currentEnrollmentId,
@@ -2884,6 +2915,9 @@ export default function StudentFeedPageClient() {
               courseName: trimSafeString(enrollment.courseName),
               isStudyOnlyCourse: true,
             });
+            if (courseWasLoaded) {
+              groupNames.add(currentGroupName);
+            }
           } catch (enrollErr) {
             console.warn(`Error cargando enrollment de modo estudio ${enrollmentDoc.id}, continuando...`, enrollErr);
           }
@@ -2894,7 +2928,7 @@ export default function StudentFeedPageClient() {
 
         if (feed.length === 0) {
           setError(
-            "Las materias asignadas a tus grupos están archivadas o sin contenido disponible.",
+            "No tienes materias activas con contenido disponible por ahora.",
           );
           setClasses([]);
           setCourseClosureMap({});

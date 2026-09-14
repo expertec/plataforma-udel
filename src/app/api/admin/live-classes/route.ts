@@ -25,6 +25,11 @@ type StorageObjectLocation = {
   objectPath: string;
 };
 
+type GroupCourseSummary = {
+  groupId: string;
+  groupName: string;
+};
+
 const PROCESSING_STALE_AFTER_MS = 45 * 60 * 1000;
 const RECENT_RETRY_WINDOW_MS = 20 * 60 * 1000;
 
@@ -139,6 +144,21 @@ function parseLessonPath(path: string): { courseId: string; lessonId: string } |
   const lessonId = asText(parts[3]);
   if (!courseId || !lessonId) return null;
   return { courseId, lessonId };
+}
+
+function getGroupCourseIds(groupData: Record<string, unknown>): string[] {
+  const courseIds = new Set<string>();
+  if (Array.isArray(groupData.courses)) {
+    groupData.courses.forEach((course) => {
+      if (!course || typeof course !== "object" || Array.isArray(course)) return;
+      const courseId = asText((course as Record<string, unknown>).courseId);
+      if (courseId) courseIds.add(courseId);
+    });
+  }
+
+  const legacyCourseId = asText(groupData.courseId);
+  if (legacyCourseId) courseIds.add(legacyCourseId);
+  return Array.from(courseIds);
 }
 
 function isSessionFinalized(session: LiveClassSession | null): boolean {
@@ -260,6 +280,8 @@ export async function GET(request: NextRequest) {
           pathData,
           refPath: classDoc.ref.path,
           title: asText(data.title) || pathData.classId,
+          linkedGroupId: asText(data.linkedGroupId) || null,
+          linkedGroupName: asText(data.linkedGroupName) || null,
           liveSession,
           createdAt,
           updatedAt,
@@ -272,6 +294,8 @@ export async function GET(request: NextRequest) {
           pathData: { courseId: string; lessonId: string; classId: string };
           refPath: string;
           title: string;
+          linkedGroupId: string | null;
+          linkedGroupName: string | null;
           liveSession: LiveClassSession | null;
           createdAt: string | null;
           updatedAt: string | null;
@@ -291,13 +315,30 @@ export async function GET(request: NextRequest) {
 
     const courseTitleMap = new Map<string, string>();
     const lessonTitleMap = new Map<string, string>();
+    const groupsByCourseId = new Map<string, GroupCourseSummary[]>();
+    const groupNameById = new Map<string, string>();
+
+    const [courseSnaps, allGroupsSnap] = await Promise.all([
+      courseRefs.size > 0 ? db.getAll(...Array.from(courseRefs.values())) : Promise.resolve([]),
+      db.collection("groups").get(),
+    ]);
 
     if (courseRefs.size > 0) {
-      const courseSnaps = await db.getAll(...Array.from(courseRefs.values()));
       courseSnaps.forEach((snap) => {
         courseTitleMap.set(snap.id, asText(snap.data()?.title) || snap.id);
       });
     }
+
+    allGroupsSnap.docs.forEach((groupDoc) => {
+      const groupData = (groupDoc.data() ?? {}) as Record<string, unknown>;
+      const groupName = asText(groupData.groupName) || groupDoc.id;
+      groupNameById.set(groupDoc.id, groupName);
+      getGroupCourseIds(groupData).forEach((courseId) => {
+        const current = groupsByCourseId.get(courseId) ?? [];
+        current.push({ groupId: groupDoc.id, groupName });
+        groupsByCourseId.set(courseId, current);
+      });
+    });
 
     if (lessonRefs.size > 0) {
       const lessonSnaps = await db.getAll(...Array.from(lessonRefs.values()));
@@ -314,10 +355,20 @@ export async function GET(request: NextRequest) {
     const defaultBucketName = resolveDefaultBucketName();
 
     const items = parsedClasses
-      .map(({ pathData, refPath, title, liveSession, createdAt, updatedAt }) => {
+      .map(({ pathData, refPath, title, linkedGroupId, linkedGroupName, liveSession, createdAt, updatedAt }) => {
         const courseTitle = courseTitleMap.get(pathData.courseId) || pathData.courseId;
         const lessonTitle =
           lessonTitleMap.get(`${pathData.courseId}::${pathData.lessonId}`) || pathData.lessonId;
+        const courseGroups = groupsByCourseId.get(pathData.courseId) ?? [];
+        const resolvedLinkedGroupName =
+          linkedGroupName ||
+          (linkedGroupId ? groupNameById.get(linkedGroupId) ?? linkedGroupId : null);
+        const sharedGroupNames = Array.from(
+          new Set(courseGroups.map((group) => group.groupName).filter(Boolean)),
+        );
+        const sharedGroupIds = Array.from(
+          new Set(courseGroups.map((group) => group.groupId).filter(Boolean)),
+        );
         const monitorStatus = deriveMonitorStatus(liveSession);
         const lastRelevantAt = latestRelevantAt({
           session: liveSession,
@@ -340,6 +391,10 @@ export async function GET(request: NextRequest) {
           title,
           courseTitle,
           lessonTitle,
+          linkedGroupId,
+          linkedGroupName: resolvedLinkedGroupName,
+          sharedGroupIds,
+          sharedGroupNames,
           docPath: refPath,
           roomName: liveSession?.roomName ?? null,
           sessionStatus: liveSession?.status ?? "scheduled",

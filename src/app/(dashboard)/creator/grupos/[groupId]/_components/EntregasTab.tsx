@@ -14,6 +14,7 @@ import {
 import { getForumPosts } from "@/lib/firebase/forum-service";
 import { getGroupStudents } from "@/lib/firebase/groups-service";
 import { db } from "@/lib/firebase/firestore";
+import { auth } from "@/lib/firebase/client";
 import { SubmissionsModal } from "./SubmissionsModal";
 
 type EntregasTabProps = {
@@ -51,7 +52,52 @@ type LessonGroup = {
 type GroupStudent = {
   id: string;
   name: string;
+  courseIds?: string[];
+  excludedCourseIds?: string[];
 };
+
+type StudentEnrollmentsApiResponse = {
+  success?: boolean;
+  error?: string;
+  data?: {
+    enrollments?: Array<Record<string, unknown> & { __id: string }>;
+  };
+};
+
+function getCourseIdsFromEnrollmentData(data: Record<string, unknown>): string[] {
+  const ids = new Set<string>();
+  const courseId = typeof data.courseId === "string" ? data.courseId.trim() : "";
+  if (courseId) ids.add(courseId);
+  if (Array.isArray(data.courseIds)) {
+    data.courseIds.forEach((item) => {
+      if (typeof item !== "string") return;
+      const id = item.trim();
+      if (id) ids.add(id);
+    });
+  }
+  return Array.from(ids);
+}
+
+function getExcludedCourseIdsFromEnrollmentData(data: Record<string, unknown>): string[] {
+  if (!Array.isArray(data.excludedCourseIds)) return [];
+  return Array.from(
+    new Set(
+      data.excludedCourseIds
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean),
+    ),
+  );
+}
+
+function isCourseOverrideEnrollment(data: Record<string, unknown>): boolean {
+  const source = typeof data.source === "string" ? data.source.trim() : "";
+  return (
+    data.isCourseOverride === true ||
+    data.scope === "course" ||
+    source === "courseOverride" ||
+    source === "extraCourse"
+  );
+}
 
 const drawRoundRect = (
   ctx: CanvasRenderingContext2D,
@@ -160,8 +206,56 @@ export function EntregasTab({
             name: student.studentName ?? "",
           }))
           .sort((a, b) => a.name.localeCompare(b.name, "es-MX"));
-        setStudents(groupStudents);
-        const studentIds = new Set(groupStudents.map((student) => student.id));
+        const studentsById = new Map<string, GroupStudent>();
+        groupStudents.forEach((student) => studentsById.set(student.id, student));
+
+        try {
+          const token = await auth.currentUser?.getIdToken();
+          if (token) {
+            const response = await fetch(`/api/groups/${encodeURIComponent(groupId)}/student-enrollments`, {
+              method: "GET",
+              headers: { Authorization: `Bearer ${token}` },
+              cache: "no-store",
+            });
+            const payload = (await response.json().catch(() => ({}))) as StudentEnrollmentsApiResponse;
+            if (response.ok && payload.success !== false) {
+              const visibleCourseIds = new Set(courseIds);
+              (payload.data?.enrollments ?? []).forEach((enrollment) => {
+                const isOverride = isCourseOverrideEnrollment(enrollment);
+                const enrollmentCourseIds = getCourseIdsFromEnrollmentData(enrollment).filter((courseId) =>
+                  visibleCourseIds.has(courseId),
+                );
+                const excludedCourseIds = getExcludedCourseIdsFromEnrollmentData(enrollment);
+                const studentId = typeof enrollment.studentId === "string" ? enrollment.studentId.trim() : "";
+                if (!studentId) return;
+                const existingStudent = studentsById.get(studentId);
+                if (existingStudent && excludedCourseIds.length > 0) {
+                  studentsById.set(studentId, {
+                    ...existingStudent,
+                    excludedCourseIds,
+                  });
+                }
+                if (!isOverride || enrollmentCourseIds.length === 0 || studentsById.has(studentId)) return;
+                studentsById.set(studentId, {
+                  id: studentId,
+                  name:
+                    (typeof enrollment.studentName === "string" && enrollment.studentName.trim()) ||
+                    "Sin nombre",
+                  courseIds: enrollmentCourseIds,
+                  excludedCourseIds,
+                });
+              });
+            }
+          }
+        } catch (error) {
+          console.warn("No se pudieron cargar alumnos por materia para entregas:", error);
+        }
+
+        const mergedStudents = Array.from(studentsById.values()).sort((a, b) =>
+          a.name.localeCompare(b.name, "es-MX"),
+        );
+        setStudents(mergedStudents);
+        const studentIds = new Set(mergedStudents.map((student) => student.id));
 
         const allClasses: Array<{
           lessonId: string;
@@ -381,7 +475,17 @@ export function EntregasTab({
         });
       });
 
-      const matrixRows = students.map((student) => {
+      const lessonStudents = students.filter((student) => {
+        if (student.excludedCourseIds?.includes(lesson.courseId)) return false;
+        if (!student.courseIds || student.courseIds.length === 0) return true;
+        return student.courseIds.includes(lesson.courseId);
+      });
+      if (lessonStudents.length === 0) {
+        toast.error("No hay alumnos para esta materia.");
+        return;
+      }
+
+      const matrixRows = lessonStudents.map((student) => {
         const grades = lesson.assignments.map((assignment) => {
           const submission = latestByActivityAndStudent.get(`${assignment.classId}::${student.id}`);
           const numericGrade = submission && hasNumericSubmissionGrade(submission) ? submission.grade : null;
@@ -636,7 +740,13 @@ export function EntregasTab({
                             </span>
                           </div>
                           <span className="text-slate-600">
-                            {row.submissions.length}/{studentsCount || "?"}
+                            {row.submissions.length}/{
+                              students.filter((student) => {
+                                if (student.excludedCourseIds?.includes(row.courseId)) return false;
+                                if (!student.courseIds || student.courseIds.length === 0) return true;
+                                return student.courseIds.includes(row.courseId);
+                              }).length || studentsCount || "?"
+                            }
                           </span>
                           <span className="text-slate-600">
                             {row.avgGrade !== null ? row.avgGrade.toFixed(1) : "Sin calificar"}

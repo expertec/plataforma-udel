@@ -51,6 +51,7 @@ export default function GroupDetailPage() {
   const [group, setGroup] = useState<Group | null>(null);
   const [loading, setLoading] = useState(true);
   const [studentsModalOpen, setStudentsModalOpen] = useState(false);
+  const [extraCourseModalOpen, setExtraCourseModalOpen] = useState(false);
   const [groupStudents, setGroupStudents] = useState<GroupStudent[]>([]);
   const [loadingStudents, setLoadingStudents] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
@@ -369,6 +370,7 @@ export default function GroupDetailPage() {
         (group.assistantTeacherIds ?? []).includes(currentUserId)),
   );
   const canViewDropoutRisk = isAdminTeacherRole(userRole) || isCoordinatorForGroup;
+  const canAssignExtraCourse = canManageMentors || isCoordinatorForGroup;
 
   const visibleCourseIdsForCurrentUser = useMemo(() => {
     if (!group || !currentUserId) return [];
@@ -1009,6 +1011,8 @@ export default function GroupDetailPage() {
                     )
                   }
                   onOpenModal={() => setStudentsModalOpen(true)}
+                  onOpenExtraCourseModal={() => setExtraCourseModalOpen(true)}
+                  canAssignExtraCourse={canAssignExtraCourse && assignedCourses.length > 0}
                   onRemoveStudent={handleRemoveStudent}
                   onOpenStudentSubmissions={(student) =>
                     isMentorWithRestrictedCourses && visibleCourseIdsForCurrentUser.length === 0
@@ -1575,6 +1579,17 @@ export default function GroupDetailPage() {
         />
       ) : null}
 
+      {group ? (
+        <AssignExtraCourseModal
+          open={extraCourseModalOpen}
+          onClose={() => setExtraCourseModalOpen(false)}
+          groupId={group.id}
+          courses={assignedCourses}
+          scopePlantelId={isCoordinatorForGroup ? group.plantelId ?? "" : ""}
+          existingGroupStudentIds={groupStudents.map((student) => student.id)}
+        />
+      ) : null}
+
       {studentSubmissionsModal.open && group ? (
         <StudentSubmissionsModal
           groupId={group.id}
@@ -1757,12 +1772,16 @@ type AlumnosTabProps = {
   removingId: string | null;
   onStudentsAdded: (count: number) => void;
   onOpenModal: () => void;
+  onOpenExtraCourseModal: () => void;
+  canAssignExtraCourse: boolean;
   onRemoveStudent: (student: GroupStudent) => void;
   onOpenStudentSubmissions: (student: GroupStudent) => void;
 };
 
 function AlumnosTab({
   onOpenModal,
+  onOpenExtraCourseModal,
+  canAssignExtraCourse,
   students,
   loadingStudents,
   removingId,
@@ -1779,6 +1798,15 @@ function AlumnosTab({
         >
           + Agregar Estudiantes
         </button>
+        {canAssignExtraCourse ? (
+          <button
+            type="button"
+            onClick={onOpenExtraCourseModal}
+            className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+          >
+            + Materia extra
+          </button>
+        ) : null}
         <button className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
           Importar CSV
         </button>
@@ -2184,6 +2212,328 @@ function SelectStudentsModal({
               className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {saving ? "Agregando..." : "Agregar seleccionados"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type AssignExtraCourseModalProps = {
+  open: boolean;
+  onClose: () => void;
+  groupId: string;
+  courses: Array<{ courseId: string; courseName: string }>;
+  scopePlantelId?: string;
+  existingGroupStudentIds: string[];
+};
+
+function AssignExtraCourseModal({
+  open,
+  onClose,
+  groupId,
+  courses,
+  scopePlantelId = "",
+  existingGroupStudentIds,
+}: AssignExtraCourseModalProps) {
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [students, setStudents] = useState<StudentUser[]>([]);
+  const [searchResults, setSearchResults] = useState<StudentUser[]>([]);
+  const [selectedStudents, setSelectedStudents] = useState<Map<string, StudentUser>>(new Map());
+  const [selectedCourseId, setSelectedCourseId] = useState("");
+  const [search, setSearch] = useState("");
+  const [hasMore, setHasMore] = useState(false);
+  const lastDocRef = useRef<DocumentSnapshot | null>(null);
+  const searchTokenRef = useRef(0);
+
+  const existingIds = useMemo(
+    () => new Set(existingGroupStudentIds),
+    [existingGroupStudentIds],
+  );
+
+  const loadInitialStudents = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await getStudentUsersPaginated(50, null, undefined, scopePlantelId);
+      setStudents(result.students);
+      lastDocRef.current = result.lastDoc;
+      setHasMore(result.hasMore);
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudieron cargar los alumnos");
+      setStudents([]);
+      setHasMore(false);
+      lastDocRef.current = null;
+    } finally {
+      setLoading(false);
+    }
+  }, [scopePlantelId]);
+
+  useEffect(() => {
+    if (!open) return;
+    setSelectedStudents(new Map());
+    setSearch("");
+    setSearchResults([]);
+    setSearching(false);
+    setSelectedCourseId(courses[0]?.courseId ?? "");
+    searchTokenRef.current += 1;
+    void loadInitialStudents();
+  }, [courses, loadInitialStudents, open]);
+
+  const isSearchActive = search.trim().length > 0;
+
+  useEffect(() => {
+    if (!open) return;
+    if (!isSearchActive) {
+      setSearchResults([]);
+      setSearching(false);
+      return;
+    }
+
+    const token = ++searchTokenRef.current;
+    const normalized = search.trim().toLowerCase();
+    setSearchResults([]);
+    setSearching(true);
+    const timer = setTimeout(async () => {
+      try {
+        const results = new Map<string, StudentUser>();
+        let last: DocumentSnapshot | null = null;
+        let hasMorePages = true;
+        let pageCount = 0;
+
+        while (hasMorePages && pageCount < 60) {
+          const page = await getStudentUsersPaginated(50, last, normalized, scopePlantelId);
+          if (searchTokenRef.current !== token) return;
+          page.students.forEach((student) => results.set(student.id, student));
+          last = page.lastDoc;
+          hasMorePages = page.hasMore;
+          pageCount += 1;
+          if (results.size >= 100) break;
+        }
+
+        if (searchTokenRef.current !== token) return;
+        setSearchResults(Array.from(results.values()));
+      } catch (err) {
+        console.error(err);
+        if (searchTokenRef.current === token) toast.error("No se pudo buscar alumnos");
+      } finally {
+        if (searchTokenRef.current === token) setSearching(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [open, scopePlantelId, search, isSearchActive]);
+
+  const visibleStudents = isSearchActive ? searchResults : students;
+
+  const toggle = (student: StudentUser) => {
+    if (existingIds.has(student.id)) return;
+    setSelectedStudents((prev) => {
+      const next = new Map(prev);
+      if (next.has(student.id)) next.delete(student.id);
+      else next.set(student.id, student);
+      return next;
+    });
+  };
+
+  const handleLoadMore = async () => {
+    if (loadingMore || !hasMore || isSearchActive) return;
+    setLoadingMore(true);
+    try {
+      const result = await getStudentUsersPaginated(50, lastDocRef.current, undefined, scopePlantelId);
+      setStudents((prev) => [...prev, ...result.students]);
+      lastDocRef.current = result.lastDoc;
+      setHasMore(result.hasMore);
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudieron cargar más alumnos");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!selectedCourseId) {
+      toast.error("Selecciona una materia");
+      return;
+    }
+    if (selectedStudents.size === 0) {
+      toast.error("Selecciona al menos un alumno");
+      return;
+    }
+    const current = auth.currentUser;
+    if (!current) {
+      toast.error("Tu sesión expiró. Inicia sesión nuevamente.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const token = await current.getIdToken();
+      const response = await fetch(`/api/groups/${encodeURIComponent(groupId)}/course-enrollments`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          courseId: selectedCourseId,
+          studentIds: Array.from(selectedStudents.keys()),
+        }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        success?: boolean;
+        error?: string;
+        data?: { assignedCount?: number; skippedGroupMemberIds?: string[] };
+      };
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.error || "No se pudo asignar la materia");
+      }
+
+      const assignedCount = payload.data?.assignedCount ?? 0;
+      if (assignedCount > 0) {
+        toast.success(`Materia asignada a ${assignedCount} alumno(s)`);
+      } else {
+        toast("No se asignaron alumnos nuevos.");
+      }
+      onClose();
+    } catch (err) {
+      console.error(err);
+      const message = err instanceof Error ? err.message : "No se pudo asignar la materia";
+      toast.error(message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 px-4 py-6">
+      <div className="w-full max-w-2xl max-h-[calc(100vh-3rem)] overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Materia extra</p>
+            <h2 className="text-lg font-semibold text-slate-900">Asignar materia sin agregar al grupo</h2>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-sm text-slate-500 hover:text-slate-800"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="mt-4 space-y-3">
+          <label className="block text-sm font-medium text-slate-700">
+            Materia
+            <select
+              value={selectedCourseId}
+              onChange={(event) => setSelectedCourseId(event.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              {courses.map((course) => (
+                <option key={course.courseId} value={course.courseId}>
+                  {course.courseName}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Buscar alumno por nombre o email"
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <p className="text-xs text-slate-600">
+              Seleccionados: <span className="font-semibold">{selectedStudents.size}</span>
+            </p>
+          </div>
+
+          {loading ? (
+            <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+              Cargando alumnos...
+            </div>
+          ) : searching ? (
+            <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+              Buscando alumnos...
+            </div>
+          ) : visibleStudents.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+              {isSearchActive ? "No se encontraron alumnos." : "No hay alumnos para mostrar."}
+            </div>
+          ) : (
+            <div className="max-h-[45vh] overflow-auto rounded-lg border border-slate-200">
+              <table className="min-w-full text-sm">
+                <thead className="bg-slate-50 text-slate-600">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Sel.</th>
+                    <th className="px-3 py-2 text-left">Nombre</th>
+                    <th className="px-3 py-2 text-left">Email</th>
+                    <th className="px-3 py-2 text-left">Estado</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {visibleStudents.map((student) => {
+                    const alreadyInGroup = existingIds.has(student.id);
+                    return (
+                      <tr key={student.id} className="hover:bg-slate-50">
+                        <td className="px-3 py-2">
+                          <input
+                            type="checkbox"
+                            checked={selectedStudents.has(student.id)}
+                            onChange={() => toggle(student)}
+                            disabled={alreadyInGroup}
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-slate-900">{student.name}</td>
+                        <td className="px-3 py-2 text-slate-600">{student.email}</td>
+                        <td className="px-3 py-2 text-slate-600">
+                          {alreadyInGroup ? "Ya está en el grupo" : student.estado ?? "activo"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {!isSearchActive && hasMore ? (
+            <div className="flex justify-center">
+              <button
+                type="button"
+                onClick={handleLoadMore}
+                disabled={loadingMore}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {loadingMore ? "Cargando..." : "Cargar más alumnos"}
+              </button>
+            </div>
+          ) : null}
+
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              disabled={saving || selectedStudents.size === 0 || !selectedCourseId}
+              onClick={handleSave}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {saving ? "Asignando..." : "Asignar materia"}
             </button>
           </div>
         </div>
