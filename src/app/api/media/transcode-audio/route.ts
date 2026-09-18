@@ -46,8 +46,10 @@ async function runFfmpeg(inputPath: string, outputPath: string): Promise<void> {
       "-i",
       inputPath,
       "-vn",
-      "-acodec",
-      "pcm_s16le",
+      "-codec:a",
+      "libmp3lame",
+      "-b:a",
+      "96k",
       "-ar",
       "44100",
       "-ac",
@@ -83,7 +85,7 @@ export async function POST(request: NextRequest) {
     const rawBaseName = uploaded.name.replace(/\.[^./\\]+$/, "") || `audio-${randomUUID()}`;
     const baseName = rawBaseName.replace(/[^a-zA-Z0-9._-]+/g, "_") || `audio-${randomUUID()}`;
     const inputPath = path.join(tempDir, `${randomUUID()}-input`);
-    const outputPath = path.join(tempDir, `${baseName}.wav`);
+    const outputPath = path.join(tempDir, `${baseName}.mp3`);
 
     const inputBuffer = Buffer.from(await uploaded.arrayBuffer());
     await fs.writeFile(inputPath, inputBuffer);
@@ -94,7 +96,7 @@ export async function POST(request: NextRequest) {
     return new NextResponse(outputBuffer, {
       status: 200,
       headers: {
-        "Content-Type": "audio/wav",
+        "Content-Type": "audio/mpeg",
         "X-Output-Filename": baseName,
         "Cache-Control": "no-store",
       },

@@ -188,7 +188,7 @@ const REVIEW_START_DAYS = 6 * 7;
 const REVIEW_DUE_DAYS = 7 * 7;
 const SYSTEM_CLOSER_ID = "system";
 const SYSTEM_CLOSER_NAME = "Sistema";
-const EXTRAORDINARY_EXAM_AUTO_ASSIGN_MIN_EXCLUSIVE = 50;
+const EXTRAORDINARY_EXAM_AUTO_ASSIGN_MIN_INCLUSIVE = 50;
 const EXTRAORDINARY_EXAM_AUTO_ASSIGN_MAX_EXCLUSIVE = 70;
 
 class RouteAccessError extends Error {
@@ -853,7 +853,7 @@ async function ensureAutoExtraordinaryExamAssignmentsForClosureWrites(params: {
     const finalGrade = asNumberOrNull(write.payload.finalGrade);
     return (
       finalGrade !== null &&
-      finalGrade > EXTRAORDINARY_EXAM_AUTO_ASSIGN_MIN_EXCLUSIVE &&
+      finalGrade >= EXTRAORDINARY_EXAM_AUTO_ASSIGN_MIN_INCLUSIVE &&
       finalGrade < EXTRAORDINARY_EXAM_AUTO_ASSIGN_MAX_EXCLUSIVE
     );
   });

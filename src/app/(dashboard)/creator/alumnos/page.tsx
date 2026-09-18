@@ -217,6 +217,7 @@ export default function AlumnosPage() {
   const [archivedStudents, setArchivedStudents] = useState<ArchivedStudentUser[]>([]);
   const [archivedLoading, setArchivedLoading] = useState(false);
   const [reactivatingStudentId, setReactivatingStudentId] = useState<string | null>(null);
+  const [archivedSearchQuery, setArchivedSearchQuery] = useState("");
 
   // Estados para actualización de contraseñas
   const [passwordFileName, setPasswordFileName] = useState<string | null>(null);
@@ -838,6 +839,25 @@ export default function AlumnosPage() {
         normalizeSearchText(student.whatsapp ?? "").includes(query)
     );
   }, [students, searchResults, searchQuery, isSearchActive, canRunGlobalSearch]);
+
+  const filteredArchivedStudents = useMemo(() => {
+    const query = normalizeSearchText(archivedSearchQuery);
+    if (!query) return archivedStudents;
+
+    return archivedStudents.filter((student) =>
+      [
+        student.name,
+        student.email,
+        student.program ?? "",
+        getStudentPlantelSummary(student),
+        student.phone ?? "",
+        student.whatsapp ?? "",
+        formatDropoutDate(student.archivedAt),
+        student.archivedReasonType,
+        student.archivedReason,
+      ].some((value) => normalizeSearchText(value).includes(query)),
+    );
+  }, [archivedStudents, archivedSearchQuery]);
 
   const plantelSuggestionByStudentId = useMemo(() => {
     const suggestions = new Map<string, SuggestedPlantelByPhone>();
@@ -1766,7 +1786,11 @@ export default function AlumnosPage() {
               <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Bajas</p>
               <h2 className="text-lg font-semibold text-slate-900">Alumnos dados de baja</h2>
               <p className="text-sm text-slate-600">
-                {archivedStudents.length} alumno{archivedStudents.length !== 1 ? "s" : ""} en baja.
+                {archivedSearchQuery.trim()
+                  ? `${filteredArchivedStudents.length} de ${archivedStudents.length} alumno${
+                      archivedStudents.length !== 1 ? "s" : ""
+                    } en baja.`
+                  : `${archivedStudents.length} alumno${archivedStudents.length !== 1 ? "s" : ""} en baja.`}
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -1789,6 +1813,53 @@ export default function AlumnosPage() {
             </div>
           </div>
 
+          {!archivedLoading && archivedStudents.length > 0 ? (
+            <div className="flex items-center gap-3">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  value={archivedSearchQuery}
+                  onChange={(e) => setArchivedSearchQuery(e.target.value)}
+                  placeholder="Buscar por nombre, email, plantel, teléfono, tipo o motivo..."
+                  className="w-full rounded-lg border border-slate-300 px-4 py-2 pl-10 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                />
+                <svg
+                  className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                  />
+                </svg>
+                {archivedSearchQuery ? (
+                  <button
+                    type="button"
+                    onClick={() => setArchivedSearchQuery("")}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    aria-label="Limpiar búsqueda de bajas"
+                  >
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M6 18L18 6M6 6l12 12"
+                      />
+                    </svg>
+                  </button>
+                ) : null}
+              </div>
+              <div className="text-sm text-slate-600">
+                {filteredArchivedStudents.length} resultado{filteredArchivedStudents.length !== 1 ? "s" : ""}
+              </div>
+            </div>
+          ) : null}
+
           {archivedLoading ? (
             <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
               Cargando bajas...
@@ -1796,6 +1867,10 @@ export default function AlumnosPage() {
           ) : archivedStudents.length === 0 ? (
             <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
               No hay alumnos dados de baja.
+            </div>
+          ) : filteredArchivedStudents.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-600">
+              No se encontraron bajas que coincidan con &quot;{archivedSearchQuery}&quot;.
             </div>
           ) : (
             <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -1809,11 +1884,11 @@ export default function AlumnosPage() {
                       <th className="min-w-[120px] px-4 py-2 text-left">Fecha</th>
                       <th className="min-w-[160px] px-4 py-2 text-left">Tipo</th>
                       <th className="min-w-[260px] px-4 py-2 text-left">Motivo</th>
-                      <th className="min-w-[130px] px-4 py-2 text-right">Acciones</th>
+                      <th className="min-w-[240px] px-4 py-2 text-right">Acciones</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {archivedStudents.map((student) => (
+                    {filteredArchivedStudents.map((student) => (
                       <tr key={student.id} className="align-middle">
                         <td className="px-4 py-3 font-medium text-slate-900">{student.name}</td>
                         <td className="px-4 py-3 text-slate-600">
@@ -1830,14 +1905,23 @@ export default function AlumnosPage() {
                           </span>
                         </td>
                         <td className="px-4 py-3 text-right">
-                          <button
-                            type="button"
-                            onClick={() => handleReactivateStudent(student)}
-                            disabled={reactivatingStudentId === student.id}
-                            className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            {reactivatingStudentId === student.id ? "Reactivando..." : "Reactivar"}
-                          </button>
+                          <div className="flex flex-wrap justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleOpenGradesModal(student)}
+                              className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-100"
+                            >
+                              Calificaciones
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleReactivateStudent(student)}
+                              disabled={reactivatingStudentId === student.id}
+                              className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {reactivatingStudentId === student.id ? "Reactivando..." : "Reactivar"}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}

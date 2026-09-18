@@ -1,6 +1,6 @@
 export type ForumMediaKind = "audio" | "video";
 
-const FORUM_AUDIO_ALLOWED_EXTENSIONS = new Set(["mp3", "m4a", "aac", "wav"]);
+const FORUM_AUDIO_ALLOWED_EXTENSIONS = new Set(["mp3", "mpeg", "mpga", "m4a", "aac", "wav"]);
 const FORUM_VIDEO_ALLOWED_EXTENSIONS = new Set(["mp4", "m4v"]);
 
 const FORUM_AUDIO_ALLOWED_MIME_TYPES = new Set([
@@ -57,6 +57,8 @@ const MIME_TYPE_TO_EXTENSION: Record<string, string> = {
 
 const EXTENSION_TO_MIME_TYPE: Record<string, string> = {
   mp3: "audio/mpeg",
+  mpeg: "audio/mpeg",
+  mpga: "audio/mpeg",
   m4a: "audio/mp4",
   aac: "audio/aac",
   wav: "audio/wav",
@@ -153,7 +155,7 @@ export function resolvePreferredContentTypeForMediaFile(
   return EXTENSION_TO_MIME_TYPE[extensionFromName] ?? fallbackContentType;
 }
 
-export async function transcodeForumAudioToWav(file: File): Promise<File> {
+export async function transcodeForumAudioToMp3(file: File): Promise<File> {
   const formData = new FormData();
   formData.append("file", file);
 
@@ -177,7 +179,7 @@ export async function transcodeForumAudioToWav(file: File): Promise<File> {
     file.name.replace(/\.[^./\\]+$/, "") ||
     `audio-${Date.now()}`;
 
-  return new File([blob], `${baseName}.wav`, { type: "audio/wav" });
+  return new File([blob], `${baseName}.mp3`, { type: "audio/mpeg" });
 }
 
 export async function normalizeForumAudioFile(
@@ -187,7 +189,7 @@ export async function normalizeForumAudioFile(
   // MP3 y WAV se reproducen de forma fiable en todos los navegadores y
   // dispositivos, así que se usan tal cual. El resto (M4A/AAC, que muchas
   // veces muestran 0:00 y no reproducen; y webm/opus/ogg de grabaciones en
-  // Android) se convierte a WAV.
+  // Android) se convierte a MP3 para mantener el archivo ligero al subirlo.
   const validationError = validateForumMediaFile("audio", file);
   const shouldTranscode = Boolean(validationError) || isForumAudioTranscodeCandidate(file);
   if (!shouldTranscode) {
@@ -197,7 +199,7 @@ export async function normalizeForumAudioFile(
   // La conversión se hace en el servidor con ffmpeg, fiable en cualquier
   // dispositivo (a diferencia del decode en el navegador, que falla en iOS).
   try {
-    const normalized = await transcodeForumAudioToWav(file);
+    const normalized = await transcodeForumAudioToMp3(file);
     const normalizedValidationError = validateForumMediaFile("audio", normalized);
     if (normalizedValidationError) {
       throw new Error(normalizedValidationError);

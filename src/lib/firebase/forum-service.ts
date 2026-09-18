@@ -299,6 +299,7 @@ export async function createOrUpdateForumPost(params: {
     if (isGraded) {
       throw new Error("FORUM_GRADED");
     }
+    throw new Error("FORUM_ALREADY_EXISTS");
   }
 
   await setDoc(postRef, {

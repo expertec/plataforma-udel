@@ -8791,6 +8791,17 @@ export function ForumPanel({
       console.error("Error enviando aporte:", err);
       if (getErrorMessage(err) === "FORUM_GRADED") {
         toast.error("No puedes editar tu aporte porque ya fue evaluado.");
+      } else if (getErrorMessage(err) === "FORUM_ALREADY_EXISTS") {
+        toast.error("Ya tienes un aporte en este foro. Elimínalo antes de enviar otro.");
+        const existingPost = await getStudentForumPost(
+          classMeta.courseId,
+          classMeta.lessonId,
+          classMeta.classDocId,
+          studentId,
+        );
+        setStudentPost(existingPost);
+        setAlreadySubmitted(Boolean(existingPost));
+        setView("list");
       } else {
         toast.error("No se pudo enviar el aporte");
       }

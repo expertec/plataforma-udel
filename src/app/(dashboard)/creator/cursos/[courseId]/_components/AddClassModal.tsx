@@ -15,7 +15,7 @@ import { normalizeLiveSession, type LiveClassSession } from "@/lib/live-classes/
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { auth } from "@/lib/firebase/client";
 import { v4 as uuidv4 } from "uuid";
-import { EditorContent, useEditor } from "@tiptap/react";
+import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import ImageExtension from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
@@ -368,13 +368,18 @@ export function AddClassModal({
       toast.error("Inicia sesión para subir imágenes");
       throw new Error("Not authenticated");
     }
-    const storage = getStorage();
-    const ext = file.name.split(".").pop() || "jpg";
-    const storageRef = ref(storage, `class-descriptions/${user.uid}/${uuidv4()}.${ext.toLowerCase()}`);
-    const snapshot = await uploadBytes(storageRef, file, {
-      contentType: file.type,
-    });
-    return getDownloadURL(snapshot.ref);
+
+    const fileList = {
+      0: file,
+      length: 1,
+      item: (idx: number) => (idx === 0 ? file : null),
+    } as unknown as FileList;
+    const urls = await uploadFiles(fileList, "image");
+    const uploadedUrl = urls[0];
+    if (!uploadedUrl) {
+      throw new Error("Image upload did not return a URL");
+    }
+    return uploadedUrl;
   };
 
   if (!open) return null;
@@ -1970,9 +1975,61 @@ type RichTextEditorProps = {
 
 function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTextEditorProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const editorRef = useRef<Editor | null>(null);
   const [uploading, setUploading] = useState(false);
   const [imageWidth, setImageWidth] = useState(100);
   const [imageSelected, setImageSelected] = useState(false);
+
+  const getImageFiles = (fileList: FileList | null | undefined): File[] =>
+    Array.from(fileList ?? []).filter((file) => file.type.startsWith("image/"));
+
+  const getImageExtension = (mimeType: string): string => {
+    const subtype = mimeType.split("/")[1]?.split("+")[0]?.toLowerCase();
+    if (!subtype) return "png";
+    if (subtype === "jpeg") return "jpg";
+    return subtype.replace(/[^a-z0-9]/g, "") || "png";
+  };
+
+  const dataUrlToImageFile = (dataUrl: string, index: number): File | null => {
+    const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/i.exec(dataUrl.trim());
+    if (!match) return null;
+
+    const mimeType = match[1] ?? "image/png";
+    const base64 = match[2] ?? "";
+    try {
+      const binary = window.atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return new File([bytes], `imagen-pegada-${index}.${getImageExtension(mimeType)}`, {
+        type: mimeType,
+      });
+    } catch {
+      return null;
+    }
+  };
+
+  const getClipboardHtmlImageFiles = (html: string): File[] => {
+    if (!html.trim()) return [];
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    return Array.from(doc.querySelectorAll("img"))
+      .map((img, index) => dataUrlToImageFile(img.getAttribute("src") ?? "", index + 1))
+      .filter((file): file is File => Boolean(file));
+  };
+
+  const getClipboardImageFiles = (event: ClipboardEvent): File[] => {
+    const itemFiles = Array.from(event.clipboardData?.items ?? [])
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+
+    if (itemFiles.length > 0) return itemFiles;
+    const directFiles = getImageFiles(event.clipboardData?.files);
+    if (directFiles.length > 0) return directFiles;
+
+    return getClipboardHtmlImageFiles(event.clipboardData?.getData("text/html") ?? "");
+  };
 
   // Permite controlar el ancho de la imagen desde la toolbar / bubble menu
   const ResizableImage = ImageExtension.extend({
@@ -2025,6 +2082,55 @@ function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTex
     },
   });
 
+  const insertImageFiles = useCallback(
+    async (files: File[], insertAt?: number) => {
+      const activeEditor = editorRef.current;
+      if (!activeEditor || files.length === 0) return;
+
+      const invalidFile = files.find((file) => !file.type.startsWith("image/"));
+      if (invalidFile) {
+        toast.error("Solo se permiten imágenes");
+        return;
+      }
+
+      try {
+        setUploading(true);
+        let currentInsertAt = insertAt;
+
+        for (const file of files) {
+          const url = await onUploadImage(file);
+          const imageContent = [
+            { type: "paragraph" },
+            { type: "image", attrs: { src: url, alt: file.name, textAlign: "left" } },
+            { type: "paragraph" },
+          ];
+
+          if (typeof currentInsertAt === "number") {
+            activeEditor.chain().focus().insertContentAt(currentInsertAt, imageContent).run();
+          } else {
+            activeEditor.chain().focus().insertContent(imageContent).run();
+          }
+
+          const { selection } = activeEditor.state;
+          const imagePos = Math.max(0, selection.from - 1);
+          activeEditor.commands.setNodeSelection(imagePos);
+          currentInsertAt = Math.min(
+            activeEditor.state.doc.content.size,
+            activeEditor.state.selection.to + 2,
+          );
+        }
+
+        toast.success(files.length > 1 ? "Imágenes agregadas" : "Imagen agregada");
+      } catch (err) {
+        console.error(err);
+        toast.error("No se pudo subir la imagen");
+      } finally {
+        setUploading(false);
+      }
+    },
+    [onUploadImage],
+  );
+
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
@@ -2049,7 +2155,38 @@ function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTex
     onUpdate: ({ editor: ed }) => {
       onChange(ed.getHTML());
     },
+    editorProps: {
+      handlePaste: (view, event) => {
+        const imageFiles = getClipboardImageFiles(event);
+        if (imageFiles.length === 0) return false;
+
+        event.preventDefault();
+        void insertImageFiles(imageFiles, view.state.selection.from);
+        return true;
+      },
+      handleDrop: (view, event) => {
+        const imageFiles = getImageFiles(event.dataTransfer?.files);
+        if (imageFiles.length === 0) return false;
+
+        const coordinates = view.posAtCoords({
+          left: event.clientX,
+          top: event.clientY,
+        });
+        event.preventDefault();
+        void insertImageFiles(imageFiles, coordinates?.pos ?? view.state.selection.from);
+        return true;
+      },
+    },
   });
+
+  useEffect(() => {
+    editorRef.current = editor;
+    return () => {
+      if (editorRef.current === editor) {
+        editorRef.current = null;
+      }
+    };
+  }, [editor]);
 
   useEffect(() => {
     if (editor && editor.getHTML() !== value) {
@@ -2078,34 +2215,6 @@ function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTex
       return;
     }
     editor.chain().focus().extendMarkRange("link").setLink(linkAttrs).run();
-  };
-
-  const handleImageFile = async (file: File) => {
-    if (!file.type.startsWith("image/")) {
-      toast.error("Solo se permiten imágenes");
-      return;
-    }
-    if (!editor) return;
-    try {
-      setUploading(true);
-      const url = await onUploadImage(file);
-      editor.chain().focus().insertContent([
-        { type: "paragraph" },
-        { type: "image", attrs: { src: url, alt: file.name, textAlign: "left" } },
-        { type: "paragraph" },
-      ]).run();
-      // Seleccionar la imagen recién insertada para mostrar controles
-      const { selection } = editor.state;
-      const pos = selection.from;
-      const imagePos = Math.max(0, pos - 1);
-      editor.commands.setNodeSelection(imagePos);
-      toast.success("Imagen agregada");
-    } catch (err) {
-      console.error(err);
-      toast.error("No se pudo subir la imagen");
-    } finally {
-      setUploading(false);
-    }
   };
 
   const handleSetImageWidth = (percentage: number) => {
@@ -2316,16 +2425,11 @@ function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTex
           multiple
           className="hidden"
           onChange={async (e) => {
-            const files = Array.from(e.target.files ?? []);
+            const files = getImageFiles(e.target.files);
             if (files.length === 0) return;
             try {
-              setUploading(true);
-              for (const f of files) {
-                await handleImageFile(f);
-              }
-              toast.success("Imágenes agregadas");
+              await insertImageFiles(files);
             } finally {
-              setUploading(false);
               if (inputRef.current) inputRef.current.value = "";
             }
           }}
