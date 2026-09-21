@@ -37,14 +37,20 @@ import {
   MediaDeviceFailure,
   Track,
 } from "livekit-client";
+import Image from "next/image";
 import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  BellRing,
+  CalendarClock,
   Check,
+  CheckCircle2,
   ChevronUp,
   Circle,
+  Clock3,
   Eye,
   Hand,
+  Hourglass,
   LayoutGrid,
   Loader2,
   LogOut,
@@ -56,9 +62,12 @@ import {
   MonitorX,
   MoreHorizontal,
   PhoneOff,
+  PlayCircle,
   Presentation,
   Radio,
+  RefreshCw,
   Send,
+  ShieldCheck,
   Smile,
   Square,
   UserCheck,
@@ -67,6 +76,7 @@ import {
   Video,
   VideoOff,
   X,
+  XCircle,
 } from "lucide-react";
 import { LoginCard } from "@/components/auth/LoginCard";
 import { auth } from "@/lib/firebase/client";
@@ -496,6 +506,218 @@ function LiveChromeRecommendationBanner({
       >
         Cerrar
       </button>
+    </div>
+  );
+}
+
+function UdelLiveWaitingRoomScreen({
+  asRole,
+  classTitle,
+  scheduledStartAt,
+  timezone,
+  waitingReason,
+  statusText,
+  startingSession,
+  showChromeRecommendation,
+  chromeRecommendation,
+  onStartSession,
+  onRefresh,
+}: {
+  asRole: "teacher" | "student" | null;
+  classTitle: string;
+  scheduledStartAt: string | null;
+  timezone: string;
+  waitingReason: string | null;
+  statusText: string;
+  startingSession: boolean;
+  showChromeRecommendation: boolean;
+  chromeRecommendation: React.ReactNode;
+  onStartSession: () => void;
+  onRefresh: () => void;
+}) {
+  const isTeacherStart = asRole === "teacher" && waitingReason === "waiting_teacher";
+  const state =
+    waitingReason === "session_ended"
+      ? {
+          eyebrow: "Sesión finalizada",
+          title: "La clase en vivo terminó",
+          description: statusText,
+          label: "Finalizada",
+          Icon: CheckCircle2,
+          accent: "text-emerald-700",
+          glow: "shadow-emerald-900/10",
+          actionLabel: "Actualizar estado",
+          actionIcon: RefreshCw,
+          actionStyle: "border border-[#d9b1a1] bg-white text-[#6e2d2d] hover:bg-[#fff7f7]",
+        }
+      : waitingReason === "waiting_approval"
+        ? {
+            eyebrow: "Solicitud enviada",
+            title: "Estás en la sala de espera",
+            description: statusText,
+            label: "Esperando aprobación",
+            Icon: Hourglass,
+            accent: "text-[#6e2d2d]",
+            glow: "shadow-[#551b22]/12",
+            actionLabel: "Actualizar estado",
+            actionIcon: RefreshCw,
+            actionStyle: "border border-[#d9b1a1] bg-white text-[#6e2d2d] hover:bg-[#fff7f7]",
+          }
+        : waitingReason === "admission_rejected"
+          ? {
+              eyebrow: "Acceso no aprobado",
+              title: "Tu entrada no fue aceptada",
+              description: statusText,
+              label: "Requiere nueva solicitud",
+              Icon: XCircle,
+              accent: "text-[#8a1f28]",
+              glow: "shadow-[#551b22]/12",
+              actionLabel: "Solicitar entrada de nuevo",
+              actionIcon: RefreshCw,
+              actionStyle: "bg-[#6e2d2d] text-white hover:bg-[#551b22]",
+            }
+          : waitingReason === "left_room"
+            ? {
+                eyebrow: "Sala de espera",
+                title: "Saliste de la sala",
+                description: statusText,
+                label: "Fuera de la clase",
+                Icon: LogOut,
+                accent: "text-[#6e2d2d]",
+                glow: "shadow-[#551b22]/12",
+                actionLabel: "Volver a entrar",
+                actionIcon: RefreshCw,
+                actionStyle: "bg-[#6e2d2d] text-white hover:bg-[#551b22]",
+              }
+            : isTeacherStart
+              ? {
+                  eyebrow: "Clase lista",
+                  title: "Todo listo para iniciar",
+                  description: "Cuando inicies la sesión, los alumnos podrán entrar a la clase en vivo.",
+                  label: "Pendiente de inicio",
+                  Icon: PlayCircle,
+                  accent: "text-[#6e2d2d]",
+                  glow: "shadow-[#551b22]/12",
+                  actionLabel: startingSession ? "Iniciando..." : "Iniciar sesión",
+                  actionIcon: startingSession ? Loader2 : PlayCircle,
+                  actionStyle: "bg-[#6e2d2d] text-white hover:bg-[#551b22]",
+                }
+              : {
+                  eyebrow: "Sala de espera",
+                  title: "La clase aún no inicia",
+                  description: statusText,
+                  label: "Esperando al profesor",
+                  Icon: Clock3,
+                  accent: "text-[#6e2d2d]",
+                  glow: "shadow-[#551b22]/12",
+                  actionLabel: "Actualizar estado",
+                  actionIcon: RefreshCw,
+                  actionStyle: "border border-[#d9b1a1] bg-white text-[#6e2d2d] hover:bg-[#fff7f7]",
+                };
+  const ActionIcon = state.actionIcon;
+  const StateIcon = state.Icon;
+
+  return (
+    <div className="relative min-h-screen overflow-hidden bg-[#f7f0eb] text-[#321717]">
+      <div className="absolute inset-x-0 top-0 h-2 bg-gradient-to-r from-[#551b22] via-[#8a1f28] to-[#b67a68]" />
+      <div className="mx-auto flex min-h-screen w-full max-w-6xl items-center px-4 py-8 sm:px-6">
+        <div className="grid w-full gap-5 lg:grid-cols-[1.05fr_0.95fr] lg:items-stretch">
+          <section className="rounded-lg border border-[#d9b1a1] bg-[#fffaf7]/95 p-5 shadow-xl shadow-[#551b22]/10 sm:p-7">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-[#d9b1a1] bg-white p-2 shadow-sm">
+                  <Image
+                    src="/university-logo.jpg"
+                    alt="UDEL"
+                    width={56}
+                    height={56}
+                    className="h-full w-full object-contain"
+                  />
+                </div>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.24em] text-[#8a1f28]">
+                    UDEL Online
+                  </p>
+                  <p className="text-sm font-semibold text-[#754848]">Clase en vivo</p>
+                </div>
+              </div>
+              <span className="inline-flex items-center gap-2 rounded-full border border-[#d9b1a1] bg-[#f3e3db] px-3 py-1 text-xs font-bold text-[#6e2d2d]">
+                <span className="h-2 w-2 rounded-full bg-[#8a1f28]" />
+                {state.label}
+              </span>
+            </div>
+
+            <div className="mt-10 max-w-2xl">
+              <p className="text-xs font-bold uppercase tracking-[0.28em] text-[#8a1f28]">
+                {state.eyebrow}
+              </p>
+              <h1 className="mt-3 text-3xl font-bold tracking-tight text-[#321717] sm:text-4xl">
+                {state.title}
+              </h1>
+              <p className="mt-4 text-base leading-7 text-[#754848]">{state.description}</p>
+            </div>
+
+            <div className="mt-8 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-lg border border-[#d9b1a1]/80 bg-white/75 p-4">
+                <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.16em] text-[#8a1f28]">
+                  <CalendarClock className="h-4 w-4" />
+                  Programación
+                </div>
+                <p className="mt-2 text-sm font-semibold text-[#321717]">
+                  {scheduledStartAt
+                    ? formatEsMxDateTime(scheduledStartAt, { timeZone: timezone })
+                    : "Sin horario programado"}
+                </p>
+                <p className="mt-1 text-xs text-[#754848]">{timezone}</p>
+              </div>
+              <div className="rounded-lg border border-[#d9b1a1]/80 bg-white/75 p-4">
+                <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.16em] text-[#8a1f28]">
+                  <ShieldCheck className="h-4 w-4" />
+                  Acceso
+                </div>
+                <p className="mt-2 text-sm font-semibold text-[#321717]">{state.label}</p>
+                <p className="mt-1 text-xs text-[#754848]">
+                  {asRole === "teacher" ? "Vista de profesor" : "Vista de alumno"}
+                </p>
+              </div>
+            </div>
+
+            {showChromeRecommendation ? <div className="mt-5">{chromeRecommendation}</div> : null}
+
+            <button
+              type="button"
+              disabled={isTeacherStart && startingSession}
+              onClick={isTeacherStart ? onStartSession : onRefresh}
+              className={`mt-7 inline-flex items-center justify-center gap-2 rounded-lg px-5 py-3 text-sm font-bold shadow-sm transition disabled:cursor-not-allowed disabled:opacity-60 ${state.actionStyle}`}
+            >
+              <ActionIcon className={`h-4 w-4 ${startingSession ? "animate-spin" : ""}`} />
+              {state.actionLabel}
+            </button>
+          </section>
+
+          <aside className="relative overflow-hidden rounded-lg bg-[#551b22] p-6 text-white shadow-xl shadow-[#551b22]/20 sm:p-8">
+            <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-[#f3e3db] via-[#b67a68] to-[#8a1f28]" />
+            <div className="relative flex h-full min-h-[22rem] flex-col justify-between">
+              <div>
+                <div
+                  className={`flex h-16 w-16 items-center justify-center rounded-lg bg-white/12 ${state.accent} ${state.glow}`}
+                >
+                  <StateIcon className="h-9 w-9 text-[#f3e3db]" />
+                </div>
+                <p className="mt-8 text-xs font-bold uppercase tracking-[0.28em] text-[#e9cfc3]">
+                  Estado de la clase
+                </p>
+                <h2 className="mt-3 text-3xl font-bold leading-tight">{classTitle}</h2>
+                <p className="mt-4 max-w-md text-sm leading-6 text-[#f3e3db]/85">
+                  Mantén esta ventana abierta para conservar el seguimiento de la clase en vivo.
+                </p>
+              </div>
+
+              <div className="mt-8 h-1 rounded-full bg-gradient-to-r from-[#f3e3db] via-[#b67a68] to-transparent opacity-70" />
+            </div>
+          </aside>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2985,6 +3207,16 @@ export default function LiveClassRoomPage() {
     : RECORDING_STATUS_LABEL[recordingStatus];
   const isSessionLive = liveSessionStatus === "live";
   const canManageClass = asRole === "teacher" && isSessionLive;
+  const waitingParticipantsCount = waitingParticipants.length;
+  const firstWaitingParticipantName =
+    waitingParticipants[0]?.displayName?.trim() || waitingParticipants[0]?.email?.trim() || "Un alumno";
+  const waitingRoomNoticeText =
+    waitingParticipantsCount === 1
+      ? `${firstWaitingParticipantName} espera entrar`
+      : `${waitingParticipantsCount} alumnos esperan entrar`;
+  const waitingRoomNoticeDetail =
+    waitingParticipantsCount === 1 ? "Quiere entrar a la clase." : "Quieren entrar a la clase.";
+  const showWaitingRoomNotice = canManageClass && waitingParticipantsCount > 0 && !showModerationPanel;
   const canStartRecording =
     asRole === "teacher" &&
     isSessionLive &&
@@ -3060,52 +3292,28 @@ export default function LiveClassRoomPage() {
 
   if (!token || !livekitUrl) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-950 px-4 text-center text-white">
-        <p className="text-xs uppercase tracking-[0.2em] text-sky-300">Sala de espera</p>
-        <h1 className="text-2xl font-semibold">{classTitle}</h1>
-        <p className="max-w-lg text-sm text-slate-200">
-          {waitingRoomStatusText}
-        </p>
-        {scheduledStartAt ? (
-          <p className="text-xs text-slate-300">
-            Inicio programado:{" "}
-            {formatEsMxDateTime(scheduledStartAt, { timeZone: timezone })}{" "}
-            ({timezone})
-          </p>
-        ) : null}
-        {shouldShowChromeRecommendation ? (
+      <UdelLiveWaitingRoomScreen
+        asRole={asRole}
+        classTitle={classTitle}
+        scheduledStartAt={scheduledStartAt}
+        timezone={timezone}
+        waitingReason={waitingReason}
+        statusText={waitingRoomStatusText}
+        startingSession={startingSession}
+        showChromeRecommendation={shouldShowChromeRecommendation}
+        chromeRecommendation={
           <LiveChromeRecommendationBanner
             browserLabel={browserInfo.label}
             onDismiss={() => {
               setChromeWarningDismissed(true);
             }}
           />
-        ) : null}
-        {asRole === "teacher" && waitingReason === "waiting_teacher" ? (
-          <button
-            type="button"
-            disabled={startingSession}
-            onClick={startSession}
-            className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-500 disabled:opacity-60"
-          >
-            {startingSession ? "Iniciando..." : "Iniciar sesión"}
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => {
-              void requestToken({ admissionRetry: waitingReason === "admission_rejected" });
-            }}
-            className="rounded-lg border border-slate-400 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-          >
-            {waitingReason === "left_room"
-              ? "Volver a entrar"
-              : waitingReason === "admission_rejected"
-                ? "Solicitar entrada de nuevo"
-                : "Actualizar estado"}
-          </button>
-        )}
-      </div>
+        }
+        onStartSession={startSession}
+        onRefresh={() => {
+          void requestToken({ admissionRetry: waitingReason === "admission_rejected" });
+        }}
+      />
     );
   }
 
@@ -3151,6 +3359,20 @@ export default function LiveClassRoomPage() {
           <Radio className="h-3 w-3" />
           {recordingStatusText}
         </span>
+      ) : null}
+      {canManageClass && waitingParticipantsCount > 0 ? (
+        <button
+          type="button"
+          onClick={() => {
+            setShowModerationPanel(true);
+          }}
+          className="hidden animate-pulse items-center gap-1.5 rounded-full bg-amber-500 px-2.5 py-1 text-[11px] font-bold text-slate-950 shadow-[0_0_22px_rgba(245,158,11,0.65)] ring-2 ring-amber-200/70 transition hover:bg-amber-400 sm:flex"
+        >
+          <BellRing className="h-3.5 w-3.5" />
+          {waitingParticipantsCount === 1
+            ? "1 alumno en espera"
+            : `${waitingParticipantsCount} alumnos en espera`}
+        </button>
       ) : null}
     </div>
   );
@@ -3208,20 +3430,30 @@ export default function LiveClassRoomPage() {
           onClick={() => {
             setShowModerationPanel((current) => !current);
           }}
-          title="Moderar audio"
+          title="Sala de espera y moderación"
           className={`flex h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold transition sm:px-3 ${
             showModerationPanel
               ? "bg-sky-600 text-white hover:bg-sky-500"
+              : waitingParticipantsCount > 0
+                ? "animate-pulse bg-amber-500 text-slate-950 shadow-[0_0_22px_rgba(245,158,11,0.65)] ring-2 ring-amber-200/70 hover:bg-amber-400"
               : "bg-white/10 text-white hover:bg-white/20"
           }`}
         >
-          <Users className="h-4 w-4" />
+          {waitingParticipantsCount > 0 ? (
+            <BellRing className="h-4 w-4" />
+          ) : (
+            <Users className="h-4 w-4" />
+          )}
           <span className="hidden md:inline">
-            {waitingParticipants.length > 0 ? `Espera (${waitingParticipants.length})` : "Moderar"}
+            {waitingParticipantsCount > 0
+              ? waitingParticipantsCount === 1
+                ? "1 en espera"
+                : `${waitingParticipantsCount} en espera`
+              : "Moderar"}
           </span>
-          {waitingParticipants.length > 0 ? (
-            <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 text-[10px] font-bold text-white md:hidden">
-              {waitingParticipants.length}
+          {waitingParticipantsCount > 0 ? (
+            <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-rose-600 px-1.5 text-[10px] font-bold text-white md:hidden">
+              {waitingParticipantsCount}
             </span>
           ) : null}
         </button>
@@ -3339,6 +3571,51 @@ export default function LiveClassRoomPage() {
               {recordingStatusNotice}
             </span>
           ) : null}
+        </div>
+      ) : null}
+      {showWaitingRoomNotice ? (
+        <div className="pointer-events-none fixed bottom-28 right-3 z-30 flex w-[min(22rem,calc(100vw-1.5rem))] justify-end">
+          <div className="pointer-events-auto flex w-full items-center gap-3 rounded-xl border border-amber-300/60 bg-slate-950/95 p-3 text-white shadow-[0_0_28px_rgba(245,158,11,0.45)] ring-1 ring-amber-200/40 backdrop-blur">
+            <span className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-500/20 text-amber-200">
+              <BellRing className="h-5 w-5" />
+              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-bold text-white">
+                {waitingParticipantsCount}
+              </span>
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold">{waitingRoomNoticeText}</p>
+              <p className="text-[11px] text-slate-300">{waitingRoomNoticeDetail}</p>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowModerationPanel(true);
+                  }}
+                  className="rounded-md border border-slate-600 px-2 py-1 text-xs font-semibold text-slate-100 hover:bg-slate-800"
+                >
+                  Ver
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    participantsLoading ||
+                    waitingParticipantActionId !== null ||
+                    admittingAllWaiting
+                  }
+                  onClick={() => {
+                    void admitAllWaitingParticipants();
+                  }}
+                  className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
+                >
+                  {admittingAllWaiting
+                    ? "Aceptando..."
+                    : waitingParticipantsCount === 1
+                      ? "Aceptar"
+                      : "Aceptar todos"}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       ) : null}
       {canManageClass && showEndSessionConfirm ? (

@@ -300,6 +300,7 @@ export default function CourseClosureReviewPage() {
   const [payrollRates, setPayrollRates] = useState<PayrollRates>(DEFAULT_PAYROLL_RATES);
   const [generatingClosedPdf, setGeneratingClosedPdf] = useState(false);
   const [generatingClosedExcel, setGeneratingClosedExcel] = useState(false);
+  const [generatingClosurePayrollPdf, setGeneratingClosurePayrollPdf] = useState(false);
   const payrollRangeKey = `${payrollFrom}:${payrollTo}`;
 
   const loadItems = useCallback(async (user: User) => {
@@ -730,6 +731,190 @@ export default function CourseClosureReviewPage() {
     }
   };
 
+  const exportClosurePayrollPdf = async () => {
+    if (payrollItemsWithAmount.length === 0) {
+      toast.error("No hay registros de nomina para exportar");
+      return;
+    }
+
+    setGeneratingClosurePayrollPdf(true);
+    try {
+      const { jsPDF } = await import("jspdf");
+      const pdf = new jsPDF({ unit: "pt", format: "a4", orientation: "landscape" });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 30;
+      const contentWidth = pageWidth - margin * 2;
+      const lineHeight = 9;
+      const footerHeight = 24;
+      const columns = [
+        { label: "Estado", width: 52, maxLines: 1 },
+        { label: "Profesor", width: 104, maxLines: 2 },
+        { label: "Grupo / materia", width: 148, maxLines: 3 },
+        { label: "Cierre", width: 68, maxLines: 2 },
+        { label: "Evidencia", width: 72, maxLines: 2 },
+        { label: "Pago", width: 72, maxLines: 2 },
+        { label: "Nomina", width: 102, maxLines: 2 },
+        { label: "Motivo", width: 168, maxLines: 3 },
+      ];
+
+      const generatedAt = new Intl.DateTimeFormat("es-MX", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(new Date());
+      const rangeLabel = `Semana de pago: ${payrollFrom || "inicio"} a ${payrollTo || "hoy"}`;
+      const ratesLabel = (Object.keys(payrollRates) as PayrollLevel[])
+        .map((level) => `${payrollLevelLabel(level)} ${formatCurrency(payrollRates[level])}`)
+        .join(" · ");
+      let y = margin;
+
+      const drawHeader = () => {
+        pdf.setFillColor(93, 17, 21);
+        pdf.rect(0, 0, pageWidth, 74, "F");
+        pdf.setTextColor(255, 255, 255);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(16);
+        pdf.text("Nomina por cierres", margin, 28);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(8);
+        pdf.text(`${rangeLabel} · Generado: ${generatedAt}`, margin, 43);
+        pdf.text(
+          `Registros: ${payrollTotals.total} · Pagar: ${payrollTotals.payable} · Pendientes: ${payrollTotals.pending} · Revisar: ${payrollTotals.review} · Monto pagable: ${formatCurrency(payrollTotals.amount)}`,
+          margin,
+          58,
+        );
+
+        y = 92;
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(7);
+        pdf.setTextColor(117, 72, 72);
+        const rateLines = pdf.splitTextToSize(`Tarifas aplicadas: ${ratesLabel}`, contentWidth) as string[];
+        pdf.text(rateLines.slice(0, 2), margin, y);
+        y += Math.min(rateLines.length, 2) * 9 + 10;
+
+        pdf.setFillColor(243, 227, 219);
+        pdf.rect(margin, y, contentWidth, 22, "F");
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(7);
+        pdf.setTextColor(85, 27, 34);
+        let x = margin + 5;
+        columns.forEach((column) => {
+          pdf.text(column.label, x, y + 14);
+          x += column.width;
+        });
+        y += 22;
+      };
+
+      const addFooter = () => {
+        const pageCount = pdf.getNumberOfPages();
+        for (let page = 1; page <= pageCount; page += 1) {
+          pdf.setPage(page);
+          pdf.setDrawColor(217, 177, 161);
+          pdf.line(margin, pageHeight - footerHeight, pageWidth - margin, pageHeight - footerHeight);
+          pdf.setFont("helvetica", "normal");
+          pdf.setFontSize(7);
+          pdf.setTextColor(120, 120, 120);
+          pdf.text("Documento generado por Plataforma UDEL.", margin, pageHeight - 10);
+          pdf.text(`Pagina ${page} de ${pageCount}`, pageWidth - margin, pageHeight - 10, {
+            align: "right",
+          });
+        }
+      };
+
+      const ensurePageSpace = (rowHeight: number) => {
+        if (y + rowHeight <= pageHeight - footerHeight - 8) return;
+        pdf.addPage();
+        drawHeader();
+      };
+
+      const truncateLineToWidth = (line: string, maxWidth: number): string => {
+        const normalized = line.replace(/\s+/g, " ").trim();
+        if (pdf.getTextWidth(normalized) <= maxWidth) return normalized;
+        const ellipsis = "...";
+        let low = 0;
+        let high = normalized.length;
+        let best = ellipsis;
+        while (low <= high) {
+          const mid = Math.floor((low + high) / 2);
+          const candidate = `${normalized.slice(0, mid).trimEnd()}${ellipsis}`;
+          if (pdf.getTextWidth(candidate) <= maxWidth) {
+            best = candidate;
+            low = mid + 1;
+          } else {
+            high = mid - 1;
+          }
+        }
+        return best;
+      };
+
+      const wrapCellText = (text: string, columnIndex: number): string[] => {
+        const column = columns[columnIndex];
+        const availableWidth = column.width - 8;
+        const normalized = text.replace(/\s+/g, " ").trim() || " ";
+        const lines = (pdf.splitTextToSize(normalized, availableWidth) as string[])
+          .map((line) => line.replace(/\s+/g, " ").trim())
+          .filter(Boolean);
+        const visibleLines = (lines.length > 0 ? lines : [" "]).slice(0, column.maxLines);
+        if (lines.length > column.maxLines && visibleLines.length > 0) {
+          visibleLines[visibleLines.length - 1] = `${visibleLines[visibleLines.length - 1].replace(/\.+$/, "")}...`;
+        }
+        return visibleLines.map((line) => truncateLineToWidth(line, availableWidth));
+      };
+
+      drawHeader();
+      payrollItemsWithAmount.forEach((item, index) => {
+        const row = [
+          payrollStatusLabel(item.status),
+          `${item.payeeName || "Sin responsable"}${item.payeeEmail ? `\n${item.payeeEmail}` : ""}`,
+          `${item.groupName}\n${item.courseName}\n${item.plantelName || "Sin plantel"} · ${item.program || "Sin programa"}`,
+          `Ult: ${item.lastClosedAt ? formatDate(item.lastClosedAt) : "Sin fecha"}\nPri: ${item.firstClosedAt ? formatDate(item.firstClosedAt) : "Sin fecha"}`,
+          `${item.totalClosedCount}/${item.totalStudents} cerrados\n${item.closedInPeriodCount} en semana · ${item.openCount} pend.`,
+          `${formatCurrency(item.amount)}\n${payrollLevelLabel(item.level)} · ${formatCurrency(item.rate)}`,
+          `${item.payrollDeposit.bank || "Sin banco"}\n${item.payrollDeposit.clabe ? `CLABE ${item.payrollDeposit.clabe}` : "Sin CLABE"}`,
+          `${item.reasons.join(" · ") || "Materia completa y lista para pago"}${item.closedByNames.length > 0 ? `\nCerrado por: ${item.closedByNames.join(", ")}` : ""}`,
+        ];
+        const wrappedCells = row.map((text, columnIndex) => wrapCellText(text, columnIndex));
+        const rowHeight = Math.max(...wrappedCells.map((lines) => lines.length * lineHeight + 12), 28);
+        ensurePageSpace(rowHeight);
+
+        if (index % 2 === 0) {
+          pdf.setFillColor(255, 250, 247);
+          pdf.rect(margin, y, contentWidth, rowHeight, "F");
+        }
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(7);
+        pdf.setTextColor(50, 50, 50);
+        let x = margin + 5;
+        wrappedCells.forEach((lines, columnIndex) => {
+          if (columnIndex === 0 || columnIndex === 5) {
+            pdf.setFont("helvetica", "bold");
+            pdf.setTextColor(columnIndex === 5 ? 85 : 50, columnIndex === 5 ? 27 : 50, columnIndex === 5 ? 34 : 50);
+          } else {
+            pdf.setFont("helvetica", "normal");
+            pdf.setTextColor(50, 50, 50);
+          }
+          lines.forEach((line, lineIndex) => {
+            pdf.text(line, x, y + 12 + lineIndex * lineHeight);
+          });
+          x += columns[columnIndex].width;
+        });
+        y += rowHeight;
+      });
+
+      addFooter();
+      pdf.save(`nomina-cierres-${safeFileToken(`${payrollFrom}-${payrollTo}`)}.pdf`);
+      toast.success("PDF descargado.");
+    } catch (pdfError) {
+      console.error(pdfError);
+      toast.error("No se pudo generar el PDF de nomina.");
+    } finally {
+      setGeneratingClosurePayrollPdf(false);
+    }
+  };
+
   const exportClosurePayrollCsv = () => {
     if (payrollItemsWithAmount.length === 0) {
       toast.error("No hay registros de nomina para exportar");
@@ -1056,8 +1241,25 @@ export default function CourseClosureReviewPage() {
                   </button>
                   <button
                     type="button"
+                    onClick={exportClosurePayrollPdf}
+                    disabled={
+                      payrollLoading ||
+                      generatingClosurePayrollPdf ||
+                      payrollItemsWithAmount.length === 0
+                    }
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-[#6e2d2d]/30 bg-white px-3 py-2 text-sm font-semibold text-[#6e2d2d] transition hover:bg-[#f3e3db]/60 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <FileDown size={16} />
+                    {generatingClosurePayrollPdf ? "Generando..." : "PDF"}
+                  </button>
+                  <button
+                    type="button"
                     onClick={exportClosurePayrollCsv}
-                    disabled={payrollLoading || payrollItemsWithAmount.length === 0}
+                    disabled={
+                      payrollLoading ||
+                      generatingClosurePayrollPdf ||
+                      payrollItemsWithAmount.length === 0
+                    }
                     className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-700/30 bg-white px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     <FileDown size={16} />
