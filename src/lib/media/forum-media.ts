@@ -40,6 +40,8 @@ const AUDIO_RECORDER_MIME_CANDIDATES = [
   "audio/webm",
 ] as const;
 
+const AUDIO_METADATA_TIMEOUT_MS = 4500;
+
 const MIME_TYPE_TO_EXTENSION: Record<string, string> = {
   "audio/mpeg": "mp3",
   "audio/mp3": "mp3",
@@ -120,6 +122,29 @@ export function pickPreferredAudioRecordingMimeType(): string | null {
   return null;
 }
 
+export function createForumAudioMediaRecorder(stream: MediaStream): MediaRecorder {
+  const supportedCandidates =
+    typeof MediaRecorder !== "undefined" && typeof MediaRecorder.isTypeSupported === "function"
+      ? AUDIO_RECORDER_MIME_CANDIDATES.filter((candidate) => MediaRecorder.isTypeSupported(candidate))
+      : [];
+
+  for (const mimeType of supportedCandidates) {
+    try {
+      return new MediaRecorder(stream, { mimeType });
+    } catch {
+      // Algunos navegadores reportan soporte pero fallan al instanciar.
+    }
+  }
+
+  return new MediaRecorder(stream);
+}
+
+export function startForumAudioRecorder(recorder: MediaRecorder): void {
+  // El timeslice fuerza bloques periódicos y evita blobs vacíos o sin metadata
+  // finalizada en navegadores móviles cuando se detiene una grabación corta.
+  recorder.start(1000);
+}
+
 export function resolvePreferredExtensionForMimeType(
   mimeType: string | null | undefined,
   fallbackExtension: string,
@@ -182,6 +207,67 @@ export async function transcodeForumAudioToMp3(file: File): Promise<File> {
   return new File([blob], `${baseName}.mp3`, { type: "audio/mpeg" });
 }
 
+async function getBrowserAudioDuration(file: File): Promise<number | null> {
+  if (typeof window === "undefined" || typeof URL === "undefined" || typeof Audio === "undefined") {
+    return null;
+  }
+
+  const objectUrl = URL.createObjectURL(file);
+
+  return new Promise((resolve) => {
+    const audio = new Audio();
+    let settled = false;
+    let triedInfinityWorkaround = false;
+
+    const cleanup = () => {
+      audio.removeAttribute("src");
+      audio.load();
+      URL.revokeObjectURL(objectUrl);
+    };
+
+    const finish = (duration: number | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
+      cleanup();
+      resolve(duration);
+    };
+
+    const timeoutId = window.setTimeout(() => finish(null), AUDIO_METADATA_TIMEOUT_MS);
+
+    audio.preload = "metadata";
+    audio.onloadedmetadata = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        finish(audio.duration);
+        return;
+      }
+
+      if (audio.duration === Infinity && !triedInfinityWorkaround) {
+        triedInfinityWorkaround = true;
+        audio.ontimeupdate = () => {
+          audio.ontimeupdate = null;
+          if (Number.isFinite(audio.duration) && audio.duration > 0) {
+            finish(audio.duration);
+          } else {
+            finish(null);
+          }
+        };
+        audio.currentTime = Number.MAX_SAFE_INTEGER;
+        return;
+      }
+
+      finish(null);
+    };
+    audio.onerror = () => finish(null);
+    audio.src = objectUrl;
+  });
+}
+
+async function hasUsableBrowserAudioDuration(file: File): Promise<boolean> {
+  const duration = await getBrowserAudioDuration(file);
+  return typeof duration === "number" && Number.isFinite(duration) && duration > 0;
+}
+
 export async function normalizeForumAudioFile(
   file: File,
   source: "upload" | "recording",
@@ -191,7 +277,12 @@ export async function normalizeForumAudioFile(
   // veces muestran 0:00 y no reproducen; y webm/opus/ogg de grabaciones en
   // Android) se convierte a MP3 para mantener el archivo ligero al subirlo.
   const validationError = validateForumMediaFile("audio", file);
-  const shouldTranscode = Boolean(validationError) || isForumAudioTranscodeCandidate(file);
+  let shouldTranscode = Boolean(validationError) || isForumAudioTranscodeCandidate(file);
+
+  if (!shouldTranscode) {
+    shouldTranscode = !(await hasUsableBrowserAudioDuration(file));
+  }
+
   if (!shouldTranscode) {
     return file;
   }

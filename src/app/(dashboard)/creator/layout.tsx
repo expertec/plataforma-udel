@@ -134,6 +134,7 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
     }
     if (isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole)) {
       items.push({ href: "/creator/examenes-globales", label: "Examenes globales" });
+      items.push({ href: "/creator/examenes-extraordinarios", label: "Extraordinarios" });
     }
     if (isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole)) {
       items.push({ href: "/creator/profesores", label: "Profesores" });

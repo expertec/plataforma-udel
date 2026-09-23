@@ -35,6 +35,7 @@ import {
   type LocalAudioTrack,
   type LocalVideoTrack,
   MediaDeviceFailure,
+  type ScreenShareCaptureOptions,
   Track,
 } from "livekit-client";
 import Image from "next/image";
@@ -294,6 +295,16 @@ const LIVE_SIGNAL_TOPIC = "udx.live.signal";
 const LIVE_REACTION_TTL_MS = 2000;
 const LIVE_RAISED_HAND_TTL_MS = 20_000;
 const LIVE_REACTIONS = ["👍", "👏", "🎉", "🔥", "❤️", "😂"];
+const LIVE_SCREEN_SHARE_CAPTURE_OPTIONS = {
+  audio: true,
+  video: {
+    displaySurface: "window",
+  },
+  selfBrowserSurface: "exclude",
+  surfaceSwitching: "include",
+  systemAudio: "include",
+  contentHint: "detail",
+} satisfies ScreenShareCaptureOptions;
 const RECORDING_STATUS_LABEL: Record<LiveRecordingControlStatus, string> = {
   idle: "No grabando",
   recording: "Grabando",
@@ -477,6 +488,31 @@ function detectScreenShareSupport(): ScreenShareSupport {
       ? "Compartir pantalla no está disponible desde iPad o iPhone. Para presentar, entra desde una computadora con Chrome o Edge."
       : "Este navegador no permite compartir pantalla. Para presentar, entra desde una computadora con Chrome o Edge.",
   };
+}
+
+function getScreenShareErrorMessage(error: unknown): string {
+  const errorName =
+    error && typeof error === "object" && "name" in error && typeof error.name === "string"
+      ? error.name
+      : "";
+
+  if (errorName === "NotAllowedError") {
+    return "No se pudo compartir pantalla. Si cancelaste el selector, inténtalo de nuevo. Si usas macOS, revisa que Chrome o Edge tenga permiso de Grabación de pantalla.";
+  }
+
+  if (errorName === "NotReadableError") {
+    return "El sistema bloqueó la captura de pantalla. Cierra y vuelve a abrir el navegador; en macOS revisa el permiso de Grabación de pantalla.";
+  }
+
+  if (errorName === "NotFoundError") {
+    return "No se encontraron pantallas o ventanas disponibles para compartir. Abre PowerPoint, Word o el programa antes de presionar Compartir.";
+  }
+
+  if (errorName === "AbortError") {
+    return "No se inició la pantalla compartida. Vuelve a intentarlo y elige Ventana o Pantalla completa en el selector.";
+  }
+
+  return "No se pudo compartir pantalla. Usa Chrome o Edge de escritorio y elige Ventana o Pantalla completa.";
 }
 
 function LiveChromeRecommendationBanner({
@@ -1040,6 +1076,7 @@ function LiveRoomConference({
   const [screenShareRequestStatus, setScreenShareRequestStatus] = useState<
     "idle" | "pending" | "approved" | "denied"
   >("idle");
+  const [screenShareErrorMessage, setScreenShareErrorMessage] = useState<string | null>(null);
   const [showReactionBar, setShowReactionBar] = useState(false);
   const [showOnlyActiveCameras, setShowOnlyActiveCameras] = useState(false);
   const [viewMode, setViewMode] = useState<LiveViewMode>("speaker");
@@ -1082,7 +1119,7 @@ function LiveRoomConference({
 
   const screenShareToggle = useTrackToggle({
     source: Track.Source.ScreenShare,
-    captureOptions: { audio: true, selfBrowserSurface: "include" },
+    captureOptions: LIVE_SCREEN_SHARE_CAPTURE_OPTIONS,
   });
 
   const remoteCameraPipTiles = useMemo<ParticipantsPipTile[]>(() => {
@@ -1398,11 +1435,17 @@ function LiveRoomConference({
     if (screenShareToggle.enabled) {
       await screenShareToggle.toggle(false);
       setScreenShareRequestStatus("idle");
+      setScreenShareErrorMessage(null);
       return;
     }
     if (screenShareRequestStatus === "approved") {
       if (screenShareToggle.pending || !screenShareSupport.supported) return;
-      await screenShareToggle.toggle(true);
+      try {
+        setScreenShareErrorMessage(null);
+        await screenShareToggle.toggle(true);
+      } catch (error) {
+        setScreenShareErrorMessage(getScreenShareErrorMessage(error));
+      }
       return;
     }
     if (screenShareToggle.pending || screenShareRequestStatus === "pending") return;
@@ -1519,14 +1562,14 @@ function LiveRoomConference({
         return "Esperando autorización del profesor";
       }
       if (screenShareRequestStatus === "approved") {
-        return "Autorizado. Haz clic para compartir pantalla.";
+        return "Autorizado. Elige Ventana para compartir PowerPoint, Word u otro programa.";
       }
       if (screenShareRequestStatus === "denied") {
         return "El profesor rechazó la solicitud. Puedes volver a solicitar.";
       }
-      return "Solicitar autorización para compartir pantalla";
+      return "Solicitar autorización para compartir pantalla, ventana o programa";
     }
-    return "Compartir pantalla";
+    return "Compartir una ventana de PowerPoint, Word, otro programa o pantalla completa";
   }, [
     screenShareRequestStatus,
     screenShareSupport.message,
@@ -1614,13 +1657,16 @@ function LiveRoomConference({
         studentsPip.close();
       }
       await screenShareToggle.toggle(false);
+      setScreenShareErrorMessage(null);
       return;
     }
 
     if (!screenShareSupport.supported) {
+      setScreenShareErrorMessage(screenShareSupport.message);
       return;
     }
 
+    setScreenShareErrorMessage(null);
     const shouldAutoOpenStudentsPip = studentsPip.supported && !studentsPip.active;
     autoStudentsPipRef.current = shouldAutoOpenStudentsPip;
     const openPromise =
@@ -1641,9 +1687,11 @@ function LiveRoomConference({
         studentsPip.close();
       }
       console.error("No se pudo alternar el compartir pantalla", error);
+      setScreenShareErrorMessage(getScreenShareErrorMessage(error));
     }
   }, [
     screenShareToggle,
+    screenShareSupport.message,
     screenShareSupport.supported,
     studentsPip,
   ]);
@@ -2039,6 +2087,11 @@ function LiveRoomConference({
                   {screenShareSupport.message}
                 </p>
               ) : null}
+              {canUseScreenShareButton && screenShareErrorMessage ? (
+                <p className="mx-auto mt-2 max-w-2xl text-center text-[11px] font-medium text-amber-200">
+                  {screenShareErrorMessage}
+                </p>
+              ) : null}
               {viewerRole === "student" && screenShareRequestStatus === "pending" ? (
                 <p className="mx-auto mt-2 max-w-2xl text-center text-[11px] font-medium text-sky-200">
                   Solicitud enviada. Espera autorización del profesor.
@@ -2046,7 +2099,7 @@ function LiveRoomConference({
               ) : null}
               {viewerRole === "student" && screenShareRequestStatus === "approved" ? (
                 <p className="mx-auto mt-2 max-w-2xl text-center text-[11px] font-medium text-emerald-200">
-                  Solicitud autorizada. Haz clic en Compartir para elegir tu pantalla.
+                  Solicitud autorizada. Haz clic en Compartir y elige Ventana o Pantalla completa.
                 </p>
               ) : null}
               {viewerRole === "student" && screenShareRequestStatus === "denied" ? (

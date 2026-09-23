@@ -71,15 +71,24 @@ export async function GET(request: NextRequest) {
       "superAdminTeacher",
     ]);
 
+    const requestedExamKind = new URL(request.url).searchParams.get("examKind")?.trim() ?? "all";
     const assignments = await getGlobalExamAssignments();
     const coordinatorScopeGroupIds =
       access.role === "coordinadorPlantel" || access.role === "director"
         ? new Set(await getCoordinatorScopeGroupIds(access.uid, access.plantelIds))
         : new Set<string>();
 
-    const visibleAssignments = assignments.filter((assignment) =>
-      canAccessGlobalExamAssignment(access, assignment, coordinatorScopeGroupIds),
-    );
+    const visibleAssignments = assignments
+      .filter((assignment) =>
+        requestedExamKind === "all"
+          ? true
+          : requestedExamKind === "extraordinary"
+            ? assignment.examKind === "extraordinary"
+            : assignment.examKind === "global",
+      )
+      .filter((assignment) =>
+        canAccessGlobalExamAssignment(access, assignment, coordinatorScopeGroupIds),
+      );
 
     return NextResponse.json({
       success: true,
@@ -263,7 +272,9 @@ export async function POST(request: NextRequest) {
         {
           success: false,
           error: template.courseId
-            ? "Ya existe una asignacion de examen global para este alumno en esa materia"
+            ? `Ya existe una asignacion de ${
+                template.examKind === "extraordinary" ? "examen extraordinario" : "examen global"
+              } para este alumno en esa materia`
             : "Ya existe una asignacion de esta plantilla para este alumno",
         },
         { status: 409 },
@@ -347,6 +358,6 @@ export async function POST(request: NextRequest) {
       data: toGlobalExamAssignmentRecord(assignmentRef.id, createdSnap.data() ?? {}),
     });
   } catch (error) {
-    return toGlobalExamRouteErrorResponse(error, "Error creando asignacion de examen global");
+    return toGlobalExamRouteErrorResponse(error, "Error creando asignacion de examen");
   }
 }

@@ -8,9 +8,11 @@ import { getDownloadURL, getStorage, ref, uploadBytes } from "firebase/storage";
 import { db } from "@/lib/firebase/firestore";
 import { createSubmission, deleteSubmission } from "@/lib/firebase/submissions-service";
 import {
+  createForumAudioMediaRecorder,
   normalizeForumAudioFile,
-  pickPreferredAudioRecordingMimeType,
   resolvePreferredContentTypeForMediaFile,
+  resolvePreferredExtensionForMimeType,
+  startForumAudioRecorder,
 } from "@/lib/media/forum-media";
 import { useAulaData } from "../_lib/AulaDataContext";
 import type { FeedClass } from "../_lib/types";
@@ -192,10 +194,7 @@ export function AssignmentSection({ cls }: { cls: FeedClass }) {
       chunksRef.current = [];
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-      const preferredMimeType = pickPreferredAudioRecordingMimeType();
-      const recorder = preferredMimeType
-        ? new MediaRecorder(stream, { mimeType: preferredMimeType })
-        : new MediaRecorder(stream);
+      const recorder = createForumAudioMediaRecorder(stream);
       recorderRef.current = recorder;
 
       recorder.addEventListener("dataavailable", (event) => {
@@ -207,23 +206,19 @@ export function AssignmentSection({ cls }: { cls: FeedClass }) {
         streamRef.current = null;
         setRecording(false);
 
-        const recorderMimeType = recorder.mimeType || preferredMimeType || "audio/webm";
+        const recorderMimeType = recorder.mimeType || "audio/webm";
         const blob = new Blob(chunksRef.current, { type: recorderMimeType });
         chunksRef.current = [];
         if (blob.size <= 0) return;
 
-        const extension = recorderMimeType.includes("mp4")
-          ? "m4a"
-          : recorderMimeType.includes("mpeg")
-            ? "mp3"
-            : "webm";
+        const extension = resolvePreferredExtensionForMimeType(recorderMimeType, "webm");
         const recordedFile = new File([blob], `tarea-audio-${Date.now()}.${extension}`, {
           type: recorderMimeType,
         });
         void handleFileSelection(recordedFile, "recording");
       });
 
-      recorder.start();
+      startForumAudioRecorder(recorder);
       setRecording(true);
     } catch (error) {
       console.error("No se pudo grabar audio para la tarea:", error);

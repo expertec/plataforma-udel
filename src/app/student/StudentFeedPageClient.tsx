@@ -74,11 +74,12 @@ import {
   normalizeForumPointValue,
 } from "@/lib/forum-grading";
 import {
+  createForumAudioMediaRecorder,
   normalizeForumAudioFile,
-  pickPreferredAudioRecordingMimeType,
   resolvePreferredContentTypeForMediaFile,
   resolvePreferredExtensionForMediaFile,
   resolvePreferredExtensionForMimeType,
+  startForumAudioRecorder,
   validateForumMediaFile,
 } from "@/lib/media/forum-media";
 
@@ -8633,10 +8634,7 @@ export function ForumPanel({
       setRecordingTarget(target);
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-      const preferredMimeType = pickPreferredAudioRecordingMimeType();
-      const recorder = preferredMimeType
-        ? new MediaRecorder(stream, { mimeType: preferredMimeType })
-        : new MediaRecorder(stream);
+      const recorder = createForumAudioMediaRecorder(stream);
       recorderRef.current = recorder;
       chunksRef.current = [];
       recorder.ondataavailable = (ev) => {
@@ -8644,7 +8642,7 @@ export function ForumPanel({
       };
       recorder.onstop = () => {
         const activeStream = streamRef.current ?? stream;
-        const recorderMimeType = recorder.mimeType || preferredMimeType || "audio/webm";
+        const recorderMimeType = recorder.mimeType || "audio/webm";
         const extension = resolvePreferredExtensionForMimeType(recorderMimeType, "webm");
         const blob = new Blob(chunksRef.current, { type: recorderMimeType });
         const rawFile = new File([blob], `grabacion-${Date.now()}.${extension}`, {
@@ -8663,7 +8661,7 @@ export function ForumPanel({
 
         void handleReplyAudioFileSelection(target.postId, rawFile, "recording");
       };
-      recorder.start();
+      startForumAudioRecorder(recorder);
       setRecording(true);
     } catch (err) {
       console.error("No se pudo iniciar grabación:", err);
@@ -9432,7 +9430,7 @@ function AssignmentPanel({
       setMicrophoneGuideKind(null);
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-      const recorder = new MediaRecorder(stream);
+      const recorder = createForumAudioMediaRecorder(stream);
       recorderRef.current = recorder;
       chunksRef.current = [];
       recorder.addEventListener("dataavailable", (event) => {
@@ -9444,12 +9442,14 @@ function AssignmentPanel({
         const activeStream = streamRef.current ?? stream;
         activeStream.getTracks().forEach((track) => track.stop());
         streamRef.current = null;
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-        const file = new File([blob], `grabacion-${Date.now()}.webm`, { type: "audio/webm" });
+        const recorderMimeType = recorder.mimeType || "audio/webm";
+        const extension = resolvePreferredExtensionForMimeType(recorderMimeType, "webm");
+        const blob = new Blob(chunksRef.current, { type: recorderMimeType });
+        const file = new File([blob], `grabacion-${Date.now()}.${extension}`, { type: recorderMimeType });
         onAudioChange(file, "recording");
         setRecording(false);
       });
-      recorder.start();
+      startForumAudioRecorder(recorder);
       setRecording(true);
     } catch (err) {
       console.error("Error grabando audio:", err);

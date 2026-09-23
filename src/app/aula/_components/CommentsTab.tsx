@@ -5,9 +5,11 @@ import { Loader2, Mic, Paperclip, Send, Trash2 } from "lucide-react";
 import toast from "react-hot-toast";
 import { getDownloadURL, getStorage, ref, uploadBytes } from "firebase/storage";
 import {
+  createForumAudioMediaRecorder,
   normalizeForumAudioFile,
-  pickPreferredAudioRecordingMimeType,
   resolvePreferredContentTypeForMediaFile,
+  resolvePreferredExtensionForMimeType,
+  startForumAudioRecorder,
 } from "@/lib/media/forum-media";
 import { useAulaData } from "../_lib/AulaDataContext";
 import {
@@ -196,10 +198,7 @@ export function CommentsTab({
       chunksRef.current = [];
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-      const preferredMimeType = pickPreferredAudioRecordingMimeType();
-      const recorder = preferredMimeType
-        ? new MediaRecorder(stream, { mimeType: preferredMimeType })
-        : new MediaRecorder(stream);
+      const recorder = createForumAudioMediaRecorder(stream);
       recorderRef.current = recorder;
 
       recorder.addEventListener("dataavailable", (event) => {
@@ -211,23 +210,19 @@ export function CommentsTab({
         streamRef.current = null;
         setRecording(false);
 
-        const recorderMimeType = recorder.mimeType || preferredMimeType || "audio/webm";
+        const recorderMimeType = recorder.mimeType || "audio/webm";
         const blob = new Blob(chunksRef.current, { type: recorderMimeType });
         chunksRef.current = [];
         if (blob.size <= 0) return;
 
-        const extension = recorderMimeType.includes("mp4")
-          ? "m4a"
-          : recorderMimeType.includes("mpeg")
-            ? "mp3"
-            : "webm";
+        const extension = resolvePreferredExtensionForMimeType(recorderMimeType, "webm");
         const file = new File([blob], `comentario-${Date.now()}.${extension}`, {
           type: recorderMimeType,
         });
         void handleAudioFileSelection(file, "recording");
       });
 
-      recorder.start();
+      startForumAudioRecorder(recorder);
       setRecording(true);
     } catch (error) {
       console.error("No se pudo grabar audio para el comentario:", error);

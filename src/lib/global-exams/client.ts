@@ -73,8 +73,11 @@ async function callApiWithToken<T>(
   return payload.data;
 }
 
-export async function fetchGlobalExamTemplates(): Promise<GlobalExamTemplateRecord[]> {
-  return callApi<GlobalExamTemplateRecord[]>("/api/global-exams/templates");
+export async function fetchGlobalExamTemplates(
+  examKind?: ExamKind | "all",
+): Promise<GlobalExamTemplateRecord[]> {
+  const query = examKind ? `?${new URLSearchParams({ examKind }).toString()}` : "";
+  return callApi<GlobalExamTemplateRecord[]>(`/api/global-exams/templates${query}`);
 }
 
 export async function createGlobalExamTemplate(payload: {
@@ -125,8 +128,11 @@ export async function duplicateGlobalExamTemplate(
   });
 }
 
-export async function fetchGlobalExamAssignments(): Promise<GlobalExamAssignmentRecord[]> {
-  return callApi<GlobalExamAssignmentRecord[]>("/api/global-exams/assignments");
+export async function fetchGlobalExamAssignments(
+  examKind?: ExamKind | "all",
+): Promise<GlobalExamAssignmentRecord[]> {
+  const query = examKind ? `?${new URLSearchParams({ examKind }).toString()}` : "";
+  return callApi<GlobalExamAssignmentRecord[]>(`/api/global-exams/assignments${query}`);
 }
 
 export async function resolveGlobalExamCandidateEnrollments(

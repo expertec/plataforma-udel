@@ -25,6 +25,7 @@ import {
   getGlobalExamReasonLabel,
   getGlobalExamStatusLabel,
   getGlobalExamTemplateStatusLabel,
+  type ExamKind,
   type GlobalExamAssignmentReason,
   type GlobalExamAssignmentRecord,
   type GlobalExamQuestion,
@@ -64,6 +65,64 @@ type QuestionFormState = {
 };
 
 const BASE_OPTION_IDS = ["a", "b", "c", "d"];
+
+type ExamPanelCopy = {
+  heading: string;
+  singularLower: string;
+  pluralLower: string;
+  templatesEmpty: string;
+  assignmentsEmpty: string;
+  loading: string;
+  createTemplatePlaceholder: string;
+  templateDescriptionPlaceholder: string;
+  assignmentDescription: string;
+  syncDescription: string;
+  noEnrollmentWithCourse: string;
+  enableNowLabel: string;
+  enableNowDescription: string;
+  activationDetailLabel: string;
+};
+
+const EXAM_PANEL_COPY: Record<ExamKind, ExamPanelCopy> = {
+  global: {
+    heading: "Examen global",
+    singularLower: "examen global",
+    pluralLower: "examenes globales",
+    templatesEmpty: "Aun no existen plantillas de examen global.",
+    assignmentsEmpty: "Aun no existen asignaciones para examen global.",
+    loading: "Cargando configuracion del examen global...",
+    createTemplatePlaceholder: "Examen global de regularizacion",
+    templateDescriptionPlaceholder: "Instrucciones internas para coordinacion o contexto del examen.",
+    assignmentDescription: "El examen solo quedara disponible para el alumno y grupo elegidos.",
+    syncDescription:
+      "Opcional: si lo dejas en \"Sin grupo\", el sistema usará automáticamente la inscripción del alumno en esta materia para sincronizar la nota a kardex y desbloquear el contenido en modo estudio.",
+    noEnrollmentWithCourse:
+      "No se encontró una inscripción actual o histórica utilizable para esta materia. Aun así, al crear la asignación el sistema generará un acceso técnico para reflejar la calificación en kardex y abrir la materia en modo estudio.",
+    enableNowLabel: "Marcar pago verificado y habilitar inmediatamente.",
+    enableNowDescription:
+      "Si lo dejas apagado, la asignacion quedara en borrador para activarla despues.",
+    activationDetailLabel: "Pago verificado",
+  },
+  extraordinary: {
+    heading: "Examen extraordinario",
+    singularLower: "examen extraordinario",
+    pluralLower: "examenes extraordinarios",
+    templatesEmpty: "Aun no existen plantillas de examen extraordinario.",
+    assignmentsEmpty: "Aun no existen asignaciones para examen extraordinario.",
+    loading: "Cargando configuracion del examen extraordinario...",
+    createTemplatePlaceholder: "Examen extraordinario de regularizacion",
+    templateDescriptionPlaceholder: "Instrucciones internas para coordinacion o contexto del extraordinario.",
+    assignmentDescription: "El extraordinario solo quedara disponible para el alumno y grupo elegidos.",
+    syncDescription:
+      "Opcional: si lo dejas en \"Sin grupo\", el sistema usará automáticamente la inscripción del alumno en esta materia para sincronizar la nota extraordinaria a kardex y desbloquear el contenido en modo estudio.",
+    noEnrollmentWithCourse:
+      "No se encontró una inscripción actual o histórica utilizable para esta materia. Aun así, al crear la asignación el sistema generará un acceso técnico para reflejar la calificación extraordinaria en kardex y abrir la materia en modo estudio.",
+    enableNowLabel: "Habilitar extraordinario inmediatamente.",
+    enableNowDescription:
+      "Si lo dejas apagado, la asignacion quedara en borrador para activarla despues.",
+    activationDetailLabel: "Activacion registrada",
+  },
+};
 
 function createBlankQuestion(index: number): QuestionFormState {
   const options = BASE_OPTION_IDS.map((optionId) => ({
@@ -108,7 +167,8 @@ function formatElapsedTime(seconds: number | null | undefined): string | null {
   return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
 }
 
-export default function GlobalExamsPage() {
+export function GlobalExamsAdminPanel({ examKind = "global" }: { examKind?: ExamKind }) {
+  const copy = EXAM_PANEL_COPY[examKind];
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [loadingContext, setLoadingContext] = useState(true);
   const [loadingData, setLoadingData] = useState(true);
@@ -234,6 +294,10 @@ export default function GlobalExamsPage() {
   }, [assignments, assignmentSearch]);
 
   const canCreateTemplates = isAdmin;
+  const publishedTemplatesForAssignment = useMemo(
+    () => templates.filter((template) => template.status === "published" && template.examKind === examKind),
+    [examKind, templates],
+  );
 
   const persistSelectedStudent = (student: StudentUser) => {
     setStudents((prev) => {
@@ -270,8 +334,8 @@ export default function GlobalExamsPage() {
     try {
       const roleIsAdmin = isAdminTeacherRole(role);
       const roleIsCoordinator = isCampusCoordinatorRole(role);
-      const templatePromise = fetchGlobalExamTemplates();
-      const assignmentPromise = fetchGlobalExamAssignments();
+      const templatePromise = fetchGlobalExamTemplates(examKind);
+      const assignmentPromise = fetchGlobalExamAssignments(examKind);
       const studentPromise = roleIsCoordinator
         ? getCoordinatorScopedStudents().then((result) => result.students)
         : getStudentUsersPaginated(500).then((result) => result.students);
@@ -290,7 +354,7 @@ export default function GlobalExamsPage() {
     } catch (error) {
       console.error(error);
       toast.error(
-        error instanceof Error ? error.message : "No se pudo cargar la configuracion del examen global",
+        error instanceof Error ? error.message : `No se pudo cargar la configuracion de ${copy.singularLower}`,
       );
     } finally {
       setLoadingData(false);
@@ -510,6 +574,7 @@ export default function GlobalExamsPage() {
     try {
       const saved = editingTemplateId
         ? await updateGlobalExamTemplate(editingTemplateId, {
+            examKind,
             title: templateTitle,
             description: templateDescription,
             courseId: selectedCourse?.id ?? "",
@@ -518,6 +583,7 @@ export default function GlobalExamsPage() {
             questions: payloadQuestions,
           })
         : await createGlobalExamTemplate({
+            examKind,
             title: templateTitle,
             description: templateDescription,
             courseId: selectedCourse?.id ?? "",
@@ -659,7 +725,7 @@ export default function GlobalExamsPage() {
     return (
       <RoleGate allowedRole={["coordinadorPlantel", "director", "adminTeacher", "superAdminTeacher"]}>
         <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">
-          Cargando examen global...
+          Cargando {copy.singularLower}...
         </div>
       </RoleGate>
     );
@@ -671,9 +737,9 @@ export default function GlobalExamsPage() {
         <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div className="space-y-2">
             <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Regularizacion</p>
-            <h1 className="text-3xl font-semibold">Examen global</h1>
+            <h1 className="text-3xl font-semibold">{copy.heading}</h1>
             <p className="max-w-3xl text-sm text-slate-600">
-              Administra plantillas de regularizacion, habilita examenes solo a alumnos
+              Administra plantillas de regularizacion, habilita {copy.pluralLower} solo a alumnos
               puntuales y sincroniza automaticamente la nota final con kardex.
             </p>
           </div>
@@ -751,7 +817,7 @@ export default function GlobalExamsPage() {
 
         {loadingData ? (
           <section className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">
-            Cargando configuracion del examen global...
+            {copy.loading}
           </section>
         ) : null}
 
@@ -825,7 +891,7 @@ export default function GlobalExamsPage() {
                       <input
                         value={templateTitle}
                         onChange={(event) => setTemplateTitle(event.target.value)}
-                        placeholder="Examen global de regularizacion"
+                        placeholder={copy.createTemplatePlaceholder}
                         className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
                         required
                       />
@@ -877,7 +943,7 @@ export default function GlobalExamsPage() {
                         onChange={(event) => setTemplateDescription(event.target.value)}
                         rows={3}
                         className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500"
-                        placeholder="Instrucciones internas para coordinacion o contexto del examen."
+                        placeholder={copy.templateDescriptionPlaceholder}
                       />
                     </label>
                     <label className="space-y-2 text-sm lg:max-w-xs">
@@ -1055,7 +1121,7 @@ export default function GlobalExamsPage() {
 
               {templates.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
-                  Aun no existen plantillas de examen global.
+                  {copy.templatesEmpty}
                 </div>
               ) : filteredTemplates.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
@@ -1178,7 +1244,7 @@ export default function GlobalExamsPage() {
                 </div>
                 <div className="p-5">
                   <p className="mb-4 text-sm text-slate-600">
-                    El examen solo quedara disponible para el alumno y grupo elegidos.
+                    {copy.assignmentDescription}
                   </p>
                   <form className="space-y-4" onSubmit={handleSubmitAssignment}>
                 <label className="space-y-2 text-sm">
@@ -1190,13 +1256,11 @@ export default function GlobalExamsPage() {
                     required
                   >
                     <option value="">Selecciona una plantilla</option>
-                    {templates
-                      .filter((template) => template.status === "published")
-                      .map((template) => (
-                        <option key={template.id} value={template.id}>
-                          {template.title} | {getGlobalExamCourseLabel(template.courseName)}
-                        </option>
-                      ))}
+                    {publishedTemplatesForAssignment.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.title} | {getGlobalExamCourseLabel(template.courseName)}
+                      </option>
+                    ))}
                   </select>
                 </label>
 
@@ -1317,14 +1381,12 @@ export default function GlobalExamsPage() {
                     candidateEnrollments.length === 0 ? (
                       <p className="text-xs text-amber-600">
                         {selectedTemplate?.courseId
-                          ? "No se encontró una inscripción actual o histórica utilizable para esta materia. Aun así, al crear la asignación el sistema generará un acceso técnico para reflejar la calificación en kardex y abrir la materia en modo estudio."
+                          ? copy.noEnrollmentWithCourse
                           : "Esta plantilla no está ligada a una materia, por lo que no hay nota que sincronizar ni contenido que desbloquear."}
                       </p>
                     ) : (
                       <p className="text-xs text-slate-500">
-                        Opcional: si lo dejas en &quot;Sin grupo&quot;, el sistema usará
-                        automáticamente la inscripción del alumno en esta materia para sincronizar la
-                        nota a kardex y desbloquear el contenido en modo estudio.
+                        {copy.syncDescription}
                       </p>
                     )}
                   </label>
@@ -1349,10 +1411,8 @@ export default function GlobalExamsPage() {
                     className="mt-1 h-4 w-4 accent-emerald-600"
                   />
                   <span>
-                    Marcar pago verificado y habilitar inmediatamente.
-                    <span className="block text-xs text-slate-500">
-                      Si lo dejas apagado, la asignacion quedara en borrador para activarla despues.
-                    </span>
+                    {copy.enableNowLabel}
+                    <span className="block text-xs text-slate-500">{copy.enableNowDescription}</span>
                   </span>
                 </label>
 
@@ -1384,7 +1444,7 @@ export default function GlobalExamsPage() {
 
               {assignments.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
-                  Aun no existen asignaciones para examen global.
+                  {copy.assignmentsEmpty}
                 </div>
               ) : filteredAssignments.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
@@ -1451,7 +1511,7 @@ export default function GlobalExamsPage() {
                           <span>Plantel: {assignment.plantelName || assignment.plantelId || "Sin plantel"}</span>
                           <span>Alumno: {assignment.studentEmail || assignment.studentId}</span>
                           <span>Plantilla: {assignment.templateTitle}</span>
-                          <span>Pago verificado: {assignment.paymentVerifiedAt ? "Si" : "No"}</span>
+                          <span>{copy.activationDetailLabel}: {assignment.paymentVerifiedAt ? "Si" : "No"}</span>
                         </div>
                       </article>
                     );
@@ -1464,4 +1524,8 @@ export default function GlobalExamsPage() {
       </div>
     </RoleGate>
   );
+}
+
+export default function GlobalExamsPage() {
+  return <GlobalExamsAdminPanel examKind="global" />;
 }
