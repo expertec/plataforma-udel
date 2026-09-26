@@ -1566,31 +1566,42 @@ export default function GroupDetailPage() {
                                         </label>
                                         <label className="mt-2 block text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
                                           Monto a pagar
-                                          <input
-                                            type="number"
-                                            min={0}
-                                            step="0.01"
-                                            inputMode="decimal"
-                                            value={
-                                              payrollDraft ??
-                                              (configuredAmount === null ? "" : String(configuredAmount))
-                                            }
-                                            placeholder="Sin monto"
-                                            disabled={!canManageMentors || !isEnabled || isSavingPayroll}
-                                            onChange={(event) =>
-                                              setMentorPayrollDrafts((prev) => ({
-                                                ...prev,
-                                                [payrollKey]: event.target.value,
-                                              }))
-                                            }
-                                            onBlur={() => void handleSaveMentorCoursePayrollAmount(t.id, course.courseId)}
-                                            onKeyDown={(event) => {
-                                              if (event.key === "Enter") {
-                                                event.currentTarget.blur();
+                                          <div className="mt-1 flex flex-col gap-2 sm:flex-row">
+                                            <input
+                                              type="number"
+                                              min={0}
+                                              step="0.01"
+                                              inputMode="decimal"
+                                              value={
+                                                payrollDraft ??
+                                                (configuredAmount === null ? "" : String(configuredAmount))
                                               }
-                                            }}
-                                            className="mt-1 block w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-slate-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-400"
-                                          />
+                                              placeholder="Sin monto"
+                                              disabled={!canManageMentors || !isEnabled || isSavingPayroll}
+                                              onChange={(event) =>
+                                                setMentorPayrollDrafts((prev) => ({
+                                                  ...prev,
+                                                  [payrollKey]: event.target.value,
+                                                }))
+                                              }
+                                              onBlur={() => void handleSaveMentorCoursePayrollAmount(t.id, course.courseId)}
+                                              onKeyDown={(event) => {
+                                                if (event.key === "Enter") {
+                                                  event.currentTarget.blur();
+                                                }
+                                              }}
+                                              className="block min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-slate-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-400"
+                                            />
+                                            <button
+                                              type="button"
+                                              disabled={!canManageMentors || !isEnabled || isSavingPayroll}
+                                              onPointerDown={(event) => event.preventDefault()}
+                                              onClick={() => void handleSaveMentorCoursePayrollAmount(t.id, course.courseId)}
+                                              className="rounded-md border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold normal-case tracking-normal text-blue-700 transition hover:border-blue-300 hover:bg-blue-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+                                            >
+                                              Guardar
+                                            </button>
+                                          </div>
                                         </label>
                                         {isSavingPayroll ? (
                                           <p className="mt-1 text-[11px] text-blue-600">Guardando monto...</p>

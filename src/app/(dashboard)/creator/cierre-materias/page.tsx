@@ -330,6 +330,7 @@ export default function CourseClosureReviewPage() {
   const [generatingClosurePayrollPdf, setGeneratingClosurePayrollPdf] = useState(false);
   const [payrollDepositDraft, setPayrollDepositDraft] = useState<PayrollDepositDraft | null>(null);
   const [savingPayrollDeposit, setSavingPayrollDeposit] = useState(false);
+  const [markingPayrollPaidKey, setMarkingPayrollPaidKey] = useState<string | null>(null);
   const payrollRangeKey = `${payrollFrom}:${payrollTo}`;
 
   const loadItems = useCallback(async (user: User) => {
@@ -623,6 +624,63 @@ export default function CourseClosureReviewPage() {
       toast.error(message);
     } finally {
       setSavingPayrollDeposit(false);
+    }
+  };
+
+  const markClosurePayrollItemPaid = async (
+    item: ClosurePayrollItem & {
+      amount: number;
+      amountSource: string;
+      rate: number;
+    },
+  ) => {
+    if (!currentUser) return;
+    const confirmed = window.confirm(
+      `Marcar como pagada la materia "${item.courseName}" para ${item.payeeName}?`,
+    );
+    if (!confirmed) return;
+
+    setMarkingPayrollPaidKey(item.sourceKey);
+    try {
+      const token = await currentUser.getIdToken();
+      const response = await fetch("/api/admin/teacher-closure-payroll", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          sourceKey: item.sourceKey,
+          payeeId: item.payeeId,
+          payeeName: item.payeeName,
+          payeeEmail: item.payeeEmail,
+          courseName: item.courseName,
+          amount: item.amount,
+          amountSource: item.amountSource,
+          firstClosedAt: item.firstClosedAt,
+          lastClosedAt: item.lastClosedAt,
+        }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      toast.success("Materia marcada como pagada.");
+      setClosurePayrollItems((prev) =>
+        prev.map((payrollItem) =>
+          payrollItem.sourceKey === item.sourceKey
+            ? {
+                ...payrollItem,
+                status: "paid",
+                reasons: [],
+                paymentNotes: ["Marcada como pagada"],
+              }
+            : payrollItem,
+        ),
+      );
+      await loadClosurePayrollItems(currentUser);
+    } catch (markError) {
+      const message = markError instanceof Error ? markError.message : "No se pudo marcar como pagada";
+      toast.error(message);
+    } finally {
+      setMarkingPayrollPaidKey(null);
     }
   };
 
@@ -1437,6 +1495,17 @@ export default function CourseClosureReviewPage() {
                           <DollarSign size={14} />
                           {payrollStatusLabel(item.status)}
                         </span>
+                        {item.status !== "paid" ? (
+                          <button
+                            type="button"
+                            onClick={() => markClosurePayrollItemPaid(item)}
+                            disabled={markingPayrollPaidKey === item.sourceKey}
+                            className="mt-2 inline-flex items-center gap-1 rounded-md border border-emerald-700/30 bg-white px-2 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <CheckCircle2 size={13} />
+                            {markingPayrollPaidKey === item.sourceKey ? "Guardando..." : "Marcar pagado"}
+                          </button>
+                        ) : null}
                       </td>
                       <td className="min-w-64 px-5 py-4">
                         <p className="font-semibold text-[#551b22]">{item.payeeName}</p>

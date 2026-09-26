@@ -113,6 +113,11 @@ function asUniqueStringArray(value: unknown): string[] {
   );
 }
 
+function asFiniteAmountOrNull(value: unknown): number | null {
+  const amount = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(amount) && amount >= 0 ? Math.round(amount * 100) / 100 : null;
+}
+
 function asTimestampOrNull(value: unknown): admin.firestore.Timestamp | null {
   if (!value) return null;
   if (value instanceof admin.firestore.Timestamp) return value;
@@ -460,6 +465,15 @@ async function alreadyPaidForSourceKey(db: admin.firestore.Firestore, sourceKey:
   return Boolean(snap && !snap.empty);
 }
 
+function parseSourceKey(sourceKey: string): { groupId: string; courseId: string } | null {
+  const separatorIndex = sourceKey.indexOf(":");
+  if (separatorIndex <= 0 || separatorIndex === sourceKey.length - 1) return null;
+  return {
+    groupId: sourceKey.slice(0, separatorIndex),
+    courseId: sourceKey.slice(separatorIndex + 1),
+  };
+}
+
 async function listClosurePayrollItems(request: NextRequest): Promise<NextResponse> {
   const access = await requirePayrollAccess(request);
   const fromMs = parseDateBoundary(request.nextUrl.searchParams.get("from"), false);
@@ -702,6 +716,82 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
   });
 }
 
+async function markClosurePayrollItemPaid(request: NextRequest): Promise<NextResponse> {
+  const access = await requirePayrollAccess(request);
+  let body: FirestoreRecord;
+  try {
+    body = (await request.json()) as FirestoreRecord;
+  } catch {
+    throw new RouteAccessError(400, "Solicitud invalida");
+  }
+
+  const sourceKey = asTrimmedString(body.sourceKey);
+  const parsedSourceKey = parseSourceKey(sourceKey);
+  if (!parsedSourceKey) {
+    throw new RouteAccessError(400, "Materia de nomina invalida");
+  }
+
+  const db = getAdminFirestore();
+  const groupRef = db.collection("groups").doc(parsedSourceKey.groupId);
+  const groupSnap = await groupRef.get();
+  if (!groupSnap.exists) {
+    throw new RouteAccessError(404, "Grupo no encontrado");
+  }
+
+  const groupData = (groupSnap.data() ?? {}) as FirestoreRecord;
+  if (!canReviewGroup({ access, groupData })) {
+    throw new RouteAccessError(403, "No tienes acceso a este grupo");
+  }
+
+  const course = toGroupCourses(groupData).find((entry) => entry.courseId === parsedSourceKey.courseId);
+  if (!course) {
+    throw new RouteAccessError(404, "Materia no encontrada en el grupo");
+  }
+
+  const payrollItemRef = db
+    .collection("teacherPayrollItems")
+    .doc(Buffer.from(sourceKey).toString("base64url"));
+  const existingSnap = await payrollItemRef.get();
+  const existingData = (existingSnap.data() ?? {}) as FirestoreRecord;
+  const serverTimestamp = admin.firestore.FieldValue.serverTimestamp();
+  const amount = asFiniteAmountOrNull(body.amount);
+
+  await payrollItemRef.set(
+    {
+      sourceKey,
+      status: "paid",
+      groupId: parsedSourceKey.groupId,
+      groupName: asTrimmedString(groupData.groupName) || "Grupo",
+      courseId: parsedSourceKey.courseId,
+      courseName: course.courseName || asTrimmedString(body.courseName) || "Materia",
+      plantelId: asTrimmedString(groupData.plantelId),
+      plantelName: asTrimmedString(groupData.plantelName),
+      payeeId: asTrimmedString(body.payeeId),
+      payeeName: asTrimmedString(body.payeeName),
+      payeeEmail: asTrimmedString(body.payeeEmail),
+      amount,
+      amountSource: asTrimmedString(body.amountSource),
+      firstClosedAt: asTrimmedString(body.firstClosedAt),
+      lastClosedAt: asTrimmedString(body.lastClosedAt),
+      paidAt: serverTimestamp,
+      paidById: access.uid,
+      paidByName: access.displayName,
+      paidByEmail: access.email,
+      updatedAt: serverTimestamp,
+      createdAt: existingData.createdAt ?? serverTimestamp,
+    },
+    { merge: true },
+  );
+
+  return NextResponse.json({
+    success: true,
+    data: {
+      sourceKey,
+      status: "paid",
+    },
+  });
+}
+
 function toErrorResponse(error: unknown): NextResponse {
   if (error instanceof RouteAccessError) {
     return NextResponse.json({ success: false, error: error.message }, { status: error.status });
@@ -719,6 +809,14 @@ function toErrorResponse(error: unknown): NextResponse {
 export async function GET(request: NextRequest) {
   try {
     return await listClosurePayrollItems(request);
+  } catch (error) {
+    return toErrorResponse(error);
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    return await markClosurePayrollItemPaid(request);
   } catch (error) {
     return toErrorResponse(error);
   }
