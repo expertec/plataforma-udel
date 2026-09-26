@@ -53,6 +53,7 @@ type PayrollItem = {
   payeeEmail: string;
   payeeRole: "primaryTeacher" | "mentor" | "multipleMentors" | "missing";
   payrollDeposit: ReturnType<typeof normalizeTeacherPayrollDeposit>;
+  configuredPayrollAmount: number | null;
   closedInPeriodCount: number;
   totalClosedCount: number;
   openCount: number;
@@ -298,6 +299,20 @@ function resolveCoursePayees(groupData: FirestoreRecord, courseId: string): {
     : { payeeIds: [], payeeNames: [], role: "missing" };
 }
 
+function resolveMentorCoursePayrollAmount(params: {
+  groupData: FirestoreRecord;
+  mentorId: string;
+  courseId: string;
+}): number | null {
+  const { groupData, mentorId, courseId } = params;
+  if (!mentorId || !courseId) return null;
+  const amountsByMentor = asObject(groupData.mentorCoursePayrollAmounts);
+  const amountsByCourse = asObject(amountsByMentor[mentorId]);
+  const rawAmount = amountsByCourse[courseId];
+  const amount = typeof rawAmount === "number" ? rawAmount : Number(rawAmount);
+  return Number.isFinite(amount) && amount >= 0 ? Math.round(amount * 100) / 100 : null;
+}
+
 function normalizeClosure(raw: unknown): EnrollmentCourseClosure | null {
   const closure = asObject(raw);
   const status = asTrimmedString(closure.status);
@@ -526,6 +541,14 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
       }
 
       const teacher = payeeId ? teachersById.get(payeeId) : undefined;
+      const configuredPayrollAmount =
+        payeeRole === "mentor"
+          ? resolveMentorCoursePayrollAmount({
+              groupData,
+              mentorId: payeeId,
+              courseId: course.courseId,
+            })
+          : null;
       const meta = await loadCourseMeta({
         db,
         courseId: course.courseId,
@@ -572,6 +595,7 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
         payeeEmail: teacher?.email || "",
         payeeRole,
         payrollDeposit: teacher?.payrollDeposit ?? normalizeTeacherPayrollDeposit(null),
+        configuredPayrollAmount,
         closedInPeriodCount: closedClosures.length,
         totalClosedCount,
         openCount,

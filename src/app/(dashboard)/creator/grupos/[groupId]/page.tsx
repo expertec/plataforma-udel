@@ -13,6 +13,7 @@ import {
   setAssistantTeachers,
   setMentorEvaluationEnabled,
   setMentorCourseAccess,
+  setMentorCoursePayrollAmount,
   updateGroupCampusGradeSettings,
   updateGroupCoordinator,
   updateGroupInPersonMode,
@@ -80,6 +81,8 @@ export default function GroupDetailPage() {
   const [removingAssistantId, setRemovingAssistantId] = useState<string | null>(null);
   const [savingMentorAccessIds, setSavingMentorAccessIds] = useState<Set<string>>(new Set());
   const [savingMentorEvaluationIds, setSavingMentorEvaluationIds] = useState<Set<string>>(new Set());
+  const [savingMentorPayrollKeys, setSavingMentorPayrollKeys] = useState<Set<string>>(new Set());
+  const [mentorPayrollDrafts, setMentorPayrollDrafts] = useState<Record<string, string>>({});
   const [unlinkingCourseId, setUnlinkingCourseId] = useState<string | null>(null);
   const [assignCourseOpen, setAssignCourseOpen] = useState(false);
   const [courseOptions, setCourseOptions] = useState<Course[]>([]);
@@ -473,6 +476,13 @@ export default function GroupDetailPage() {
     return courseIdsForGroup.filter((courseId) => allowedSet.has(courseId));
   };
 
+  const getMentorPayrollKey = (mentorId: string, courseId: string) => `${mentorId}::${courseId}`;
+
+  const getMentorCoursePayrollAmount = (mentorId: string, courseId: string): number | null => {
+    const amount = group?.mentorCoursePayrollAmounts?.[mentorId]?.[courseId];
+    return typeof amount === "number" && Number.isFinite(amount) ? amount : null;
+  };
+
   const isMentorEvaluationEnabledForGroup = (mentorId: string): boolean => {
     if (!group) return false;
     const evaluationMap = group.mentorEvaluationEnabled;
@@ -584,6 +594,79 @@ export default function GroupDetailPage() {
       setSavingMentorAccessIds((prev) => {
         const next = new Set(prev);
         next.delete(mentorId);
+        return next;
+      });
+    }
+  };
+
+  const handleSaveMentorCoursePayrollAmount = async (mentorId: string, courseId: string) => {
+    if (!group) return;
+    if (!canManageMentors) {
+      toast.error("No tienes permisos para editar pagos de mentores.");
+      return;
+    }
+
+    const key = getMentorPayrollKey(mentorId, courseId);
+    const rawDraft = mentorPayrollDrafts[key];
+    if (rawDraft === undefined) return;
+
+    const trimmed = rawDraft.trim();
+    const nextAmount = trimmed ? Number(trimmed) : null;
+    if (nextAmount !== null && (!Number.isFinite(nextAmount) || nextAmount < 0)) {
+      toast.error("Captura un monto válido.");
+      return;
+    }
+
+    const currentAmount = getMentorCoursePayrollAmount(mentorId, courseId);
+    if (
+      (nextAmount === null && currentAmount === null) ||
+      (nextAmount !== null && currentAmount !== null && Math.round(nextAmount * 100) === Math.round(currentAmount * 100))
+    ) {
+      setMentorPayrollDrafts((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      return;
+    }
+
+    setSavingMentorPayrollKeys((prev) => new Set(prev).add(key));
+    try {
+      await setMentorCoursePayrollAmount({
+        groupId: group.id,
+        mentorId,
+        courseId,
+        amount: nextAmount,
+      });
+      setGroup((prev) => {
+        if (!prev) return prev;
+        const nextAmounts = { ...(prev.mentorCoursePayrollAmounts ?? {}) };
+        const mentorAmounts = { ...(nextAmounts[mentorId] ?? {}) };
+        if (nextAmount === null) {
+          delete mentorAmounts[courseId];
+        } else {
+          mentorAmounts[courseId] = Math.round(nextAmount * 100) / 100;
+        }
+        if (Object.keys(mentorAmounts).length > 0) nextAmounts[mentorId] = mentorAmounts;
+        else delete nextAmounts[mentorId];
+        return {
+          ...prev,
+          mentorCoursePayrollAmounts: nextAmounts,
+        };
+      });
+      setMentorPayrollDrafts((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      toast.success("Monto de pago actualizado.");
+    } catch (err) {
+      console.error(err);
+      toast.error("No se pudo guardar el monto de pago.");
+    } finally {
+      setSavingMentorPayrollKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
         return next;
       });
     }
@@ -1455,27 +1538,64 @@ export default function GroupDetailPage() {
                                 Materias permitidas
                               </p>
                               {assignedCourses.length > 0 ? (
-                                <div className="mt-2 flex flex-wrap gap-2">
+                                <div className="mt-2 grid gap-2 lg:grid-cols-2">
                                   {assignedCourses.map((course) => {
                                     const isEnabled = mentorAllowedCourseIds.has(course.courseId);
+                                    const payrollKey = getMentorPayrollKey(t.id, course.courseId);
+                                    const configuredAmount = getMentorCoursePayrollAmount(t.id, course.courseId);
+                                    const payrollDraft = mentorPayrollDrafts[payrollKey];
+                                    const isSavingPayroll = savingMentorPayrollKeys.has(payrollKey);
                                     return (
-                                      <label
+                                      <div
                                         key={`${t.id}-${course.courseId}`}
-                                        className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs transition ${
+                                        className={`rounded-lg border p-3 text-xs transition ${
                                           isEnabled
                                             ? "border-blue-300 bg-blue-50 text-blue-700"
                                             : "border-slate-200 bg-white text-slate-600"
                                         }`}
                                       >
-                                        <input
-                                          type="checkbox"
-                                          className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                                          checked={isEnabled}
-                                          disabled={!canManageMentors || isSavingMentorAccess}
-                                          onChange={() => handleToggleMentorCourse(t.id, course.courseId)}
-                                        />
-                                        <span>{course.courseName}</span>
-                                      </label>
+                                        <label className="flex items-start gap-2">
+                                          <input
+                                            type="checkbox"
+                                            className="mt-0.5 h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                            checked={isEnabled}
+                                            disabled={!canManageMentors || isSavingMentorAccess}
+                                            onChange={() => handleToggleMentorCourse(t.id, course.courseId)}
+                                          />
+                                          <span className="font-medium leading-snug">{course.courseName}</span>
+                                        </label>
+                                        <label className="mt-2 block text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                                          Monto a pagar
+                                          <input
+                                            type="number"
+                                            min={0}
+                                            step="0.01"
+                                            inputMode="decimal"
+                                            value={
+                                              payrollDraft ??
+                                              (configuredAmount === null ? "" : String(configuredAmount))
+                                            }
+                                            placeholder="Sin monto"
+                                            disabled={!canManageMentors || !isEnabled || isSavingPayroll}
+                                            onChange={(event) =>
+                                              setMentorPayrollDrafts((prev) => ({
+                                                ...prev,
+                                                [payrollKey]: event.target.value,
+                                              }))
+                                            }
+                                            onBlur={() => void handleSaveMentorCoursePayrollAmount(t.id, course.courseId)}
+                                            onKeyDown={(event) => {
+                                              if (event.key === "Enter") {
+                                                event.currentTarget.blur();
+                                              }
+                                            }}
+                                            className="mt-1 block w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-slate-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-400"
+                                          />
+                                        </label>
+                                        {isSavingPayroll ? (
+                                          <p className="mt-1 text-[11px] text-blue-600">Guardando monto...</p>
+                                        ) : null}
+                                      </div>
                                     );
                                   })}
                                 </div>

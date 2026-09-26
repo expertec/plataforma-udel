@@ -42,6 +42,7 @@ export type Group = {
   assistantTeacherIds?: string[];
   assistantTeachers?: Array<{ id: string; name: string; email?: string }>;
   mentorCourseAccess?: Record<string, string[]>;
+  mentorCoursePayrollAmounts?: Record<string, Record<string, number>>;
   mentorEvaluationEnabled?: Record<string, boolean>;
   semester: string;
   startDate?: Date | null;
@@ -81,6 +82,7 @@ type CreateGroupData = {
 };
 
 type MentorCourseAccessMap = Record<string, string[]>;
+type MentorCoursePayrollAmountsMap = Record<string, Record<string, number>>;
 type MentorEvaluationEnabledMap = Record<string, boolean>;
 
 const toUniqueStringArray = (value: unknown): string[] => {
@@ -237,6 +239,32 @@ const normalizeMentorEvaluationEnabled = (
   return next;
 };
 
+const normalizeMentorCoursePayrollAmounts = (params: {
+  value: unknown;
+  mentorIds: string[];
+  validCourseIds: string[];
+}): MentorCoursePayrollAmountsMap => {
+  const { value, mentorIds, validCourseIds } = params;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const validMentors = new Set(mentorIds);
+  const validCourses = new Set(validCourseIds);
+  const next: MentorCoursePayrollAmountsMap = {};
+  Object.entries(value as Record<string, unknown>).forEach(([mentorId, rawCourses]) => {
+    if (!mentorId || !validMentors.has(mentorId)) return;
+    if (!rawCourses || typeof rawCourses !== "object" || Array.isArray(rawCourses)) return;
+    Object.entries(rawCourses as Record<string, unknown>).forEach(([courseId, rawAmount]) => {
+      if (!courseId || !validCourses.has(courseId)) return;
+      const amount = typeof rawAmount === "number" ? rawAmount : Number(rawAmount);
+      if (!Number.isFinite(amount) || amount < 0) return;
+      next[mentorId] = {
+        ...(next[mentorId] ?? {}),
+        [courseId]: Math.round(amount * 100) / 100,
+      };
+    });
+  });
+  return next;
+};
+
 const buildMentorEvaluationEnabled = (params: {
   mentorIds: string[];
   existingSelection: MentorEvaluationEnabledMap;
@@ -331,6 +359,11 @@ const toGroup = (id: string, data: DocumentData): Group => {
     assistantTeacherIds,
     assistantTeachers: toAssistantTeachers(data.assistantTeachers),
     mentorCourseAccess: normalizeMentorCourseAccess(data.mentorCourseAccess, courseIds),
+    mentorCoursePayrollAmounts: normalizeMentorCoursePayrollAmounts({
+      value: data.mentorCoursePayrollAmounts,
+      mentorIds: assistantTeacherIds,
+      validCourseIds: courseIds,
+    }),
     mentorEvaluationEnabled: normalizeMentorEvaluationEnabled(
       data.mentorEvaluationEnabled,
       assistantTeacherIds,
@@ -511,6 +544,11 @@ export async function updateGroupTeacher(params: {
     groupData.mentorEvaluationEnabled,
     toUniqueStringArray(groupData.assistantTeacherIds),
   );
+  const existingPayrollAmounts = normalizeMentorCoursePayrollAmounts({
+    value: groupData.mentorCoursePayrollAmounts,
+    mentorIds: toUniqueStringArray(groupData.assistantTeacherIds),
+    validCourseIds: courseIds,
+  });
   const nextMentorCourseAccess = buildMentorCourseAccess({
     mentorIds: nextAssistantIds,
     existingAccess,
@@ -531,6 +569,11 @@ export async function updateGroupTeacher(params: {
     assistantTeacherIds: nextAssistantIds,
     assistantTeachers: nextAssistantTeachers,
     mentorCourseAccess: nextMentorCourseAccess,
+    mentorCoursePayrollAmounts: normalizeMentorCoursePayrollAmounts({
+      value: existingPayrollAmounts,
+      mentorIds: nextAssistantIds,
+      validCourseIds: courseIds,
+    }),
     mentorEvaluationEnabled: nextMentorEvaluationEnabled,
     updatedAt: serverTimestamp(),
   });
@@ -1158,6 +1201,11 @@ export async function linkCourseToGroup(params: {
   const courseIds = toGroupCourseIds(data, courses);
   const mentorIds = toUniqueStringArray(data.assistantTeacherIds);
   const existingAccess = normalizeMentorCourseAccess(data.mentorCourseAccess, courseIds);
+  const existingPayrollAmounts = normalizeMentorCoursePayrollAmounts({
+    value: data.mentorCoursePayrollAmounts,
+    mentorIds,
+    validCourseIds: courseIds,
+  });
 
   const hasCourse = courses.some((c) => c.courseId === courseId);
   const enabledAt = Timestamp.now();
@@ -1179,6 +1227,11 @@ export async function linkCourseToGroup(params: {
     courses: nextCourses,
     courseIds: nextCourseIds,
     mentorCourseAccess: nextMentorCourseAccess,
+    mentorCoursePayrollAmounts: normalizeMentorCoursePayrollAmounts({
+      value: existingPayrollAmounts,
+      mentorIds,
+      validCourseIds: nextCourseIds,
+    }),
     updatedAt: serverTimestamp(),
   });
 
@@ -1203,6 +1256,11 @@ export async function unlinkCourseFromGroup(params: {
   const courseIds = toGroupCourseIds(data, courses);
   const mentorIds = toUniqueStringArray(data.assistantTeacherIds);
   const existingAccess = normalizeMentorCourseAccess(data.mentorCourseAccess, courseIds);
+  const existingPayrollAmounts = normalizeMentorCoursePayrollAmounts({
+    value: data.mentorCoursePayrollAmounts,
+    mentorIds,
+    validCourseIds: courseIds,
+  });
 
   // Remover el curso de los arrays
   const nextCourses = courses.filter((c) => c.courseId !== courseId);
@@ -1219,6 +1277,11 @@ export async function unlinkCourseFromGroup(params: {
     courses: nextCourses,
     courseIds: nextCourseIds,
     mentorCourseAccess: nextMentorCourseAccess,
+    mentorCoursePayrollAmounts: normalizeMentorCoursePayrollAmounts({
+      value: existingPayrollAmounts,
+      mentorIds,
+      validCourseIds: nextCourseIds,
+    }),
     updatedAt: serverTimestamp(),
   };
 
@@ -1265,6 +1328,11 @@ export async function unlinkCourseForTeacherInGroup(params: {
   }
 
   const existingAccess = normalizeMentorCourseAccess(data.mentorCourseAccess, courseIds);
+  const existingPayrollAmounts = normalizeMentorCoursePayrollAmounts({
+    value: data.mentorCoursePayrollAmounts,
+    mentorIds,
+    validCourseIds: courseIds,
+  });
   const hasExplicitTeacherAccess = Object.prototype.hasOwnProperty.call(existingAccess, teacherUid);
   const nextAccess = buildMentorCourseAccess({
     mentorIds,
@@ -1304,6 +1372,11 @@ export async function unlinkCourseForTeacherInGroup(params: {
     assistantTeacherIds: nextMentorIds,
     assistantTeachers: nextAssistantTeachers,
     mentorCourseAccess: finalAccess,
+    mentorCoursePayrollAmounts: normalizeMentorCoursePayrollAmounts({
+      value: existingPayrollAmounts,
+      mentorIds: nextMentorIds,
+      validCourseIds: courseIds,
+    }),
     updatedAt: serverTimestamp(),
   });
 
@@ -1332,6 +1405,11 @@ export async function setAssistantTeachers(groupId: string, teachers: Array<{ id
     groupData.mentorEvaluationEnabled,
     toUniqueStringArray(groupData.assistantTeacherIds),
   );
+  const existingPayrollAmounts = normalizeMentorCoursePayrollAmounts({
+    value: groupData.mentorCoursePayrollAmounts,
+    mentorIds: toUniqueStringArray(groupData.assistantTeacherIds),
+    validCourseIds: courseIds,
+  });
   const mentorCourseAccess = buildMentorCourseAccess({
     mentorIds,
     existingAccess,
@@ -1347,6 +1425,11 @@ export async function setAssistantTeachers(groupId: string, teachers: Array<{ id
     assistantTeacherIds: mentorIds,
     assistantTeachers: teachers,
     mentorCourseAccess,
+    mentorCoursePayrollAmounts: normalizeMentorCoursePayrollAmounts({
+      value: existingPayrollAmounts,
+      mentorIds,
+      validCourseIds: courseIds,
+    }),
     mentorEvaluationEnabled,
     updatedAt: serverTimestamp(),
   });
@@ -1404,6 +1487,57 @@ export async function setMentorCourseAccess(
     const courseMentors = mapCourseMentorsByAccess(courseIds, mentorIds, nextAccess);
     await syncCourseMentorsByCourse(courseMentors);
   }
+}
+
+export async function setMentorCoursePayrollAmount(params: {
+  groupId: string;
+  mentorId: string;
+  courseId: string;
+  amount: number | null;
+}): Promise<void> {
+  const groupId = params.groupId.trim();
+  const mentorId = params.mentorId.trim();
+  const courseId = params.courseId.trim();
+  if (!groupId || !mentorId || !courseId) return;
+
+  const ref = doc(db, "groups", groupId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error("Grupo no encontrado");
+
+  const data = snap.data();
+  const courseIds = toGroupCourseIds(data);
+  if (!courseIds.includes(courseId)) {
+    throw new Error("La materia no está asignada al grupo");
+  }
+
+  const mentorIds = toUniqueStringArray(data.assistantTeacherIds);
+  if (!mentorIds.includes(mentorId)) {
+    throw new Error("El mentor no está asignado al grupo");
+  }
+
+  const nextAmounts = normalizeMentorCoursePayrollAmounts({
+    value: data.mentorCoursePayrollAmounts,
+    mentorIds,
+    validCourseIds: courseIds,
+  });
+  const parsedAmount = typeof params.amount === "number" ? params.amount : null;
+
+  if (parsedAmount === null || !Number.isFinite(parsedAmount)) {
+    if (nextAmounts[mentorId]) {
+      delete nextAmounts[mentorId][courseId];
+      if (Object.keys(nextAmounts[mentorId]).length === 0) delete nextAmounts[mentorId];
+    }
+  } else {
+    nextAmounts[mentorId] = {
+      ...(nextAmounts[mentorId] ?? {}),
+      [courseId]: Math.max(0, Math.round(parsedAmount * 100) / 100),
+    };
+  }
+
+  await updateDoc(ref, {
+    mentorCoursePayrollAmounts: nextAmounts,
+    updatedAt: serverTimestamp(),
+  });
 }
 
 export async function setMentorEvaluationEnabled(

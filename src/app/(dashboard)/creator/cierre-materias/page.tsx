@@ -90,6 +90,7 @@ type ClosurePayrollItem = {
     clabe: string;
     depositDetails: string;
   };
+  configuredPayrollAmount: number | null;
   closedInPeriodCount: number;
   totalClosedCount: number;
   openCount: number;
@@ -257,6 +258,15 @@ function payrollLevelLabel(level: PayrollLevel): string {
   if (level === "preparatoria") return "Preparatoria";
   if (level === "otros") return "Otros";
   return "Sin programa";
+}
+
+function payrollDepositAccountLine(deposit: ClosurePayrollItem["payrollDeposit"]): string {
+  const clabe = deposit.clabe.trim();
+  if (clabe) return `CLABE ${clabe}`;
+  const depositDetails = deposit.depositDetails.trim();
+  return depositDetails
+    ? `Datos adicionales para depósito de nómina: ${depositDetails}`
+    : "Sin CLABE";
 }
 
 function toCsvField(value: string | number): string {
@@ -505,8 +515,9 @@ export default function CourseClosureReviewPage() {
     () =>
       filteredClosurePayrollItems.map((item) => ({
         ...item,
-        rate: payrollRates[item.level] ?? 0,
-        amount: item.status === "payable" ? payrollRates[item.level] ?? 0 : 0,
+        rate: item.configuredPayrollAmount ?? payrollRates[item.level] ?? 0,
+        amount: item.status === "payable" ? item.configuredPayrollAmount ?? payrollRates[item.level] ?? 0 : 0,
+        amountSource: item.configuredPayrollAmount === null ? "fallbackRate" : "configured",
       })),
     [filteredClosurePayrollItems, payrollRates],
   );
@@ -754,7 +765,7 @@ export default function CourseClosureReviewPage() {
         { label: "Cierre", width: 68, maxLines: 2 },
         { label: "Evidencia", width: 72, maxLines: 2 },
         { label: "Pago", width: 72, maxLines: 2 },
-        { label: "Nomina", width: 102, maxLines: 2 },
+        { label: "Nomina", width: 102, maxLines: 4 },
         { label: "Motivo", width: 168, maxLines: 3 },
       ];
 
@@ -791,7 +802,7 @@ export default function CourseClosureReviewPage() {
         pdf.setFont("helvetica", "normal");
         pdf.setFontSize(7);
         pdf.setTextColor(117, 72, 72);
-        const rateLines = pdf.splitTextToSize(`Tarifas aplicadas: ${ratesLabel}`, contentWidth) as string[];
+        const rateLines = pdf.splitTextToSize(`Tarifas de respaldo: ${ratesLabel}`, contentWidth) as string[];
         pdf.text(rateLines.slice(0, 2), margin, y);
         y += Math.min(rateLines.length, 2) * 9 + 10;
 
@@ -872,8 +883,8 @@ export default function CourseClosureReviewPage() {
           `${item.groupName}\n${item.courseName}\n${item.plantelName || "Sin plantel"} · ${item.program || "Sin programa"}`,
           `Ult: ${item.lastClosedAt ? formatDate(item.lastClosedAt) : "Sin fecha"}\nPri: ${item.firstClosedAt ? formatDate(item.firstClosedAt) : "Sin fecha"}`,
           `${item.totalClosedCount}/${item.totalStudents} cerrados\n${item.closedInPeriodCount} en semana · ${item.openCount} pend.`,
-          `${formatCurrency(item.amount)}\n${payrollLevelLabel(item.level)} · ${formatCurrency(item.rate)}`,
-          `${item.payrollDeposit.bank || "Sin banco"}\n${item.payrollDeposit.clabe ? `CLABE ${item.payrollDeposit.clabe}` : "Sin CLABE"}`,
+          `${formatCurrency(item.amount)}\n${item.amountSource === "configured" ? "Monto configurado" : `${payrollLevelLabel(item.level)} · respaldo`} · ${formatCurrency(item.rate)}`,
+          `${item.payrollDeposit.bank || "Sin banco"}\n${payrollDepositAccountLine(item.payrollDeposit)}`,
           `${item.reasons.join(" · ") || "Materia completa y lista para pago"}${item.closedByNames.length > 0 ? `\nCerrado por: ${item.closedByNames.join(", ")}` : ""}`,
         ];
         const wrappedCells = row.map((text, columnIndex) => wrapCellText(text, columnIndex));
@@ -938,7 +949,8 @@ export default function CourseClosureReviewPage() {
       "Cerrados total",
       "Pendientes",
       "Alumnos total",
-      "Tarifa MXN",
+      "Fuente monto",
+      "Tarifa/Monto MXN",
       "Monto pagable MXN",
       "Motivos",
       "Cerrado por",
@@ -963,6 +975,7 @@ export default function CourseClosureReviewPage() {
         item.totalClosedCount,
         item.openCount,
         item.totalStudents,
+        item.amountSource === "configured" ? "Monto configurado" : "Tarifa de respaldo",
         item.rate.toFixed(2),
         item.amount.toFixed(2),
         item.reasons.join(" | ") || "Listo para pago",
@@ -1285,7 +1298,7 @@ export default function CourseClosureReviewPage() {
               <div className="grid gap-3 md:grid-cols-4">
                 {(["licenciatura", "preparatoria", "otros", "sinPrograma"] as PayrollLevel[]).map((level) => (
                   <label key={level} className="text-xs font-semibold uppercase tracking-[0.12em] text-[#754848]">
-                    Tarifa {payrollLevelLabel(level)}
+                    Respaldo {payrollLevelLabel(level)}
                     <input
                       type="number"
                       min={0}
@@ -1374,7 +1387,9 @@ export default function CourseClosureReviewPage() {
                       <td className="px-5 py-4 text-[#754848]">
                         <p className="font-semibold text-[#551b22]">{formatCurrency(item.amount)}</p>
                         <p className="text-xs">
-                          {payrollLevelLabel(item.level)} · tarifa {formatCurrency(item.rate)}
+                          {item.amountSource === "configured"
+                            ? `Monto configurado · ${formatCurrency(item.rate)}`
+                            : `${payrollLevelLabel(item.level)} · respaldo ${formatCurrency(item.rate)}`}
                         </p>
                       </td>
                       <td className="min-w-56 px-5 py-4 text-[#754848]">
