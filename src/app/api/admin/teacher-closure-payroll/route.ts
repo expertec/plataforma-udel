@@ -6,6 +6,7 @@ import {
   TeacherAccessError,
   type TeacherAccessContext,
 } from "@/lib/server/require-teacher-access";
+import { isStudentStatusActive } from "@/lib/students/status";
 import { normalizeTeacherPayrollDeposit } from "@/lib/teachers/profile";
 
 export const runtime = "nodejs";
@@ -324,7 +325,7 @@ function getEnrollmentKey(docId: string, enrollmentData: FirestoreRecord): strin
 
 function shouldCountEnrollment(enrollmentData: FirestoreRecord): boolean {
   const status = asTrimmedString(enrollmentData.status) || "active";
-  return status !== "inactive" && status !== "baja";
+  return enrollmentData.archived !== true && isStudentStatusActive(status);
 }
 
 function getEnrollmentCourseIds(enrollmentData: FirestoreRecord): string[] {
@@ -435,19 +436,26 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
     const courses = toGroupCourses(groupData);
     if (courses.length === 0) continue;
 
-    const [liveEnrollmentsSnap, archivedEnrollmentsSnap] = await Promise.all([
+    const [groupStudentsSnap, liveEnrollmentsSnap] = await Promise.all([
+      db.collection("groups").doc(groupDoc.id).collection("students").get(),
       db.collection("studentEnrollments").where("groupId", "==", groupDoc.id).get(),
-      db.collection("studentEnrollmentsArchive").where("groupId", "==", groupDoc.id).get(),
     ]);
 
-    const enrollmentsByStudent = new Map<string, FirestoreRecord>();
-    archivedEnrollmentsSnap.docs.forEach((docSnap) => {
+    const activeGroupStudentIds = new Set<string>();
+    groupStudentsSnap.docs.forEach((docSnap) => {
       const data = (docSnap.data() ?? {}) as FirestoreRecord;
-      if (shouldCountEnrollment(data)) enrollmentsByStudent.set(getEnrollmentKey(docSnap.id, data), data);
+      if (isStudentStatusActive(data.status)) activeGroupStudentIds.add(docSnap.id);
     });
+    const hasActiveGroupRoster = activeGroupStudentIds.size > 0;
+
+    const enrollmentsByStudent = new Map<string, FirestoreRecord>();
     liveEnrollmentsSnap.docs.forEach((docSnap) => {
       const data = (docSnap.data() ?? {}) as FirestoreRecord;
-      if (shouldCountEnrollment(data)) enrollmentsByStudent.set(getEnrollmentKey(docSnap.id, data), data);
+      if (!shouldCountEnrollment(data)) return;
+      const studentId = getEnrollmentKey(docSnap.id, data);
+      if (!studentId) return;
+      if (hasActiveGroupRoster && !activeGroupStudentIds.has(studentId) && !isCourseOverrideEnrollment(data)) return;
+      enrollmentsByStudent.set(studentId, data);
     });
 
     if (enrollmentsByStudent.size === 0) continue;

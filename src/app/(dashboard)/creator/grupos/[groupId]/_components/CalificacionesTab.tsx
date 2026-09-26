@@ -34,6 +34,7 @@ import {
 import {
   Submission,
   getAllSubmissions,
+  getSubmissionClassMatchScore,
   hasNumericSubmissionGrade,
   shouldPreferIncomingSubmission,
 } from "@/lib/firebase/submissions-service";
@@ -1519,7 +1520,28 @@ export function CalificacionesTab({
 
   const rows = useMemo<StudentCourseRow[]>(() => {
     if (!selectedCourseId) return [];
-    const classIdSet = new Set(selectedCourseTasks.map((t) => t.id));
+
+    const findMatchedTaskId = (submission: Submission): string => {
+      let bestTaskId = "";
+      let bestScore = 0;
+
+      selectedCourseTasks.some((task) => {
+        const score = getSubmissionClassMatchScore(submission, {
+          classId: task.id,
+          courseId: selectedCourseId,
+          lessonId: task.lessonId,
+          className: task.title,
+          classType: task.classType,
+        });
+        if (score > bestScore) {
+          bestScore = score;
+          bestTaskId = task.id;
+        }
+        return score >= 3;
+      });
+
+      return bestTaskId;
+    };
 
     return students.filter((student) => {
       if (student.excludedCourseIds?.includes(selectedCourseId)) return false;
@@ -1530,8 +1552,8 @@ export function CalificacionesTab({
       allSubmissions.forEach((submission) => {
         if (submission.studentId !== student.id) return;
         if ((submission.courseId ?? "") !== selectedCourseId) return;
-        const classId = (submission.classDocId ?? submission.classId ?? "").trim();
-        if (!classId || !classIdSet.has(classId)) return;
+        const classId = findMatchedTaskId(submission);
+        if (!classId) return;
         const current = latestByClass.get(classId);
         if (!current) {
           latestByClass.set(classId, submission);
