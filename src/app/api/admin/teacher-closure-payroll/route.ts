@@ -39,6 +39,7 @@ type PayrollItem = {
   sourceKey: string;
   status: PayrollStatus;
   reasons: string[];
+  paymentNotes: string[];
   groupId: string;
   groupName: string;
   groupStatus: string;
@@ -60,6 +61,8 @@ type PayrollItem = {
   totalStudents: number;
   firstClosedAt: string;
   lastClosedAt: string;
+  closureDocumentUrl: string;
+  closureDocumentFileName: string;
   closedByNames: string[];
   closureTriggers: string[];
 };
@@ -70,6 +73,14 @@ type EnrollmentCourseClosure = {
   closedById: string;
   closedByName: string;
   closureTrigger: string;
+  closureDocumentUrl: string;
+  closureDocumentFileName: string;
+};
+
+type PayrollEnrollmentRecord = {
+  docId: string;
+  studentId: string;
+  data: FirestoreRecord;
 };
 
 class RouteAccessError extends Error {
@@ -325,6 +336,8 @@ function normalizeClosure(raw: unknown): EnrollmentCourseClosure | null {
     closedById: asTrimmedString(closure.closedById),
     closedByName: asTrimmedString(closure.closedByName),
     closureTrigger: asTrimmedString(closure.closureTrigger),
+    closureDocumentUrl: asTrimmedString(closure.closureDocumentUrl),
+    closureDocumentFileName: asTrimmedString(closure.closureDocumentFileName),
   };
 }
 
@@ -365,6 +378,27 @@ function enrollmentAppliesToCourse(enrollmentData: FirestoreRecord, courseId: st
   if (asUniqueStringArray(enrollmentData.excludedCourseIds).includes(courseId)) return false;
   if (!isCourseOverrideEnrollment(enrollmentData)) return true;
   return getEnrollmentCourseIds(enrollmentData).includes(courseId);
+}
+
+function selectEnrollmentForCourse(params: {
+  groupId: string;
+  courseId: string;
+  records: PayrollEnrollmentRecord[];
+}): PayrollEnrollmentRecord | null {
+  const applicableRecords = params.records.filter((record) =>
+    enrollmentAppliesToCourse(record.data, params.courseId),
+  );
+  if (applicableRecords.length === 0) return null;
+
+  const scoreRecord = (record: PayrollEnrollmentRecord): number => {
+    const closures = asObject(record.data.courseClosures);
+    const hasClosedClosure = normalizeClosure(closures[params.courseId]) !== null;
+    const isCanonical = record.docId === `${params.groupId}_${record.studentId}`;
+    const isOverride = isCourseOverrideEnrollment(record.data);
+    return (hasClosedClosure ? 100 : 0) + (isCanonical ? 10 : 0) + (!isOverride ? 5 : 0);
+  };
+
+  return [...applicableRecords].sort((left, right) => scoreRecord(right) - scoreRecord(left))[0] ?? null;
 }
 
 async function loadTeachersById(db: admin.firestore.Firestore): Promise<Map<string, TeacherSnapshot>> {
@@ -463,14 +497,16 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
     });
     const hasActiveGroupRoster = activeGroupStudentIds.size > 0;
 
-    const enrollmentsByStudent = new Map<string, FirestoreRecord>();
+    const enrollmentsByStudent = new Map<string, PayrollEnrollmentRecord[]>();
     liveEnrollmentsSnap.docs.forEach((docSnap) => {
       const data = (docSnap.data() ?? {}) as FirestoreRecord;
       if (!shouldCountEnrollment(data)) return;
       const studentId = getEnrollmentKey(docSnap.id, data);
       if (!studentId) return;
       if (hasActiveGroupRoster && !activeGroupStudentIds.has(studentId) && !isCourseOverrideEnrollment(data)) return;
-      enrollmentsByStudent.set(studentId, data);
+      const records = enrollmentsByStudent.get(studentId) ?? [];
+      records.push({ docId: docSnap.id, studentId, data });
+      enrollmentsByStudent.set(studentId, records);
     });
 
     if (enrollmentsByStudent.size === 0) continue;
@@ -480,8 +516,14 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
       let totalClosedCount = 0;
       let totalStudents = 0;
 
-      enrollmentsByStudent.forEach((enrollmentData) => {
-        if (!enrollmentAppliesToCourse(enrollmentData, course.courseId)) return;
+      enrollmentsByStudent.forEach((records) => {
+        const selectedEnrollment = selectEnrollmentForCourse({
+          groupId: groupDoc.id,
+          courseId: course.courseId,
+          records,
+        });
+        if (!selectedEnrollment) return;
+        const enrollmentData = selectedEnrollment.data;
         totalStudents += 1;
         const closures = asObject(enrollmentData.courseClosures);
         const closure = normalizeClosure(closures[course.courseId]);
@@ -556,31 +598,48 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
         fallbackProgram: course.program || asTrimmedString(groupData.program),
       });
       const reasons: string[] = [];
-      if (openCount > 0) reasons.push(`${openCount} alumno(s) siguen abiertos`);
+      const paymentNotes: string[] = [];
+      const closureRatio = totalStudents > 0 ? totalClosedCount / totalStudents : 0;
+      const hasMajorityClosureEvidence = openCount > 0 && closureRatio > 0.5;
+      if (openCount > 0 && !hasMajorityClosureEvidence) {
+        reasons.push(`${openCount} alumno(s) siguen abiertos`);
+      }
+      if (hasMajorityClosureEvidence) {
+        paymentNotes.push(
+          `${openCount} alumno(s) siguen abiertos, pago liberado por tener ${totalClosedCount}/${totalStudents} cerrados`,
+        );
+      }
       if (payeeRole === "multipleMentors") reasons.push("Hay mas de un mentor asignado a la materia");
       if (payeeRole === "missing") reasons.push("No hay docente responsable identificado");
       if (!payeeId && payeeRole === "mentor") reasons.push("Responsable identificado por cierre, falta vincular usuario");
       if (payeeId && !teacher) reasons.push("El docente responsable no existe en usuarios");
-      if (teacher && !teacher.payrollDeposit.clabe && !teacher.payrollDeposit.bank) {
+      if (
+        teacher &&
+        !teacher.payrollDeposit.clabe &&
+        !teacher.payrollDeposit.bank &&
+        !teacher.payrollDeposit.depositDetails
+      ) {
         reasons.push("Sin datos de nomina registrados");
       }
 
       const status: PayrollStatus = paid
         ? "paid"
-        : reasons.length > 0 && openCount === 0
+        : reasons.length > 0 && !(!hasMajorityClosureEvidence && openCount > 0)
           ? "review"
-          : openCount > 0
+          : openCount > 0 && !hasMajorityClosureEvidence
             ? "pending"
             : "payable";
       const sortedClosedAt = closedClosures
         .map((closure) => closure.closedAt)
         .filter((value): value is admin.firestore.Timestamp => value !== null)
         .sort((left, right) => left.toMillis() - right.toMillis());
+      const closureDocument = closedClosures.find((closure) => closure.closureDocumentUrl);
 
       items.push({
         sourceKey,
         status,
         reasons,
+        paymentNotes,
         groupId: groupDoc.id,
         groupName: asTrimmedString(groupData.groupName) || "Grupo",
         groupStatus: asTrimmedString(groupData.status) || "active",
@@ -602,6 +661,8 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
         totalStudents,
         firstClosedAt: sortedClosedAt[0]?.toDate().toISOString() ?? "",
         lastClosedAt: sortedClosedAt[sortedClosedAt.length - 1]?.toDate().toISOString() ?? "",
+        closureDocumentUrl: closureDocument?.closureDocumentUrl ?? "",
+        closureDocumentFileName: closureDocument?.closureDocumentFileName ?? "",
         closedByNames: Array.from(new Set(closedClosures.map((closure) => closure.closedByName).filter(Boolean))),
         closureTriggers: Array.from(new Set(closedClosures.map((closure) => closure.closureTrigger).filter(Boolean))),
       });

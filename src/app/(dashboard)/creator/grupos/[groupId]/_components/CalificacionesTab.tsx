@@ -159,6 +159,10 @@ type CourseClosureState = {
   closedAt?: Date | null;
   closedById?: string;
   closedByName?: string;
+  closureDocumentUrl?: string;
+  closureDocumentPath?: string;
+  closureDocumentFileName?: string;
+  closureDocumentGeneratedAt?: Date | null;
   reopenedAt?: Date | null;
   reopenedById?: string;
   reopenedByName?: string;
@@ -264,6 +268,13 @@ type SignatureResult = {
   signedAt: Date;
   signatureDataUrl: string;
   context: SignatureModalContext;
+};
+
+type ClosureDocumentUpload = {
+  fileName: string;
+  storagePath: string;
+  downloadUrl: string;
+  generatedAt: Date;
 };
 
 type ConfirmationModalContext = {
@@ -3146,7 +3157,7 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
     }
   };
 
-  const downloadSignedClosurePdf = async (signature: SignatureResult) => {
+  const downloadSignedClosurePdf = async (signature: SignatureResult): Promise<ClosureDocumentUpload> => {
     const pdf = new jsPDF({ unit: "pt", format: "a4" });
     const pageWidth = pdf.internal.pageSize.getWidth();
     const pageHeight = pdf.internal.pageSize.getHeight();
@@ -3353,7 +3364,20 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
       .replace("T", "-")
       .replace(":", "");
     const fileName = `acta-cierre-${safeCourseName || "materia"}-${stamp}.pdf`;
+    const pdfBlob = pdf.output("blob") as Blob;
+    const storagePath = `closure-actas/${groupId}/${signature.context.courseId}/${stamp}-${safeCourseName || "materia"}.pdf`;
+    const storageRef = ref(getStorage(), storagePath);
+    const snapshot = await uploadBytes(storageRef, pdfBlob, {
+      contentType: "application/pdf",
+    });
+    const downloadUrl = await getDownloadURL(snapshot.ref);
     pdf.save(fileName);
+    return {
+      fileName,
+      storagePath,
+      downloadUrl,
+      generatedAt: signature.signedAt,
+    };
   };
 
   useEffect(() => {
@@ -4042,9 +4066,11 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
     if (!signature) return;
 
     setProcessingAll(true);
-    let processStage: "closing" | "unlinking" | "pdf" = "closing";
+    let processStage: "acta" | "closing" | "unlinking" = "acta";
     try {
       const now = new Date();
+      const closureDocument = await downloadSignedClosurePdf(signature);
+      processStage = "closing";
       const chunkSize = 400;
 
       for (let i = 0; i < parsedRows.length; i += chunkSize) {
@@ -4082,6 +4108,10 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
                   closedAt: now,
                   closedById: currentUserId,
                   closedByName: signature.signerName,
+                  closureDocumentUrl: closureDocument.downloadUrl,
+                  closureDocumentPath: closureDocument.storagePath,
+                  closureDocumentFileName: closureDocument.fileName,
+                  closureDocumentGeneratedAt: closureDocument.generatedAt,
                   updatedAt: now,
                 },
               },
@@ -4130,6 +4160,10 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
                 closedAt: now,
                 closedById: currentUserId,
                 closedByName: signature.signerName,
+                closureDocumentUrl: closureDocument.downloadUrl,
+                closureDocumentPath: closureDocument.storagePath,
+                closureDocumentFileName: closureDocument.fileName,
+                closureDocumentGeneratedAt: closureDocument.generatedAt,
                 updatedAt: now,
               },
             },
@@ -4182,9 +4216,6 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
         await onCourseCompletedAndUnlinked?.(selectedCourseId);
       }
 
-      processStage = "pdf";
-      await downloadSignedClosurePdf(signature);
-
       if (unlinked) {
         toast.success(`Materia cerrada para ${openRows.length} alumno(s) y retirada de tu carga docente.`);
       } else {
@@ -4196,12 +4227,12 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
     } catch (err) {
       console.error(err);
       const message = err instanceof Error ? err.message : "Error inesperado al procesar el cierre";
-      if (processStage === "closing") {
+      if (processStage === "acta") {
+        toast.error(`No se pudo generar o guardar el acta de cierre: ${message}`);
+      } else if (processStage === "closing") {
         toast.error("No se pudo cerrar la materia para todos.");
-      } else if (processStage === "unlinking") {
-        toast.error(`Calificaciones cerradas, pero hubo un error al desvincular: ${message}. No se generó el PDF.`);
       } else {
-        toast.error(`Calificaciones cerradas y desvinculadas, pero no se pudo generar el PDF: ${message}`);
+        toast.error(`Calificaciones cerradas, pero hubo un error al desvincular: ${message}. No se generó el PDF.`);
       }
     } finally {
       setProcessingAll(false);

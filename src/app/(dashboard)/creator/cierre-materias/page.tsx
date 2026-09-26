@@ -72,6 +72,7 @@ type ClosurePayrollItem = {
   sourceKey: string;
   status: "payable" | "pending" | "review" | "paid";
   reasons: string[];
+  paymentNotes?: string[];
   groupId: string;
   groupName: string;
   groupStatus: string;
@@ -97,8 +98,19 @@ type ClosurePayrollItem = {
   totalStudents: number;
   firstClosedAt: string;
   lastClosedAt: string;
+  closureDocumentUrl: string;
+  closureDocumentFileName: string;
   closedByNames: string[];
   closureTriggers: string[];
+};
+
+type PayrollDepositDraft = {
+  teacherId: string;
+  teacherName: string;
+  teacherEmail: string;
+  bank: string;
+  clabe: string;
+  depositDetails: string;
 };
 
 type ActiveTab = "scheduled" | "openWithoutDate" | "closedHistory" | "closurePayroll";
@@ -269,6 +281,11 @@ function payrollDepositAccountLine(deposit: ClosurePayrollItem["payrollDeposit"]
     : "Sin CLABE";
 }
 
+function needsPayrollDepositCapture(item: ClosurePayrollItem): boolean {
+  const deposit = item.payrollDeposit;
+  return Boolean(item.payeeId) && !deposit.bank.trim() && !deposit.clabe.trim() && !deposit.depositDetails.trim();
+}
+
 function toCsvField(value: string | number): string {
   const raw = String(value ?? "");
   return `"${raw.replace(/"/g, "\"\"")}"`;
@@ -311,6 +328,8 @@ export default function CourseClosureReviewPage() {
   const [generatingClosedPdf, setGeneratingClosedPdf] = useState(false);
   const [generatingClosedExcel, setGeneratingClosedExcel] = useState(false);
   const [generatingClosurePayrollPdf, setGeneratingClosurePayrollPdf] = useState(false);
+  const [payrollDepositDraft, setPayrollDepositDraft] = useState<PayrollDepositDraft | null>(null);
+  const [savingPayrollDeposit, setSavingPayrollDeposit] = useState(false);
   const payrollRangeKey = `${payrollFrom}:${payrollTo}`;
 
   const loadItems = useCallback(async (user: User) => {
@@ -495,6 +514,7 @@ export default function CourseClosureReviewPage() {
         item.plantelName,
         payrollStatusLabel(item.status),
         ...item.reasons,
+        ...(item.paymentNotes ?? []),
       ]
         .join(" ")
         .toLowerCase()
@@ -513,12 +533,16 @@ export default function CourseClosureReviewPage() {
 
   const payrollItemsWithAmount = useMemo(
     () =>
-      filteredClosurePayrollItems.map((item) => ({
-        ...item,
-        rate: item.configuredPayrollAmount ?? payrollRates[item.level] ?? 0,
-        amount: item.status === "payable" ? item.configuredPayrollAmount ?? payrollRates[item.level] ?? 0 : 0,
-        amountSource: item.configuredPayrollAmount === null ? "fallbackRate" : "configured",
-      })),
+      filteredClosurePayrollItems.map((item) => {
+        const paymentNotes = Array.isArray(item.paymentNotes) ? item.paymentNotes : [];
+        return {
+          ...item,
+          paymentNotes,
+          rate: item.configuredPayrollAmount ?? payrollRates[item.level] ?? 0,
+          amount: item.status === "payable" ? item.configuredPayrollAmount ?? payrollRates[item.level] ?? 0 : 0,
+          amountSource: item.configuredPayrollAmount === null ? "fallbackRate" : "configured",
+        };
+      }),
     [filteredClosurePayrollItems, payrollRates],
   );
 
@@ -547,6 +571,59 @@ export default function CourseClosureReviewPage() {
       ...prev,
       [level]: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0,
     }));
+  };
+
+  const openPayrollDepositEditor = (item: ClosurePayrollItem) => {
+    if (!item.payeeId) {
+      toast.error("No hay usuario de docente vinculado para guardar datos de nómina.");
+      return;
+    }
+    setPayrollDepositDraft({
+      teacherId: item.payeeId,
+      teacherName: item.payeeName,
+      teacherEmail: item.payeeEmail,
+      bank: item.payrollDeposit.bank,
+      clabe: item.payrollDeposit.clabe,
+      depositDetails: item.payrollDeposit.depositDetails,
+    });
+  };
+
+  const savePayrollDepositDraft = async () => {
+    if (!payrollDepositDraft || !currentUser) return;
+    const clabe = payrollDepositDraft.clabe.replace(/\D/g, "");
+    if (clabe && clabe.length !== 18) {
+      toast.error("La CLABE interbancaria debe tener 18 dígitos.");
+      return;
+    }
+
+    setSavingPayrollDeposit(true);
+    try {
+      const token = await currentUser.getIdToken();
+      const response = await fetch("/api/teachers/update-profile", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          teacherId: payrollDepositDraft.teacherId,
+          payrollDeposit: {
+            bank: payrollDepositDraft.bank.trim(),
+            clabe,
+            depositDetails: payrollDepositDraft.depositDetails.trim(),
+          },
+        }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      toast.success("Datos de pago actualizados.");
+      setPayrollDepositDraft(null);
+      await loadClosurePayrollItems(currentUser);
+    } catch (saveError) {
+      const message = saveError instanceof Error ? saveError.message : "No se pudieron guardar los datos de pago";
+      toast.error(message);
+    } finally {
+      setSavingPayrollDeposit(false);
+    }
   };
 
   const exportClosedHistoryPdf = async () => {
@@ -884,8 +961,8 @@ export default function CourseClosureReviewPage() {
           `Ult: ${item.lastClosedAt ? formatDate(item.lastClosedAt) : "Sin fecha"}\nPri: ${item.firstClosedAt ? formatDate(item.firstClosedAt) : "Sin fecha"}`,
           `${item.totalClosedCount}/${item.totalStudents} cerrados\n${item.closedInPeriodCount} en semana · ${item.openCount} pend.`,
           `${formatCurrency(item.amount)}\n${item.amountSource === "configured" ? "Monto configurado" : `${payrollLevelLabel(item.level)} · respaldo`} · ${formatCurrency(item.rate)}`,
-          `${item.payrollDeposit.bank || "Sin banco"}\n${payrollDepositAccountLine(item.payrollDeposit)}`,
-          `${item.reasons.join(" · ") || "Materia completa y lista para pago"}${item.closedByNames.length > 0 ? `\nCerrado por: ${item.closedByNames.join(", ")}` : ""}`,
+          `${item.payrollDeposit.bank || (item.payrollDeposit.depositDetails ? "Datos adicionales" : "Sin banco")}\n${payrollDepositAccountLine(item.payrollDeposit)}`,
+          `${item.reasons.join(" · ") || item.paymentNotes.join(" · ") || "Materia completa y lista para pago"}${item.closedByNames.length > 0 ? `\nCerrado por: ${item.closedByNames.join(", ")}` : ""}`,
         ];
         const wrappedCells = row.map((text, columnIndex) => wrapCellText(text, columnIndex));
         const rowHeight = Math.max(...wrappedCells.map((lines) => lines.length * lineHeight + 12), 28);
@@ -945,6 +1022,7 @@ export default function CourseClosureReviewPage() {
       "Nivel",
       "Primer cierre",
       "Ultimo cierre",
+      "Acta",
       "Cerrados en semana",
       "Cerrados total",
       "Pendientes",
@@ -971,6 +1049,7 @@ export default function CourseClosureReviewPage() {
         payrollLevelLabel(item.level),
         item.firstClosedAt ? formatDate(item.firstClosedAt) : "Sin fecha",
         item.lastClosedAt ? formatDate(item.lastClosedAt) : "Sin fecha",
+        item.closureDocumentUrl || "Sin acta guardada",
         item.closedInPeriodCount,
         item.totalClosedCount,
         item.openCount,
@@ -978,7 +1057,7 @@ export default function CourseClosureReviewPage() {
         item.amountSource === "configured" ? "Monto configurado" : "Tarifa de respaldo",
         item.rate.toFixed(2),
         item.amount.toFixed(2),
-        item.reasons.join(" | ") || "Listo para pago",
+        item.reasons.join(" | ") || item.paymentNotes.join(" | ") || "Listo para pago",
         item.closedByNames.join(" | ") || "Sin registrar",
         item.closureTriggers.join(" | ") || "Sin origen",
       ]
@@ -1376,6 +1455,16 @@ export default function CourseClosureReviewPage() {
                         <p className="text-xs">
                           Primer cierre: {item.firstClosedAt ? formatDate(item.firstClosedAt) : "Sin fecha"}
                         </p>
+                        {item.closureDocumentUrl ? (
+                          <a
+                            href={item.closureDocumentUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-2 inline-flex rounded-md border border-[#6e2d2d]/30 bg-white px-2 py-1 text-xs font-semibold text-[#6e2d2d] transition hover:bg-[#f3e3db]/70"
+                          >
+                            Ver acta
+                          </a>
+                        ) : null}
                       </td>
                       <td className="px-5 py-4 text-[#754848]">
                         <p className="font-medium text-[#551b22]">
@@ -1394,14 +1483,27 @@ export default function CourseClosureReviewPage() {
                       </td>
                       <td className="min-w-56 px-5 py-4 text-[#754848]">
                         <p className="font-medium text-[#551b22]">
-                          {item.payrollDeposit.bank || "Sin banco"}
+                          {item.payrollDeposit.bank || (item.payrollDeposit.depositDetails ? "Datos adicionales" : "Sin banco")}
                         </p>
                         <p className="text-xs">
-                          {item.payrollDeposit.clabe ? `CLABE ${item.payrollDeposit.clabe}` : "Sin CLABE"}
+                          {payrollDepositAccountLine(item.payrollDeposit)}
                         </p>
+                        {needsPayrollDepositCapture(item) ? (
+                          <button
+                            type="button"
+                            onClick={() => openPayrollDepositEditor(item)}
+                            className="mt-2 rounded-md border border-[#6e2d2d]/30 bg-white px-2 py-1 text-xs font-semibold text-[#6e2d2d] transition hover:bg-[#f3e3db]/70"
+                          >
+                            Capturar datos de pago
+                          </button>
+                        ) : null}
                       </td>
                       <td className="min-w-64 px-5 py-4 text-xs text-[#754848]">
-                        {item.reasons.length > 0 ? item.reasons.join(" · ") : "Materia completa y lista para pago"}
+                        {item.reasons.length > 0
+                          ? item.reasons.join(" · ")
+                          : item.paymentNotes.length > 0
+                            ? item.paymentNotes.join(" · ")
+                            : "Materia completa y lista para pago"}
                         {item.closedByNames.length > 0 ? (
                           <p className="mt-1 text-[#9f6e61]">
                             Cerrado por: {item.closedByNames.join(", ")}
@@ -1609,6 +1711,108 @@ export default function CourseClosureReviewPage() {
             </div>
           )}
         </section>
+
+        {payrollDepositDraft ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 py-6">
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void savePayrollDepositDraft();
+              }}
+              className="w-full max-w-lg rounded-lg border border-[#d9b1a1]/70 bg-white p-5 shadow-xl"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.18em] text-[#9f6e61]">
+                    Datos de pago
+                  </p>
+                  <h2 className="mt-1 text-lg font-semibold text-[#551b22]">
+                    {payrollDepositDraft.teacherName || "Docente"}
+                  </h2>
+                  <p className="text-sm text-[#754848]">
+                    {payrollDepositDraft.teacherEmail || "Sin correo registrado"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPayrollDepositDraft(null)}
+                  disabled={savingPayrollDeposit}
+                  className="rounded-md border border-[#d9b1a1]/70 px-3 py-1 text-sm font-semibold text-[#6e2d2d] transition hover:bg-[#f3e3db]/70 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Cerrar
+                </button>
+              </div>
+
+              <div className="mt-5 grid gap-4">
+                <label className="text-xs font-semibold uppercase tracking-[0.12em] text-[#754848]">
+                  Banco
+                  <input
+                    type="text"
+                    value={payrollDepositDraft.bank}
+                    onChange={(event) =>
+                      setPayrollDepositDraft((prev) =>
+                        prev ? { ...prev, bank: event.target.value } : prev,
+                      )
+                    }
+                    className="mt-1 block w-full rounded-lg border border-[#d9b1a1]/70 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-[#551b22] outline-none focus:border-[#8a1f28] focus:ring-2 focus:ring-[#6e2d2d]/10"
+                    placeholder="BBVA, Santander, Banorte..."
+                  />
+                </label>
+
+                <label className="text-xs font-semibold uppercase tracking-[0.12em] text-[#754848]">
+                  CLABE interbancaria
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={payrollDepositDraft.clabe}
+                    onChange={(event) =>
+                      setPayrollDepositDraft((prev) =>
+                        prev
+                          ? { ...prev, clabe: event.target.value.replace(/\D/g, "").slice(0, 18) }
+                          : prev,
+                      )
+                    }
+                    className="mt-1 block w-full rounded-lg border border-[#d9b1a1]/70 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-[#551b22] outline-none focus:border-[#8a1f28] focus:ring-2 focus:ring-[#6e2d2d]/10"
+                    placeholder="18 dígitos"
+                  />
+                </label>
+
+                <label className="text-xs font-semibold uppercase tracking-[0.12em] text-[#754848]">
+                  Datos adicionales para depósito de nómina
+                  <textarea
+                    value={payrollDepositDraft.depositDetails}
+                    onChange={(event) =>
+                      setPayrollDepositDraft((prev) =>
+                        prev ? { ...prev, depositDetails: event.target.value } : prev,
+                      )
+                    }
+                    rows={3}
+                    className="mt-1 block w-full resize-none rounded-lg border border-[#d9b1a1]/70 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-[#551b22] outline-none focus:border-[#8a1f28] focus:ring-2 focus:ring-[#6e2d2d]/10"
+                    placeholder="Cuenta, tarjeta, instrucciones internas u otros datos"
+                  />
+                </label>
+              </div>
+
+              <div className="mt-5 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setPayrollDepositDraft(null)}
+                  disabled={savingPayrollDeposit}
+                  className="rounded-lg border border-[#d9b1a1]/70 bg-white px-4 py-2 text-sm font-semibold text-[#6e2d2d] transition hover:bg-[#f3e3db]/70 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingPayrollDeposit}
+                  className="rounded-lg bg-[#6e2d2d] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#551b22] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingPayrollDeposit ? "Guardando..." : "Guardar datos"}
+                </button>
+              </div>
+            </form>
+          </div>
+        ) : null}
       </div>
     </RoleGate>
   );
