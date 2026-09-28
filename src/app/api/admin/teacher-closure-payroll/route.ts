@@ -629,6 +629,7 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
       if (payeeId && !teacher) reasons.push("El docente responsable no existe en usuarios");
       if (
         teacher &&
+        !teacher.payrollDeposit.debitCard &&
         !teacher.payrollDeposit.clabe &&
         !teacher.payrollDeposit.bank &&
         !teacher.payrollDeposit.depositDetails

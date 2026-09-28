@@ -8,6 +8,7 @@ export type TeacherProfessionalProfile = {
 
 export type TeacherPayrollDeposit = {
   bank: string;
+  debitCard: string;
   clabe: string;
   depositDetails: string;
 };
@@ -86,6 +87,7 @@ const EMPTY_PROFILE: TeacherProfessionalProfile = {
 
 const EMPTY_PAYROLL_DEPOSIT: TeacherPayrollDeposit = {
   bank: "",
+  debitCard: "",
   clabe: "",
   depositDetails: "",
 };
@@ -207,6 +209,7 @@ export function normalizeTeacherPayrollDeposit(value: unknown): TeacherPayrollDe
   const candidate = value as Record<string, unknown>;
   return {
     bank: normalizeText(candidate.bank),
+    debitCard: normalizeText(candidate.debitCard).replace(/\D/g, "").slice(0, 19),
     clabe: normalizeText(candidate.clabe).replace(/\D/g, "").slice(0, 18),
     depositDetails: normalizeText(candidate.depositDetails),
   };

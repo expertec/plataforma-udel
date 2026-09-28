@@ -363,11 +363,17 @@ export default function PerfilPage() {
             Información configurada por administración, dirección o coordinación.
           </p>
         </div>
-        <dl className="mt-4 grid gap-3 sm:grid-cols-3">
+        <dl className="mt-4 grid gap-3 sm:grid-cols-4">
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
             <dt className="text-xs uppercase tracking-[0.2em] text-slate-500">Banco</dt>
             <dd className="text-sm font-semibold text-slate-900">
               {payrollDeposit.bank || "Sin banco registrado"}
+            </dd>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <dt className="text-xs uppercase tracking-[0.2em] text-slate-500">Tarjeta</dt>
+            <dd className="font-mono text-sm text-slate-800">
+              {payrollDeposit.debitCard || "Sin tarjeta registrada"}
             </dd>
           </div>
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">

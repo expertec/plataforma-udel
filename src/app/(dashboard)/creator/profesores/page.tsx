@@ -61,10 +61,16 @@ function hasDirectorExtraRole(teacher: Pick<TeacherUser, "extraRoles">): boolean
 
 function getTeacherPayrollSummary(teacher: TeacherUser): string {
   const payroll = teacher.payrollDeposit;
+  if (payroll.bank && payroll.debitCard) return `${payroll.bank} · Tarjeta ${payroll.debitCard}`;
+  if (payroll.debitCard) return `Tarjeta ${payroll.debitCard}`;
   if (payroll.bank && payroll.clabe) return `${payroll.bank} · CLABE ${payroll.clabe}`;
   if (payroll.clabe) return `CLABE ${payroll.clabe}`;
   if (payroll.bank) return payroll.bank;
   return "Sin datos de nómina";
+}
+
+function normalizeDebitCardInput(value: string): string {
+  return value.replace(/\D/g, "").slice(0, 19);
 }
 
 function normalizeClabeInput(value: string): string {
@@ -229,6 +235,7 @@ export default function ProfesoresPage() {
   const [newRole, setNewRole] = useState<EditableTeacherRole>("teacher");
   const [newDirectorExtraRole, setNewDirectorExtraRole] = useState(false);
   const [payrollBank, setPayrollBank] = useState("");
+  const [payrollDebitCard, setPayrollDebitCard] = useState("");
   const [payrollClabe, setPayrollClabe] = useState("");
   const [payrollDepositDetails, setPayrollDepositDetails] = useState("");
   const [planteles, setPlanteles] = useState<Plantel[]>([]);
@@ -477,6 +484,7 @@ export default function ProfesoresPage() {
       teacher.role === "coordinadorPlantel" && hasDirectorExtraRole(teacher),
     );
     setPayrollBank(teacher.payrollDeposit.bank);
+    setPayrollDebitCard(teacher.payrollDeposit.debitCard);
     setPayrollClabe(teacher.payrollDeposit.clabe);
     setPayrollDepositDetails(teacher.payrollDeposit.depositDetails);
     setSelectedPlantelIds(getTeacherPlantelIds(teacher));
@@ -518,12 +526,14 @@ export default function ProfesoresPage() {
       (newDirectorExtraRole !== hasDirectorExtraRole(selectedTeacher));
     const nextPayrollDeposit = {
       bank: payrollBank.trim(),
+      debitCard: normalizeDebitCardInput(payrollDebitCard),
       clabe: normalizeClabeInput(payrollClabe),
       depositDetails: payrollDepositDetails.trim(),
     };
     const payrollChanged =
       canManageTeacherPayroll &&
       (nextPayrollDeposit.bank !== selectedTeacher.payrollDeposit.bank ||
+        nextPayrollDeposit.debitCard !== selectedTeacher.payrollDeposit.debitCard ||
         nextPayrollDeposit.clabe !== selectedTeacher.payrollDeposit.clabe ||
         nextPayrollDeposit.depositDetails !== selectedTeacher.payrollDeposit.depositDetails);
 
@@ -617,6 +627,7 @@ export default function ProfesoresPage() {
       setSelectedTeacher(null);
       setNewDirectorExtraRole(false);
       setPayrollBank("");
+      setPayrollDebitCard("");
       setPayrollClabe("");
       setPayrollDepositDetails("");
       await refreshTeachersAndReport();
@@ -2155,6 +2166,20 @@ export default function ProfesoresPage() {
                   </div>
                   <div className="space-y-1">
                     <label className="text-sm font-medium text-slate-700">
+                      Tarjeta de débito
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={payrollDebitCard}
+                      onChange={(e) => setPayrollDebitCard(normalizeDebitCardInput(e.target.value))}
+                      maxLength={19}
+                      placeholder="Solo números"
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">
                       CLABE interbancaria
                     </label>
                     <input
@@ -2190,6 +2215,7 @@ export default function ProfesoresPage() {
                     setSelectedPlantelIds([]);
                     setNewDirectorExtraRole(false);
                     setPayrollBank("");
+                    setPayrollDebitCard("");
                     setPayrollClabe("");
                     setPayrollDepositDetails("");
                   }}

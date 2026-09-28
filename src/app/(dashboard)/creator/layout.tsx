@@ -171,11 +171,11 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
       <div className="creator-shell flex min-h-screen w-full">
         {/* Sidebar */}
         <aside
-          className={`creator-sidebar fixed inset-y-0 left-0 z-20 w-72 shrink-0 border-r px-4 py-6 text-white transition transform ${
+          className={`creator-sidebar fixed inset-y-0 left-0 z-20 flex w-72 shrink-0 flex-col overflow-hidden border-r px-4 py-6 text-white transition transform ${
             open ? "translate-x-0" : "-translate-x-full"
           }`}
         >
-          <div className="flex items-center justify-center py-2">
+          <div className="flex shrink-0 items-center justify-center py-2">
             <Image
               src="/university-logo.jpg"
               alt="Logo UDEL Universidad"
@@ -185,7 +185,7 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
               priority
             />
           </div>
-          <nav className="mt-6 space-y-1.5">
+          <nav className="mt-6 min-h-0 flex-1 space-y-1.5 overflow-y-auto overscroll-contain pb-6 pr-1 [scrollbar-gutter:stable]">
             {navItems.map((item) => (
               <Link
                 key={item.href}

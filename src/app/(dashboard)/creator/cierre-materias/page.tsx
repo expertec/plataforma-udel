@@ -88,6 +88,7 @@ type ClosurePayrollItem = {
   payeeRole: "primaryTeacher" | "mentor" | "multipleMentors" | "missing";
   payrollDeposit: {
     bank: string;
+    debitCard: string;
     clabe: string;
     depositDetails: string;
   };
@@ -109,6 +110,7 @@ type PayrollDepositDraft = {
   teacherName: string;
   teacherEmail: string;
   bank: string;
+  debitCard: string;
   clabe: string;
   depositDetails: string;
 };
@@ -273,17 +275,19 @@ function payrollLevelLabel(level: PayrollLevel): string {
 }
 
 function payrollDepositAccountLine(deposit: ClosurePayrollItem["payrollDeposit"]): string {
+  const debitCard = deposit.debitCard.trim();
+  if (debitCard) return `Tarjeta de débito ${debitCard}`;
   const clabe = deposit.clabe.trim();
   if (clabe) return `CLABE ${clabe}`;
   const depositDetails = deposit.depositDetails.trim();
   return depositDetails
     ? `Datos adicionales para depósito de nómina: ${depositDetails}`
-    : "Sin CLABE";
+    : "Sin tarjeta ni CLABE";
 }
 
 function needsPayrollDepositCapture(item: ClosurePayrollItem): boolean {
   const deposit = item.payrollDeposit;
-  return Boolean(item.payeeId) && !deposit.bank.trim() && !deposit.clabe.trim() && !deposit.depositDetails.trim();
+  return Boolean(item.payeeId) && !deposit.bank.trim() && !deposit.debitCard.trim() && !deposit.clabe.trim() && !deposit.depositDetails.trim();
 }
 
 function toCsvField(value: string | number): string {
@@ -584,6 +588,7 @@ export default function CourseClosureReviewPage() {
       teacherName: item.payeeName,
       teacherEmail: item.payeeEmail,
       bank: item.payrollDeposit.bank,
+      debitCard: item.payrollDeposit.debitCard,
       clabe: item.payrollDeposit.clabe,
       depositDetails: item.payrollDeposit.depositDetails,
     });
@@ -591,6 +596,7 @@ export default function CourseClosureReviewPage() {
 
   const savePayrollDepositDraft = async () => {
     if (!payrollDepositDraft || !currentUser) return;
+    const debitCard = payrollDepositDraft.debitCard.replace(/\D/g, "").slice(0, 19);
     const clabe = payrollDepositDraft.clabe.replace(/\D/g, "");
     if (clabe && clabe.length !== 18) {
       toast.error("La CLABE interbancaria debe tener 18 dígitos.");
@@ -610,6 +616,7 @@ export default function CourseClosureReviewPage() {
           teacherId: payrollDepositDraft.teacherId,
           payrollDeposit: {
             bank: payrollDepositDraft.bank.trim(),
+            debitCard,
             clabe,
             depositDetails: payrollDepositDraft.depositDetails.trim(),
           },
@@ -1019,7 +1026,7 @@ export default function CourseClosureReviewPage() {
           `Ult: ${item.lastClosedAt ? formatDate(item.lastClosedAt) : "Sin fecha"}\nPri: ${item.firstClosedAt ? formatDate(item.firstClosedAt) : "Sin fecha"}`,
           `${item.totalClosedCount}/${item.totalStudents} cerrados\n${item.closedInPeriodCount} en semana · ${item.openCount} pend.`,
           `${formatCurrency(item.amount)}\n${item.amountSource === "configured" ? "Monto configurado" : `${payrollLevelLabel(item.level)} · respaldo`} · ${formatCurrency(item.rate)}`,
-          `${item.payrollDeposit.bank || (item.payrollDeposit.depositDetails ? "Datos adicionales" : "Sin banco")}\n${payrollDepositAccountLine(item.payrollDeposit)}`,
+          `${item.payrollDeposit.bank || (item.payrollDeposit.debitCard ? "Tarjeta de débito" : item.payrollDeposit.depositDetails ? "Datos adicionales" : "Sin banco")}\n${payrollDepositAccountLine(item.payrollDeposit)}`,
           `${item.reasons.join(" · ") || item.paymentNotes.join(" · ") || "Materia completa y lista para pago"}${item.closedByNames.length > 0 ? `\nCerrado por: ${item.closedByNames.join(", ")}` : ""}`,
         ];
         const wrappedCells = row.map((text, columnIndex) => wrapCellText(text, columnIndex));
@@ -1072,6 +1079,7 @@ export default function CourseClosureReviewPage() {
       "Email",
       "Rol pago",
       "Banco",
+      "Tarjeta de débito",
       "CLABE",
       "Plantel",
       "Grupo",
@@ -1099,6 +1107,7 @@ export default function CourseClosureReviewPage() {
         item.payeeEmail,
         payrollRoleLabel(item.payeeRole),
         item.payrollDeposit.bank,
+        item.payrollDeposit.debitCard,
         item.payrollDeposit.clabe,
         item.plantelName || item.plantelId || "Sin plantel",
         item.groupName,
@@ -1552,7 +1561,7 @@ export default function CourseClosureReviewPage() {
                       </td>
                       <td className="min-w-56 px-5 py-4 text-[#754848]">
                         <p className="font-medium text-[#551b22]">
-                          {item.payrollDeposit.bank || (item.payrollDeposit.depositDetails ? "Datos adicionales" : "Sin banco")}
+                          {item.payrollDeposit.bank || (item.payrollDeposit.debitCard ? "Tarjeta de débito" : item.payrollDeposit.depositDetails ? "Datos adicionales" : "Sin banco")}
                         </p>
                         <p className="text-xs">
                           {payrollDepositAccountLine(item.payrollDeposit)}
@@ -1829,6 +1838,24 @@ export default function CourseClosureReviewPage() {
                 </label>
 
                 <label className="text-xs font-semibold uppercase tracking-[0.12em] text-[#754848]">
+                  Tarjeta de débito
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={payrollDepositDraft.debitCard}
+                    onChange={(event) =>
+                      setPayrollDepositDraft((prev) =>
+                        prev
+                          ? { ...prev, debitCard: event.target.value.replace(/\D/g, "").slice(0, 19) }
+                          : prev,
+                      )
+                    }
+                    className="mt-1 block w-full rounded-lg border border-[#d9b1a1]/70 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-[#551b22] outline-none focus:border-[#8a1f28] focus:ring-2 focus:ring-[#6e2d2d]/10"
+                    placeholder="Solo números"
+                  />
+                </label>
+
+                <label className="text-xs font-semibold uppercase tracking-[0.12em] text-[#754848]">
                   CLABE interbancaria
                   <input
                     type="text"
@@ -1857,7 +1884,7 @@ export default function CourseClosureReviewPage() {
                     }
                     rows={3}
                     className="mt-1 block w-full resize-none rounded-lg border border-[#d9b1a1]/70 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-[#551b22] outline-none focus:border-[#8a1f28] focus:ring-2 focus:ring-[#6e2d2d]/10"
-                    placeholder="Cuenta, tarjeta, instrucciones internas u otros datos"
+                    placeholder="Cuenta, instrucciones internas u otros datos"
                   />
                 </label>
               </div>
