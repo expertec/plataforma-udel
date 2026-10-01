@@ -17,9 +17,10 @@ type TabId = "comentarios" | "foro" | "tarea";
 function getDefaultTabForClass(cls: {
   hasAssignment?: boolean;
   forumEnabled?: boolean;
+  groupIsInPerson?: boolean;
 } | null): TabId {
   if (cls?.hasAssignment) return "tarea";
-  if (cls?.forumEnabled) return "foro";
+  if (cls?.groupIsInPerson !== true && cls?.forumEnabled) return "foro";
   return "comentarios";
 }
 
@@ -89,7 +90,8 @@ export default function ClassPage({
   if (locked) return null;
 
   const done = isComplete(cls);
-  const forumPending = cls.forumEnabled === true && forumDone[cls.id] !== true;
+  const forumPending =
+    cls.groupIsInPerson !== true && cls.forumEnabled === true && forumDone[cls.id] !== true;
 
   return (
     <>

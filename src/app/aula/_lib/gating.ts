@@ -76,6 +76,7 @@ export const getClassPct = (cls: FeedClass, progress: ProgressSnapshot) =>
   );
 
 export const isForumSatisfied = (cls: FeedClass, forumDone: Record<string, boolean>) => {
+  if (cls.groupIsInPerson === true) return true;
   if (!cls.forumEnabled) return true;
   return forumDone[cls.id] === true;
 };
@@ -84,7 +85,10 @@ export const isClassComplete = (
   cls: FeedClass,
   progress: ProgressSnapshot,
   forumDone: Record<string, boolean>,
-) => getClassPct(cls, progress) >= getRequiredPct(cls.type) && isForumSatisfied(cls, forumDone);
+) => {
+  if (cls.groupIsInPerson === true) return true;
+  return getClassPct(cls, progress) >= getRequiredPct(cls.type) && isForumSatisfied(cls, forumDone);
+};
 
 /** La clase anterior del mismo curso: la que gobierna el desbloqueo secuencial. */
 export const getPrevSameCourse = (classes: FeedClass[], targetIdx: number) => {

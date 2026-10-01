@@ -56,7 +56,12 @@ export const loadForumStatuses = async (
   classes: FeedClass[],
 ): Promise<Record<string, boolean>> => {
   const forumClasses = classes.filter(
-    (cls) => cls.forumEnabled && cls.courseId && cls.lessonId && cls.classDocId,
+    (cls) =>
+      cls.groupIsInPerson !== true &&
+      cls.forumEnabled &&
+      cls.courseId &&
+      cls.lessonId &&
+      cls.classDocId,
   );
   if (forumClasses.length === 0) return {};
 

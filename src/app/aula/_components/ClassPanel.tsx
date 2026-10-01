@@ -12,7 +12,7 @@ type TabId = "comentarios" | "foro" | "tarea";
 
 function getDefaultTabForClass(cls: FeedClass): TabId {
   if (cls.hasAssignment) return "tarea";
-  if (cls.forumEnabled) return "foro";
+  if (cls.groupIsInPerson !== true && cls.forumEnabled) return "foro";
   return "comentarios";
 }
 
@@ -35,7 +35,8 @@ export function ClassPanel({
   const { forumDone, refreshForumStatus, studentName, currentUser } = useAulaData();
   const [commentsCount, setCommentsCount] = useState<number | null>(null);
 
-  const forumPending = cls.forumEnabled === true && forumDone[cls.id] !== true;
+  const forumEnabled = cls.groupIsInPerson !== true && cls.forumEnabled === true;
+  const forumPending = forumEnabled && forumDone[cls.id] !== true;
 
   const tabs = useMemo(() => {
     const list: Array<{ id: TabId; label: string; icon: typeof MessageCircle; badge?: string }> = [
@@ -46,7 +47,7 @@ export function ClassPanel({
         badge: commentsCount !== null ? String(commentsCount) : undefined,
       },
     ];
-    if (cls.forumEnabled) {
+    if (forumEnabled) {
       list.push({
         id: "foro",
         label: "Foro",
@@ -58,7 +59,7 @@ export function ClassPanel({
       list.push({ id: "tarea", label: "Tarea", icon: Paperclip });
     }
     return list;
-  }, [cls.forumEnabled, cls.hasAssignment, commentsCount, forumPending]);
+  }, [forumEnabled, cls.hasAssignment, commentsCount, forumPending]);
 
   // Si la clase actual no tiene la pestaña abierta, entra por la acción principal.
   useEffect(() => {
@@ -111,7 +112,7 @@ export function ClassPanel({
           <CommentsTab cls={cls} onCountChange={setCommentsCount} />
         )}
 
-        {activeTab === "foro" && cls.forumEnabled && (
+        {activeTab === "foro" && forumEnabled && (
           <div className="h-full overflow-hidden">
             <ForumPanel
               open

@@ -966,6 +966,7 @@ export default function StudentFeedPageClient() {
 
   const isForumSatisfied = useCallback(
     (cls: FeedClass) => {
+      if (cls.groupIsInPerson === true) return true;
       if (!cls.forumEnabled) return true;
       return forumDoneMap[cls.id] === true;
     },
@@ -1445,7 +1446,7 @@ export default function StudentFeedPageClient() {
       if (previewMode) return;
       if (!currentUser?.uid) return;
       const cls = findClassById(classId);
-      if (!cls || !cls.forumEnabled) {
+      if (!cls || cls.groupIsInPerson === true || !cls.forumEnabled) {
         setForumDoneMap((prev) => ({ ...prev, [classId]: true }));
         return;
       }
@@ -1486,7 +1487,7 @@ export default function StudentFeedPageClient() {
       setForumsReady(true);
       return;
     }
-    const forumClasses = classes.filter((c) => c.forumEnabled);
+    const forumClasses = classes.filter((c) => c.groupIsInPerson !== true && c.forumEnabled);
     if (forumClasses.length === 0) {
       setForumsReady(true);
       return;
@@ -1607,6 +1608,7 @@ export default function StudentFeedPageClient() {
         ? `${activeLesson.groupId ?? "sin-grupo"}-${activeLesson.courseId}-${activeLesson.lessonId}`
         : lessonsFlat[0]?.lessonId;
     const firstPending = visibleClasses.find((c) => {
+      if (c.groupIsInPerson === true) return false;
       const pct = Math.max(
         progressMap[c.id] ?? 0,
         progressRef.current[c.id] ?? 0,
@@ -1617,7 +1619,7 @@ export default function StudentFeedPageClient() {
           ? 100
           : 0,
       );
-      const forumOk = c.forumEnabled ? forumDoneMap[c.id] === true : true;
+      const forumOk = isForumSatisfied(c);
       return pct < getRequiredPct(c.type) || !forumOk;
     });
     const pendingLessonKey =
@@ -1656,6 +1658,7 @@ export default function StudentFeedPageClient() {
     completedMap,
     courseThreads,
     forumDoneMap,
+    isForumSatisfied,
     progressMap,
     seenMap,
     visibleClasses,
@@ -3317,6 +3320,7 @@ export default function StudentFeedPageClient() {
   const isClassComplete = useCallback(
     (cls: FeedClass) => {
       if (previewMode) return true;
+      if (cls.groupIsInPerson === true) return true;
       const pct = Math.max(
         progressMap[cls.id] ?? 0,
         progressRef.current[cls.id] ?? 0,
@@ -3334,6 +3338,7 @@ export default function StudentFeedPageClient() {
     }
     if (!visibleClasses.length) return { index: 0, id: null as string | null };
     const computeComplete = (cls: FeedClass) => {
+      if (cls.groupIsInPerson === true) return true;
       const pct = Math.max(
         progressMap[cls.id] ?? 0,
         progressRef.current[cls.id] ?? 0,
@@ -3345,13 +3350,13 @@ export default function StudentFeedPageClient() {
           : 0,
       );
       const baseOk = pct >= getRequiredPct(cls.type);
-      const forumOk = cls.forumEnabled ? forumDoneMap[cls.id] === true : true;
+      const forumOk = isForumSatisfied(cls);
       return baseOk && forumOk;
     };
     const firstPendingIdx = visibleClasses.findIndex((cls) => !computeComplete(cls));
     const targetIndex = firstPendingIdx === -1 ? Math.max(visibleClasses.length - 1, 0) : firstPendingIdx;
     return { index: targetIndex, id: visibleClasses[targetIndex]?.id ?? null };
-  }, [visibleClasses, progressMap, completedMap, seenMap, forumDoneMap, previewMode]);
+  }, [visibleClasses, progressMap, completedMap, seenMap, isForumSatisfied, previewMode]);
 
   // Al cargar, posicionar en la primera clase pendiente
   useEffect(() => {
@@ -4863,7 +4868,7 @@ export default function StudentFeedPageClient() {
                       )}
 
                       {/* Stack móvil (estilo TikTok) */}
-                      {shouldRenderHeavyCard && cls.type !== "quiz" ? (
+                      {shouldRenderHeavyCard && (cls.type !== "quiz" || cls.groupIsInPerson === true) ? (
                         <ActionStack
                           likes={likesMap[cls.id] ?? cls.likesCount ?? 0}
                           comments={(commentsCountMap[cls.id] ?? commentsMap[cls.id]?.length ?? 0)}
@@ -4888,7 +4893,7 @@ export default function StudentFeedPageClient() {
                             }
                             setAssignmentPanel({ open: true, classId: cls.id });
                           }}
-                          hasForum={cls.forumEnabled || false}
+                          hasForum={cls.groupIsInPerson !== true && (cls.forumEnabled || false)}
                           forumDone={previewMode ? true : (forumDoneMap[cls.id] ?? false)}
                           onForum={() => {
                             if (previewMode) {
@@ -4931,9 +4936,9 @@ export default function StudentFeedPageClient() {
                               progressRef.current[cls.id] ?? 0,
                               progressMap[cls.id] ?? 0
                             );
-                            const requiredPct = getRequiredPct(cls.type);
+                            const requiredPct = cls.groupIsInPerson === true ? 0 : getRequiredPct(cls.type);
                             const isCompleted = completedMap[cls.id] || seenMap[cls.id] || currentProgress >= requiredPct;
-                            const forumOk = cls.forumEnabled ? (forumDoneMap[cls.id] ?? false) : true;
+                            const forumOk = isForumSatisfied(cls);
                             const canAdvance = isCompleted && forumOk;
 
                             if (!ENFORCE_VIDEO_GATE) {
@@ -4971,7 +4976,7 @@ export default function StudentFeedPageClient() {
                               progressRef.current[cls.id] ?? 0,
                               progressMap[cls.id] ?? 0
                             );
-                            const requiredPct = getRequiredPct(cls.type);
+                            const requiredPct = cls.groupIsInPerson === true ? 0 : getRequiredPct(cls.type);
                             const isCompleted = completedMap[cls.id] || seenMap[cls.id] || currentProgress >= requiredPct;
 
                             // Solo mostrar si NO está completada y el tipo no es quiz
@@ -5012,7 +5017,7 @@ export default function StudentFeedPageClient() {
                   </div>
 
                   {/* Stack desktop al costado del contenido */}
-                  {shouldRenderHeavyCard && cls.type !== "quiz" ? (
+                  {shouldRenderHeavyCard && (cls.type !== "quiz" || cls.groupIsInPerson === true) ? (
                     <ActionStack
                       likes={likesMap[cls.id] ?? cls.likesCount ?? 0}
                       comments={(commentsCountMap[cls.id] ?? commentsMap[cls.id]?.length ?? 0)}
@@ -5037,7 +5042,7 @@ export default function StudentFeedPageClient() {
                         }
                         setAssignmentPanel({ open: true, classId: cls.id });
                       }}
-                      hasForum={cls.forumEnabled || false}
+                      hasForum={cls.groupIsInPerson !== true && (cls.forumEnabled || false)}
                       forumDone={previewMode ? true : (forumDoneMap[cls.id] ?? false)}
                       onForum={() => {
                         if (previewMode) {

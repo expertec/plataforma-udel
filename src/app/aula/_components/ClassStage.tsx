@@ -171,6 +171,22 @@ function QuizStage({ cls }: { cls: FeedClass }) {
   );
 }
 
+function InPersonStage({ cls }: { cls: FeedClass }) {
+  return (
+    <div className="flex aspect-video w-full items-center justify-center rounded-2xl border border-[var(--aula-border)] bg-[var(--aula-surface)] px-6 text-center">
+      <div className="max-w-md">
+        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">
+          Grupo presencial
+        </p>
+        <h2 className="mt-2 text-xl font-semibold text-[var(--aula-text)]">{cls.title}</h2>
+        <p className="mt-2 text-sm text-[var(--aula-text-muted)]">
+          Este grupo se gestiona presencialmente. Aquí solo verás y enviarás tareas.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function TextStage({ cls, html }: { cls: FeedClass; html: string }) {
   const { reportProgress } = useAulaData();
   const endRef = useRef<HTMLDivElement | null>(null);
@@ -201,6 +217,7 @@ function TextStage({ cls, html }: { cls: FeedClass; html: string }) {
 }
 
 export function ClassStage({ cls, contentHtml }: { cls: FeedClass; contentHtml: string }) {
+  if (cls.groupIsInPerson === true) return <InPersonStage cls={cls} />;
   if (cls.type === "quiz") return <QuizStage cls={cls} />;
   if (cls.type === "live") return <LiveStage cls={cls} />;
   if (cls.type === "audio" && cls.audioUrl) return <AudioStage cls={cls} />;
