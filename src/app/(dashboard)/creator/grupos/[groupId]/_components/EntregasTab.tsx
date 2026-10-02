@@ -469,7 +469,7 @@ export function EntregasTab({
           if (assignment.classType === "forum") {
             const forumPosts = await getForumPosts(assignment.courseId, assignment.lessonId, assignment.classId);
             const submissions = forumPosts
-              .map((post) => {
+              .map((post): Submission | null => {
                 const authorId = (post.authorId ?? "").trim() || post.id;
                 if (authorId && studentIds.size && !studentIds.has(authorId)) return null;
                 return {
