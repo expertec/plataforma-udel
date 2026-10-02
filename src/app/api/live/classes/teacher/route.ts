@@ -83,29 +83,35 @@ function normalizeComparableText(value: string): string {
 function getGroupCourses(
   groupData: Record<string, unknown>,
 ): Array<{ courseId: string; courseName: string }> {
+  const coursesById = new Map<string, { courseId: string; courseName: string }>();
+
   if (Array.isArray(groupData.courses)) {
-    const courses = groupData.courses
-      .map((course) => {
-        if (!course || typeof course !== "object" || Array.isArray(course)) return null;
-        const courseId = asTrimmedString((course as Record<string, unknown>).courseId);
-        if (!courseId) return null;
-        return {
-          courseId,
-          courseName: asTrimmedString((course as Record<string, unknown>).courseName),
-        };
-      })
-      .filter((course): course is { courseId: string; courseName: string } => course !== null);
-    if (courses.length > 0) return courses;
+    groupData.courses.forEach((course) => {
+      if (!course || typeof course !== "object" || Array.isArray(course)) return;
+      const courseId = asTrimmedString((course as Record<string, unknown>).courseId);
+      if (!courseId) return;
+      coursesById.set(courseId, {
+        courseId,
+        courseName: asTrimmedString((course as Record<string, unknown>).courseName),
+      });
+    });
   }
 
+  asUniqueStringArray(groupData.courseIds).forEach((courseId) => {
+    if (!coursesById.has(courseId)) {
+      coursesById.set(courseId, { courseId, courseName: "" });
+    }
+  });
+
   const legacyCourseId = asTrimmedString(groupData.courseId);
-  if (!legacyCourseId) return [];
-  return [
-    {
+  if (legacyCourseId && !coursesById.has(legacyCourseId)) {
+    coursesById.set(legacyCourseId, {
       courseId: legacyCourseId,
       courseName: asTrimmedString(groupData.courseName),
-    },
-  ];
+    });
+  }
+
+  return Array.from(coursesById.values());
 }
 
 function getMentorAllowedCourseIds(
@@ -185,6 +191,24 @@ function getLastRelevantAt(session: ReturnType<typeof normalizeLiveSession>, upd
     updatedAt ??
     createdAt
   );
+}
+
+function getNumericOrder(data: Record<string, unknown>): number {
+  const order = data.order;
+  if (typeof order === "number" && Number.isFinite(order)) return order;
+
+  const lessonNumber = data.lessonNumber;
+  if (typeof lessonNumber === "number" && Number.isFinite(lessonNumber)) return lessonNumber;
+
+  return Number.MAX_SAFE_INTEGER;
+}
+
+function sortDocsByOrder<T extends FirebaseFirestore.QueryDocumentSnapshot>(left: T, right: T): number {
+  const leftData = (left.data() ?? {}) as Record<string, unknown>;
+  const rightData = (right.data() ?? {}) as Record<string, unknown>;
+  const orderDiff = getNumericOrder(leftData) - getNumericOrder(rightData);
+  if (orderDiff !== 0) return orderDiff;
+  return left.id.localeCompare(right.id, "es");
 }
 
 async function resolveTeacherContext(request: NextRequest): Promise<{
@@ -405,14 +429,16 @@ export async function GET(request: NextRequest) {
         const courseTeacherId = asTrimmedString(courseData.teacherId);
         const courseTitle = asTrimmedString(courseData.title) || "Materia";
 
-        const lessonsSnap = await courseRef.collection("lessons").orderBy("order", "asc").get();
+        const lessonsSnap = await courseRef.collection("lessons").get();
+        const lessonDocs = [...lessonsSnap.docs].sort(sortDocsByOrder);
         await Promise.all(
-          lessonsSnap.docs.map(async (lessonDoc) => {
+          lessonDocs.map(async (lessonDoc) => {
             const lessonData = (lessonDoc.data() ?? {}) as Record<string, unknown>;
             const lessonTitle = asTrimmedString(lessonData.title) || "Lección";
-            const classesSnap = await lessonDoc.ref.collection("classes").orderBy("order", "asc").get();
+            const classesSnap = await lessonDoc.ref.collection("classes").get();
+            const classDocs = [...classesSnap.docs].sort(sortDocsByOrder);
 
-            classesSnap.docs.forEach((classDoc) => {
+            classDocs.forEach((classDoc) => {
               const classData = (classDoc.data() ?? {}) as Record<string, unknown>;
               const classType = asTrimmedString(classData.type).toLowerCase();
               const liveSession = normalizeLiveSession(classData.liveSession);
@@ -424,10 +450,14 @@ export async function GET(request: NextRequest) {
               if (isCoordinator) {
                 if (rawLinkedGroupId && !scopedGroupIds.has(rawLinkedGroupId)) return;
                 if (!rawLinkedGroupId && courseGroups.length === 0) return;
-              } else if (teacherCreatedById) {
-                if (teacherCreatedById !== teacher.uid) return;
-              } else if (courseTeacherId !== teacher.uid) {
-                return;
+              } else if (rawLinkedGroupId) {
+                if (!scopedGroupIds.has(rawLinkedGroupId)) return;
+              } else if (courseGroups.length === 0) {
+                if (teacherCreatedById) {
+                  if (teacherCreatedById !== teacher.uid && courseTeacherId !== teacher.uid) return;
+                } else if (courseTeacherId && courseTeacherId !== teacher.uid) {
+                  return;
+                }
               }
 
               const inferredGroup =
@@ -567,7 +597,8 @@ export async function POST(request: NextRequest) {
 
     const db = getAdminFirestore();
     const courseRef = db.collection("courses").doc(courseId);
-    const lessonsSnap = await courseRef.collection("lessons").orderBy("order", "asc").get();
+    const lessonsSnap = await courseRef.collection("lessons").get();
+    const lessonDocs = [...lessonsSnap.docs].sort(sortDocsByOrder);
 
     // Si el profesor eligió una lección específica, la usamos (validando que exista
     // en la materia). Si no, caemos al comportamiento previo: la lección "Clases en vivo".
@@ -575,8 +606,7 @@ export async function POST(request: NextRequest) {
     let lessonId = "";
 
     if (requestedLessonId) {
-      // Búsqueda directa (no vía lessonsSnap) porque ese query usa orderBy('order')
-      // y excluiría lecciones sin ese campo, dando un falso 404.
+      // Búsqueda directa para validar exactamente la lección elegida.
       const requestedLessonSnap = await courseRef
         .collection("lessons")
         .doc(requestedLessonId)
@@ -590,7 +620,7 @@ export async function POST(request: NextRequest) {
 
     const liveLesson = lessonRef
       ? null
-      : lessonsSnap.docs.find((lessonDoc) => {
+      : lessonDocs.find((lessonDoc) => {
           const lessonData = (lessonDoc.data() ?? {}) as Record<string, unknown>;
           return normalizeComparableText(asTrimmedString(lessonData.title)) === "clases en vivo";
         });
@@ -601,11 +631,11 @@ export async function POST(request: NextRequest) {
     }
 
     if (!lessonRef) {
-      const maxLessonNumber = lessonsSnap.docs.reduce((acc, lessonDoc) => {
+      const maxLessonNumber = lessonDocs.reduce((acc, lessonDoc) => {
         const value = lessonDoc.data()?.lessonNumber;
         return typeof value === "number" && Number.isFinite(value) ? Math.max(acc, value) : acc;
       }, 0);
-      const maxOrder = lessonsSnap.docs.reduce((acc, lessonDoc) => {
+      const maxOrder = lessonDocs.reduce((acc, lessonDoc) => {
         const value = lessonDoc.data()?.order;
         return typeof value === "number" && Number.isFinite(value) ? Math.max(acc, value) : acc;
       }, -1);
@@ -632,7 +662,7 @@ export async function POST(request: NextRequest) {
       lessonId = lessonRef.id;
     }
 
-    const classesSnap = await lessonRef.collection("classes").orderBy("order", "asc").get();
+    const classesSnap = await lessonRef.collection("classes").get();
     const nextOrder = classesSnap.docs.reduce((acc, classDoc) => {
       const value = classDoc.data()?.order;
       return typeof value === "number" && Number.isFinite(value) ? Math.max(acc, value) : acc;

@@ -462,8 +462,56 @@ export function EntregasTab({
 
     setExportingLessonKey(lesson.key);
     try {
+      const studentIds = new Set(students.map((student) => student.id));
+      const allSubs = await getAllSubmissions(groupId);
+      const assignmentsForExport = await Promise.all(
+        lesson.assignments.map(async (assignment) => {
+          if (assignment.classType === "forum") {
+            const forumPosts = await getForumPosts(assignment.courseId, assignment.lessonId, assignment.classId);
+            const submissions = forumPosts
+              .map((post) => {
+                const authorId = (post.authorId ?? "").trim() || post.id;
+                if (authorId && studentIds.size && !studentIds.has(authorId)) return null;
+                return {
+                  id: post.id,
+                  classId: assignment.classId,
+                  classDocId: assignment.classId,
+                  courseId: assignment.courseId,
+                  className: assignment.className,
+                  classType: "forum",
+                  studentId: authorId,
+                  studentName: post.authorName ?? "",
+                  submittedAt: post.createdAt ?? null,
+                  fileUrl: post.mediaUrl ?? "",
+                  content: post.text ?? "",
+                  status:
+                    post.status === "graded" || typeof post.grade === "number"
+                      ? "graded"
+                      : "pending",
+                  grade: typeof post.grade === "number" ? post.grade : undefined,
+                  feedback: post.feedback ?? "",
+                  gradedAt: post.gradedAt ?? null,
+                  gradedById: post.gradedById ?? undefined,
+                  gradedByName: post.gradedByName ?? undefined,
+                } satisfies Submission;
+              })
+              .filter((submission): submission is Submission => submission !== null);
+            return { ...assignment, submissions };
+          }
+
+          const submissions = matchSubmissionsToClass(allSubs, {
+            classId: assignment.classId,
+            courseId: assignment.courseId,
+            lessonId: assignment.lessonId,
+            className: assignment.className,
+            classType: assignment.classType,
+          });
+          return { ...assignment, submissions };
+        }),
+      );
+
       const latestByActivityAndStudent = new Map<string, Submission>();
-      lesson.assignments.forEach((assignment) => {
+      assignmentsForExport.forEach((assignment) => {
         assignment.submissions.forEach((submission) => {
           const studentId = submission.studentId?.trim();
           if (!studentId) return;
@@ -486,7 +534,7 @@ export function EntregasTab({
       }
 
       const matrixRows = lessonStudents.map((student) => {
-        const grades = lesson.assignments.map((assignment) => {
+        const grades = assignmentsForExport.map((assignment) => {
           const submission = latestByActivityAndStudent.get(`${assignment.classId}::${student.id}`);
           const numericGrade = submission && hasNumericSubmissionGrade(submission) ? submission.grade : null;
           const label = !submission ? "—" : numericGrade !== null ? numericGrade.toFixed(1) : "Pend.";
@@ -505,9 +553,9 @@ export function EntregasTab({
       const canvas = document.createElement("canvas");
       const marginX = 44;
       const studentColumnWidth = 360;
-      const activityColumnWidth = Math.max(118, Math.min(176, Math.floor(520 / lesson.assignments.length)));
+      const activityColumnWidth = Math.max(118, Math.min(176, Math.floor(520 / assignmentsForExport.length)));
       const totalColumnWidth = 132;
-      const tableWidth = studentColumnWidth + lesson.assignments.length * activityColumnWidth + totalColumnWidth;
+      const tableWidth = studentColumnWidth + assignmentsForExport.length * activityColumnWidth + totalColumnWidth;
       const width = Math.max(1080, tableWidth + marginX * 2);
       const contentWidth = width - marginX * 2;
       const headerHeight = 166;
@@ -554,14 +602,14 @@ export function EntregasTab({
       const startX = marginX + 18;
       const columns = [
         { label: "Alumno", x: startX, width: studentColumnWidth },
-        ...lesson.assignments.map((assignment, index) => ({
+        ...assignmentsForExport.map((assignment, index) => ({
           label: assignment.className,
           x: startX + studentColumnWidth + index * activityColumnWidth,
           width: activityColumnWidth,
         })),
         {
           label: "Total semana",
-          x: startX + studentColumnWidth + lesson.assignments.length * activityColumnWidth,
+          x: startX + studentColumnWidth + assignmentsForExport.length * activityColumnWidth,
           width: totalColumnWidth,
         },
       ];

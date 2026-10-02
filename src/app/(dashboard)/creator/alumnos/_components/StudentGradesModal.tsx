@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { type MutableRefObject, useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   collectionGroup,
@@ -11,10 +11,13 @@ import {
   query,
   where,
 } from "firebase/firestore";
+import { Download } from "lucide-react";
+import { jsPDF } from "jspdf";
 import toast from "react-hot-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { auth } from "@/lib/firebase/client";
 import { db } from "@/lib/firebase/firestore";
+import { isAdminTeacherRole, type UserRole } from "@/lib/firebase/roles";
 
 type Props = {
   studentId: string;
@@ -23,6 +26,7 @@ type Props = {
   scopePlantelId?: string;
   scopeGroupIds?: string[];
   useServerGrades?: boolean;
+  userRole?: UserRole | null;
   isOpen: boolean;
   onClose: () => void;
 };
@@ -70,6 +74,13 @@ type StudentGradesApiResponse = {
   data?: {
     rows?: ApiGradeRow[];
   };
+};
+
+type GroupMeta = {
+  groupName: string;
+  semester: string;
+  plantelName: string;
+  program: string;
 };
 
 const toDateOrNull = (value: unknown): Date | null => {
@@ -152,6 +163,28 @@ const formatDate = (value: Date | null): string => {
   }).format(value);
 };
 
+const formatDateTime = (value: Date | null): string => {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("es-MX", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(value);
+};
+
+const formatGradeValue = (value: number | null | undefined): string =>
+  typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "—";
+
+const toSafeFileToken = (value: string): string =>
+  value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
+
 const buildRowKey = (groupId: string, groupName: string, courseId: string, courseName: string) => {
   const g = groupId.trim() || groupName.trim() || "sin-grupo";
   const c = courseId.trim() || courseName.trim() || "sin-materia";
@@ -227,11 +260,16 @@ export function StudentGradesModal({
   scopePlantelId = "",
   scopeGroupIds = [],
   useServerGrades = false,
+  userRole = null,
   isOpen,
   onClose,
 }: Props) {
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<GradeRow[]>([]);
+  const [groupMetaById, setGroupMetaById] = useState<Record<string, GroupMeta>>({});
+  const [exportingKardexRowId, setExportingKardexRowId] = useState<string | null>(null);
+  const pdfLogoDataUrlRef = useRef<string | null>(null);
+  const canDownloadInstitutionalKardex = isAdminTeacherRole(userRole) || userRole === "director";
 
   useEffect(() => {
     if (!isOpen || !studentId) return;
@@ -964,6 +1002,81 @@ export function StudentGradesModal({
     };
   }, [isOpen, scopeGroupIds, scopePlantelId, studentId, useServerGrades]);
 
+  useEffect(() => {
+    if (!isOpen || rows.length === 0) return;
+    const missingGroupIds = Array.from(
+      new Set(rows.map((row) => row.groupId.trim()).filter(Boolean)),
+    ).filter((groupId) => !groupMetaById[groupId]);
+    if (missingGroupIds.length === 0) return;
+
+    let active = true;
+    const loadGroupMeta = async () => {
+      const entries = await Promise.all(
+        missingGroupIds.map(async (groupId): Promise<[string, GroupMeta] | null> => {
+          try {
+            const groupSnap = await getDoc(doc(db, "groups", groupId));
+            if (!groupSnap.exists()) return null;
+            const data = groupSnap.data() as Record<string, unknown>;
+            return [
+              groupId,
+              {
+                groupName: typeof data.groupName === "string" ? data.groupName.trim() : "",
+                semester: typeof data.semester === "string" ? data.semester.trim() : "",
+                plantelName: typeof data.plantelName === "string" ? data.plantelName.trim() : "",
+                program: typeof data.program === "string" ? data.program.trim() : "",
+              },
+            ];
+          } catch (error) {
+            if (!isPermissionDeniedError(error)) {
+              console.warn("No se pudo cargar informacion del grupo para Kardex:", error);
+            }
+            return null;
+          }
+        }),
+      );
+      if (!active) return;
+      setGroupMetaById((prev) => ({
+        ...prev,
+        ...Object.fromEntries(entries.filter((entry): entry is [string, GroupMeta] => entry !== null)),
+      }));
+    };
+
+    void loadGroupMeta();
+    return () => {
+      active = false;
+    };
+  }, [groupMetaById, isOpen, rows]);
+
+  const loadPdfAssetDataUrl = async (
+    path: string,
+    cacheRef: MutableRefObject<string | null>,
+    label: string,
+  ): Promise<string | null> => {
+    if (cacheRef.current) return cacheRef.current;
+    try {
+      const response = await fetch(path, { cache: "force-cache" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          if (typeof reader.result === "string") {
+            resolve(reader.result);
+            return;
+          }
+          reject(new Error(`No se pudo convertir ${label}`));
+        };
+        reader.onerror = () => reject(new Error(`No se pudo leer ${label}`));
+        reader.readAsDataURL(blob);
+      });
+      cacheRef.current = dataUrl;
+      return dataUrl;
+    } catch (error) {
+      console.error(`No se pudo cargar ${label} para el PDF:`, error);
+      return null;
+    }
+  };
+
   const summary = useMemo(() => {
     const closed = rows.filter((row) => row.status === "closed");
     const graded = closed.filter((row) => typeof row.finalGrade === "number");
@@ -978,6 +1091,168 @@ export function StudentGradesModal({
     };
   }, [rows]);
 
+  const downloadInstitutionalKardexPdf = async () => {
+    if (!canDownloadInstitutionalKardex) {
+      toast.error("No tienes permisos para descargar el Kardex institucional.");
+      return;
+    }
+    if (rows.length === 0) {
+      toast.error("No hay calificaciones para descargar.");
+      return;
+    }
+
+    setExportingKardexRowId("__all__");
+    try {
+      const pdf = new jsPDF({ unit: "pt", format: "a4", orientation: "landscape" });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const marginX = 42;
+      const contentWidth = pageWidth - marginX * 2;
+      const tableTop = 210;
+      const rowHeight = 30;
+      const tableBottom = pageHeight - 88;
+      const logoDataUrl = await loadPdfAssetDataUrl("/university-logo.jpg", pdfLogoDataUrlRef, "university-logo.jpg");
+      const downloadedAt = new Date();
+      const sortedRows = [...rows].sort((left, right) => {
+        const leftTime = Math.max(left.closedAt?.getTime() ?? 0, left.updatedAt?.getTime() ?? 0);
+        const rightTime = Math.max(right.closedAt?.getTime() ?? 0, right.updatedAt?.getTime() ?? 0);
+        return rightTime - leftTime;
+      });
+      const primaryGroupMeta =
+        sortedRows.map((row) => groupMetaById[row.groupId]).find(Boolean) ?? null;
+      const resolvedPlantelName = primaryGroupMeta?.plantelName || "UDEL";
+      const resolvedProgram = primaryGroupMeta?.program || "N/D";
+      const columns = {
+        index: { x: marginX, width: 24 },
+        group: { x: marginX + 30, width: 114 },
+        semester: { x: marginX + 154, width: 78 },
+        course: { x: marginX + 242, width: 178 },
+        status: { x: marginX + 430, width: 68 },
+        global: { x: marginX + 508, width: 60 },
+        extraordinary: { x: marginX + 578, width: 72 },
+        final: { x: marginX + 660, width: 54 },
+        updated: { x: marginX + 724, width: 74 },
+      };
+      let y = tableTop + 26;
+      let pageNumber = 1;
+
+      const drawHeader = () => {
+        if (logoDataUrl) {
+          pdf.addImage(logoDataUrl, "JPEG", marginX, 34, 48, 48);
+        }
+        const titleX = logoDataUrl ? marginX + 62 : marginX;
+        pdf.setTextColor(20, 20, 20);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(20);
+        pdf.text("Kardex Institucional", titleX, 54);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(10);
+        pdf.text("Historial de calificaciones del alumno", titleX, 72);
+        pdf.setTextColor(80, 80, 80);
+        pdf.text(`Fecha de descarga: ${formatDateTime(downloadedAt)}`, pageWidth - marginX, 54, { align: "right" });
+
+        pdf.setDrawColor(180, 180, 180);
+        pdf.setLineWidth(1);
+        pdf.line(marginX, 96, marginX + contentWidth, 96);
+
+        const metaY = 118;
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(9);
+        pdf.setTextColor(60, 60, 60);
+        pdf.text("ALUMNO", marginX, metaY);
+        pdf.text("CORREO", marginX + 260, metaY);
+        pdf.text("PLANTEL", marginX + 520, metaY);
+        pdf.text("PROGRAMA", marginX + 660, metaY);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(10);
+        pdf.setTextColor(20, 20, 20);
+        pdf.text((pdf.splitTextToSize(studentName || "Sin nombre", 230) as string[]).slice(0, 2), marginX, metaY + 15);
+        pdf.text((pdf.splitTextToSize(studentEmail || "N/D", 230) as string[]).slice(0, 2), marginX + 260, metaY + 15);
+        pdf.text((pdf.splitTextToSize(resolvedPlantelName, 120) as string[]).slice(0, 2), marginX + 520, metaY + 15);
+        pdf.text((pdf.splitTextToSize(resolvedProgram, 130) as string[]).slice(0, 2), marginX + 660, metaY + 15);
+
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(9);
+        pdf.setTextColor(20, 20, 20);
+        pdf.text(`Materias: ${summary.total}`, marginX, 186);
+        pdf.text(`Cerradas: ${summary.closed}`, marginX + 92, 186);
+        pdf.text(`Promedio final: ${summary.avg === null ? "N/D" : summary.avg.toFixed(1)}`, marginX + 192, 186);
+
+        pdf.setDrawColor(180, 180, 180);
+        pdf.line(marginX, tableTop - 24, marginX + contentWidth, tableTop - 24);
+        pdf.line(marginX, tableTop + 2, marginX + contentWidth, tableTop + 2);
+        pdf.setTextColor(40, 40, 40);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(8);
+        pdf.text("#", columns.index.x + 2, tableTop - 5);
+        pdf.text("Grupo", columns.group.x, tableTop - 5);
+        pdf.text("Cuatr.", columns.semester.x, tableTop - 5);
+        pdf.text("Materia", columns.course.x, tableTop - 5);
+        pdf.text("Estado", columns.status.x, tableTop - 5);
+        pdf.text("Global", columns.global.x, tableTop - 5);
+        pdf.text("Extraord.", columns.extraordinary.x, tableTop - 5);
+        pdf.text("Final", columns.final.x, tableTop - 5);
+        pdf.text("Actualizado", columns.updated.x, tableTop - 5);
+      };
+
+      const drawFooter = () => {
+        pdf.setDrawColor(200, 200, 200);
+        pdf.line(marginX, pageHeight - 58, marginX + contentWidth, pageHeight - 58);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(8);
+        pdf.setTextColor(90, 90, 90);
+        pdf.text("Documento generado por Plataforma UDEL.", marginX, pageHeight - 40);
+        pdf.text(`Pagina ${pageNumber}`, pageWidth - marginX, pageHeight - 40, { align: "right" });
+      };
+
+      const addPage = () => {
+        pdf.addPage();
+        pageNumber += 1;
+        y = tableTop + 26;
+        drawHeader();
+        drawFooter();
+      };
+
+      drawHeader();
+      drawFooter();
+
+      sortedRows.forEach((row, index) => {
+        if (y + rowHeight > tableBottom) addPage();
+        const groupMeta = groupMetaById[row.groupId] ?? null;
+        const rowTop = y - 14;
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(8);
+        pdf.setTextColor(20, 20, 20);
+        pdf.text(String(index + 1), columns.index.x + 2, y + 4);
+        pdf.text((pdf.splitTextToSize(groupMeta?.groupName || row.groupName || "N/D", columns.group.width) as string[]).slice(0, 2), columns.group.x, y);
+        pdf.text(groupMeta?.semester || "N/D", columns.semester.x, y + 4);
+        pdf.text((pdf.splitTextToSize(row.courseName || "N/D", columns.course.width) as string[]).slice(0, 2), columns.course.x, y);
+        pdf.text(row.status === "closed" ? "Cerrada" : "Abierta", columns.status.x, y + 4);
+        pdf.text(formatGradeValue(row.globalExamGrade), columns.global.x, y + 4);
+        pdf.text(formatGradeValue(row.extraordinaryExamGrade), columns.extraordinary.x, y + 4);
+        pdf.setFont("helvetica", "bold");
+        pdf.text(formatGradeValue(row.finalGrade), columns.final.x, y + 4);
+        pdf.setFont("helvetica", "normal");
+        pdf.text(formatDate(row.closedAt ?? row.updatedAt), columns.updated.x, y + 4);
+        y += rowHeight;
+        pdf.setDrawColor(220, 220, 220);
+        pdf.line(marginX, rowTop + rowHeight, marginX + contentWidth, rowTop + rowHeight);
+      });
+
+      pdf.save(
+        `kardex-institucional-${toSafeFileToken(studentName) || "alumno"}-${downloadedAt
+          .toISOString()
+          .slice(0, 10)}.pdf`,
+      );
+      toast.success("Kardex institucional descargado.");
+    } catch (error) {
+      console.error("No se pudo generar el Kardex institucional:", error);
+      toast.error("No se pudo descargar el Kardex institucional.");
+    } finally {
+      setExportingKardexRowId(null);
+    }
+  };
+
   return (
     <Dialog
       open={isOpen}
@@ -986,13 +1261,26 @@ export function StudentGradesModal({
       }}
     >
       <DialogContent className="w-full max-w-5xl p-0">
-        <div className="border-b border-slate-200 px-6 py-4">
-          <DialogHeader className="mb-1">
-            <DialogTitle>Kardex de calificaciones</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-slate-600">
-            {studentName} · {studentEmail}
-          </p>
+        <div className="flex flex-col gap-3 border-b border-slate-200 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <DialogHeader className="mb-1">
+              <DialogTitle>Kardex de calificaciones</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-slate-600">
+              {studentName} · {studentEmail}
+            </p>
+          </div>
+          {canDownloadInstitutionalKardex ? (
+            <button
+              type="button"
+              onClick={() => void downloadInstitutionalKardexPdf()}
+              disabled={loading || rows.length === 0 || exportingKardexRowId === "__all__"}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-[#7c152d] bg-white px-3 py-2 text-xs font-semibold text-[#7c152d] hover:bg-[#fff7f7] disabled:opacity-60"
+            >
+              <Download size={14} />
+              <span>{exportingKardexRowId === "__all__" ? "Generando..." : "Descargar Kardex institucional"}</span>
+            </button>
+          ) : null}
         </div>
 
         <div className="space-y-4 p-6">

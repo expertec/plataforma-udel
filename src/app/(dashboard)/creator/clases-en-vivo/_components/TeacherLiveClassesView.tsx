@@ -200,6 +200,15 @@ function buildLiveHref(item: Pick<TeacherLiveClassItem, "classId" | "courseId" |
   return `/live/${encodeURIComponent(item.classId)}?${searchParams.toString()}`;
 }
 
+function normalizeSearchText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
 function getClassGroupLabel(item: Pick<TeacherLiveClassItem, "linkedGroupName" | "sharedGroupNames">): string {
   if (item.linkedGroupName?.trim()) return item.linkedGroupName.trim();
   const names = Array.from(
@@ -423,7 +432,7 @@ export function TeacherLiveClassesView({
   );
 
   const filteredScheduleGroups = useMemo(() => {
-    const query = groupSearch.trim().toLowerCase();
+    const query = normalizeSearchText(groupSearch);
     if (!query) return scheduleGroups;
 
     return scheduleGroups.filter((group) => {
@@ -431,9 +440,8 @@ export function TeacherLiveClassesView({
         group.groupName,
         ...group.courses.map((course) => course.courseName),
       ]
-        .join(" ")
-        .toLowerCase();
-      return haystack.includes(query);
+        .join(" ");
+      return normalizeSearchText(haystack).includes(query);
     });
   }, [groupSearch, scheduleGroups]);
 
@@ -454,7 +462,7 @@ export function TeacherLiveClassesView({
   }, [form.courseId, scheduleGroups]);
 
   const filteredItems = useMemo(() => {
-    const query = search.trim().toLowerCase();
+    const query = normalizeSearchText(search);
     return items.filter((item) => {
       if (statusFilter !== "all" && item.liveStatus !== statusFilter) return false;
       if (!query) return true;
@@ -468,10 +476,9 @@ export function TeacherLiveClassesView({
         ...item.sharedGroupNames,
         item.roomName ?? "",
       ]
-        .join(" ")
-        .toLowerCase();
+        .join(" ");
 
-      return haystack.includes(query);
+      return normalizeSearchText(haystack).includes(query);
     });
   }, [items, search, statusFilter]);
 
@@ -921,7 +928,7 @@ export function TeacherLiveClassesView({
             <p className="text-xs text-[#9f6e61]">
               {isReadOnlyScope
                 ? "Solo se muestran clases live relacionadas con tus planteles o grupos online asignados."
-                : "Solo se muestran clases live creadas por ti."}
+                : "Solo se muestran clases live relacionadas con tus grupos o creadas por ti."}
             </p>
           </div>
 

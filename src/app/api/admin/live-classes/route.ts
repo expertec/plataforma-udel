@@ -37,6 +37,17 @@ function asText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function asUniqueStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .map((item) => asText(item))
+        .filter(Boolean),
+    ),
+  );
+}
+
 function normalizeBucketName(rawValue: string): string {
   const trimmed = rawValue.trim();
   if (!trimmed) return "";
@@ -148,6 +159,8 @@ function parseLessonPath(path: string): { courseId: string; lessonId: string } |
 
 function getGroupCourseIds(groupData: Record<string, unknown>): string[] {
   const courseIds = new Set<string>();
+  asUniqueStringArray(groupData.courseIds).forEach((courseId) => courseIds.add(courseId));
+
   if (Array.isArray(groupData.courses)) {
     groupData.courses.forEach((course) => {
       if (!course || typeof course !== "object" || Array.isArray(course)) return;

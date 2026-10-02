@@ -92,6 +92,15 @@ function getUserPlantelIds(data: Record<string, unknown>): string[] {
   return legacyPlantelId ? [legacyPlantelId] : [];
 }
 
+function getStudentPlantelScopeIds(data: Record<string, unknown>): string[] {
+  return Array.from(
+    new Set([
+      ...getUserPlantelIds(data),
+      ...asUniqueStringArray(data.archivedPlantelIds),
+    ]),
+  );
+}
+
 function extractBearerToken(authorizationHeader: string | null): string | null {
   if (!authorizationHeader) return null;
   const trimmed = authorizationHeader.trim();
@@ -133,6 +142,18 @@ function buildRowKey(groupId: string, groupName: string, courseId: string, cours
 
 function buildGroupCourseKey(groupId: string, courseId: string): string {
   return `${groupId.trim()}::${courseId.trim()}`;
+}
+
+function looksLikeFirestoreId(value: string): boolean {
+  return /^[A-Za-z0-9_-]{16,}$/.test(value.trim());
+}
+
+function isSpecificCourseNameCandidate(candidate: string, courseId: string): boolean {
+  const trimmed = candidate.trim();
+  if (!trimmed) return false;
+  if (trimmed.toLowerCase() === "sin materia") return false;
+  if (courseId.trim() && trimmed === courseId.trim() && looksLikeFirestoreId(trimmed)) return false;
+  return true;
 }
 
 function getCourseNameFromGroupData(groupData: {
@@ -251,7 +272,7 @@ async function assertCanReadStudentGrades(context: RouteContext, studentId: stri
 
   const db = getAdminFirestore();
   const studentSnap = await db.collection("users").doc(studentId).get();
-  const studentPlantelIds = getUserPlantelIds((studentSnap.data() ?? {}) as Record<string, unknown>);
+  const studentPlantelIds = getStudentPlantelScopeIds((studentSnap.data() ?? {}) as Record<string, unknown>);
   const hasStudentPlantelScope = studentPlantelIds.some((plantelId) => context.plantelIds.includes(plantelId));
   if (!hasStudentPlantelScope) throw new RouteAccessError(403, "Alumno fuera del alcance del plantel");
 
@@ -317,6 +338,7 @@ export async function GET(
     });
 
     const groupCourseNameByKey = new Map<string, string>();
+    const courseTitleById = new Map<string, string>();
     const groupDocs = await Promise.allSettled(
       Array.from(groupIds).map((groupId) => db.collection("groups").doc(groupId).get()),
     );
@@ -333,15 +355,66 @@ export async function GET(
       });
     });
 
+    const loadCourseTitles = async (courseIds: Iterable<string>) => {
+      const courseIdsToLoad = Array.from(
+        new Set(
+          Array.from(courseIds)
+            .map((courseId) => courseId.trim())
+            .filter((courseId) => courseId && !courseTitleById.has(courseId)),
+        ),
+      );
+      if (courseIdsToLoad.length === 0) return;
+
+      const courseDocs = await Promise.allSettled(
+        courseIdsToLoad.map((courseId) => db.collection("courses").doc(courseId).get()),
+      );
+      courseDocs.forEach((result, index) => {
+        if (result.status !== "fulfilled" || !result.value.exists) return;
+        const data = result.value.data() as { title?: unknown; courseName?: unknown; name?: unknown };
+        const title =
+          asTrimmedString(data.title) ||
+          asTrimmedString(data.courseName) ||
+          asTrimmedString(data.name);
+        if (title) courseTitleById.set(courseIdsToLoad[index], title);
+      });
+    };
+
+    const needsCourseLookup = (groupId: string, courseId: string, ...candidates: string[]): boolean => {
+      const normalizedCourseId = courseId.trim();
+      if (!normalizedCourseId || courseTitleById.has(normalizedCourseId)) return false;
+      const groupCourseName = groupCourseNameByKey.get(buildGroupCourseKey(groupId, normalizedCourseId)) ?? "";
+      return ![groupCourseName, ...candidates].some((candidate) =>
+        isSpecificCourseNameCandidate(candidate, normalizedCourseId),
+      );
+    };
+
     const resolveCourseName = (groupId: string, courseId: string, ...candidates: string[]): string => {
-      const groupCourseName = groupCourseNameByKey.get(buildGroupCourseKey(groupId, courseId)) ?? "";
-      for (const candidate of [groupCourseName, ...candidates]) {
-        if (candidate.trim()) return candidate.trim();
+      const normalizedCourseId = courseId.trim();
+      const groupCourseName = groupCourseNameByKey.get(buildGroupCourseKey(groupId, normalizedCourseId)) ?? "";
+      const courseTitle = courseTitleById.get(normalizedCourseId) ?? "";
+      for (const candidate of [groupCourseName, courseTitle, ...candidates]) {
+        if (isSpecificCourseNameCandidate(candidate, normalizedCourseId)) return candidate.trim();
       }
-      return courseId.trim() || "Sin materia";
+      if (normalizedCourseId) {
+        return looksLikeFirestoreId(normalizedCourseId) ? "Materia archivada" : normalizedCourseId;
+      }
+      return "Sin materia";
     };
 
     const rows = new Map<string, GradeRow>();
+
+    const closureCourseIdsToLookup = new Set<string>();
+    enrollmentSources.forEach(({ groupId, fallbackCourseName, closures }) => {
+      Object.entries(closures).forEach(([courseIdRaw, closureRaw]) => {
+        const closure = closureRaw as CourseClosure;
+        if (!closure || typeof closure !== "object") return;
+        const courseId = courseIdRaw.trim();
+        if (needsCourseLookup(groupId, courseId, asTrimmedString(closure.courseName), fallbackCourseName)) {
+          closureCourseIdsToLookup.add(courseId);
+        }
+      });
+    });
+    await loadCourseTitles(closureCourseIdsToLookup);
 
     enrollmentSources.forEach(({ groupId, groupName, fallbackCourseName, closures }) => {
       Object.entries(closures).forEach(([courseIdRaw, closureRaw]) => {
@@ -404,6 +477,20 @@ export async function GET(
         return { groupId, docs: snap.docs };
       }),
     );
+
+    const submissionCourseIdsToLookup = new Set<string>();
+    submissionResults.forEach((result) => {
+      if (result.status !== "fulfilled") return;
+      const fallbackCourseName = enrollmentCourseFallbackByGroup.get(result.value.groupId) ?? "";
+      result.value.docs.forEach((docSnap) => {
+        const data = docSnap.data() as Record<string, unknown>;
+        const courseId = asTrimmedString(data.courseId);
+        if (needsCourseLookup(result.value.groupId, courseId, asTrimmedString(data.courseTitle), fallbackCourseName)) {
+          submissionCourseIdsToLookup.add(courseId);
+        }
+      });
+    });
+    await loadCourseTitles(submissionCourseIdsToLookup);
 
     const submissionAgg = new Map<
       string,

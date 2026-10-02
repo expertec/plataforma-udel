@@ -2555,6 +2555,7 @@ export default function AlumnosPage() {
           scopePlantelId={isCoordinator ? coordinatorPlantelId || "" : ""}
           scopeGroupIds={isCoordinator ? coordinatorScopeGroupIds : []}
           useServerGrades={userRole === "teacher" || isCoordinator}
+          userRole={userRole}
           isOpen={gradesModalOpen}
           onClose={() => {
             setGradesModalOpen(false);
