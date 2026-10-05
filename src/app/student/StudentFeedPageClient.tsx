@@ -1328,6 +1328,7 @@ export default function StudentFeedPageClient() {
     const platformVisible = classes.filter((cls) => {
       if (cls.showInStudentPlatform === false) return false;
       if (cls.groupIsInPerson === true) {
+        if (cls.type === "quiz") return false;
         if (cls.studyOnly === true) return true;
         return cls.hasAssignment === true;
       }
@@ -2754,6 +2755,7 @@ export default function StudentFeedPageClient() {
               classesSnap.forEach((cls) => {
                 const c = cls.data();
                 const normType = normalizeClassType(c.type);
+                if (isGroupInPerson && normType === "quiz") return;
                 if (isStudyOnlyCourse && normType === "quiz") return;
                 const imageArray =
                   c.images ??

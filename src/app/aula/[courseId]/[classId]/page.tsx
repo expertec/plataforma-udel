@@ -145,7 +145,7 @@ export default function ClassPage({
             </p>
           )}
 
-          {contentHtml && cls.type !== "text" && (
+          {contentHtml && cls.type !== "text" && cls.groupIsInPerson !== true && (
             <section className="rounded-2xl border border-[var(--aula-border)] bg-[var(--aula-surface)] p-6">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-[var(--aula-text-muted)]">
                 Resumen

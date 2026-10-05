@@ -285,6 +285,7 @@ const loadCourseContent = async (task: CourseTask): Promise<CourseResult | null>
         classesSnap.forEach((cls) => {
           const c = cls.data();
           const normType = normalizeClassType(c.type);
+          if (task.isGroupInPerson && normType === "quiz") return;
           if (task.isStudyOnlyCourse && normType === "quiz") return;
           const imageArray = c.images ?? c.imageUrls ?? (c.imageUrl ? [c.imageUrl] : []);
 
