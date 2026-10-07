@@ -2052,6 +2052,10 @@ export default function StudentFeedPageClient() {
       }
       const targetId = activeIdRef.current ?? visibleClasses[activeIndex]?.id ?? null;
       if (!targetId) return;
+      const targetMeta = visibleClasses.find((cls) => cls.id === targetId);
+      if (targetMeta?.hasAssignment || (targetMeta?.groupIsInPerson !== true && targetMeta?.forumEnabled)) {
+        return;
+      }
       setCommentsClassId(targetId);
       setCommentsOpen(true);
     };
@@ -3104,6 +3108,8 @@ export default function StudentFeedPageClient() {
           cls.courseId &&
           cls.lessonId &&
           cls.classDocId &&
+          !cls.hasAssignment &&
+          !(cls.groupIsInPerson !== true && cls.forumEnabled) &&
           !commentsCountLoadCacheRef.current[cls.id],
       );
       if (!pendingClasses.length) return;
@@ -3210,7 +3216,15 @@ export default function StudentFeedPageClient() {
     if (activeId) {
       setUnmutedId(activeId);
       activeIdRef.current = activeId;
-      if (commentsOpen) setCommentsClassId(activeId);
+      if (commentsOpen) {
+        const activeClass = visibleClasses.find((cls) => cls.id === activeId);
+        if (activeClass?.hasAssignment || (activeClass?.groupIsInPerson !== true && activeClass?.forumEnabled)) {
+          setCommentsOpen(false);
+          setCommentsClassId(null);
+        } else {
+          setCommentsClassId(activeId);
+        }
+      }
     }
 
     // Guardar progreso de todas las clases antes de cambiar
@@ -3254,7 +3268,7 @@ export default function StudentFeedPageClient() {
         }
       });
     }
-  }, [activeId, previewMode, currentUser?.uid, enrollmentId, classes, saveProgressToFirestore]);
+  }, [activeId, previewMode, currentUser?.uid, enrollmentId, classes, saveProgressToFirestore, commentsOpen, visibleClasses]);
 
   const scrollToIndex = (idx: number, smooth = true) => {
     const clampedIdx = Math.max(0, Math.min(visibleClasses.length - 1, idx));
@@ -6661,14 +6675,14 @@ function ActionStack({
           onClick={onForum}
           isActive={forumDone}
         />
-      ) : (
+      ) : !hasAssignment ? (
         <ActionButton
           icon="comment"
           label={comments.toLocaleString("es-MX")}
           onClick={handleComments}
           disabled={commentsDisabled}
         />
-      )}
+      ) : null}
     </div>
   );
 }

@@ -37,16 +37,18 @@ export function ClassPanel({
 
   const forumEnabled = cls.groupIsInPerson !== true && cls.forumEnabled === true;
   const forumPending = forumEnabled && forumDone[cls.id] !== true;
+  const commentsEnabled = !cls.hasAssignment && !forumEnabled;
 
   const tabs = useMemo(() => {
-    const list: Array<{ id: TabId; label: string; icon: typeof MessageCircle; badge?: string }> = [
-      {
+    const list: Array<{ id: TabId; label: string; icon: typeof MessageCircle; badge?: string }> = [];
+    if (commentsEnabled) {
+      list.push({
         id: "comentarios",
         label: "Comentarios",
         icon: MessageCircle,
         badge: commentsCount !== null ? String(commentsCount) : undefined,
-      },
-    ];
+      });
+    }
     if (forumEnabled) {
       list.push({
         id: "foro",
@@ -59,7 +61,7 @@ export function ClassPanel({
       list.push({ id: "tarea", label: "Tarea", icon: Paperclip });
     }
     return list;
-  }, [forumEnabled, cls.hasAssignment, commentsCount, forumPending]);
+  }, [commentsEnabled, forumEnabled, cls.hasAssignment, commentsCount, forumPending]);
 
   // Si la clase actual no tiene la pestaña abierta, entra por la acción principal.
   useEffect(() => {
@@ -108,7 +110,7 @@ export function ClassPanel({
       </nav>
 
       <div className="min-h-0 flex-1 overflow-hidden pt-4">
-        {activeTab === "comentarios" && (
+        {activeTab === "comentarios" && commentsEnabled && (
           <CommentsTab cls={cls} onCountChange={setCommentsCount} />
         )}
 
@@ -117,7 +119,7 @@ export function ClassPanel({
             <ForumPanel
               open
               positionClass={EMBEDDED_FORUM_POSITION}
-              onClose={() => onTabChange("comentarios")}
+              onClose={() => onTabChange(getDefaultTabForClass(cls))}
               classMeta={cls}
               requiredFormat={cls.forumRequiredFormat ?? "text"}
               studentName={studentName}
