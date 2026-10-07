@@ -35,6 +35,7 @@ type Props = {
   groupId: string;
   courseIds: string[];
   students: GroupStudentSummary[];
+  isInPerson?: boolean;
 };
 
 function formatDateTime(value: Date | null): string {
@@ -55,6 +56,20 @@ function daysSince(value: Date | null, now: Date): number | null {
   return Math.floor(delta / MS_PER_DAY);
 }
 
+const normalizeEvaluableType = (value: unknown): string =>
+  typeof value === "string"
+    ? value
+        .trim()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+    : "";
+
+const isQuizOrForumType = (value: unknown): boolean =>
+  ["quiz", "quizz", "cuestionario", "forum", "foro", "post", "discussion"].includes(
+    normalizeEvaluableType(value),
+  );
+
 function isPermissionDeniedLikeError(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
   const code = (error as { code?: unknown }).code;
@@ -68,7 +83,7 @@ function isPermissionDeniedLikeError(error: unknown): boolean {
   );
 }
 
-export function DropoutRiskTab({ groupId, courseIds, students }: Props) {
+export function DropoutRiskTab({ groupId, courseIds, students, isInPerson = false }: Props) {
   const [rows, setRows] = useState<RiskRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -90,13 +105,22 @@ export function DropoutRiskTab({ groupId, courseIds, students }: Props) {
 
       const studentIds = new Set(studentList.map((student) => student.id));
 
-      const allSubmissions = await getAllSubmissions(groupId);
+      const allSubmissions = (await getAllSubmissions(groupId)).filter(
+        (submission) => !(isInPerson && isQuizOrForumType(submission.classType)),
+      );
 
       const evaluableClassIds = new Set<string>();
       allSubmissions.forEach((submission) => {
         const classId = (submission.classDocId ?? submission.classId ?? "").trim();
         if (!classId) return;
-        if (submission.classType !== "quiz" && submission.classType !== "assignment" && submission.classType !== "forum") {
+        const normalizedType = normalizeEvaluableType(submission.classType);
+        if (
+          normalizedType !== "quiz" &&
+          normalizedType !== "assignment" &&
+          normalizedType !== "tarea" &&
+          normalizedType !== "forum" &&
+          normalizedType !== "foro"
+        ) {
           return;
         }
         evaluableClassIds.add(classId);
@@ -209,7 +233,7 @@ export function DropoutRiskTab({ groupId, courseIds, students }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [groupId, students]);
+  }, [groupId, isInPerson, students]);
 
   useEffect(() => {
     void loadRiskRows();

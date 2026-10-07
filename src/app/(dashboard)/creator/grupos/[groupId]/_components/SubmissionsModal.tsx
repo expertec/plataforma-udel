@@ -101,21 +101,13 @@ function PendingReplyAudioPreview({
   file: File | null;
   onRemove: () => void;
 }) {
-  const [previewUrl, setPreviewUrl] = useState("");
+  const previewUrl = useMemo(() => (file ? URL.createObjectURL(file) : ""), [file]);
 
   useEffect(() => {
-    if (!file) {
-      setPreviewUrl("");
-      return;
-    }
-
-    const nextUrl = URL.createObjectURL(file);
-    setPreviewUrl(nextUrl);
-
     return () => {
-      URL.revokeObjectURL(nextUrl);
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
     };
-  }, [file]);
+  }, [previewUrl]);
 
   if (!file || !previewUrl) return null;
 
@@ -1439,6 +1431,13 @@ export function SubmissionsModal({
           };
         });
 
+        if (isInPerson && (isQuizClass || isForumClass)) {
+          setRows(students.map((student) => ({ student })));
+          setInlineGrades({});
+          setQuizQuestions([]);
+          return;
+        }
+
         const allSubmissions = await getAllSubmissions(groupId);
         let submissions: Submission[] = [];
         if (classType === "forum" && courseId && lessonId) {
@@ -1532,7 +1531,7 @@ export function SubmissionsModal({
       }
     };
     load();
-  }, [isOpen, groupId, classId, className, courseId, lessonId, classType]);
+  }, [isOpen, groupId, classId, className, courseId, lessonId, classType, isInPerson, isForumClass, isQuizClass]);
 
   const formatDate = (date?: Date | null) => {
     if (!date) return "-";

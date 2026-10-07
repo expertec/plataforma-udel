@@ -52,6 +52,19 @@ function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeSubmissionType(value: unknown): string {
+  return asTrimmedString(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function isQuizOrForumSubmissionType(value: unknown): boolean {
+  return ["quiz", "quizz", "cuestionario", "forum", "foro", "post", "discussion"].includes(
+    normalizeSubmissionType(value),
+  );
+}
+
 function asUniqueStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return Array.from(
@@ -155,6 +168,10 @@ async function resolveAccessContext(request: NextRequest, groupId: string) {
   if (!canRead) {
     throw new RouteAccessError(403, "Missing or insufficient permissions.");
   }
+
+  return {
+    isInPerson: groupData.isInPerson === true,
+  };
 }
 
 function toErrorResponse(error: unknown): NextResponse {
@@ -180,7 +197,7 @@ export async function GET(request: NextRequest, context: { params?: { groupId?: 
       throw new RouteAccessError(400, "groupId es requerido");
     }
 
-    await resolveAccessContext(request, groupId);
+    const accessContext = await resolveAccessContext(request, groupId);
 
     const submissionsSnap = await getAdminFirestore()
       .collection("groups")
@@ -189,33 +206,35 @@ export async function GET(request: NextRequest, context: { params?: { groupId?: 
       .orderBy("submittedAt", "desc")
       .get();
 
-    const submissions: SubmissionPayload[] = submissionsSnap.docs.map((docSnap) => {
-      const data = docSnap.data() as Record<string, unknown>;
-      return {
-        id: docSnap.id,
-        classId: asTrimmedString(data.classId),
-        classDocId: asTrimmedString(data.classDocId) || undefined,
-        courseId: asTrimmedString(data.courseId) || undefined,
-        courseTitle: asTrimmedString(data.courseTitle) || undefined,
-        lessonId: asTrimmedString(data.lessonId) || undefined,
-        lessonTitle: asTrimmedString(data.lessonTitle) || undefined,
-        className: asTrimmedString(data.className),
-        classType: asTrimmedString(data.classType),
-        studentId: asTrimmedString(data.studentId),
-        studentName: asTrimmedString(data.studentName),
-        submittedAtMs: toMillis(data.submittedAt),
-        fileUrl: asTrimmedString(data.fileUrl) || undefined,
-        audioUrl: asTrimmedString(data.audioUrl) || undefined,
-        content: asTrimmedString(data.content) || undefined,
-        status: asTrimmedString(data.status) || "pending",
-        grade: typeof data.grade === "number" && Number.isFinite(data.grade) ? data.grade : undefined,
-        answers: Array.isArray(data.answers) ? data.answers : undefined,
-        feedback: asTrimmedString(data.feedback) || undefined,
-        gradedAtMs: toMillis(data.gradedAt),
-        gradedById: asTrimmedString(data.gradedById) || undefined,
-        gradedByName: asTrimmedString(data.gradedByName) || undefined,
-      };
-    });
+    const submissions: SubmissionPayload[] = submissionsSnap.docs
+      .flatMap((docSnap): SubmissionPayload[] => {
+        const data = docSnap.data() as Record<string, unknown>;
+        if (accessContext.isInPerson && isQuizOrForumSubmissionType(data.classType)) return [];
+        return [{
+          id: docSnap.id,
+          classId: asTrimmedString(data.classId),
+          classDocId: asTrimmedString(data.classDocId) || undefined,
+          courseId: asTrimmedString(data.courseId) || undefined,
+          courseTitle: asTrimmedString(data.courseTitle) || undefined,
+          lessonId: asTrimmedString(data.lessonId) || undefined,
+          lessonTitle: asTrimmedString(data.lessonTitle) || undefined,
+          className: asTrimmedString(data.className),
+          classType: asTrimmedString(data.classType),
+          studentId: asTrimmedString(data.studentId),
+          studentName: asTrimmedString(data.studentName),
+          submittedAtMs: toMillis(data.submittedAt),
+          fileUrl: asTrimmedString(data.fileUrl) || undefined,
+          audioUrl: asTrimmedString(data.audioUrl) || undefined,
+          content: asTrimmedString(data.content) || undefined,
+          status: asTrimmedString(data.status) || "pending",
+          grade: typeof data.grade === "number" && Number.isFinite(data.grade) ? data.grade : undefined,
+          answers: Array.isArray(data.answers) ? data.answers : undefined,
+          feedback: asTrimmedString(data.feedback) || undefined,
+          gradedAtMs: toMillis(data.gradedAt),
+          gradedById: asTrimmedString(data.gradedById) || undefined,
+          gradedByName: asTrimmedString(data.gradedByName) || undefined,
+        } satisfies SubmissionPayload];
+      });
 
     return NextResponse.json(
       {

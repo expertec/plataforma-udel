@@ -47,6 +47,7 @@ type CalificacionesTabProps = {
   courses: Array<{ courseId: string; courseName: string; program?: string }>;
   groupProgram?: string;
   groupTeacherId: string;
+  isInPerson?: boolean;
   currentUserId: string | null;
   userRole: UserRole | null;
   enableCampusTasksGrade?: boolean;
@@ -430,10 +431,22 @@ const EXAM_QUESTION_TYPE_LABELS: Record<ExamQuestionType, string> = {
 const EXAM_TEMPLATE_ACCEPT =
   ".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const MAX_EXAM_TEMPLATE_FILE_SIZE = 25 * 1024 * 1024;
+const EXTRAORDINARY_EXAM_TEMPLATE_URL = "/templates/materia-formato-institucional-udel.docx";
 const OPTION_LETTERS = ["A", "B", "C", "D", "E", "F"];
 
 const normalizeTextValue = (value: unknown): string =>
   typeof value === "string" ? value.trim() : "";
+
+const normalizeEvaluableType = (value: unknown): string =>
+  normalizeTextValue(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+const isQuizOrForumType = (value: unknown): boolean =>
+  ["quiz", "quizz", "cuestionario", "forum", "foro", "post", "discussion"].includes(
+    normalizeEvaluableType(value),
+  );
 
 const isWordExamTemplateName = (fileName: string) => {
   const lowerName = fileName.toLowerCase();
@@ -941,6 +954,7 @@ export function CalificacionesTab({
   courses,
   groupProgram = "",
   groupTeacherId,
+  isInPerson = false,
   currentUserId,
   userRole,
   enableCampusTasksGrade = false,
@@ -1124,6 +1138,9 @@ export function CalificacionesTab({
         let submissions: Submission[] = [];
         try {
           submissions = await getAllSubmissions(groupId);
+          if (isInPerson) {
+            submissions = submissions.filter((submission) => !isQuizOrForumType(submission.classType));
+          }
         } catch (error) {
           if (isPermissionDeniedError(error)) {
             permissionWarningShown = true;
@@ -1331,22 +1348,26 @@ export function CalificacionesTab({
                   forumEnabled?: boolean;
                   title?: string;
                 };
-                const evaluable = data.type === "quiz" || data.hasAssignment === true || data.forumEnabled === true;
+                const isQuizClass = normalizeEvaluableType(data.type) === "quiz";
+                const includeQuiz = !isInPerson && isQuizClass;
+                const includeForum = !isInPerson && data.forumEnabled === true;
+                const includeAssignment = data.hasAssignment === true && !(isInPerson && isQuizClass);
+                const evaluable = includeQuiz || includeAssignment || includeForum;
                 if (!evaluable) return;
                 tasks.push({
                   id: cls.id,
                   lessonId: lesson.id,
                   title: data.title ?? "Sin título",
                   classType:
-                    data.forumEnabled === true
+                    includeForum
                       ? "forum"
-                      : data.type === "quiz"
+                      : includeQuiz
                       ? "quiz"
-                      : data.hasAssignment === true
+                      : includeAssignment
                       ? "assignment"
                       : "activity",
                 });
-                if (data.forumEnabled === true) {
+                if (includeForum) {
                   forumClasses.push({
                     courseId: course.courseId,
                     lessonId: lesson.id,
@@ -1427,7 +1448,7 @@ export function CalificacionesTab({
     return () => {
       cancelled = true;
     };
-  }, [courses, groupId, userRole]);
+  }, [courses, groupId, isInPerson, userRole]);
 
   const selectedCourseTasks = useMemo(() => {
     if (!selectedCourseId) return [];
@@ -2598,49 +2619,18 @@ export function CalificacionesTab({
     }
   };
 
-  const renderGlobalExamQuestionsHtml = (template: GlobalExamTemplateRecord | null) => {
-    if (!template || template.questions.length === 0) {
-      return `
+  const renderExamTemplateSampleQuestionHtml = () => `
   <p><strong>Tipo admitido:</strong> Opción múltiple</p>
   <p>1. Escribe el enunciado de la pregunta.</p>
   <p>A) Opción A<br />B) Opción B<br />C) Opción C<br />D) Opción D</p>
   <p><strong>Respuesta correcta:</strong> A</p>
   <p><strong>Retroalimentación:</strong> Explica aquí por qué la respuesta correcta es la adecuada.</p>
   <p><strong>Puntaje:</strong> __ puntos</p>`;
-    }
 
-    return template.questions
-      .map((question, questionIndex) => {
-        const correctIndex = question.options.findIndex((option) => option.id === question.correctOptionId);
-        const correctLetter = correctIndex >= 0 ? OPTION_LETTERS[correctIndex] ?? `${correctIndex + 1}` : "";
-        const optionsHtml = question.options
-          .map((option, optionIndex) => {
-            const letter = OPTION_LETTERS[optionIndex] ?? `${optionIndex + 1}`;
-            return `${letter}) ${escapeHtml(option.text)}`;
-          })
-          .join("<br />");
-        return `
-  <p><strong>Tipo admitido:</strong> Opción múltiple</p>
-  <p>${questionIndex + 1}. ${escapeHtml(question.prompt)}</p>
-  <p>${optionsHtml}</p>
-  <p><strong>Respuesta correcta:</strong> ${escapeHtml(correctLetter)}</p>
-  <p><strong>Retroalimentación:</strong> ${escapeHtml(question.feedback ?? "")}</p>
-  <p><strong>Puntaje:</strong> ${Math.round(1000 / template.questions.length) / 10} puntos</p>`;
-      })
-      .join("\n");
-  };
-
-  const buildExamTemplateExampleHtml = (
-    kind: ExamTemplateKind,
-    globalTemplate: GlobalExamTemplateRecord | null,
-  ) => {
-    const courseName = globalTemplate?.courseName || selectedCourse?.courseName || "Materia";
-    const title = globalTemplate
-      ? `${EXAM_TEMPLATE_KIND_LABELS[kind]} basado en ${globalTemplate.title}`
-      : EXAM_TEMPLATE_KIND_LABELS[kind];
-    const description = globalTemplate?.description.trim()
-      ? globalTemplate.description.trim()
-      : "Completa esta plantilla en Word y súbela antes de cerrar calificaciones.";
+  const buildExamTemplateExampleHtml = () => {
+    const courseName = selectedCourse?.courseName || "Materia";
+    const title = EXAM_TEMPLATE_KIND_LABELS.global;
+    const description = "Completa esta plantilla en Word y súbela antes de cerrar calificaciones.";
     return `<!doctype html>
 <html>
 <head>
@@ -2665,30 +2655,27 @@ export function CalificacionesTab({
   <table>
     <tr><th>Campo</th><th>Valor</th></tr>
     <tr><td>Duración</td><td>${GLOBAL_EXAM_DURATION_MINUTES} minutos</td></tr>
-    <tr><td>Puntaje mínimo aprobatorio</td><td>${globalTemplate?.passScore ?? 70} / 100</td></tr>
-    <tr><td>Número de preguntas</td><td>${globalTemplate?.questionCount ?? "__"}</td></tr>
+    <tr><td>Puntaje mínimo aprobatorio</td><td>70 / 100</td></tr>
+    <tr><td>Número de preguntas</td><td>__</td></tr>
     <tr><td>Instrucciones para el alumno</td><td>Escribe aquí las instrucciones generales.</td></tr>
   </table>
 
   <h2>Preguntas</h2>
-${renderGlobalExamQuestionsHtml(globalTemplate)}
+${renderExamTemplateSampleQuestionHtml()}
 </body>
 </html>`;
   };
 
   const downloadExamTemplateExample = async (kind: ExamTemplateKind) => {
-    let globalTemplate: GlobalExamTemplateRecord | null = null;
-    try {
-      globalTemplate = await fetchExistingGlobalExamTemplate();
-      if (!globalTemplate) {
-        toast("No hay examen global cargado para esta materia; se descargará el formato base.");
-      }
-    } catch (error) {
-      console.warn("No se pudo cargar examen global existente para la plantilla:", error);
-      toast("No se pudo leer el examen global existente; se descargará el formato base.");
+    if (kind === "extraordinary") {
+      const link = document.createElement("a");
+      link.href = EXTRAORDINARY_EXAM_TEMPLATE_URL;
+      link.download = "MATERIA FORMATO INSTITUCIONAL UDEL.docx";
+      link.click();
+      return;
     }
 
-    const html = buildExamTemplateExampleHtml(kind, globalTemplate);
+    const html = buildExamTemplateExampleHtml();
     const blob = new Blob([html], { type: "application/msword;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -4595,7 +4582,9 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
 
       {selectedCourseTasks.length === 0 ? (
         <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-          Esta materia no tiene actividades evaluables (quiz/tarea/foro).
+          {isInPerson
+            ? "Esta materia no tiene tareas evaluables."
+            : "Esta materia no tiene actividades evaluables (quiz/tarea/foro)."}
         </div>
       ) : (
         <div className="space-y-2">
@@ -4927,7 +4916,9 @@ ${renderGlobalExamQuestionsHtml(globalTemplate)}
             </table>
           </div>
           <p className="px-1 text-xs text-slate-500">
-            Auto es la suma de puntos ganados en tareas, foros y quizzes con calificación numérica.
+            {isInPerson
+              ? "Auto es la suma de puntos ganados en tareas con calificación numérica."
+              : "Auto es la suma de puntos ganados en tareas, foros y quizzes con calificación numérica."}
           </p>
         </div>
       )}

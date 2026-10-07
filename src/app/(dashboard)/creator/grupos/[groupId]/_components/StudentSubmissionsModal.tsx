@@ -10,6 +10,7 @@ type Props = {
   studentId: string;
   studentName: string;
   allowedCourseIds?: string[];
+  isInPerson?: boolean;
   readOnly?: boolean;
   isOpen: boolean;
   onClose: () => void;
@@ -20,6 +21,7 @@ export function StudentSubmissionsModal({
   studentId,
   studentName,
   allowedCourseIds,
+  isInPerson = false,
   readOnly = false,
   isOpen,
   onClose,
@@ -31,16 +33,26 @@ export function StudentSubmissionsModal({
 
   const filterByAllowedCourses = useCallback(
     (items: Submission[]): Submission[] => {
-      if (!allowedCourseIds) return items;
+      const filteredByMode = isInPerson
+        ? items.filter((submission) => {
+            const normalizedType = submission.classType
+              .trim()
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .toLowerCase();
+            return !["quiz", "quizz", "cuestionario", "forum", "foro", "post", "discussion"].includes(normalizedType);
+          })
+        : items;
+      if (!allowedCourseIds) return filteredByMode;
       const allowedSet = new Set(
         allowedCourseIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0),
       );
-      return items.filter((submission) => {
+      return filteredByMode.filter((submission) => {
         const courseId = submission.courseId ?? "";
         return courseId ? allowedSet.has(courseId) : false;
       });
     },
-    [allowedCourseIds],
+    [allowedCourseIds, isInPerson],
   );
 
   useEffect(() => {

@@ -9,6 +9,7 @@ type AllowedRole = "coordinadorPlantel" | "director" | "adminTeacher" | "superAd
 type GroupInfo = {
   id: string;
   groupName: string;
+  isInPerson: boolean;
   courseNameMap: Map<string, string>;
 };
 
@@ -63,6 +64,19 @@ function extractBearerToken(authorizationHeader: string | null): string | null {
 
 function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeSubmissionType(value: unknown): string {
+  return asTrimmedString(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function isQuizOrForumSubmissionType(value: unknown): boolean {
+  return ["quiz", "quizz", "cuestionario", "forum", "foro", "post", "discussion"].includes(
+    normalizeSubmissionType(value),
+  );
 }
 
 function asUniqueStringArray(value: unknown): string[] {
@@ -165,6 +179,7 @@ function toGroupInfo(
   return {
     id,
     groupName: asTrimmedString(data.groupName) || "Sin nombre",
+    isInPerson: data.isInPerson === true,
     courseNameMap,
   };
 }
@@ -263,8 +278,9 @@ function mapSubmissionDoc(
   docSnap: FirebaseFirestore.QueryDocumentSnapshot,
   groupId: string,
   groupInfo?: GroupInfo,
-): SubmissionPayload {
+): SubmissionPayload | null {
   const data = docSnap.data() as Record<string, unknown>;
+  if (groupInfo?.isInPerson && isQuizOrForumSubmissionType(data.classType)) return null;
   return {
     id: docSnap.id,
     groupId,
@@ -331,6 +347,7 @@ async function getForumSubmissions(
       break;
     }
     if (!resolvedGroupId || !resolvedGroupInfo) return;
+    if (resolvedGroupInfo.isInPerson) return;
 
     const forumData = forumDoc.data() as Record<string, unknown>;
     results.push({
@@ -414,7 +431,8 @@ export async function GET(
         submissionsSnap.docs.forEach((docSnap) => {
           const groupId = extractGroupIdFromDocPath(docSnap.ref.path);
           if (!groupId) return;
-          allSubmissions.push(mapSubmissionDoc(docSnap, groupId, groupsMap.get(groupId)));
+          const submission = mapSubmissionDoc(docSnap, groupId, groupsMap.get(groupId));
+          if (submission) allSubmissions.push(submission);
         });
       } catch (error) {
         if (!isFirestoreFailedPrecondition(error)) {
@@ -439,7 +457,8 @@ export async function GET(
               .get();
 
             submissionsSnap.docs.forEach((docSnap) => {
-              allSubmissions.push(mapSubmissionDoc(docSnap, groupId, groupsMap.get(groupId)));
+              const submission = mapSubmissionDoc(docSnap, groupId, groupsMap.get(groupId));
+              if (submission) allSubmissions.push(submission);
             });
           }),
         );
@@ -468,7 +487,8 @@ export async function GET(
             .get();
 
           submissionsSnap.docs.forEach((docSnap) => {
-            allSubmissions.push(mapSubmissionDoc(docSnap, groupId, groupsMap.get(groupId)));
+            const submission = mapSubmissionDoc(docSnap, groupId, groupsMap.get(groupId));
+            if (submission) allSubmissions.push(submission);
           });
         }),
       );

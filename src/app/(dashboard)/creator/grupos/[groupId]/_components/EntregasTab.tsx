@@ -166,6 +166,20 @@ const formatWeekExportName = (value: string) =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 
+const normalizeEvaluableType = (value: unknown): string =>
+  typeof value === "string"
+    ? value
+        .trim()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+    : "";
+
+const isQuizOrForumType = (value: unknown): boolean =>
+  ["quiz", "quizz", "cuestionario", "forum", "foro", "post", "discussion"].includes(
+    normalizeEvaluableType(value),
+  );
+
 export function EntregasTab({
   groupId,
   courseIds,
@@ -307,16 +321,20 @@ export function EntregasTab({
                   classOrder: data.order ?? undefined,
                 };
               })
-              .filter((c) => c.type === "quiz" || c.hasAssignment === true || c.forumEnabled === true)
+              .filter((c) => {
+                const isQuizClass = normalizeEvaluableType(c.type) === "quiz";
+                if (isInPerson) return c.hasAssignment === true && !isQuizClass;
+                return isQuizClass || c.hasAssignment === true || c.forumEnabled === true;
+              })
               .map((c) => ({
                 lessonId: lessonDoc.id,
                 classId: c.id,
                 courseId: cid,
                 title: c.title ?? "Sin título",
                 classType:
-                  c.type === "quiz"
+                  !isInPerson && normalizeEvaluableType(c.type) === "quiz"
                     ? "quiz"
-                    : c.forumEnabled
+                    : !isInPerson && c.forumEnabled
                     ? "forum"
                     : c.hasAssignment
                     ? "assignment"
@@ -330,7 +348,9 @@ export function EntregasTab({
           allClasses.push(...classes);
         }
 
-        const allSubs: Submission[] = await getAllSubmissions(groupId);
+        const allSubs: Submission[] = (await getAllSubmissions(groupId)).filter(
+          (submission) => !(isInPerson && isQuizOrForumType(submission.classType)),
+        );
 
         const forumSubs: Submission[] = [];
         for (const cls of allClasses.filter((c) => c.classType === "forum")) {
@@ -400,7 +420,7 @@ export function EntregasTab({
     };
 
     load();
-  }, [courseIds, groupId]);
+  }, [courseIds, groupId, isInPerson]);
 
   const lessonGroups: LessonGroup[] = useMemo(() => {
     const map = new Map<string, LessonGroup>();
@@ -463,7 +483,9 @@ export function EntregasTab({
     setExportingLessonKey(lesson.key);
     try {
       const studentIds = new Set(students.map((student) => student.id));
-      const allSubs = await getAllSubmissions(groupId);
+      const allSubs = (await getAllSubmissions(groupId)).filter(
+        (submission) => !(isInPerson && isQuizOrForumType(submission.classType)),
+      );
       const assignmentsForExport = await Promise.all(
         lesson.assignments.map(async (assignment) => {
           if (assignment.classType === "forum") {

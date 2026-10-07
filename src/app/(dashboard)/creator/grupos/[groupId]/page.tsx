@@ -1143,6 +1143,7 @@ export default function GroupDetailPage() {
                     courses={visibleCoursesForCurrentUser}
                     groupProgram={group.program ?? ""}
                     groupTeacherId={group.teacherId}
+                    isInPerson={group.isInPerson === true}
                     currentUserId={currentUserId}
                     userRole={userRole}
                     enableCampusTasksGrade={group.enableCampusTasksGrade === true}
@@ -1165,6 +1166,7 @@ export default function GroupDetailPage() {
                   groupId={group.id}
                   courseIds={courseIdsForGroup}
                   students={groupStudents}
+                  isInPerson={group.isInPerson === true}
                 />
               </TabsContent>
             ) : null}
@@ -1727,6 +1729,7 @@ export default function GroupDetailPage() {
           studentId={studentSubmissionsModal.studentId}
           studentName={studentSubmissionsModal.studentName}
           allowedCourseIds={isMentorWithRestrictedCourses ? visibleCourseIdsForCurrentUser : undefined}
+          isInPerson={group.isInPerson === true}
           readOnly={isCoordinatorForGroup}
           isOpen={studentSubmissionsModal.open}
           onClose={() => setStudentSubmissionsModal({ open: false, studentId: "", studentName: "" })}
