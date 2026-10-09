@@ -69,7 +69,10 @@ export function ClassPanel({
   }, [tabs, activeTab, onTabChange, cls]);
 
   return (
-    <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-[var(--aula-border)] bg-[var(--aula-surface)]">
+    <section
+      data-tour="aula-class-panel"
+      className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-[var(--aula-border)] bg-[var(--aula-surface)]"
+    >
       <nav className="flex shrink-0 border-b border-[var(--aula-border)]">
         {tabs.map((tab) => {
           const active = tab.id === activeTab;

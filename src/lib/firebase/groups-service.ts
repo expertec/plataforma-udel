@@ -1139,6 +1139,27 @@ export async function deleteGroup(groupId: string): Promise<void> {
 
 export async function removeStudentFromGroup(groupId: string, studentId: string): Promise<void> {
   if (!groupId || !studentId) return;
+  const currentUser = auth.currentUser;
+  if (currentUser) {
+    const token = await currentUser.getIdToken();
+    const response = await fetch(`/api/groups/${encodeURIComponent(groupId)}/students`, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ studentId }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as {
+      success?: boolean;
+      error?: string;
+    };
+    if (!response.ok || payload.success === false) {
+      throw new Error(payload.error ?? "No se pudo eliminar al alumno del grupo");
+    }
+    return;
+  }
+
   const batch = writeBatch(db);
   const studentRef = doc(db, "groups", groupId, "students", studentId);
   batch.delete(studentRef);

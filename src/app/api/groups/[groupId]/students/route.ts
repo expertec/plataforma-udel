@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import * as admin from "firebase-admin";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 import { isStudentStatusActive } from "@/lib/students/status";
 
@@ -120,7 +121,12 @@ function compareStudentsByName(left: GroupStudentPayload, right: GroupStudentPay
   return left.id.localeCompare(right.id, "es-MX", { numeric: true, sensitivity: "base" });
 }
 
-async function resolveAccessContext(request: NextRequest, groupId: string) {
+type AccessContext = {
+  uid: string;
+  groupData: Record<string, unknown>;
+};
+
+async function resolveAccessContext(request: NextRequest, groupId: string): Promise<AccessContext> {
   const token = extractBearerToken(request.headers.get("authorization"));
   if (!token) {
     throw new RouteAccessError(401, "Authorization Bearer token requerido");
@@ -166,7 +172,10 @@ async function resolveAccessContext(request: NextRequest, groupId: string) {
     throw new RouteAccessError(403, "Missing or insufficient permissions.");
   }
 
-  return;
+  return {
+    uid,
+    groupData,
+  };
 }
 
 function toErrorResponse(error: unknown): NextResponse {
@@ -188,16 +197,47 @@ type RouteContext = {
   params?: { groupId?: string } | Promise<{ groupId?: string }>;
 };
 
-export async function GET(request: NextRequest, context: RouteContext) {
-  try {
-    const resolvedParams = await Promise.resolve(context.params);
+function resolveGroupId(request: NextRequest, context: RouteContext): Promise<string> {
+  return Promise.resolve(context.params).then((resolvedParams) => {
     const groupIdFromParams = resolvedParams?.groupId?.trim() ?? "";
     const pathnameSegments = new URL(request.url).pathname.split("/").filter(Boolean);
     const groupIdFromPath =
       pathnameSegments[1] === "groups" && pathnameSegments[3] === "students"
         ? pathnameSegments[2]?.trim() ?? ""
         : "";
-    const groupId = groupIdFromParams || groupIdFromPath;
+    return groupIdFromParams || groupIdFromPath;
+  });
+}
+
+async function syncStudentPlantelAccess(studentId: string) {
+  const firestore = getAdminFirestore();
+  const enrollmentsSnap = await firestore
+    .collection("studentEnrollments")
+    .where("studentId", "==", studentId)
+    .get();
+  const plantelNameById = new Map<string, string>();
+
+  enrollmentsSnap.docs.forEach((enrollmentDoc) => {
+    const data = enrollmentDoc.data() as Record<string, unknown>;
+    if (!isStudentStatusActive(asTrimmedString(data.status) || "active")) return;
+    const plantelId = asTrimmedString(data.plantelId);
+    if (!plantelId) return;
+    plantelNameById.set(plantelId, asTrimmedString(data.plantelName));
+  });
+
+  await firestore.collection("users").doc(studentId).set(
+    {
+      plantelIds: Array.from(plantelNameById.keys()),
+      plantelNames: Array.from(plantelNameById.values()).filter(Boolean),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+}
+
+export async function GET(request: NextRequest, context: RouteContext) {
+  try {
+    const groupId = await resolveGroupId(request, context);
     if (!groupId) {
       throw new RouteAccessError(400, "groupId es requerido");
     }
@@ -230,6 +270,95 @@ export async function GET(request: NextRequest, context: RouteContext) {
         success: true,
         data: {
           students,
+        },
+      },
+      { status: 200 },
+    );
+  } catch (error) {
+    return toErrorResponse(error);
+  }
+}
+
+export async function DELETE(request: NextRequest, context: RouteContext) {
+  try {
+    const groupId = await resolveGroupId(request, context);
+    if (!groupId) {
+      throw new RouteAccessError(400, "groupId es requerido");
+    }
+
+    await resolveAccessContext(request, groupId);
+
+    const body = (await request.json().catch(() => ({}))) as { studentId?: unknown };
+    const studentId = asTrimmedString(body.studentId);
+    if (!studentId) {
+      throw new RouteAccessError(400, "studentId es requerido");
+    }
+
+    const firestore = getAdminFirestore();
+    const groupRef = firestore.collection("groups").doc(groupId);
+    const studentRef = groupRef.collection("students").doc(studentId);
+    const studentSnap = await studentRef.get();
+
+    const batch = firestore.batch();
+    if (studentSnap.exists) {
+      batch.delete(studentRef);
+      batch.update(groupRef, {
+        studentsCount: admin.firestore.FieldValue.increment(-1),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    const archivedAt = admin.firestore.FieldValue.serverTimestamp();
+    const processedEnrollmentIds = new Set<string>();
+    const archiveAndDeleteEnrollment = (
+      enrollmentId: string,
+      data: FirebaseFirestore.DocumentData | null,
+    ) => {
+      if (!enrollmentId || processedEnrollmentIds.has(enrollmentId)) return;
+      processedEnrollmentIds.add(enrollmentId);
+      const enrollmentRef = firestore.collection("studentEnrollments").doc(enrollmentId);
+      if (data) {
+        batch.set(firestore.collection("studentEnrollmentsArchive").doc(enrollmentId), {
+          ...data,
+          studentId,
+          groupId: asTrimmedString(data.groupId) || groupId,
+          archived: true,
+          archivedAt,
+          archivedFromGroupId: groupId,
+        });
+      }
+      batch.delete(enrollmentRef);
+    };
+
+    const primaryEnrollmentId = `${groupId}_${studentId}`;
+    const primaryEnrollmentSnap = await firestore
+      .collection("studentEnrollments")
+      .doc(primaryEnrollmentId)
+      .get();
+    archiveAndDeleteEnrollment(
+      primaryEnrollmentId,
+      primaryEnrollmentSnap.exists ? primaryEnrollmentSnap.data() ?? null : null,
+    );
+
+    const enrollmentsSnap = await firestore
+      .collection("studentEnrollments")
+      .where("studentId", "==", studentId)
+      .where("groupId", "==", groupId)
+      .get();
+    enrollmentsSnap.docs.forEach((docSnap) => {
+      archiveAndDeleteEnrollment(docSnap.id, docSnap.data());
+    });
+
+    await batch.commit();
+    await syncStudentPlantelAccess(studentId).catch((error) => {
+      console.warn("No se pudo sincronizar acceso de plantel del alumno", studentId, error);
+    });
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: {
+          removed: studentSnap.exists,
         },
       },
       { status: 200 },

@@ -38,13 +38,30 @@ function asUniqueStringArray(value: unknown): string[] {
 }
 
 function asAllowedRole(value: unknown): AllowedRole | null {
-  return value === "teacher" ||
+  if (
+    value === "teacher" ||
+    value === "mentor" ||
+    value === "professor" ||
+    value === "docente"
+  ) {
+    return "teacher";
+  }
+  if (
     value === "coordinadorPlantel" ||
     value === "director" ||
     value === "adminTeacher" ||
     value === "superAdminTeacher"
-    ? value
-    : null;
+  ) {
+    return value;
+  }
+  if (value === "adminteacher" || value === "admin_teacher") return "adminTeacher";
+  if (
+    value === "superadminteacher" ||
+    value === "super_admin_teacher"
+  ) {
+    return "superAdminTeacher";
+  }
+  return null;
 }
 
 function getUserPlantelIds(data: Record<string, unknown>): string[] {

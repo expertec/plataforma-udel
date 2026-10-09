@@ -47,6 +47,7 @@ export function StudentViewSwitch({
       <button
         type="button"
         role="switch"
+        data-tour="aula-view-switch"
         aria-checked={modernActive}
         aria-label={modernActive ? "Cambiar a vista tradicional" : "Cambiar a vista moderna"}
         title={modernActive ? "Vista moderna activa" : "Activar vista moderna"}
@@ -75,6 +76,7 @@ export function StudentViewSwitch({
     <button
       type="button"
       role="switch"
+      data-tour="student-view-switch"
       aria-checked={modernActive}
       aria-label={modernActive ? "Cambiar a vista tradicional" : "Cambiar a vista moderna"}
       title={modernActive ? "Cambiar a vista tradicional" : "Cambiar a vista moderna"}

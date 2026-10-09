@@ -25,6 +25,54 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+.driver-popover.udel-product-tour {
+  max-width: min(340px, calc(100vw - 32px));
+  border: 1px solid rgba(181, 122, 104, 0.36);
+  border-radius: 18px;
+  background: #fffaf7;
+  color: #321717;
+  box-shadow: 0 24px 70px rgba(11, 7, 8, 0.28);
+}
+
+.driver-popover.udel-product-tour .driver-popover-title {
+  color: #551b22;
+  font-size: 1rem;
+  line-height: 1.35;
+}
+
+.driver-popover.udel-product-tour .driver-popover-description {
+  color: #754848;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.driver-popover.udel-product-tour .driver-popover-progress-text {
+  color: #8c5e57;
+  font-size: 0.75rem;
+}
+
+.driver-popover.udel-product-tour button {
+  border-radius: 9999px;
+  text-shadow: none;
+}
+
+.driver-popover.udel-product-tour .driver-popover-next-btn,
+.driver-popover.udel-product-tour .driver-popover-done-btn {
+  border-color: #6e2d2d;
+  background: #6e2d2d;
+  color: #ffffff;
+}
+
+.driver-popover.udel-product-tour .driver-popover-prev-btn {
+  border-color: rgba(181, 122, 104, 0.52);
+  background: #fffaf7;
+  color: #551b22;
+}
+
+.driver-popover.udel-product-tour .driver-popover-close-btn {
+  color: #754848;
+}
+
 .creator-shell {
   --creator-bg: #f7f0eb;
   --creator-surface: #fffaf7;

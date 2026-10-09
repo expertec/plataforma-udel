@@ -48,14 +48,31 @@ function asUniqueStringArray(value: unknown): string[] {
 }
 
 function asGlobalExamRole(value: unknown): GlobalExamAccessRole | null {
-  return value === "student" ||
+  if (
     value === "teacher" ||
+    value === "mentor" ||
+    value === "professor" ||
+    value === "docente"
+  ) {
+    return "teacher";
+  }
+  if (
+    value === "adminTeacher" ||
+    value === "superAdminTeacher" ||
     value === "coordinadorPlantel" ||
     value === "director" ||
-    value === "adminTeacher" ||
-    value === "superAdminTeacher"
-    ? value
-    : null;
+    value === "student"
+  ) {
+    return value;
+  }
+  if (value === "adminteacher" || value === "admin_teacher") return "adminTeacher";
+  if (
+    value === "superadminteacher" ||
+    value === "super_admin_teacher"
+  ) {
+    return "superAdminTeacher";
+  }
+  return null;
 }
 
 function getUserPlantelIds(userData: Record<string, unknown>): string[] {

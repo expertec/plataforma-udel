@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { ChevronLeft, ChevronRight, Radio } from "lucide-react";
@@ -217,17 +217,26 @@ function TextStage({ cls, html }: { cls: FeedClass; html: string }) {
 }
 
 export function ClassStage({ cls, contentHtml }: { cls: FeedClass; contentHtml: string }) {
-  if (cls.groupIsInPerson === true) return <InPersonStage cls={cls} />;
-  if (cls.type === "quiz") return <QuizStage cls={cls} />;
-  if (cls.type === "live") return <LiveStage cls={cls} />;
-  if (cls.type === "audio" && cls.audioUrl) return <AudioStage cls={cls} />;
-  if (cls.type === "image") return <ImageStage cls={cls} />;
-  if (cls.type === "text") return <TextStage cls={cls} html={contentHtml} />;
-  if (cls.videoUrl) return <VideoStage cls={cls} />;
+  let stage: ReactNode;
+
+  if (cls.groupIsInPerson === true) stage = <InPersonStage cls={cls} />;
+  else if (cls.type === "quiz") stage = <QuizStage cls={cls} />;
+  else if (cls.type === "live") stage = <LiveStage cls={cls} />;
+  else if (cls.type === "audio" && cls.audioUrl) stage = <AudioStage cls={cls} />;
+  else if (cls.type === "image") stage = <ImageStage cls={cls} />;
+  else if (cls.type === "text") stage = <TextStage cls={cls} html={contentHtml} />;
+  else if (cls.videoUrl) stage = <VideoStage cls={cls} />;
+  else {
+    stage = (
+      <div className="rounded-2xl border border-[var(--aula-border)] bg-[var(--aula-surface)] p-8 text-center text-[var(--aula-text-muted)]">
+        Esta clase todavía no tiene contenido para mostrar.
+      </div>
+    );
+  }
 
   return (
-    <div className="rounded-2xl border border-[var(--aula-border)] bg-[var(--aula-surface)] p-8 text-center text-[var(--aula-text-muted)]">
-      Esta clase todavía no tiene contenido para mostrar.
+    <div data-tour="aula-class-stage">
+      {stage}
     </div>
   );
 }

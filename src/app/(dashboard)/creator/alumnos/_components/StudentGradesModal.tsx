@@ -177,6 +177,14 @@ const formatDateTime = (value: Date | null): string => {
 const formatGradeValue = (value: number | null | undefined): string =>
   typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "—";
 
+const formatSummaryGradeValue = (value: number | null | undefined): string => {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "N/D";
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+};
+
+const PASSING_GRADE = 7;
+const TOTAL_PROGRAM_SUBJECTS = 48;
+
 const toSafeFileToken = (value: string): string =>
   value
     .normalize("NFD")
@@ -268,7 +276,7 @@ export function StudentGradesModal({
   const [rows, setRows] = useState<GradeRow[]>([]);
   const [groupMetaById, setGroupMetaById] = useState<Record<string, GroupMeta>>({});
   const [exportingKardexRowId, setExportingKardexRowId] = useState<string | null>(null);
-  const pdfLogoDataUrlRef = useRef<string | null>(null);
+  const pdfBackgroundDataUrlRef = useRef<string | null>(null);
   const canDownloadInstitutionalKardex = isAdminTeacherRole(userRole) || userRole === "director";
 
   useEffect(() => {
@@ -1080,14 +1088,21 @@ export function StudentGradesModal({
   const summary = useMemo(() => {
     const closed = rows.filter((row) => row.status === "closed");
     const graded = closed.filter((row) => typeof row.finalGrade === "number");
+    const approved = graded.filter((row) => (row.finalGrade ?? 0) >= PASSING_GRADE);
     const avg =
       graded.length > 0
         ? graded.reduce((acc, row) => acc + (row.finalGrade ?? 0), 0) / graded.length
         : null;
+    const approvedAvg =
+      approved.length > 0
+        ? approved.reduce((acc, row) => acc + (row.finalGrade ?? 0), 0) / approved.length
+        : null;
     return {
       total: rows.length,
       closed: closed.length,
+      approved: approved.length,
       avg,
+      approvedAvg,
     };
   }, [rows]);
 
@@ -1103,15 +1118,15 @@ export function StudentGradesModal({
 
     setExportingKardexRowId("__all__");
     try {
-      const pdf = new jsPDF({ unit: "pt", format: "a4", orientation: "landscape" });
+      const pdf = new jsPDF({ unit: "pt", format: "letter", orientation: "portrait" });
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
       const marginX = 42;
       const contentWidth = pageWidth - marginX * 2;
-      const tableTop = 210;
-      const rowHeight = 30;
-      const tableBottom = pageHeight - 88;
-      const logoDataUrl = await loadPdfAssetDataUrl("/university-logo.jpg", pdfLogoDataUrlRef, "university-logo.jpg");
+      const tableTop = 250;
+      const rowHeight = 34;
+      const tableBottom = pageHeight - 126;
+      const backgroundDataUrl = await loadPdfAssetDataUrl("/bg-pdf-01.png", pdfBackgroundDataUrlRef, "bg-pdf-01.png");
       const downloadedAt = new Date();
       const sortedRows = [...rows].sort((left, right) => {
         const leftTime = Math.max(left.closedAt?.getTime() ?? 0, left.updatedAt?.getTime() ?? 0);
@@ -1124,119 +1139,148 @@ export function StudentGradesModal({
       const resolvedProgram = primaryGroupMeta?.program || "N/D";
       const columns = {
         index: { x: marginX, width: 24 },
-        group: { x: marginX + 30, width: 114 },
-        semester: { x: marginX + 154, width: 78 },
-        course: { x: marginX + 242, width: 178 },
-        status: { x: marginX + 430, width: 68 },
-        global: { x: marginX + 508, width: 60 },
-        extraordinary: { x: marginX + 578, width: 72 },
-        final: { x: marginX + 660, width: 54 },
-        updated: { x: marginX + 724, width: 74 },
+        course: { x: marginX + 32, width: 286 },
+        global: { x: pageWidth - marginX - 168, width: 44 },
+        extraordinary: { x: pageWidth - marginX - 114, width: 54 },
+        final: { x: pageWidth - marginX - 48, width: 48 },
       };
       let y = tableTop + 26;
-      let pageNumber = 1;
+
+      const drawPageBackground = () => {
+        if (backgroundDataUrl) {
+          pdf.addImage(backgroundDataUrl, "PNG", 0, 0, pageWidth, pageHeight);
+        }
+      };
 
       const drawHeader = () => {
-        if (logoDataUrl) {
-          pdf.addImage(logoDataUrl, "JPEG", marginX, 34, 48, 48);
-        }
-        const titleX = logoDataUrl ? marginX + 62 : marginX;
         pdf.setTextColor(20, 20, 20);
         pdf.setFont("helvetica", "bold");
         pdf.setFontSize(20);
-        pdf.text("Kardex Institucional", titleX, 54);
+        pdf.text("Kardex Institucional", marginX, 116);
         pdf.setFont("helvetica", "normal");
         pdf.setFontSize(10);
-        pdf.text("Historial de calificaciones del alumno", titleX, 72);
+        pdf.text("Historial de calificaciones del alumno", marginX, 134);
         pdf.setTextColor(80, 80, 80);
-        pdf.text(`Fecha de descarga: ${formatDateTime(downloadedAt)}`, pageWidth - marginX, 54, { align: "right" });
+        pdf.text(`Fecha de descarga: ${formatDateTime(downloadedAt)}`, pageWidth - marginX, 116, { align: "right" });
 
         pdf.setDrawColor(180, 180, 180);
         pdf.setLineWidth(1);
-        pdf.line(marginX, 96, marginX + contentWidth, 96);
+        pdf.line(marginX, 144, marginX + contentWidth, 144);
 
-        const metaY = 118;
+        const metaY = 166;
         pdf.setFont("helvetica", "bold");
         pdf.setFontSize(9);
         pdf.setTextColor(60, 60, 60);
         pdf.text("ALUMNO", marginX, metaY);
-        pdf.text("CORREO", marginX + 260, metaY);
-        pdf.text("PLANTEL", marginX + 520, metaY);
-        pdf.text("PROGRAMA", marginX + 660, metaY);
+        pdf.text("PLANTEL", marginX + 250, metaY);
+        pdf.text("PROGRAMA", marginX + 372, metaY);
         pdf.setFont("helvetica", "normal");
         pdf.setFontSize(10);
         pdf.setTextColor(20, 20, 20);
-        pdf.text((pdf.splitTextToSize(studentName || "Sin nombre", 230) as string[]).slice(0, 2), marginX, metaY + 15);
-        pdf.text((pdf.splitTextToSize(studentEmail || "N/D", 230) as string[]).slice(0, 2), marginX + 260, metaY + 15);
-        pdf.text((pdf.splitTextToSize(resolvedPlantelName, 120) as string[]).slice(0, 2), marginX + 520, metaY + 15);
-        pdf.text((pdf.splitTextToSize(resolvedProgram, 130) as string[]).slice(0, 2), marginX + 660, metaY + 15);
+        pdf.text((pdf.splitTextToSize(studentName || "Sin nombre", 220) as string[]).slice(0, 2), marginX, metaY + 15);
+        pdf.text((pdf.splitTextToSize(resolvedPlantelName, 104) as string[]).slice(0, 2), marginX + 250, metaY + 15);
+        pdf.text((pdf.splitTextToSize(resolvedProgram, 150) as string[]).slice(0, 2), marginX + 372, metaY + 15);
 
         pdf.setFont("helvetica", "bold");
         pdf.setFontSize(9);
         pdf.setTextColor(20, 20, 20);
-        pdf.text(`Materias: ${summary.total}`, marginX, 186);
-        pdf.text(`Cerradas: ${summary.closed}`, marginX + 92, 186);
-        pdf.text(`Promedio final: ${summary.avg === null ? "N/D" : summary.avg.toFixed(1)}`, marginX + 192, 186);
+        pdf.text(`Materias: ${summary.total}`, marginX, 224);
+        pdf.text(`Cerradas: ${summary.closed}`, marginX + 92, 224);
+        pdf.text(`Aprobadas: ${summary.approved}`, marginX + 192, 224);
+        pdf.text(
+          `Promedio aprobadas: ${formatSummaryGradeValue(summary.approvedAvg)}`,
+          pageWidth - marginX,
+          224,
+          { align: "right" },
+        );
 
         pdf.setDrawColor(180, 180, 180);
+        pdf.setLineWidth(0.7);
         pdf.line(marginX, tableTop - 24, marginX + contentWidth, tableTop - 24);
         pdf.line(marginX, tableTop + 2, marginX + contentWidth, tableTop + 2);
         pdf.setTextColor(40, 40, 40);
         pdf.setFont("helvetica", "bold");
-        pdf.setFontSize(8);
+        pdf.setFontSize(8.5);
         pdf.text("#", columns.index.x + 2, tableTop - 5);
-        pdf.text("Grupo", columns.group.x, tableTop - 5);
-        pdf.text("Cuatr.", columns.semester.x, tableTop - 5);
         pdf.text("Materia", columns.course.x, tableTop - 5);
-        pdf.text("Estado", columns.status.x, tableTop - 5);
         pdf.text("Global", columns.global.x, tableTop - 5);
         pdf.text("Extraord.", columns.extraordinary.x, tableTop - 5);
         pdf.text("Final", columns.final.x, tableTop - 5);
-        pdf.text("Actualizado", columns.updated.x, tableTop - 5);
       };
 
       const drawFooter = () => {
         pdf.setDrawColor(200, 200, 200);
-        pdf.line(marginX, pageHeight - 58, marginX + contentWidth, pageHeight - 58);
+        pdf.setLineWidth(0.7);
+        pdf.line(marginX, pageHeight - 154, marginX + contentWidth, pageHeight - 154);
+        pdf.setDrawColor(168, 200, 255);
+        pdf.setLineWidth(4);
+        pdf.line(marginX, pageHeight - 144, marginX, pageHeight - 102);
+        pdf.setLineWidth(0.7);
+        pdf.setFont("helvetica", "bolditalic");
+        pdf.setFontSize(9.5);
+        pdf.setTextColor(20, 20, 20);
+        pdf.text(
+          `El presente Kárdex de estudios ampara ${summary.approved} de las ${TOTAL_PROGRAM_SUBJECTS} asignaturas totales en el programa.`,
+          marginX + 8,
+          pageHeight - 136,
+        );
+        pdf.text(`La calificación mínima aprobatoria es de ${PASSING_GRADE}`, marginX + 8, pageHeight - 122);
+        pdf.text(
+          `Promedio de materias aprobadas: ${formatSummaryGradeValue(summary.approvedAvg)}`,
+          marginX + 8,
+          pageHeight - 108,
+        );
         pdf.setFont("helvetica", "normal");
         pdf.setFontSize(8);
         pdf.setTextColor(90, 90, 90);
-        pdf.text("Documento generado por Plataforma UDEL.", marginX, pageHeight - 40);
-        pdf.text(`Pagina ${pageNumber}`, pageWidth - marginX, pageHeight - 40, { align: "right" });
+        pdf.text("Documento generado por Plataforma UDEL.", marginX, pageHeight - 86);
       };
 
       const addPage = () => {
         pdf.addPage();
-        pageNumber += 1;
         y = tableTop + 26;
+        drawPageBackground();
         drawHeader();
         drawFooter();
       };
 
+      drawPageBackground();
       drawHeader();
       drawFooter();
 
       sortedRows.forEach((row, index) => {
-        if (y + rowHeight > tableBottom) addPage();
         const groupMeta = groupMetaById[row.groupId] ?? null;
+        const groupLabel = groupMeta?.groupName || row.groupName || "N/D";
+        const semesterLabel = groupMeta?.semester || "N/D";
+        const updatedLabel = formatDate(row.closedAt ?? row.updatedAt);
+        const courseLines = (pdf.splitTextToSize(row.courseName || "N/D", columns.course.width) as string[]).slice(0, 2);
+        const metadataLine = `Grupo: ${groupLabel}   |   Cuatr.: ${semesterLabel}   |   Actualizado: ${updatedLabel}`;
+        const currentRowHeight = Math.max(rowHeight, 24 + courseLines.length * 10);
+        if (y + currentRowHeight > tableBottom) addPage();
         const rowTop = y - 14;
         pdf.setFont("helvetica", "normal");
-        pdf.setFontSize(8);
+        pdf.setFontSize(8.5);
         pdf.setTextColor(20, 20, 20);
         pdf.text(String(index + 1), columns.index.x + 2, y + 4);
-        pdf.text((pdf.splitTextToSize(groupMeta?.groupName || row.groupName || "N/D", columns.group.width) as string[]).slice(0, 2), columns.group.x, y);
-        pdf.text(groupMeta?.semester || "N/D", columns.semester.x, y + 4);
-        pdf.text((pdf.splitTextToSize(row.courseName || "N/D", columns.course.width) as string[]).slice(0, 2), columns.course.x, y);
-        pdf.text(row.status === "closed" ? "Cerrada" : "Abierta", columns.status.x, y + 4);
+        pdf.text(courseLines, columns.course.x, y);
+        pdf.setFontSize(7);
+        pdf.setTextColor(100, 100, 100);
+        pdf.text(
+          (pdf.splitTextToSize(metadataLine, columns.course.width) as string[]).slice(0, 1),
+          columns.course.x,
+          y + 10 * courseLines.length + 3,
+        );
+        pdf.setFontSize(8.5);
+        pdf.setTextColor(20, 20, 20);
         pdf.text(formatGradeValue(row.globalExamGrade), columns.global.x, y + 4);
         pdf.text(formatGradeValue(row.extraordinaryExamGrade), columns.extraordinary.x, y + 4);
         pdf.setFont("helvetica", "bold");
         pdf.text(formatGradeValue(row.finalGrade), columns.final.x, y + 4);
         pdf.setFont("helvetica", "normal");
-        pdf.text(formatDate(row.closedAt ?? row.updatedAt), columns.updated.x, y + 4);
-        y += rowHeight;
+        y += currentRowHeight;
         pdf.setDrawColor(220, 220, 220);
-        pdf.line(marginX, rowTop + rowHeight, marginX + contentWidth, rowTop + rowHeight);
+        pdf.setLineWidth(0.7);
+        pdf.line(marginX, rowTop + currentRowHeight, marginX + contentWidth, rowTop + currentRowHeight);
       });
 
       pdf.save(

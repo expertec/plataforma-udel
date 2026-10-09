@@ -30,6 +30,7 @@ import {
 } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { StudentViewSwitch } from "@/components/student/StudentViewSwitch";
+import { ProductTour, type ProductTourStep } from "@/components/product-tour/ProductTour";
 import { createSubmission, deleteSubmission, type SubmissionStatus } from "@/lib/firebase/submissions-service";
 import {
   getForumPosts,
@@ -282,6 +283,45 @@ const FINANCE_VALIDATION_TIMEZONE = "America/Monterrey";
 const BILLING_SUPPORT_WHATSAPP_URL = `https://wa.me/${BILLING_SUPPORT_WHATSAPP}?text=${encodeURIComponent(
   "Hola, me aparece bloqueo por pagos vencidos en la plataforma UDEL y necesito ayuda para revisar mi acceso.",
 )}`;
+
+const modernStudentTourSteps: ProductTourStep[] = [
+  {
+    target: ["[data-tour='student-class-map']", "[data-tour='student-mobile-classes']"],
+    title: "Mapa de clases",
+    description: "Consulta tus materias, lecciones y avance. En móvil se abre desde el botón Mis clases.",
+    side: "right",
+  },
+  {
+    target: "[data-tour='student-feed']",
+    title: "Feed de aprendizaje",
+    description: "Desliza verticalmente para avanzar entre clases y continuar justo donde te quedaste.",
+    side: "left",
+  },
+  {
+    target: "[data-tour='student-class-content']",
+    title: "Contenido de la clase",
+    description: "Aquí verás videos, lecturas, imágenes, audios o exámenes según la actividad.",
+    side: "bottom",
+  },
+  {
+    target: "[data-tour='student-actions']",
+    title: "Acciones rápidas",
+    description: "Desde esta columna puedes dar like, comentar, participar en foro o entregar tarea.",
+    side: "left",
+  },
+  {
+    target: "[data-tour='student-feed-navigation']",
+    title: "Navegar sin deslizar",
+    description: "Usa estas flechas para saltar a la clase anterior o siguiente.",
+    side: "left",
+  },
+  {
+    target: "[data-tour='student-top-actions']",
+    title: "Perfil, exámenes y vista",
+    description: "Entra a exámenes globales, abre tu perfil o cambia a la vista tradicional.",
+    side: "bottom",
+  },
+];
 
 const normalizePhone = (raw?: string | null) => {
   const digits = (raw ?? "").replace(/\D/g, "");
@@ -4620,6 +4660,12 @@ export default function StudentFeedPageClient() {
 
   return (
     <div className={`min-h-screen bg-black text-white ${hasLiveJoinBanner ? "pt-12" : ""}`} style={{ touchAction: "pan-y" }}>
+      <ProductTour
+        tourId="student-modern"
+        steps={modernStudentTourSteps}
+        autoStart={!previewMode}
+        className="fixed bottom-4 left-4 z-50 lg:bottom-6 lg:left-auto lg:right-6"
+      />
       {liveJoinBannerTarget ? (
         <div className="fixed inset-x-0 top-0 z-[85] border-b border-black/30 bg-[#a30000] shadow-lg">
           <div className="mx-auto flex h-12 max-w-6xl items-center justify-center gap-3 px-4">
@@ -4651,7 +4697,10 @@ export default function StudentFeedPageClient() {
           </button>
         </div>
       ) : null}
-      <header className={`fixed left-0 z-20 hidden w-[19.2rem] flex-col border-r border-white/10 bg-neutral-900/80 p-4 lg:flex ${sidebarTopClass}`}>
+      <header
+        data-tour="student-class-map"
+        className={`fixed left-0 z-20 hidden w-[19.2rem] flex-col border-r border-white/10 bg-neutral-900/80 p-4 lg:flex ${sidebarTopClass}`}
+      >
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 space-y-1">
             <h1 className="text-xl font-bold">Mis clases</h1>
@@ -4706,6 +4755,7 @@ export default function StudentFeedPageClient() {
         <button
           type="button"
           onClick={() => setMobileClassesOpen(true)}
+          data-tour="student-mobile-classes"
           className={`pointer-events-auto fixed left-3 z-40 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white shadow-lg backdrop-blur lg:hidden ${floatingButtonsTopClass}`}
           aria-label="Abrir mis clases"
         >
@@ -4722,7 +4772,7 @@ export default function StudentFeedPageClient() {
             <ControlIcon name="user" />
           </button>
         ) : (
-          <div className={`pointer-events-auto fixed right-3 z-40 flex items-center gap-2 ${floatingButtonsTopClass}`}>
+          <div data-tour="student-top-actions" className={`pointer-events-auto fixed right-3 z-40 flex items-center gap-2 ${floatingButtonsTopClass}`}>
             <StudentViewSwitch currentView="modern" user={currentUser} />
             <Link
               href="/student/examenes-globales"
@@ -4748,6 +4798,7 @@ export default function StudentFeedPageClient() {
         </div>
         <div
           ref={containerRef}
+          data-tour="student-feed"
           className={`relative flex ${feedContainerHeightClass} snap-y snap-mandatory flex-col overflow-y-scroll scroll-smooth overscroll-contain`}
         >
           {mobileClassesOpen ? (
@@ -4868,7 +4919,7 @@ export default function StudentFeedPageClient() {
               >
                 <div className="relative flex h-full w-full min-h-0 items-center justify-center lg:px-8 lg:py-5 mx-auto overflow-visible">
                   <div className="relative box-border flex min-h-0 items-center justify-center gap-6 lg:gap-10 w-full h-full lg:w-auto lg:h-auto pt-6 pb-14 lg:pt-0 lg:pb-0">
-                  <div className={`relative w-full h-full ${contentBoxSizeClass} overflow-hidden rounded-none lg:rounded-2xl border-0 lg:border border-white/10 lg:bg-neutral-900/60 lg:shadow-2xl flex items-center justify-center`}>
+                  <div data-tour="student-class-content" className={`relative w-full h-full ${contentBoxSizeClass} overflow-hidden rounded-none lg:rounded-2xl border-0 lg:border border-white/10 lg:bg-neutral-900/60 lg:shadow-2xl flex items-center justify-center`}>
                       {shouldRenderHeavyCard ? (
                         renderContent(cls, idx)
                       ) : (
@@ -5086,7 +5137,7 @@ export default function StudentFeedPageClient() {
             );
           })}
 
-          <div className="pointer-events-auto fixed right-3 bottom-16 z-40 flex flex-col gap-3 lg:right-6 lg:top-1/2 lg:-translate-y-1/2 lg:bottom-auto">
+          <div data-tour="student-feed-navigation" className="pointer-events-auto fixed right-3 bottom-16 z-40 flex flex-col gap-3 lg:right-6 lg:top-1/2 lg:-translate-y-1/2 lg:bottom-auto">
             <button
               type="button"
               onClick={() => {
@@ -6647,7 +6698,7 @@ function ActionStack({
   };
 
   return (
-    <div className={`pointer-events-auto z-30 flex flex-col items-center gap-4 text-white ${positionClass ?? ""}`}>
+    <div data-tour="student-actions" className={`pointer-events-auto z-30 flex flex-col items-center gap-4 text-white ${positionClass ?? ""}`}>
       <div className="flex flex-col items-center gap-2">
         <div className="h-12 w-12 overflow-hidden rounded-full border-2 border-white/50 bg-white/10">
           <img

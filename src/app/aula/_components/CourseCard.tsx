@@ -22,6 +22,7 @@ export function CourseCard({
   return (
     <Link
       href={`/aula/${courseId}`}
+      data-tour="aula-course-card"
       className="group flex flex-col overflow-hidden rounded-2xl border border-[var(--aula-border)] bg-[var(--aula-surface)] transition-colors hover:border-[var(--aula-accent)]"
     >
       <div className="relative aspect-video w-full bg-[var(--aula-bg)]">

@@ -48,7 +48,10 @@ export function Topbar({
   const nextIndex = neighbourInCourse(1);
 
   return (
-    <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-[var(--aula-border)] bg-[var(--aula-surface)] px-4 py-3">
+    <header
+      data-tour="aula-class-topbar"
+      className="sticky top-0 z-30 flex items-center gap-3 border-b border-[var(--aula-border)] bg-[var(--aula-surface)] px-4 py-3"
+    >
       <div className="min-w-0 flex-1">
         <h1 className="truncate text-base font-semibold text-[var(--aula-text)]">{cls.title}</h1>
         <p className="truncate text-xs text-[var(--aula-text-muted)]">{cls.courseTitle}</p>

@@ -395,10 +395,7 @@ export default function GroupDetailPage() {
     }
 
     // Legacy fallback para grupos antiguos sin mentorCourseAccess
-    const explicitAccess = group.mentorCourseAccess?.[currentUserId];
-    if (!Array.isArray(explicitAccess)) return [];
-    const allowedSet = new Set(explicitAccess.filter((id): id is string => typeof id === "string"));
-    return courseIdsForGroup.filter((courseId) => allowedSet.has(courseId));
+    return courseIdsForGroup;
   }, [courseIdsForGroup, currentUserId, group, hasFullGroupVisibility, isCoordinatorForGroup, isCurrentUserAssistant]);
 
   const visibleCourseIdsSet = useMemo(

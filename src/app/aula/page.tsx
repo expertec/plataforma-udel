@@ -18,7 +18,7 @@ export default function AulaHomePage() {
       {curriculum.length === 0 ? (
         <p className="text-[var(--aula-text-muted)]">Todavía no tienes materias disponibles.</p>
       ) : (
-        <div className="grid grid-cols-2 gap-4 sm:gap-6 lg:grid-cols-3">
+        <div data-tour="aula-courses" className="grid grid-cols-2 gap-4 sm:gap-6 lg:grid-cols-3">
           {curriculum.map((course) => {
             const items = course.lessons.flatMap((lesson) => lesson.items);
             const completedClasses = items.filter((item) => isComplete(classes[item.index])).length;

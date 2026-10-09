@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { FileText, Home, User } from "lucide-react";
+import { ProductTour, type ProductTourStep } from "@/components/product-tour/ProductTour";
 import { StudentViewSwitch } from "@/components/student/StudentViewSwitch";
 import { LOADING_STAGES, useAulaData } from "../_lib/AulaDataContext";
 import { BillingBlockedScreen } from "./BillingBlockedScreen";
@@ -14,11 +15,57 @@ const railItems = [
   { href: "/aula/perfil", icon: User, label: "Mi perfil" },
 ];
 
+const aulaTourSteps: ProductTourStep[] = [
+  {
+    target: ["[data-tour='aula-rail']", "[data-tour='aula-bottom-nav']"],
+    title: "Navegación del aula",
+    description: "Aquí cambias entre inicio, exámenes y perfil sin salir de la vista tradicional.",
+    side: "right",
+  },
+  {
+    target: "[data-tour='aula-courses']",
+    title: "Tus materias",
+    description: "Cada tarjeta abre una materia y muestra el avance que llevas en sus clases.",
+    side: "bottom",
+  },
+  {
+    target: "[data-tour='aula-course-card']",
+    title: "Abre una materia",
+    description: "Entra desde la tarjeta para ver el temario y continuar con la siguiente clase disponible.",
+    side: "bottom",
+  },
+  {
+    target: "[data-tour='aula-class-topbar']",
+    title: "Controles de clase",
+    description: "Cuando estás dentro de una clase, esta barra te permite cambiar de clase o abrir el temario.",
+    side: "bottom",
+  },
+  {
+    target: "[data-tour='aula-class-stage']",
+    title: "Contenido principal",
+    description: "Aquí aparece el video, lectura, imagen o actividad que corresponde a la clase actual.",
+    side: "bottom",
+  },
+  {
+    target: "[data-tour='aula-class-panel']",
+    title: "Participación y tareas",
+    description: "Usa este panel para comentarios, foro o entrega de tarea según lo que pida la clase.",
+    side: "left",
+  },
+  {
+    target: "[data-tour='aula-view-switch']",
+    title: "Cambiar de vista",
+    description: "Este interruptor te lleva a la experiencia moderna tipo feed cuando quieras alternar.",
+    side: "right",
+  },
+];
+
 /** Barra inferior: en móvil sustituye al rail lateral, que queda oculto. */
 function BottomBar() {
   const pathname = usePathname();
   return (
     <nav
+      data-tour="aula-bottom-nav"
       className="fixed inset-x-0 bottom-0 z-40 flex border-t border-[var(--aula-border)] bg-[var(--aula-surface)] pb-[env(safe-area-inset-bottom)] lg:hidden"
       aria-label="Navegación principal"
     >
@@ -78,7 +125,7 @@ function Rail() {
   const pathname = usePathname();
   const { currentUser } = useAulaData();
   return (
-    <nav className="fixed left-0 top-0 z-40 hidden h-screen w-14 flex-col items-center gap-2 border-r border-[var(--aula-border)] bg-[var(--aula-surface)] py-4 lg:flex">
+    <nav data-tour="aula-rail" className="fixed left-0 top-0 z-40 hidden h-screen w-14 flex-col items-center gap-2 border-r border-[var(--aula-border)] bg-[var(--aula-surface)] py-4 lg:flex">
       <Link href="/aula" aria-label="Inicio del aula" className="mb-4 shrink-0">
         <Image
           src="/university-logo.jpg"
@@ -163,6 +210,11 @@ export function AulaShell({ children }: { children: React.ReactNode }) {
   return (
     <>
       <Rail />
+      <ProductTour
+        tourId="aula"
+        steps={aulaTourSteps}
+        className="fixed bottom-24 right-4 z-50 border-[var(--aula-border)] bg-[var(--aula-surface)] text-[var(--aula-text)] hover:bg-[var(--aula-bg)] lg:bottom-5"
+      />
       {/* El padding inferior evita que la barra fija tape el final del contenido. */}
       <div className="pb-20 lg:pb-0 lg:pl-14">{children}</div>
       <BottomBar />
