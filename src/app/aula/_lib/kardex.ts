@@ -1,11 +1,16 @@
 import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { trimSafeString } from "./gating";
+import { getStudentEquivalencies } from "@/lib/firebase/equivalencies-service";
+import { equivalencyGradeRow } from "@/lib/students/equivalencies";
+import { isCertificationGroup } from "@/lib/students/kardex";
 
 export type KardexRow = {
   id: string;
   groupId: string;
   groupName: string;
+  semester?: string;
+  isCertification?: boolean;
   courseId: string;
   courseName: string;
   status: "open" | "closed";
@@ -21,6 +26,8 @@ export type KardexRow = {
   closedAt: Date | null;
   updatedAt: Date | null;
   archived: boolean;
+  equivalencyId?: string;
+  countsTowardProgram?: boolean;
 };
 
 const toDateOrNull = (value: unknown): Date | null => {
@@ -118,7 +125,7 @@ export const loadKardex = async (
   uid: string,
   courseTitles: Record<string, string>,
 ): Promise<KardexRow[]> => {
-  const [liveDocs, archivedDocs] = await Promise.all([
+  const [liveDocs, archivedDocs, equivalencies] = await Promise.all([
     getDocs(query(collection(db, "studentEnrollments"), where("studentId", "==", uid)))
       .then((snap) => snap.docs)
       .catch((err) => {
@@ -131,7 +138,16 @@ export const loadKardex = async (
         console.warn("No se pudo leer el historial de inscripciones:", err);
         return [];
       }),
+    getStudentEquivalencies(uid),
   ]);
+
+  const groupIds = Array.from(new Set([...liveDocs, ...archivedDocs]
+    .map((entry) => trimSafeString(entry.data().groupId)).filter(Boolean)));
+  const groupResults = await Promise.allSettled(groupIds.map((groupId) => getDoc(doc(db, "groups", groupId))));
+  const groupsById = new Map<string, Record<string, unknown>>();
+  groupResults.forEach((result, index) => {
+    if (result.status === "fulfilled" && result.value.exists()) groupsById.set(groupIds[index], result.value.data());
+  });
 
   const rows = new Map<string, KardexRow>();
   const rememberedCourseNames = new Map<string, string>();
@@ -179,7 +195,12 @@ export const loadKardex = async (
 
   const ingest = (data: Record<string, unknown>, archived: boolean) => {
     const groupId = trimSafeString(data.groupId);
-    const groupName = trimSafeString(data.groupName) || "Grupo";
+    const groupData = groupsById.get(groupId);
+    const storedGroupName = trimSafeString(data.groupName);
+    const groupName = trimSafeString(groupData?.groupName) || storedGroupName || "Sin grupo";
+    const semesterValue = groupData?.semester ?? data.semester;
+    const semester = typeof semesterValue === "number" ? String(semesterValue) : trimSafeString(semesterValue);
+    const isCertification = isCertificationGroup(storedGroupName) || isCertificationGroup(groupName);
     const fallbackCourseName = trimSafeString(data.courseName);
     const closures = (data.courseClosures ?? {}) as Record<string, unknown>;
 
@@ -204,6 +225,8 @@ export const loadKardex = async (
         id: rowKey(groupId, courseId),
         groupId,
         groupName,
+        semester,
+        isCertification,
         courseId,
         courseName: resolveCourseName(courseId, closureCourseName, fallbackCourseName),
         status,
@@ -241,6 +264,8 @@ export const loadKardex = async (
         id: rowKey(groupId, courseId),
         groupId,
         groupName,
+        semester,
+        isCertification,
         courseId,
         courseName: resolveCourseName(courseId, fallbackCourseName),
         status: finalGrade !== null ? "closed" : "open",
@@ -262,6 +287,17 @@ export const loadKardex = async (
 
   archivedDocs.forEach((docSnap) => ingest(docSnap.data(), true));
   liveDocs.forEach((docSnap) => ingest(docSnap.data(), false));
+  equivalencies.forEach((equivalency) => {
+    const row = equivalencyGradeRow(equivalency);
+    rows.set(row.id, {
+      ...row,
+      closedAt: new Date(row.closedAt),
+      updatedAt: new Date(row.updatedAt),
+      closedByType: null,
+      closureTrigger: null,
+      archived: false,
+    });
+  });
 
   if (unresolvedCourseIds.size > 0) {
     const courseIds = Array.from(unresolvedCourseIds);
@@ -281,6 +317,7 @@ export const loadKardex = async (
   }
 
   rows.forEach((row, key) => {
+    if (row.equivalencyId) return;
     const resolvedName = resolveCourseName(row.courseId, row.courseName);
     if (resolvedName !== row.courseName) {
       rows.set(key, { ...row, courseName: resolvedName });

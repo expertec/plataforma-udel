@@ -280,7 +280,7 @@ function mapSubmissionDoc(
   groupInfo?: GroupInfo,
 ): SubmissionPayload | null {
   const data = docSnap.data() as Record<string, unknown>;
-  if (groupInfo?.isInPerson && isQuizOrForumSubmissionType(data.classType)) return null;
+  if (groupInfo?.isInPerson && isQuizOrForumSubmissionType(data.classType) && data.assessmentKind !== "final") return null;
   return {
     id: docSnap.id,
     groupId,

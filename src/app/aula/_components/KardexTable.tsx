@@ -1,7 +1,7 @@
 "use client";
 
 import { Archive, Clock } from "lucide-react";
-import { formatDate } from "../_lib/profile";
+import { formatKardexDate, formatKardexIdentification } from "@/lib/students/kardex";
 import type { KardexRow } from "../_lib/kardex";
 
 function GradeBadge({ grade }: { grade: number | null }) {
@@ -71,7 +71,6 @@ export function KardexTable({ rows, loading }: { rows: KardexRow[]; loading: boo
         <thead className="border-b border-[var(--aula-border)] text-[var(--aula-text-muted)]">
           <tr>
             <th className="px-4 py-3 font-medium">Materia</th>
-            <th className="px-4 py-3 font-medium">Grupo</th>
             <th className="px-4 py-3 font-medium">Estado</th>
             <th className="px-4 py-3 font-medium">Cierre</th>
             <th className="px-4 py-3 text-right font-medium">Examen global</th>
@@ -85,6 +84,9 @@ export function KardexTable({ rows, loading }: { rows: KardexRow[]; loading: boo
               <td className="px-4 py-3">
                 <div className="flex items-center gap-2">
                   <span className="text-[var(--aula-text)]">{row.courseName}</span>
+                  {row.equivalencyId && (
+                    <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-xs text-sky-300">Equivalencia</span>
+                  )}
                   {row.archived && (
                     <span
                       title="Materia de un grupo anterior"
@@ -95,12 +97,12 @@ export function KardexTable({ rows, loading }: { rows: KardexRow[]; loading: boo
                     </span>
                   )}
                 </div>
+                <p className="mt-1 text-xs text-[var(--aula-text-muted)]">{formatKardexIdentification(row)}</p>
               </td>
-              <td className="px-4 py-3 text-[var(--aula-text-muted)]">{row.groupName}</td>
               <td className="px-4 py-3">
                 {row.status === "closed" ? (
                   <span className="rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs font-medium text-emerald-400">
-                    Cerrada
+                    {row.equivalencyId ? "Acreditada" : "Cerrada"}
                   </span>
                 ) : (
                   <span className="flex w-fit items-center gap-1 rounded-full bg-amber-500/15 px-2.5 py-1 text-xs font-medium text-amber-300">
@@ -112,7 +114,7 @@ export function KardexTable({ rows, loading }: { rows: KardexRow[]; loading: boo
               <td className="px-4 py-3 text-[var(--aula-text-muted)]">
                 {row.status === "closed" ? (
                   <div className="flex flex-col gap-1">
-                    <span>{formatDate(row.closedAt)}</span>
+                    <span>{formatKardexDate(row.closedAt)}</span>
                     <ClosureOriginBadge row={row} />
                   </div>
                 ) : (

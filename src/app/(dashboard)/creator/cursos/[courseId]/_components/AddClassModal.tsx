@@ -3,6 +3,8 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import Image from "next/image";
 import toast from "react-hot-toast";
+import { finalExamRequest } from "@/lib/firebase/final-exams-service";
+import { QuizWordImport } from "./QuizWordImport";
 import {
   ClassItem,
   createClass,
@@ -102,6 +104,8 @@ type AddClassModalProps = {
     payload: {
       title: string;
       type: string;
+      assessmentKind?: "regular" | "final";
+      assessmentVersion?: number;
       duration?: number;
       liveSession?: LiveClassSession | null;
       hasAssignment?: boolean;
@@ -121,6 +125,8 @@ type AddClassModalProps = {
     payload: {
       title: string;
       type: string;
+      assessmentKind?: "regular" | "final";
+      assessmentVersion?: number;
       duration?: number;
       liveSession?: LiveClassSession | null;
       hasAssignment?: boolean;
@@ -149,6 +155,7 @@ export function AddClassModal({
 }: AddClassModalProps) {
   const [type, setType] = useState<"video" | "text" | "audio" | "quiz" | "image" | "live">("video");
   const [title, setTitle] = useState("");
+  const [assessmentKind, setAssessmentKind] = useState<"regular" | "final">("regular");
   const [duration, setDuration] = useState<number | undefined>(undefined);
   const [url, setUrl] = useState("");
   const [content, setContent] = useState("");
@@ -213,6 +220,7 @@ export function AddClassModal({
       id: string;
       prompt: string;
       explanation?: string;
+      pointValue?: number;
       type: "multiple" | "truefalse" | "open";
       options: Array<{
         id: string;
@@ -229,6 +237,7 @@ export function AddClassModal({
   useEffect(() => {
     if (mode === "edit" && initialData) {
       setType(initialData.type);
+      setAssessmentKind(initialData.assessmentKind === "final" ? "final" : "regular");
       setTitle(initialData.title);
       setDuration(initialData.duration ?? undefined);
       setUrl(initialData.videoUrl ?? initialData.audioUrl ?? "");
@@ -297,6 +306,7 @@ export function AddClassModal({
               qs.map((q) => ({
                 id: q.id,
                 prompt: q.prompt,
+                pointValue: q.pointValue,
                 explanation: q.explanation ?? "",
                 type: q.type,
                 options:
@@ -318,6 +328,7 @@ export function AddClassModal({
       }
     } else if (mode === "create") {
       setType("video");
+      setAssessmentKind("regular");
       setTitle("");
       setDuration(undefined);
       setUrl("");
@@ -497,6 +508,20 @@ export function AddClassModal({
         : null;
     setLoading(true);
     try {
+      if (assessmentKind === "final" || initialData?.assessmentKind === "final") {
+        if (type !== "quiz") throw new Error("Para cambiar el tipo de clase, primero desmarca el examen final y guarda.");
+        const saved = await finalExamRequest<{ classId: string }>(courseId, "POST", {
+          lessonId, classId: mode === "edit" ? classId : undefined, assessmentKind,
+          version: initialData?.assessmentVersion ?? 0, title: title.trim(), content, order: nextOrder,
+          questions: questions.map((question) => ({ ...question, pointValue: question.pointValue ?? (parseQuizQuestionPointValue(quizQuestionPointValueInput) || 1) })),
+        });
+        const payload = { title: title.trim(), type: "quiz", assessmentKind, assessmentVersion: (initialData?.assessmentVersion ?? 0) + 1 };
+        if (mode === "edit") onUpdated?.(saved.classId, payload);
+        else onCreated(saved.classId, payload);
+        toast.success(assessmentKind === "final" ? "Examen final guardado: 10 puntos, disponible en semana 5." : "Ahora es un quiz semanal. Vuelve a editarlo para ajustar sus preguntas.");
+        onClose();
+        return;
+      }
       let savedClassId = classId;
       if (mode === "edit" && classId) {
         await updateClass({
@@ -1566,6 +1591,15 @@ export function AddClassModal({
             <div className="grid gap-3 sm:grid-cols-2">
               {type === "quiz" ? (
                 <div className="space-y-4 sm:col-span-2">
+                  <label className="block text-sm font-semibold text-slate-800">Tipo de evaluación
+                    <select value={assessmentKind} disabled={(initialData?.finalExamAttemptCount ?? 0) > 0} onChange={(event) => setAssessmentKind(event.target.value as "regular" | "final")} className="mt-2 block w-full rounded border border-slate-300 p-2">
+                      <option value="regular">Quiz semanal</option>
+                      <option value="final">Examen final</option>
+                    </select>
+                  </label>
+                  {assessmentKind === "final" ? <p className="rounded bg-blue-50 p-3 text-sm text-blue-900">10 puntos en total, distribuidos proporcionalmente entre los reactivos. Debe estar en la semana 5; abre 28 días después de habilitar la materia en cada grupo. El resto de actividades dispone de hasta 90 puntos. Un solo envío por alumno.</p> : null}
+                  {(initialData?.finalExamAttemptCount ?? 0) > 0 ? <p className="text-sm text-amber-700">Este examen ya tiene respuestas: no se permite modificarlo para proteger las calificaciones.</p> : null}
+                  <QuizWordImport onImport={(imported) => setQuestions(imported.map((question) => ({ ...question, id: uuidv4(), type: question.type ?? "multiple", options: question.options.map((option) => ({ ...option, id: uuidv4() })) })))} />
                   <div className="space-y-3 rounded-lg border border-slate-200 p-3">
                     <div className="flex items-center justify-between">
                       <p className="text-sm font-semibold text-slate-800">
@@ -1579,7 +1613,7 @@ export function AddClassModal({
                         + Agregar pregunta
                       </button>
                     </div>
-                    <div className="flex items-center gap-2 text-xs font-medium text-slate-700">
+                    <div className={assessmentKind === "final" ? "hidden" : "flex items-center gap-2 text-xs font-medium text-slate-700"}>
                       <span>Cada pregunta vale:</span>
                       <input
                         type="text"
@@ -1695,7 +1729,7 @@ export function AddClassModal({
                             >
                               <option value="multiple">Opción múltiple</option>
                               <option value="truefalse">Verdadero / Falso</option>
-                              <option value="open">Respuesta abierta</option>
+                              {assessmentKind !== "final" ? <option value="open">Respuesta abierta</option> : null}
                             </select>
                           </div>
                           <input
@@ -1954,7 +1988,7 @@ export function AddClassModal({
             </button>
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || loadingQuiz || (initialData?.finalExamAttemptCount ?? 0) > 0}
               className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
             >
               {loading ? "Guardando..." : "Guardar Clase"}

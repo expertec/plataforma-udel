@@ -97,6 +97,8 @@ type TeacherAttendanceReportRow = {
   attendanceSeconds: number;
   attendancePercentage: number;
   joinCount: number;
+  cameraOnCount: number | null;
+  cameraOnSeconds: number | null;
   firstJoinedAt: string | null;
   lastLeftAt: string | null;
 };
@@ -256,6 +258,9 @@ function buildAttendanceCsv(params: {
     "Primera entrada",
     "Ultima salida",
     "Duracion de clase",
+    "Veces que encendio la camara",
+    "Tiempo con camara encendida",
+    "Segundos con camara encendida",
   ];
   const csvRows = [
     ["Reporte de asistencia", params.report.title || params.item.title],
@@ -290,6 +295,11 @@ function buildAttendanceCsv(params: {
         ? formatEsMxDateTime(row.lastLeftAt, { timeZone: params.item.timezone })
         : "",
       formatDuration(params.report.classDurationSeconds ?? null),
+      row.cameraOnCount ?? "Sin datos",
+      row.cameraOnSeconds === null || row.cameraOnSeconds === undefined
+        ? "Sin datos"
+        : row.cameraOnSeconds === 0 ? "0s" : formatDuration(row.cameraOnSeconds),
+      row.cameraOnSeconds ?? "Sin datos",
     ]),
   ];
 

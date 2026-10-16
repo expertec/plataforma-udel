@@ -41,6 +41,8 @@ import {
 import { getForumPosts } from "@/lib/firebase/forum-service";
 import { UserRole, isAdminTeacherRole } from "@/lib/firebase/roles";
 import { isExamOptionalForCourse } from "@/lib/program-level";
+import { finalExamBudgetError } from "@/lib/final-exams";
+import { finalExamRequest } from "@/lib/firebase/final-exams-service";
 
 type CalificacionesTabProps = {
   groupId: string;
@@ -61,6 +63,7 @@ type CalificacionesTabProps = {
 type Student = { id: string; name: string; courseIds?: string[]; excludedCourseIds?: string[] };
 
 type Task = {
+  assessmentKind?: "regular" | "final";
   id: string;
   lessonId: string;
   title: string;
@@ -276,6 +279,10 @@ type ClosureDocumentUpload = {
   storagePath: string;
   downloadUrl: string;
   generatedAt: Date;
+};
+
+type PreparedClosureDocument = ClosureDocumentUpload & {
+  download: () => void;
 };
 
 type ConfirmationModalContext = {
@@ -1139,7 +1146,7 @@ export function CalificacionesTab({
         try {
           submissions = await getAllSubmissions(groupId);
           if (isInPerson) {
-            submissions = submissions.filter((submission) => !isQuizOrForumType(submission.classType));
+            submissions = submissions.filter((submission) => submission.assessmentKind === "final" || !isQuizOrForumType(submission.classType));
           }
         } catch (error) {
           if (isPermissionDeniedError(error)) {
@@ -1280,6 +1287,13 @@ export function CalificacionesTab({
               closedById: typeof closureObj.closedById === "string" ? closureObj.closedById : undefined,
               closedByName:
                 typeof closureObj.closedByName === "string" ? closureObj.closedByName : undefined,
+              closureDocumentUrl:
+                typeof closureObj.closureDocumentUrl === "string" ? closureObj.closureDocumentUrl : undefined,
+              closureDocumentPath:
+                typeof closureObj.closureDocumentPath === "string" ? closureObj.closureDocumentPath : undefined,
+              closureDocumentFileName:
+                typeof closureObj.closureDocumentFileName === "string" ? closureObj.closureDocumentFileName : undefined,
+              closureDocumentGeneratedAt: toDateOrNull(closureObj.closureDocumentGeneratedAt),
               reopenedAt: toDateOrNull(closureObj.reopenedAt),
               reopenedById:
                 typeof closureObj.reopenedById === "string" ? closureObj.reopenedById : undefined,
@@ -1347,14 +1361,16 @@ export function CalificacionesTab({
                   hasAssignment?: boolean;
                   forumEnabled?: boolean;
                   title?: string;
+                  assessmentKind?: "regular" | "final";
                 };
                 const isQuizClass = normalizeEvaluableType(data.type) === "quiz";
-                const includeQuiz = !isInPerson && isQuizClass;
+                const includeQuiz = (!isInPerson || data.assessmentKind === "final") && isQuizClass;
                 const includeForum = !isInPerson && data.forumEnabled === true;
                 const includeAssignment = data.hasAssignment === true && !(isInPerson && isQuizClass);
                 const evaluable = includeQuiz || includeAssignment || includeForum;
                 if (!evaluable) return;
                 tasks.push({
+                  assessmentKind: data.assessmentKind,
                   id: cls.id,
                   lessonId: lesson.id,
                   title: data.title ?? "Sin título",
@@ -1472,7 +1488,9 @@ export function CalificacionesTab({
       try {
         const entries = await Promise.all(
           quizTasks.map(async (task) => {
-            const questionsSnap = await getDocs(
+            const questionsSnap = task.assessmentKind === "final" ? {
+              docs: (await finalExamRequest<{ questions: Array<{ id: string; pointValue?: unknown; options?: unknown[] }> }>(selectedCourseId, "GET", { mode: "editor", lessonId: task.lessonId, classId: task.id })).questions.map((question) => ({ id: question.id, data: () => question })),
+            } : await getDocs(
               collection(
                 db,
                 "courses",
@@ -1586,6 +1604,7 @@ export function CalificacionesTab({
         if ((submission.courseId ?? "") !== selectedCourseId) return;
         const classId = findMatchedTaskId(submission);
         if (!classId) return;
+        if (selectedCourseTasks.some((task) => task.id === classId && task.assessmentKind === "final") && submission.id !== `final-${classId}-${student.id}`) return;
         const current = latestByClass.get(classId);
         if (!current) {
           latestByClass.set(classId, submission);
@@ -1671,7 +1690,8 @@ export function CalificacionesTab({
         return Math.round(ratio * currentQuizPointsMax * 10) / 10;
       };
       const autoBreakdown = selectedCourseTasks.map<AutoBreakdownEntry>((task) => {
-        const matched = latestByClass.get(task.id);
+        const candidate = latestByClass.get(task.id);
+        const matched = task.assessmentKind === "final" && candidate?.id !== `final-${task.id}-${student.id}` ? undefined : candidate;
         const normalizedGrade = normalizeTaskGrade(task, matched);
         return {
           classId: task.id,
@@ -2293,6 +2313,11 @@ export function CalificacionesTab({
       };
     }
 
+    const finalTaskIds = new Set(selectedCourseTasks.filter((task) => task.assessmentKind === "final").map((task) => task.id));
+    const finalPoints = row.autoBreakdown.reduce((sum, entry) => sum + (finalTaskIds.has(entry.classId) ? entry.grade ?? 0 : 0), 0);
+    const otherPoints = (row.autoGrade ?? 0) - finalPoints + (campusGrades.campusTasksGrade ?? 0) + (campusGrades.globalExamGrade ?? 0) + (campusGrades.extraordinaryExamGrade ?? 0) + extraConceptsResolution.totalPoints;
+    const budgetError = finalExamBudgetError(finalTaskIds.size > 0, finalPoints, otherPoints, campusGrades.campusFinalExamGrade);
+    if (budgetError) return { finalGrade: null, manualOverride: false, campusGrades, extraConcepts: extraConceptsResolution.concepts, extraPointsTotal: extraConceptsResolution.totalPoints, errorMessage: budgetError };
     const autoFinalGrade = roundGrade(
       (row.autoGrade ?? 0) +
       (campusGrades.campusTasksGrade ?? 0) +
@@ -2912,7 +2937,10 @@ ${renderExamTemplateSampleQuestionHtml()}
           id: enrollmentId,
           courseClosures: {
             ...current.courseClosures,
-            [courseId]: closure,
+            [courseId]: {
+              ...current.courseClosures[courseId],
+              ...closure,
+            },
           },
         },
       };
@@ -3144,7 +3172,7 @@ ${renderExamTemplateSampleQuestionHtml()}
     }
   };
 
-  const downloadSignedClosurePdf = async (signature: SignatureResult): Promise<ClosureDocumentUpload> => {
+  const prepareSignedClosurePdf = async (signature: SignatureResult): Promise<PreparedClosureDocument> => {
     const pdf = new jsPDF({ unit: "pt", format: "a4" });
     const pageWidth = pdf.internal.pageSize.getWidth();
     const pageHeight = pdf.internal.pageSize.getHeight();
@@ -3358,13 +3386,23 @@ ${renderExamTemplateSampleQuestionHtml()}
       contentType: "application/pdf",
     });
     const downloadUrl = await getDownloadURL(snapshot.ref);
-    pdf.save(fileName);
     return {
       fileName,
       storagePath,
       downloadUrl,
       generatedAt: signature.signedAt,
+      // Deliver the acta only after its student closures have been committed.
+      download: () => { pdf.save(fileName); },
     };
+  };
+
+  const downloadCommittedClosurePdf = (document: PreparedClosureDocument) => {
+    try {
+      document.download();
+    } catch (error) {
+      console.error("El cierre se guardó, pero no se pudo descargar el acta:", error);
+      toast.error("El cierre y el acta quedaron guardados, pero falló la descarga del PDF.");
+    }
   };
 
   useEffect(() => {
@@ -3437,7 +3475,10 @@ ${renderExamTemplateSampleQuestionHtml()}
     if (!signature) return;
 
     setProcessingStudentId(row.studentId);
+    let processStage: "acta" | "closing" | "finalizing" = "acta";
     try {
+      const closureDocument = await prepareSignedClosurePdf(signature);
+      processStage = "closing";
       const previousClosure = row.closure ?? null;
       const closurePayload: CourseClosureState = {
         status: "closed",
@@ -3460,6 +3501,10 @@ ${renderExamTemplateSampleQuestionHtml()}
         closedAt: new Date(),
         closedById: currentUserId,
         closedByName: signature.signerName,
+        closureDocumentUrl: closureDocument.downloadUrl,
+        closureDocumentPath: closureDocument.storagePath,
+        closureDocumentFileName: closureDocument.fileName,
+        closureDocumentGeneratedAt: closureDocument.generatedAt,
         updatedAt: new Date(),
       };
 
@@ -3492,6 +3537,10 @@ ${renderExamTemplateSampleQuestionHtml()}
               closedAt: closurePayload.closedAt,
               closedById: closurePayload.closedById,
               closedByName: closurePayload.closedByName,
+              closureDocumentUrl: closurePayload.closureDocumentUrl,
+              closureDocumentPath: closurePayload.closureDocumentPath,
+              closureDocumentFileName: closurePayload.closureDocumentFileName,
+              closureDocumentGeneratedAt: closurePayload.closureDocumentGeneratedAt,
               updatedAt: closurePayload.updatedAt,
             },
           },
@@ -3500,14 +3549,22 @@ ${renderExamTemplateSampleQuestionHtml()}
       );
 
       upsertLocalClosure(row.studentId, selectedCourseId, closurePayload, row.enrollmentId);
+      processStage = "finalizing";
+      downloadCommittedClosurePdf(closureDocument);
       await persistConceptSuggestions(extraConcepts);
       const autoExtraordinaryExamSummary = await ensureExtraordinaryExamAssignmentsForStudents([{ row, finalGrade }]);
-      await downloadSignedClosurePdf(signature);
       showAutoExtraordinaryExamAssignmentNotice(autoExtraordinaryExamSummary);
       toast.success(`Materia cerrada para ${row.studentName}`);
     } catch (err) {
       console.error(err);
-      toast.error("No se pudo cerrar la materia para este alumno.");
+      const message = err instanceof Error ? err.message : "Error inesperado al procesar el cierre";
+      if (processStage === "acta") {
+        toast.error(`No se pudo generar o guardar el acta de cierre: ${message}`);
+      } else if (processStage === "closing") {
+        toast.error(`No se pudo guardar el cierre para este alumno. No se descargó el acta: ${message}`);
+      } else {
+        toast.error(`La materia y el acta quedaron guardadas, pero falló un paso posterior: ${message}`);
+      }
     } finally {
       setProcessingStudentId(null);
     }
@@ -3966,8 +4023,45 @@ ${renderExamTemplateSampleQuestionHtml()}
     }
   };
 
+  const completeTeacherCourse = async (courseId: string) => {
+    const currentSessionUser = auth.currentUser;
+    if (!currentSessionUser) {
+      throw new Error("Tu sesión expiró. Inicia sesión nuevamente.");
+    }
+    const token = await currentSessionUser.getIdToken();
+    const response = await fetch("/api/groups/unlink-course", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        groupId,
+        courseId,
+        teacherId: currentUserId,
+        scope: "teacher",
+      }),
+    });
+    const data = (await response.json().catch(() => null)) as {
+      updated?: boolean;
+      error?: string;
+      message?: string;
+    } | null;
+    if (!response.ok) {
+      throw new Error(data?.error || "No se pudo desvincular la materia del grupo");
+    }
+    const unlinked = Boolean(data?.updated);
+    if (unlinked) {
+      await onCourseCompletedAndUnlinked?.(courseId);
+    } else if (data?.message) {
+      toast(data.message);
+    }
+    return unlinked;
+  };
+
   const handleCloseCourseForAll = async () => {
     if (!selectedCourseId) return;
+    if (processingAll || processingStudentId !== null) return;
     if (processingNotifyStudentId !== null) {
       toast("Espera a que termine la notificación en curso.");
       return;
@@ -3978,7 +4072,25 @@ ${renderExamTemplateSampleQuestionHtml()}
     }
     const openRows = rows.filter((row) => row.closure?.status !== "closed");
     if (!openRows.length) {
-      toast("Todas las materias de esta selección ya están cerradas.");
+      if (!rows.length) return;
+      const confirmed = await requestConfirmation({
+        title: "Completar materia",
+        message: "Las calificaciones ya están cerradas. ¿Deseas completar el retiro de la materia de tu carga docente?",
+        confirmLabel: "Completar materia",
+        cancelLabel: "Cancelar",
+      });
+      if (!confirmed) return;
+      setProcessingAll(true);
+      try {
+        const unlinked = await completeTeacherCourse(selectedCourseId);
+        if (unlinked) toast.success("Materia retirada de tu carga docente.");
+      } catch (error) {
+        console.error(error);
+        const message = error instanceof Error ? error.message : "Error inesperado";
+        toast.error(`Las calificaciones siguen cerradas, pero no se pudo retirar la materia: ${message}`);
+      } finally {
+        setProcessingAll(false);
+      }
       return;
     }
 
@@ -4053,10 +4165,11 @@ ${renderExamTemplateSampleQuestionHtml()}
     if (!signature) return;
 
     setProcessingAll(true);
-    let processStage: "acta" | "closing" | "unlinking" = "acta";
+    let processStage: "acta" | "closing" | "finalizing" | "unlinking" = "acta";
+    let committedStudentsCount = 0;
     try {
       const now = new Date();
-      const closureDocument = await downloadSignedClosurePdf(signature);
+      const closureDocument = await prepareSignedClosurePdf(signature);
       processStage = "closing";
       const chunkSize = 400;
 
@@ -4107,57 +4220,60 @@ ${renderExamTemplateSampleQuestionHtml()}
           );
         });
         await batch.commit();
-      }
+        committedStudentsCount += chunk.length;
 
-      setEnrollmentByStudent((prev) => {
-        const next = { ...prev };
-        parsedRows.forEach(({ row, finalGrade, campusGrades, manualOverride, extraConcepts, extraPointsTotal }) => {
-          if (typeof finalGrade !== "number") return;
-          const previousClosure = row.closure ?? null;
-          const current = next[row.studentId] ?? {
-            id: row.enrollmentId,
-            courseIds: [],
-            excludedCourseIds: [],
-            isCourseOverride: false,
-            courseClosures: {},
-          };
-          next[row.studentId] = {
-            ...current,
-            id: row.enrollmentId,
-            courseClosures: {
-              ...current.courseClosures,
-              [selectedCourseId]: {
-                status: "closed",
-                courseName: selectedCourseName,
-                finalGrade,
-                autoGrade: row.autoGrade,
-                campusTasksGrade: campusGrades.campusTasksGrade,
-                campusFinalExamGrade: campusGrades.campusFinalExamGrade,
-                globalExamGrade: campusGrades.globalExamGrade,
-                extraordinaryExamGrade: campusGrades.extraordinaryExamGrade,
-                extraConcepts,
-                extraPointsTotal,
-                manualOverride,
-                pendingUngradedCount: row.pendingUngradedCount,
-                closedByType: "teacher",
-                closureTrigger: "manual",
-                lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
-                lastFinalGradeNotifiedBy: previousClosure?.lastFinalGradeNotifiedBy,
-                lastFinalGradeNotifiedValue: previousClosure?.lastFinalGradeNotifiedValue,
-                closedAt: now,
-                closedById: currentUserId,
-                closedByName: signature.signerName,
-                closureDocumentUrl: closureDocument.downloadUrl,
-                closureDocumentPath: closureDocument.storagePath,
-                closureDocumentFileName: closureDocument.fileName,
-                closureDocumentGeneratedAt: closureDocument.generatedAt,
-                updatedAt: now,
+        setEnrollmentByStudent((prev) => {
+          const next = { ...prev };
+          chunk.forEach(({ row, finalGrade, campusGrades, manualOverride, extraConcepts, extraPointsTotal }) => {
+            if (typeof finalGrade !== "number") return;
+            const previousClosure = row.closure ?? null;
+            const current = next[row.studentId] ?? {
+              id: row.enrollmentId,
+              courseIds: [],
+              excludedCourseIds: [],
+              isCourseOverride: false,
+              courseClosures: {},
+            };
+            next[row.studentId] = {
+              ...current,
+              id: row.enrollmentId,
+              courseClosures: {
+                ...current.courseClosures,
+                [selectedCourseId]: {
+                  status: "closed",
+                  courseName: selectedCourseName,
+                  finalGrade,
+                  autoGrade: row.autoGrade,
+                  campusTasksGrade: campusGrades.campusTasksGrade,
+                  campusFinalExamGrade: campusGrades.campusFinalExamGrade,
+                  globalExamGrade: campusGrades.globalExamGrade,
+                  extraordinaryExamGrade: campusGrades.extraordinaryExamGrade,
+                  extraConcepts,
+                  extraPointsTotal,
+                  manualOverride,
+                  pendingUngradedCount: row.pendingUngradedCount,
+                  closedByType: "teacher",
+                  closureTrigger: "manual",
+                  lastFinalGradeNotifiedAt: previousClosure?.lastFinalGradeNotifiedAt ?? null,
+                  lastFinalGradeNotifiedBy: previousClosure?.lastFinalGradeNotifiedBy,
+                  lastFinalGradeNotifiedValue: previousClosure?.lastFinalGradeNotifiedValue,
+                  closedAt: now,
+                  closedById: currentUserId,
+                  closedByName: signature.signerName,
+                  closureDocumentUrl: closureDocument.downloadUrl,
+                  closureDocumentPath: closureDocument.storagePath,
+                  closureDocumentFileName: closureDocument.fileName,
+                  closureDocumentGeneratedAt: closureDocument.generatedAt,
+                  updatedAt: now,
+                },
               },
-            },
-          };
+            };
+          });
+          return next;
         });
-        return next;
-      });
+      }
+      processStage = "finalizing";
+      downloadCommittedClosurePdf(closureDocument);
       const allConcepts = parsedRows.flatMap(({ extraConcepts }) => extraConcepts ?? []);
       await persistConceptSuggestions(allConcepts);
       const autoExtraordinaryExamSummary = await ensureExtraordinaryExamAssignmentsForStudents(
@@ -4168,47 +4284,10 @@ ${renderExamTemplateSampleQuestionHtml()}
       showAutoExtraordinaryExamAssignmentNotice(autoExtraordinaryExamSummary);
 
       processStage = "unlinking";
-      const currentSessionUser = auth.currentUser;
-      if (!currentSessionUser) {
-        throw new Error("Tu sesión expiró. Inicia sesión nuevamente.");
-      }
-      const token = await currentSessionUser.getIdToken();
-      const response = await fetch("/api/groups/unlink-course", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          groupId,
-          courseId: selectedCourseId,
-          teacherId: currentUserId,
-          scope: "teacher",
-        }),
-      });
-
-      let data: { updated?: boolean; error?: string; message?: string } | null = null;
-      try {
-        data = await response.json();
-      } catch {
-        data = null;
-      }
-
-      if (!response.ok) {
-        throw new Error(data?.error || "No se pudo desvincular la materia del grupo");
-      }
-
-      const unlinked = Boolean(data?.updated);
-      if (unlinked) {
-        await onCourseCompletedAndUnlinked?.(selectedCourseId);
-      }
-
+      const unlinked = await completeTeacherCourse(selectedCourseId);
       if (unlinked) {
         toast.success(`Materia cerrada para ${openRows.length} alumno(s) y retirada de tu carga docente.`);
       } else {
-        if (data?.message) {
-          toast(data.message);
-        }
         toast.success(`Materia cerrada para ${openRows.length} alumno(s).`);
       }
     } catch (err) {
@@ -4217,9 +4296,14 @@ ${renderExamTemplateSampleQuestionHtml()}
       if (processStage === "acta") {
         toast.error(`No se pudo generar o guardar el acta de cierre: ${message}`);
       } else if (processStage === "closing") {
-        toast.error("No se pudo cerrar la materia para todos.");
+        toast.error(
+          `Se guardó el cierre de ${committedStudentsCount} de ${openRows.length} alumno(s). ` +
+          `No se descargó el acta ni se retiró la materia de tu carga docente. Puedes reintentar: ${message}`,
+        );
+      } else if (processStage === "finalizing") {
+        toast.error(`Calificaciones y acta guardadas, pero falló un paso posterior: ${message}`);
       } else {
-        toast.error(`Calificaciones cerradas, pero hubo un error al desvincular: ${message}. No se generó el PDF.`);
+        toast.error(`Calificaciones y acta guardadas, pero no se pudo retirar la materia de tu carga docente: ${message}`);
       }
     } finally {
       setProcessingAll(false);
@@ -4557,13 +4641,12 @@ ${renderExamTemplateSampleQuestionHtml()}
                 processingAll ||
                 processingStudentId !== null ||
                 processingNotifyStudentId !== null ||
-                selectedCourseTasks.length === 0 ||
-                rows.length === 0 ||
-                openRowsCount === 0
+                (selectedCourseTasks.length === 0 && openRowsCount > 0) ||
+                rows.length === 0
               }
               className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
             >
-              {processingAll ? "Cerrando..." : "Cerrar y completar"}
+              {processingAll ? "Procesando..." : openRowsCount === 0 ? "Completar materia" : "Cerrar y completar"}
             </button>
           ) : null}
           <span className="text-xs text-slate-500">
@@ -4836,6 +4919,16 @@ ${renderExamTemplateSampleQuestionHtml()}
                           <span className="text-[11px] text-slate-500">
                             {closureOriginLabel(row.closure)}
                           </span>
+                        ) : null}
+                        {isClosed && row.closure?.closureDocumentUrl ? (
+                          <a
+                            href={row.closure.closureDocumentUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[11px] font-semibold text-slate-700 underline"
+                          >
+                            Ver acta de cierre
+                          </a>
                         ) : null}
                       </div>
                     </td>

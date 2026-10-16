@@ -273,6 +273,8 @@ export async function DELETE(
       throw new RouteAccessError(404, "Lección no encontrada");
     }
 
+    const finalExams = await lessonRef.collection("classes").where("assessmentKind", "==", "final").limit(1).get();
+    if (!finalExams.empty) throw new RouteAccessError(409, "Esta lección contiene el examen final. Desmárcalo primero desde su editor; si tiene respuestas, no puede eliminarse.");
     await deleteDocumentTree(lessonRef);
 
     const nextMentorIds = access.shouldBackfillMentor

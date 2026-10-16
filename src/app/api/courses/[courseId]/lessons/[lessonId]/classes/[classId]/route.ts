@@ -344,6 +344,9 @@ export async function PATCH(
       throw new RouteAccessError(404, "Clase no encontrada");
     }
     const classData = classSnap.data() ?? {};
+    if (classData.assessmentKind === "final") {
+      throw new RouteAccessError(409, "Edita el examen final desde su editor para conservar sus puntajes y respuestas.");
+    }
 
     const nextHasAssignment =
       typeof payload.hasAssignment === "boolean"
@@ -451,6 +454,9 @@ export async function DELETE(
       throw new RouteAccessError(404, "Clase no encontrada");
     }
 
+    if (classSnap.data()?.assessmentKind === "final") {
+      throw new RouteAccessError(409, "Primero desmarca el examen final desde su editor. Si tiene respuestas, no puede eliminarse.");
+    }
     await deleteDocumentTree(classRef);
 
     const nextMentorIds = access.shouldBackfillMentor

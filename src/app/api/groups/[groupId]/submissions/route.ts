@@ -7,6 +7,7 @@ export const dynamic = "force-dynamic";
 type AllowedRole = "teacher" | "coordinadorPlantel" | "director" | "adminTeacher" | "superAdminTeacher";
 
 type SubmissionPayload = {
+  assessmentKind?: "regular" | "final";
   id: string;
   classId: string;
   classDocId?: string;
@@ -209,9 +210,10 @@ export async function GET(request: NextRequest, context: { params?: { groupId?: 
     const submissions: SubmissionPayload[] = submissionsSnap.docs
       .flatMap((docSnap): SubmissionPayload[] => {
         const data = docSnap.data() as Record<string, unknown>;
-        if (accessContext.isInPerson && isQuizOrForumSubmissionType(data.classType)) return [];
+        if (accessContext.isInPerson && isQuizOrForumSubmissionType(data.classType) && data.assessmentKind !== "final") return [];
         return [{
           id: docSnap.id,
+          assessmentKind: data.assessmentKind === "final" ? "final" : "regular",
           classId: asTrimmedString(data.classId),
           classDocId: asTrimmedString(data.classDocId) || undefined,
           courseId: asTrimmedString(data.courseId) || undefined,

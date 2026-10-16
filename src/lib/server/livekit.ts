@@ -439,6 +439,16 @@ export async function listLiveKitRoomParticipants(
     });
 }
 
+export async function isLiveKitParticipantConnected(roomName: string, identity: string): Promise<boolean> {
+  try {
+    await getRoomServiceClient().getParticipant(roomName, identity);
+    return true;
+  } catch (error) {
+    if (isLiveKitNotFoundError(error)) return false;
+    throw error;
+  }
+}
+
 export async function muteLiveKitParticipantMicrophones(params: {
   roomName: string;
   participantIdentity: string;

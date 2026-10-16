@@ -5,6 +5,7 @@ import type { LiveClassSession } from "@/lib/live-classes/types";
  * exactamente el mismo documento de clase; si uno cambia, el otro debe seguirlo.
  */
 export type FeedClass = {
+  assessmentKind?: "regular" | "final";
   id: string;
   classDocId?: string;
   title: string;

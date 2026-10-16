@@ -191,6 +191,9 @@ export async function POST(
       throw new RouteAccessError(404, "Clase no encontrada");
     }
     const classData = classSnap.data() ?? {};
+    if (classData.assessmentKind === "final") {
+      throw new RouteAccessError(409, "Las preguntas del examen final se guardan juntas desde su editor.");
+    }
     const classType = normalizeClassType(classData.type);
     if (classType !== "quiz") {
       throw new RouteAccessError(400, "La clase no es un quiz");

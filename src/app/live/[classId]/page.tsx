@@ -81,6 +81,7 @@ import {
 } from "lucide-react";
 import { LoginCard } from "@/components/auth/LoginCard";
 import { auth } from "@/lib/firebase/client";
+import { LiveCameraAttendance } from "./_components/LiveCameraAttendance";
 import { formatEsMxDateTime } from "@/lib/utils/date-format";
 import {
   useStudentsPip,
@@ -3606,6 +3607,7 @@ export default function LiveClassRoomPage() {
         data-lk-theme="default"
         className="h-full w-full"
       >
+        {asRole === "student" && <LiveCameraAttendance user={user} endpoint={attendancePresenceEndpoint} />}
         <LiveRoomConference
           viewerRole={asRole}
           leftSlot={bottomLeftSlot}

@@ -47,6 +47,7 @@ import { suggestPlantelByPhone, type SuggestedPlantelByPhone } from "@/lib/plant
 import { normalizeSearchText } from "@/lib/search";
 import { StudentAllSubmissionsModal } from "./_components/StudentAllSubmissionsModal";
 import { StudentGradesModal } from "./_components/StudentGradesModal";
+import { StudentEquivalenciesModal } from "./_components/StudentEquivalenciesModal";
 import { StudentDropoutRiskTab } from "./_components/StudentDropoutRiskTab";
 import { StudentProgressHistoryModal } from "./_components/StudentProgressHistoryModal";
 
@@ -253,6 +254,7 @@ export default function AlumnosPage() {
   const [selectedStudentForSubmissions, setSelectedStudentForSubmissions] = useState<StudentUser | null>(null);
   const [gradesModalOpen, setGradesModalOpen] = useState(false);
   const [selectedStudentForGrades, setSelectedStudentForGrades] = useState<StudentUser | null>(null);
+  const [equivalenciesStudent, setEquivalenciesStudent] = useState<StudentUser | null>(null);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [selectedStudentForHistory, setSelectedStudentForHistory] = useState<StudentUser | null>(null);
   const [extraCourseModalOpen, setExtraCourseModalOpen] = useState(false);
@@ -912,7 +914,7 @@ export default function AlumnosPage() {
 
     const rect = target.getBoundingClientRect();
     const menuWidth = 176; // w-44
-    const shouldOpenUp = window.innerHeight - rect.bottom < 220;
+    const shouldOpenUp = window.innerHeight - rect.bottom < (isAdminTeacherRole(userRole) ? 340 : 220);
     const nextTop = shouldOpenUp ? rect.top - 8 : rect.bottom + 8;
     const nextLeft = Math.min(
       window.innerWidth - menuWidth - 12,
@@ -2220,6 +2222,18 @@ export default function AlumnosPage() {
                 >
                   Calificaciones
                 </button>
+                {isAdmin ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpenActionMenu(null);
+                      setEquivalenciesStudent(actionMenuStudent);
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-[#7c152d] hover:bg-red-50"
+                  >
+                    Equivalencias
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => {
@@ -2546,12 +2560,22 @@ export default function AlumnosPage() {
         />
       )}
 
+      {equivalenciesStudent && isAdmin && (
+        <StudentEquivalenciesModal
+          studentId={equivalenciesStudent.id}
+          studentName={equivalenciesStudent.name}
+          onClose={() => setEquivalenciesStudent(null)}
+        />
+      )}
+
       {/* Modal para ver calificaciones del alumno */}
       {gradesModalOpen && selectedStudentForGrades && (
         <StudentGradesModal
           studentId={selectedStudentForGrades.id}
           studentName={selectedStudentForGrades.name}
           studentEmail={selectedStudentForGrades.email}
+          studentProgram={selectedStudentForGrades.program}
+          studentPlantelNames={selectedStudentForGrades.plantelNames}
           scopePlantelId={isCoordinator ? coordinatorPlantelId || "" : ""}
           scopeGroupIds={isCoordinator ? coordinatorScopeGroupIds : []}
           useServerGrades={userRole === "teacher" || isCoordinator}

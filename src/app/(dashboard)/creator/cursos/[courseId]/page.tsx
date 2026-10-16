@@ -418,6 +418,9 @@ export default function CourseBuilderPage() {
           return {
             id: doc.id,
             title: d.title ?? "Clase sin título",
+            assessmentKind: d.assessmentKind === "final" ? "final" : "regular",
+            assessmentVersion: d.assessmentVersion ?? 0,
+            finalExamAttemptCount: d.finalExamAttemptCount ?? 0,
             type: d.type ?? "video",
             order: d.order ?? 0,
             duration: d.duration,
@@ -638,6 +641,9 @@ export default function CourseBuilderPage() {
         return {
           id: docSnap.id,
           title: d.title ?? "Clase sin título",
+          assessmentKind: d.assessmentKind === "final" ? "final" : "regular",
+          assessmentVersion: d.assessmentVersion ?? 0,
+          finalExamAttemptCount: d.finalExamAttemptCount ?? 0,
           type: d.type ?? "video",
           order: d.order ?? 0,
           duration: d.duration,

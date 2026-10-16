@@ -152,6 +152,7 @@ function QuizStage({ cls }: { cls: FeedClass }) {
   return (
     <div className="rounded-2xl border border-[var(--aula-border)] bg-[var(--aula-surface)] p-6">
       <QuizContent
+        assessmentKind={cls.assessmentKind}
         classId={cls.id}
         classDocId={cls.classDocId}
         courseId={cls.courseId}
@@ -219,7 +220,7 @@ function TextStage({ cls, html }: { cls: FeedClass; html: string }) {
 export function ClassStage({ cls, contentHtml }: { cls: FeedClass; contentHtml: string }) {
   let stage: ReactNode;
 
-  if (cls.groupIsInPerson === true) stage = <InPersonStage cls={cls} />;
+  if (cls.groupIsInPerson === true && cls.assessmentKind !== "final") stage = <InPersonStage cls={cls} />;
   else if (cls.type === "quiz") stage = <QuizStage cls={cls} />;
   else if (cls.type === "live") stage = <LiveStage cls={cls} />;
   else if (cls.type === "audio" && cls.audioUrl) stage = <AudioStage cls={cls} />;

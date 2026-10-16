@@ -20,6 +20,7 @@ import {
 import { db } from "./firestore";
 import { syncCourseProgram } from "./programs-service";
 import { auth } from "./client";
+import { finalExamRequest } from "./final-exams-service";
 import {
   createLiveSessionForClass,
   mergeTeacherEditableLiveSession,
@@ -408,6 +409,7 @@ export async function duplicateCourse(input: DuplicateCourseInput): Promise<stri
     });
 
   let copiedLessonsCount = 0;
+  const finalExamCopies: Array<{ lessonId: string; classId: string; title: string; content: string }> = [];
   for (let lessonIndex = 0; lessonIndex < sourceLessons.length; lessonIndex += 1) {
     const lesson = sourceLessons[lessonIndex];
     const lessonOrder = asNumber(lesson.data.order, lessonIndex);
@@ -483,6 +485,7 @@ export async function duplicateCourse(input: DuplicateCourseInput): Promise<stri
       }
 
       await updateDoc(duplicatedClassRef, duplicatedClassPatch);
+      if (classItem.data.assessmentKind === "final") finalExamCopies.push({ lessonId: duplicatedLessonRef.id, classId: duplicatedClassRef.id, title: asString(classItem.data.title), content: asString(classItem.data.content) });
 
       const questionsSnap = await getDocs(
         collection(
@@ -547,6 +550,9 @@ export async function duplicateCourse(input: DuplicateCourseInput): Promise<stri
   }
 
   await updateDoc(duplicatedCourseRef, { lessonsCount: copiedLessonsCount });
+  for (const exam of finalExamCopies) {
+    await finalExamRequest(duplicatedCourseRef.id, "POST", { ...exam, assessmentKind: "final", version: 0, questions: await getQuizQuestions(duplicatedCourseRef.id, exam.lessonId, exam.classId) });
+  }
   if (program) {
     await syncCourseProgram(duplicatedCourseRef.id, program);
   }
@@ -868,6 +874,9 @@ export async function deleteLesson(courseId: string, lessonId: string): Promise<
 
 export type ClassItem = {
   id: string;
+  assessmentKind?: "regular" | "final";
+  assessmentVersion?: number;
+  finalExamAttemptCount?: number;
   title: string;
   type: "video" | "text" | "audio" | "quiz" | "image" | "live";
   order: number;
@@ -896,6 +905,9 @@ export async function getClasses(courseId: string, lessonId: string): Promise<Cl
     return {
       id: doc.id,
       title: data.title ?? "Clase sin título",
+      assessmentKind: data.assessmentKind === "final" ? "final" : "regular",
+      assessmentVersion: data.assessmentVersion ?? 0,
+      finalExamAttemptCount: data.finalExamAttemptCount ?? 0,
       type: normalizeClassType(data.type),
       order: data.order ?? 0,
       duration: data.duration,
@@ -1354,6 +1366,11 @@ export async function getQuizQuestions(
   lessonId: string,
   classId: string,
 ): Promise<QuizQuestion[]> {
+  const classSnapshot = await getDoc(doc(db, "courses", courseId, "lessons", lessonId, "classes", classId));
+  if (classSnapshot.data()?.assessmentKind === "final") {
+    const result = await finalExamRequest<{ questions: QuizQuestion[] }>(courseId, "GET", { mode: "editor", lessonId, classId });
+    return result.questions;
+  }
   const refQuestions = collection(
     db,
     "courses",

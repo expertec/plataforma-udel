@@ -20,6 +20,8 @@ export type WordImportedQuizQuestion = {
   options: Array<{
     text: string;
     isCorrect: boolean;
+    feedback?: string;
+    incorrectFeedback?: string;
   }>;
   explanation?: string;
   pointValue?: number;
@@ -33,6 +35,7 @@ type LessonSection = {
 };
 
 const WEEK_HEADING_REGEX = /^semana\s*\d+/i;
+const FEEDBACK_PREFIX_REGEX = /^(?:retroalimentaci[oó]n|explicaci[oó]n|feedback)\s*:\s*(.*)$/i;
 const URL_REGEX = /https?:\/\/[^\s<>()]+/i;
 const VIDEO_HOSTS = new Set(["vimeo.com", "www.vimeo.com", "youtu.be", "youtube.com", "www.youtube.com"]);
 const ASSIGNMENT_KEYWORDS_REGEX =
@@ -291,6 +294,14 @@ function parseQuizQuestions(lines: string[]): WordImportedQuizQuestion[] {
     const pointValue = parsePointValue(lines[i] ?? "");
     if (pointValue !== undefined) i += 1;
 
+    let hasLabeledFeedback = false;
+    for (let feedbackIndex = i; feedbackIndex < lines.length && !isQuestionStart(lines, feedbackIndex); feedbackIndex += 1) {
+      if (FEEDBACK_PREFIX_REGEX.test(lines[feedbackIndex])) {
+        hasLabeledFeedback = true;
+        break;
+      }
+    }
+
     const options: Array<{ text: string; isCorrect: boolean }> = [];
     while (i < lines.length && isOptionMarker(lines[i] ?? "")) {
       i += 1; // saltar marcador a)/b)/c)
@@ -304,7 +315,7 @@ function parseQuizQuestions(lines: string[]): WordImportedQuizQuestion[] {
           i += 1;
           break;
         }
-        if (isOptionMarker(line) || isQuestionStart(lines, i)) break;
+        if (isOptionMarker(line) || isQuestionStart(lines, i) || FEEDBACK_PREFIX_REGEX.test(line)) break;
         optionTextLines.push(line);
         i += 1;
 
@@ -318,7 +329,7 @@ function parseQuizQuestions(lines: string[]): WordImportedQuizQuestion[] {
         ) {
           const lastLine = optionTextLines[optionTextLines.length - 1] ?? "";
           const looksLikeExplanationStart = /^[A-ZÁÉÍÓÚÜÑ¿]/.test(nextLine) && /[.!?]$/.test(lastLine);
-          if (looksLikeExplanationStart) break;
+          if (!hasLabeledFeedback && looksLikeExplanationStart) break;
         }
       }
 
@@ -332,7 +343,8 @@ function parseQuizQuestions(lines: string[]): WordImportedQuizQuestion[] {
     while (i < lines.length && !isQuestionStart(lines, i)) {
       const line = lines[i] ?? "";
       if (isOptionMarker(line)) break;
-      explanationLines.push(line);
+      const feedback = line.match(FEEDBACK_PREFIX_REGEX);
+      explanationLines.push(feedback ? feedback[1] : line);
       i += 1;
     }
 
@@ -354,7 +366,9 @@ function parseQuizQuestions(lines: string[]): WordImportedQuizQuestion[] {
 
     questions.push({
       prompt,
-      options: filteredOptions,
+      options: filteredOptions.map((option) => !option.isCorrect && explanation
+        ? { ...option, feedback: explanation, incorrectFeedback: explanation }
+        : option),
       explanation: explanation || undefined,
       pointValue,
       type: maybeTrueFalse ? "truefalse" : "multiple",

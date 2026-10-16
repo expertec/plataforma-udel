@@ -275,6 +275,7 @@ export function AulaDataProvider({ children }: { children: React.ReactNode }) {
   const reportProgress = useCallback(
     (cls: FeedClass, pct: number) => {
       if (!currentUser?.uid || !cls.enrollmentId) return;
+      if (cls.assessmentKind === "final" && pct < 100) return;
       const bounded = Math.max(0, Math.min(100, Math.round(pct)));
       const previous = progressRef.current.progress[cls.id] ?? 0;
       if (bounded <= previous) return;
@@ -288,6 +289,7 @@ export function AulaDataProvider({ children }: { children: React.ReactNode }) {
         seen: nowComplete ? { ...prev.seen, [cls.id]: true } : prev.seen,
       }));
 
+      if (cls.assessmentKind === "final") return;
       const lastWritten = lastWrittenRef.current[cls.id] ?? -1;
       const crossedThreshold = previous < requiredPct && nowComplete;
       if (!crossedThreshold && bounded - lastWritten < PROGRESS_WRITE_STEP) return;
@@ -309,6 +311,7 @@ export function AulaDataProvider({ children }: { children: React.ReactNode }) {
   const markComplete = useCallback(
     async (cls: FeedClass) => {
       if (!currentUser?.uid || !cls.enrollmentId) return false;
+      if (cls.assessmentKind === "final") return false;
       const ok = await markClassCompletedManually({
         uid: currentUser.uid,
         enrollmentId: cls.enrollmentId,

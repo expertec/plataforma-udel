@@ -137,6 +137,10 @@ export async function DELETE(
       throw new RouteAccessError(404, "Pregunta no encontrada");
     }
 
+    const classSnapshot = await questionRef.parent.parent!.get();
+    if (classSnapshot.data()?.assessmentKind === "final") {
+      throw new RouteAccessError(409, "Las preguntas del examen final se administran desde su editor.");
+    }
     await questionRef.delete();
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (error: unknown) {

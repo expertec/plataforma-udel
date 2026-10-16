@@ -112,6 +112,7 @@ export function ClassItem({
         <div>
           <div className="flex items-center gap-2">
             <p className="font-medium text-slate-900">{item.title}</p>
+            {item.assessmentKind === "final" ? <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-700">Examen final · 10 pts · Semana 5</span> : null}
             {hasError ? (
               <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">
                 Error

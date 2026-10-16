@@ -29,6 +29,7 @@ export type SubmissionAnswer = {
 };
 
 export type Submission = {
+  assessmentKind?: "regular" | "final";
   id: string;
   classId: string;
   classDocId?: string;
@@ -59,6 +60,7 @@ type SubmissionsApiResponse = {
   error?: string;
   data?: {
     submissions?: Array<{
+      assessmentKind?: "regular" | "final";
       id: string;
       classId: string;
       classDocId?: string;
@@ -328,6 +330,7 @@ export async function getAllSubmissions(groupId: string): Promise<Submission[]> 
 
     return (payload.data?.submissions ?? []).map((item) => ({
       id: item.id,
+      assessmentKind: item.assessmentKind,
       classId: item.classId ?? "",
       classDocId: item.classDocId,
       courseId: item.courseId,
@@ -412,6 +415,7 @@ export async function deleteSubmission(
 }
 
 type SubmissionData = {
+  assessmentKind?: "regular" | "final";
   classId?: string;
   classDocId?: string;
   courseId?: string;
@@ -450,6 +454,7 @@ function toSubmission(id: string, data: SubmissionData): Submission {
     ? (data.status as SubmissionStatus)
     : "pending";
   return {
+    assessmentKind: data.assessmentKind,
     id,
     classId: data.classId ?? "",
     classDocId: data.classDocId,

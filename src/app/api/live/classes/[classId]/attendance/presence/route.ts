@@ -6,18 +6,21 @@ import {
 import {
   recordLiveAttendanceJoin,
   recordLiveAttendanceLeave,
+  recordLiveAttendanceCamera,
   type LiveAttendanceParticipantInput,
 } from "@/lib/live-classes/attendance";
 import { buildLiveRoomName } from "@/lib/live-classes/types";
-import { isLiveKitNotFoundError, listLiveKitRoomParticipants } from "@/lib/server/livekit";
+import { isLiveKitNotFoundError, isLiveKitParticipantConnected, listLiveKitRoomParticipants } from "@/lib/server/livekit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type PresenceAction = "join" | "leave" | "sync";
+type PresenceAction = "join" | "leave" | "sync" | "camera";
 
 type PresenceBody = {
   action?: unknown;
+  cameraEnabled?: unknown;
+  roomConnected?: unknown;
 };
 
 function asTrimmedString(value: unknown): string {
@@ -26,7 +29,7 @@ function asTrimmedString(value: unknown): string {
 
 function asPresenceAction(value: unknown): PresenceAction | null {
   const action = asTrimmedString(value).toLowerCase();
-  if (action === "join" || action === "leave" || action === "sync") return action;
+  if (action === "join" || action === "leave" || action === "sync" || action === "camera") return action;
   return null;
 }
 
@@ -75,7 +78,7 @@ export async function POST(
     const action = asPresenceAction(body.action);
     if (!action) {
       return NextResponse.json(
-        { success: false, error: "Accion invalida. Usa join, leave o sync." },
+        { success: false, error: "Accion invalida. Usa join, leave, sync o camera." },
         { status: 400 },
       );
     }
@@ -87,6 +90,29 @@ export async function POST(
       liveSessionRoomName: access.classContext.liveSession?.roomName,
     });
     const now = new Date().toISOString();
+
+    if (action === "camera") {
+      if (access.accessRole !== "student") {
+        return NextResponse.json({ success: false, error: "Solo el alumno puede registrar su propia cámara." }, { status: 403 });
+      }
+      if (typeof body.cameraEnabled !== "boolean" || typeof body.roomConnected !== "boolean" || (body.cameraEnabled && !body.roomConnected)) {
+        return NextResponse.json({ success: false, error: "El estado de cámara y conexión no es válido." }, { status: 400 });
+      }
+      if (access.classContext.liveSession?.status !== "live" || access.classContext.liveSession?.lastEndedAt) {
+        return NextResponse.json({ success: true, ignored: true }, { status: 200 });
+      }
+      const attendanceContext = {
+        classRef: access.classContext.classRef,
+        classId: access.classContext.classId,
+        courseId: access.classContext.courseId,
+        lessonId: access.classContext.lessonId,
+        roomName,
+      };
+      const participant = toStudentParticipant(access);
+      const connected = body.roomConnected && await isLiveKitParticipantConnected(roomName, access.user.uid);
+      await recordLiveAttendanceCamera(attendanceContext, participant, body.cameraEnabled && connected, now, connected);
+      return NextResponse.json({ success: true }, { status: 200 });
+    }
 
     if (action === "join") {
       if (access.accessRole !== "student") {

@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { auth } from "@/lib/firebase/client";
+import { extractWordCourseTemplateText } from "@/lib/course-word-template-docx";
 import {
   createClass,
   createLesson,
@@ -41,15 +42,6 @@ type ImportProgress = {
   completedSteps: number;
   phase: string;
   detail: string;
-};
-
-type MammothResult = {
-  value: string;
-  messages: Array<{ type: string; message: string }>;
-};
-
-type MammothModule = {
-  extractRawText: (input: { arrayBuffer: ArrayBuffer }) => Promise<MammothResult>;
 };
 
 type ImportVimeoApiResponse = {
@@ -143,16 +135,6 @@ const isVimeoUrl = (url: string): boolean => {
     return /vimeo\.com/i.test(url);
   }
 };
-
-async function extractRawTextFromDocx(file: File): Promise<MammothResult> {
-  const mammothImport = (await import("mammoth")) as unknown as {
-    default?: MammothModule;
-  } & MammothModule;
-  const mammoth = mammothImport.default ?? mammothImport;
-  return mammoth.extractRawText({
-    arrayBuffer: await file.arrayBuffer(),
-  });
-}
 
 function PreviewClassIcon({ type }: { type: WordImportedClass["type"] }) {
   return (
@@ -257,6 +239,8 @@ async function createImportedQuizQuestions(params: {
         id: `q${index + 1}-o${optionIndex + 1}`,
         text: option.text.trim(),
         isCorrect: option.isCorrect === true,
+        feedback: option.feedback?.trim() || "",
+        incorrectFeedback: option.incorrectFeedback?.trim() || "",
       }));
 
     if (question.type !== "open" && options.length < 2) {
@@ -377,7 +361,7 @@ export function ImportLessonsFromWordModal({
       const parseWarnings: string[] = [...duplicateWarnings];
 
       for (const file of filesToParse) {
-        const raw = await extractRawTextFromDocx(file);
+        const raw = await extractWordCourseTemplateText({ arrayBuffer: await file.arrayBuffer() });
         if (raw.messages.length > 0) {
           parseWarnings.push(
             ...raw.messages.map((message) => `${file.name}: ${message.message}`),

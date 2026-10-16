@@ -16,6 +16,7 @@ import {
   toGlobalExamTemplateRecord,
 } from "@/lib/server/global-exams";
 import { isExamOptionalForCourse } from "@/lib/program-level";
+import { finalExamBudgetError } from "@/lib/final-exams";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,6 +36,7 @@ type CourseMentors = {
 };
 
 type Task = {
+  assessmentKind?: "regular" | "final";
   id: string;
   lessonId: string;
   title: string;
@@ -534,6 +536,7 @@ async function loadCourseTasks(
         const isAssignment = data.hasAssignment === true;
         if (!isForum && !isQuiz && !isAssignment) return;
         tasks.push({
+          assessmentKind: data.assessmentKind === "final" ? "final" : "regular",
           id: classDoc.id,
           lessonId: lessonDoc.id,
           title: asTrimmedString(data.title) || "Sin titulo",
@@ -743,6 +746,8 @@ function calculateStudentCourse(params: {
     if (submission.studentId !== params.studentId) return;
     const classId = asTrimmedString(submission.classDocId ?? submission.classId);
     if (!classId || !classIdSet.has(classId)) return;
+    const task = params.tasks.find((item) => item.id === classId);
+    if (task?.assessmentKind === "final" && submission.id !== `final-${classId}-${params.studentId}`) return;
     const current = latestByClass.get(classId);
     if (!current || shouldPreferIncomingSubmission(current, submission)) {
       latestByClass.set(classId, submission);
@@ -777,9 +782,13 @@ function calculateStudentCourse(params: {
 
   const previousManualFinalGrade = asNumberOrNull(params.previousClosure.finalGrade);
   const manualOverride = params.previousClosure.manualOverride === true && previousManualFinalGrade !== null;
+  const finalTasks = params.tasks.filter((task) => task.assessmentKind === "final");
+  const finalPoints = finalTasks.reduce((sum, task) => sum + (normalizeTaskGrade(task, latestByClass.get(task.id), params.quizConfigByClass) ?? 0), 0);
+  const otherPoints = (autoGrade ?? 0) - finalPoints + (campusTasksGrade ?? 0) + (globalExamGrade ?? 0) + (extraordinaryExamGrade ?? 0) + extraPointsTotal;
+  const budgetError = finalExamBudgetError(finalTasks.length > 0, finalPoints, otherPoints, campusFinalExamGrade);
   const finalGrade = manualOverride
     ? previousManualFinalGrade
-    : roundGrade(
+    : budgetError ? null : roundGrade(
         (autoGrade ?? 0) +
           (campusTasksGrade ?? 0) +
           (campusFinalExamGrade ?? 0) +

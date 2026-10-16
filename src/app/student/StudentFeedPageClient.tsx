@@ -9,6 +9,7 @@ import type { FirebaseError } from "firebase/app";
 import { auth } from "@/lib/firebase/client";
 import { onAuthStateChanged, signOut, updatePassword, User } from "firebase/auth";
 import toast from "react-hot-toast";
+import { finalExamRequest } from "@/lib/firebase/final-exams-service";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import {
   collection,
@@ -85,6 +86,7 @@ import {
 } from "@/lib/media/forum-media";
 
 type FeedClass = {
+  assessmentKind?: "regular" | "final";
   id: string;
   classDocId?: string;
   title: string;
@@ -1367,6 +1369,7 @@ export default function StudentFeedPageClient() {
   const visibleClasses = useMemo(() => {
     const platformVisible = classes.filter((cls) => {
       if (cls.showInStudentPlatform === false) return false;
+      if (cls.assessmentKind === "final") return true;
       if (cls.groupIsInPerson === true) {
         if (cls.type === "quiz") return false;
         if (cls.studyOnly === true) return true;
@@ -2799,7 +2802,7 @@ export default function StudentFeedPageClient() {
               classesSnap.forEach((cls) => {
                 const c = cls.data();
                 const normType = normalizeClassType(c.type);
-                if (isGroupInPerson && normType === "quiz") return;
+                if (isGroupInPerson && normType === "quiz" && c.assessmentKind !== "final") return;
                 if (isStudyOnlyCourse && normType === "quiz") return;
                 const imageArray =
                   c.images ??
@@ -2808,6 +2811,7 @@ export default function StudentFeedPageClient() {
 
                 feed.push({
                   id: `${currentGroupId}_${courseId}_${cls.id}`,
+                  assessmentKind: c.assessmentKind === "final" ? "final" : "regular",
                   classDocId: cls.id,
                   title: c.title ?? "Clase sin título",
                   type: normType,
@@ -3376,6 +3380,7 @@ export default function StudentFeedPageClient() {
   const isClassComplete = useCallback(
     (cls: FeedClass) => {
       if (previewMode) return true;
+      if (cls.assessmentKind === "final") return (progressRef.current[cls.id] ?? progressMap[cls.id] ?? 0) >= 100;
       if (cls.groupIsInPerson === true) return true;
       const pct = Math.max(
         progressMap[cls.id] ?? 0,
@@ -3394,6 +3399,7 @@ export default function StudentFeedPageClient() {
     }
     if (!visibleClasses.length) return { index: 0, id: null as string | null };
     const computeComplete = (cls: FeedClass) => {
+      if (cls.assessmentKind === "final") return (progressRef.current[cls.id] ?? progressMap[cls.id] ?? 0) >= 100;
       if (cls.groupIsInPerson === true) return true;
       const pct = Math.max(
         progressMap[cls.id] ?? 0,
@@ -3587,6 +3593,16 @@ export default function StudentFeedPageClient() {
       const maxProgress = Math.max(pct, previousProgress);
       const requiredPct = getRequiredPct(classType);
       const meta = findClassById(classId);
+      if (meta?.assessmentKind === "final") {
+        if (pct < 100) return;
+        progressRef.current[classId] = 100;
+        completedRef.current[classId] = true;
+        seenRef.current[classId] = true;
+        setProgressMap((previous) => ({ ...previous, [classId]: 100 }));
+        setCompletedMap((previous) => ({ ...previous, [classId]: true }));
+        setSeenMap((previous) => ({ ...previous, [classId]: true }));
+        return;
+      }
       const forumOk = meta ? isForumSatisfied(meta) : true;
 
       // Siempre actualizar progressRef para tener el valor más reciente
@@ -3666,6 +3682,7 @@ export default function StudentFeedPageClient() {
       }
 
       const cls = classes.find((c) => c.id === classId);
+      if (cls?.assessmentKind === "final") { toast.error("Envía el examen final para completarlo."); return; }
       const targetEnrollmentId = cls?.enrollmentId || enrollmentId;
       if (!targetEnrollmentId) {
         toast.error("No se encontró la inscripción.");
@@ -4019,7 +4036,7 @@ export default function StudentFeedPageClient() {
   }, [classes, currentUser?.uid, loadForumStatusesForAll, previewMode]);
 
   const renderContent = (cls: FeedClass, idx: number) => {
-    if (!previewMode && cls.groupIsInPerson === true) {
+    if (!previewMode && cls.groupIsInPerson === true && cls.assessmentKind !== "final") {
       return (
         <div className="flex h-full w-full items-center justify-center bg-neutral-950 px-6 text-center">
           <div className="max-w-md rounded-2xl border border-white/10 bg-neutral-900/70 p-6">
@@ -4199,6 +4216,7 @@ export default function StudentFeedPageClient() {
     if (cls.type === "quiz") {
       return (
         <QuizContent
+          assessmentKind={previewMode ? "regular" : cls.assessmentKind}
           classId={cls.id}
           classDocId={cls.classDocId ?? cls.id}
           courseId={cls.courseId}
@@ -4206,7 +4224,7 @@ export default function StudentFeedPageClient() {
           lessonId={cls.lessonId}
           lessonTitle={cls.lessonTitle ?? cls.lessonName}
           courseClosed={isCourseClosedForClass(cls)}
-          enrollmentId={enrollmentId ?? undefined}
+          enrollmentId={cls.enrollmentId ?? enrollmentId ?? undefined}
           groupId={cls.groupId}
           classTitle={cls.classTitle ?? cls.title}
           studentName={studentName || currentUser?.displayName || "Estudiante"}
@@ -7513,6 +7531,7 @@ function StyledAudioPreview({ src, label, className }: StyledAudioPreviewProps) 
 }
 
 type QuizContentProps = {
+  assessmentKind?: "regular" | "final";
   classId: string;
   classDocId?: string;
   courseId?: string;
@@ -7530,7 +7549,11 @@ type QuizContentProps = {
   onQuizStateChange?: (state: { classId: string; answered: number; total: number; submitted: boolean; onSubmit?: () => Promise<void> } | null) => void;
 };
 
-export function QuizContent({ classId, classDocId, courseId, courseTitle, lessonId, lessonTitle, courseClosed = false, enrollmentId, groupId, classTitle, studentName, studentId, isActive = true, onProgress, onQuizStateChange }: QuizContentProps) {
+export function QuizContent({ assessmentKind, classId, classDocId, courseId, courseTitle, lessonId, lessonTitle, courseClosed = false, enrollmentId, groupId, classTitle, studentName, studentId, isActive = true, onProgress, onQuizStateChange }: QuizContentProps) {
+  const isFinalExam = assessmentKind === "final";
+  const [examState, setExamState] = useState<{ available: boolean; closed: boolean; opensAt: string | null } | null>(null);
+  const [examError, setExamError] = useState<string | null>(null);
+  const [examReload, setExamReload] = useState(0);
   const [questions, setQuestions] = useState<
     Array<{
       id: string;
@@ -7568,12 +7591,28 @@ export function QuizContent({ classId, classDocId, courseId, courseTitle, lesson
     setSubmissionStatus(null);
     setSubmissionGrade(null);
     savedRef.current = false;
+    setExamState(null);
+    setExamError(null);
+    let cancelled = false;
     const loadQuestions = async () => {
       const targetClassId = classDocId ?? classId;
       if (!courseId || !lessonId || !targetClassId) {
         return;
       }
       try {
+        if (isFinalExam) {
+          const result = await finalExamRequest<{ available: boolean; closed: boolean; opensAt: string | null; submitted: boolean; grade: number | null; questions: typeof questions }>(courseId, "GET", { lessonId, classId: targetClassId, enrollmentId });
+          if (cancelled) return;
+          setExamState(result);
+          setQuestions(result.questions);
+          if (result.submitted) {
+            savedRef.current = true;
+            setSubmitted(true);
+            setSubmissionGrade(result.grade);
+            setSubmissionStatus("Calificado");
+          }
+          return;
+        }
         const qSnap = await getDocs(
           query(
             collection(db, "courses", courseId, "lessons", lessonId, "classes", targetClassId, "questions"),
@@ -7610,11 +7649,13 @@ export function QuizContent({ classId, classDocId, courseId, courseTitle, lesson
         });
         setQuestions(data);
       } catch (err) {
+        if (isFinalExam && !cancelled) setExamError(err instanceof Error ? err.message : "No se pudo cargar el examen.");
         console.error("No se pudieron cargar las preguntas del quiz:", err);
       }
     };
     loadQuestions();
-  }, [classDocId, classId, courseId, lessonId]);
+    return () => { cancelled = true; };
+  }, [classDocId, classId, courseId, lessonId, enrollmentId, isFinalExam, examReload]);
 
   const answeredCount = useMemo(
     () => questions.filter((q) => answers[q.id]).length,
@@ -7623,12 +7664,13 @@ export function QuizContent({ classId, classDocId, courseId, courseTitle, lesson
 
   useEffect(() => {
     if (!onProgressRef.current) return;
+    if (isFinalExam && !submitted) return;
     const total = Math.max(questions.length, 1);
     const rawPct = (answeredCount / total) * 100;
     // Solo se considera 100% cuando el quiz ha sido enviado; antes se limita a <100.
     const pct = submitted ? 100 : Math.min(99, rawPct);
     onProgressRef.current(Math.min(100, Math.max(0, pct)));
-  }, [answeredCount, questions.length, submitted]);
+  }, [answeredCount, questions.length, submitted, isFinalExam]);
 
   // Notificar el estado del quiz al componente padre (incluyendo función de envío)
   const handleSubmitRef = useRef<(() => Promise<void>) | null>(null);
@@ -7641,7 +7683,7 @@ export function QuizContent({ classId, classDocId, courseId, courseTitle, lesson
         answered: answeredCount,
         total: questions.length,
         submitted,
-        onSubmit: handleSubmitRef.current ?? undefined,
+        onSubmit: async () => { await handleSubmitRef.current?.(); },
       });
     } else if (!isActive) {
       onQuizStateChange(null);
@@ -7702,6 +7744,7 @@ export function QuizContent({ classId, classDocId, courseId, courseTitle, lesson
 
   useEffect(() => {
     const checkExistingSubmission = async () => {
+      if (isFinalExam) return;
       const baseClassId = classDocId ?? classId;
       if (!groupId || !studentId || !baseClassId) return;
       try {
@@ -7740,7 +7783,7 @@ export function QuizContent({ classId, classDocId, courseId, courseTitle, lesson
       }
     };
     checkExistingSubmission();
-  }, [groupId, studentId, classId, classDocId]);
+  }, [groupId, studentId, classId, classDocId, isFinalExam]);
 
   const handleSubmit = useCallback(async () => {
     if (
@@ -7758,6 +7801,19 @@ export function QuizContent({ classId, classDocId, courseId, courseTitle, lesson
       return;
     }
     setSubmitting(true);
+    if (isFinalExam) {
+      try {
+        if (!courseId || !lessonId) throw new Error("No se encontró la materia del examen.");
+        const result = await finalExamRequest<{ grade: number }>(courseId, "PUT", { lessonId, classId: classDocId ?? classId, enrollmentId, answers, courseTitle, lessonTitle });
+        savedRef.current = true;
+        setSubmitted(true);
+        setSubmissionGrade(result.grade);
+        setSubmissionStatus("Calificado");
+        onProgressRef.current?.(100);
+      } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo enviar el examen."); }
+      finally { setSubmitting(false); }
+      return;
+    }
     const answerPayload = questions.map((q) => ({
       questionId: q.id,
       question: q.text ?? "",
@@ -7850,7 +7906,7 @@ export function QuizContent({ classId, classDocId, courseId, courseTitle, lesson
     } finally {
       setSubmitting(false);
     }
-  }, [allAnswered, enrollmentId, studentId, groupId, submitting, questions, answers, classId, classTitle, studentName, courseId, courseTitle, lessonId, lessonTitle, classDocId, courseClosed]);
+  }, [allAnswered, enrollmentId, studentId, groupId, submitting, questions, answers, classId, classTitle, studentName, courseId, courseTitle, lessonId, lessonTitle, classDocId, courseClosed, isFinalExam]);
 
   // Actualizar la referencia para que el padre pueda llamar handleSubmit
   useEffect(() => {
@@ -7862,7 +7918,7 @@ export function QuizContent({ classId, classDocId, courseId, courseTitle, lesson
     const totalQuestionPoints = roundQuizPoints(
       questions.reduce((sum, question) => sum + normalizeQuizPointValue(question.pointValue), 0),
     );
-    const quizPointsMax = questions.length > 0 ? totalQuestionPoints : 100;
+    const quizPointsMax = isFinalExam ? 10 : questions.length > 0 ? totalQuestionPoints : 100;
     const isLegacyPercentScore =
       quizPointsMax > 0 &&
       submissionGrade > quizPointsMax &&
@@ -7913,6 +7969,13 @@ export function QuizContent({ classId, classDocId, courseId, courseTitle, lesson
   }
 
   // Si el quiz fue enviado pero no tiene calificación numérica (pendiente de revisión manual)
+  if (isFinalExam && (!examState || !examState.available) && !submitted) {
+    return <div className="flex h-full min-h-64 items-center justify-center rounded-2xl bg-neutral-900 p-6 text-center text-neutral-300"><div>
+      <h3 className="text-xl font-semibold">Examen final · 10 puntos</h3>
+      <p className="mt-3">{examError ?? (examState?.closed ? "Esta materia está cerrada." : !examState ? "Cargando examen…" : examState.opensAt ? `Disponible en semana 5, a partir del ${new Date(examState.opensAt).toLocaleString("es-MX", { timeZone: "America/Monterrey" })}.` : "Falta configurar la fecha de inicio de la materia. Contacta a tu mentor.")}</p>
+      <button type="button" className="mt-4 rounded border border-neutral-500 px-4 py-2" onClick={() => setExamReload((value) => value + 1)}>Consultar disponibilidad</button>
+    </div></div>;
+  }
   if (submitted) {
     return (
       <div className="flex h-full w-full items-center justify-center px-0 lg:px-10">

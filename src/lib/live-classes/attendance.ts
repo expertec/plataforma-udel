@@ -23,6 +23,9 @@ export type LiveAttendanceRecord = {
   connected: boolean;
   joinCount: number;
   totalSeconds: number;
+  cameraOnCount: number | null;
+  cameraOnSeconds: number | null;
+  cameraActiveStartedAt: string | null;
   createdAt: string | null;
   updatedAt: string | null;
 };
@@ -120,6 +123,9 @@ function mapAttendanceDoc(docSnap: QueryDocumentSnapshot): LiveAttendanceRecord 
     connected: data.connected === true,
     joinCount: asNonNegativeInteger(data.joinCount),
     totalSeconds: asNonNegativeNumber(data.totalSeconds),
+    cameraOnCount: data.cameraTrackingStartedAt ? asNonNegativeInteger(data.cameraOnCount) : null,
+    cameraOnSeconds: data.cameraTrackingStartedAt ? asNonNegativeNumber(data.cameraOnSeconds) : null,
+    cameraActiveStartedAt: asNullableText(data.cameraActiveStartedAt),
     createdAt: asNullableText(data.createdAt),
     updatedAt: asNullableText(data.updatedAt),
   };
@@ -127,6 +133,78 @@ function mapAttendanceDoc(docSnap: QueryDocumentSnapshot): LiveAttendanceRecord 
 
 export function isStudentLiveParticipant(participant: LiveAttendanceParticipantInput): boolean {
   return participant.role?.trim().toLowerCase() === "student";
+}
+
+function closeCameraInterval(current: Record<string, unknown>, endedAtIso: string): Record<string, unknown> {
+  if (!current.cameraTrackingStartedAt) return {};
+  const startedMs = toMillis(current.cameraActiveStartedAt);
+  const endedMs = Date.parse(endedAtIso);
+  const elapsedSeconds = startedMs !== null && endedMs > startedMs ? (endedMs - startedMs) / 1000 : 0;
+  return {
+    cameraEnabled: false,
+    cameraActiveStartedAt: null,
+    cameraOnSeconds: asNonNegativeNumber(current.cameraOnSeconds) + elapsedSeconds,
+    cameraStateUpdatedAt: endedAtIso,
+  };
+}
+
+export async function recordLiveAttendanceCamera(
+  context: AttendanceContext,
+  participant: LiveAttendanceParticipantInput,
+  enabled: boolean,
+  observedAtIso: string,
+  roomConnected = true,
+) {
+  const identity = normalizeText(participant.identity);
+  if (!identity || !isStudentLiveParticipant(participant)) return;
+  const docRef = attendanceRef(context.classRef, identity);
+  await context.classRef.firestore.runTransaction(async (transaction) => {
+    const classSnap = await transaction.get(context.classRef);
+    const snap = await transaction.get(docRef);
+    const session = classSnap.data()?.liveSession;
+    if (session?.status !== "live" || session?.lastEndedAt) return;
+    const current = (snap.data() ?? {}) as Record<string, unknown>;
+    if (!roomConnected && (!snap.exists || current.connected !== true)) return;
+    const observedMs = toMillis(observedAtIso);
+    const previousMs = toMillis(current.cameraStateUpdatedAt);
+    if (observedMs === null || (previousMs !== null && observedMs < previousMs)) return;
+    const wasEnabled = current.cameraEnabled === true;
+    const closedInterval = !enabled && wasEnabled ? closeCameraInterval(current, observedAtIso) : {};
+    const joining = roomConnected && (current.connected !== true || !current.activeSessionStartedAt);
+    transaction.set(docRef, {
+      ...(joining ? {
+        participantIdentity: identity,
+        studentId: asNullableText(participant.uid) ?? asNullableText(current.studentId) ?? identity,
+        studentName: asNullableText(participant.name) ?? asNullableText(current.studentName),
+        role: participant.role,
+        roomName: context.roomName,
+        courseId: context.courseId,
+        lessonId: context.lessonId,
+        classId: context.classId,
+        firstJoinedAt: asNullableText(current.firstJoinedAt) ?? observedAtIso,
+        lastJoinedAt: observedAtIso,
+        activeSessionStartedAt: observedAtIso,
+        connected: true,
+        joinCount: asNonNegativeInteger(current.joinCount) + 1,
+        totalSeconds: asNonNegativeNumber(current.totalSeconds),
+        createdAt: asNullableText(current.createdAt) ?? observedAtIso,
+      } : {}),
+      ...(!roomConnected ? {
+        connected: false,
+        activeSessionStartedAt: null,
+        lastLeftAt: observedAtIso,
+        totalSeconds: asNonNegativeNumber(current.totalSeconds) + secondsBetween(current.activeSessionStartedAt, observedAtIso),
+      } : {}),
+      ...closedInterval,
+      cameraTrackingStartedAt: asNullableText(current.cameraTrackingStartedAt) ?? observedAtIso,
+      cameraEnabled: enabled,
+      cameraOnCount: asNonNegativeInteger(current.cameraOnCount) + (enabled && !wasEnabled ? 1 : 0),
+      cameraOnSeconds: closedInterval.cameraOnSeconds ?? asNonNegativeNumber(current.cameraOnSeconds),
+      cameraActiveStartedAt: enabled ? asNullableText(current.cameraActiveStartedAt) ?? observedAtIso : null,
+      cameraStateUpdatedAt: observedAtIso,
+      updatedAt: observedAtIso,
+    }, { merge: true });
+  });
 }
 
 export async function recordLiveAttendanceJoin(
@@ -183,11 +261,14 @@ export async function recordLiveAttendanceLeave(
   const docRef = attendanceRef(context.classRef, identity);
   const db = context.classRef.firestore;
   await db.runTransaction(async (transaction) => {
+    const classSnap = await transaction.get(context.classRef);
     const snap = await transaction.get(docRef);
     const current = snap.exists ? (snap.data() ?? {}) as Record<string, unknown> : {};
+    const endedAt = asNullableText(classSnap.data()?.liveSession?.lastEndedAt);
+    const effectiveLeftAt = endedAt && Date.parse(endedAt) < Date.parse(leftAtIso) ? endedAt : leftAtIso;
     const activeStartedAt = asNullableText(current.activeSessionStartedAt);
     const totalSeconds =
-      asNonNegativeNumber(current.totalSeconds) + secondsBetween(activeStartedAt, leftAtIso);
+      asNonNegativeNumber(current.totalSeconds) + secondsBetween(activeStartedAt, effectiveLeftAt);
     const studentId = asNullableText(participant.uid) ?? asNullableText(current.studentId) ?? identity;
     const studentName = asNullableText(participant.name) ?? asNullableText(current.studentName);
 
@@ -202,10 +283,11 @@ export async function recordLiveAttendanceLeave(
         courseId: context.courseId,
         lessonId: context.lessonId,
         classId: context.classId,
-        lastLeftAt: leftAtIso,
+        lastLeftAt: effectiveLeftAt,
         activeSessionStartedAt: null,
         connected: false,
         totalSeconds,
+        ...closeCameraInterval(current, effectiveLeftAt),
         createdAt: asNullableText(current.createdAt) ?? leftAtIso,
         updatedAt: leftAtIso,
       },
@@ -224,25 +306,24 @@ export async function finalizeLiveAttendanceForClass(
     .get();
   if (attendanceSnap.empty) return;
 
-  const batch = classRef.firestore.batch();
-  attendanceSnap.docs.forEach((docSnap) => {
-    const data = (docSnap.data() ?? {}) as Record<string, unknown>;
-    const activeStartedAt = asNullableText(data.activeSessionStartedAt);
-    const totalSeconds =
-      asNonNegativeNumber(data.totalSeconds) + secondsBetween(activeStartedAt, endedAtIso);
-    batch.set(
-      docSnap.ref,
-      {
-        lastLeftAt: asNullableText(data.lastLeftAt) ?? endedAtIso,
+  await Promise.all(attendanceSnap.docs.map((docSnap) =>
+    classRef.firestore.runTransaction(async (transaction) => {
+      const currentSnap = await transaction.get(docSnap.ref);
+      const data = (currentSnap.data() ?? {}) as Record<string, unknown>;
+      if (data.connected !== true) return;
+      const activeStartedAt = asNullableText(data.activeSessionStartedAt);
+      const totalSeconds =
+        asNonNegativeNumber(data.totalSeconds) + secondsBetween(activeStartedAt, endedAtIso);
+      transaction.set(docSnap.ref, {
+        lastLeftAt: endedAtIso,
         activeSessionStartedAt: null,
         connected: false,
         totalSeconds,
+        ...closeCameraInterval(data, endedAtIso),
         updatedAt: endedAtIso,
-      },
-      { merge: true },
-    );
-  });
-  await batch.commit();
+      }, { merge: true });
+    }),
+  ));
 }
 
 export async function loadLiveAttendanceRecords(

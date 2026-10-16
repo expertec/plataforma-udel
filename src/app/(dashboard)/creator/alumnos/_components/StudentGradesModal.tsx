@@ -18,11 +18,16 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { auth } from "@/lib/firebase/client";
 import { db } from "@/lib/firebase/firestore";
 import { isAdminTeacherRole, type UserRole } from "@/lib/firebase/roles";
+import { getStudentEquivalencies } from "@/lib/firebase/equivalencies-service";
+import { equivalencyGradeRow } from "@/lib/students/equivalencies";
+import { filterKardexRows, formatKardexIdentification, isCertificationGroup, type KardexSection } from "@/lib/students/kardex";
 
 type Props = {
   studentId: string;
   studentName: string;
   studentEmail: string;
+  studentProgram?: string;
+  studentPlantelNames?: string[];
   scopePlantelId?: string;
   scopeGroupIds?: string[];
   useServerGrades?: boolean;
@@ -46,10 +51,14 @@ type CourseClosure = {
 };
 
 type GradeRow = {
+  equivalencyId?: string;
+  countsTowardProgram?: boolean;
   id: string;
   groupId: string;
   courseId: string;
   groupName: string;
+  semester?: string;
+  isCertification?: boolean;
   courseName: string;
   status: "open" | "closed";
   finalGrade: number | null;
@@ -154,15 +163,6 @@ const resolveExtraordinaryExamData = (
   };
 };
 
-const formatDate = (value: Date | null): string => {
-  if (!value) return "—";
-  return new Intl.DateTimeFormat("es-MX", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  }).format(value);
-};
-
 const formatDateTime = (value: Date | null): string => {
   if (!value) return "—";
   return new Intl.DateTimeFormat("es-MX", {
@@ -182,8 +182,40 @@ const formatSummaryGradeValue = (value: number | null | undefined): string => {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 };
 
-const PASSING_GRADE = 7;
+const PASSING_GRADE = 70;
 const TOTAL_PROGRAM_SUBJECTS = 48;
+
+const hasNumericGrade = (value: number | null | undefined): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+
+const hasKardexPdfGrade = (row: GradeRow): boolean =>
+  hasNumericGrade(row.finalGrade) ||
+  hasNumericGrade(row.globalExamGrade) ||
+  hasNumericGrade(row.extraordinaryExamGrade);
+
+const buildGradeSummary = (sourceRows: GradeRow[]) => {
+  const closed = sourceRows.filter((row) => row.status === "closed");
+  const graded = closed.filter(
+    (row): row is GradeRow & { finalGrade: number } => hasNumericGrade(row.finalGrade),
+  );
+  const approved = graded.filter((row) => row.finalGrade >= PASSING_GRADE);
+  const avg =
+    graded.length > 0
+      ? graded.reduce((acc, row) => acc + row.finalGrade, 0) / graded.length
+      : null;
+  const approvedAvg =
+    approved.length > 0
+      ? approved.reduce((acc, row) => acc + row.finalGrade, 0) / approved.length
+      : null;
+  return {
+    total: sourceRows.length,
+    closed: closed.length,
+    approved: approved.length,
+    programApproved: approved.filter((row) => row.countsTowardProgram !== false).length,
+    avg,
+    approvedAvg,
+  };
+};
 
 const toSafeFileToken = (value: string): string =>
   value
@@ -265,6 +297,8 @@ export function StudentGradesModal({
   studentId,
   studentName,
   studentEmail,
+  studentProgram = "",
+  studentPlantelNames = [],
   scopePlantelId = "",
   scopeGroupIds = [],
   useServerGrades = false,
@@ -274,6 +308,7 @@ export function StudentGradesModal({
 }: Props) {
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<GradeRow[]>([]);
+  const [kardexSection, setKardexSection] = useState<KardexSection>("academic");
   const [groupMetaById, setGroupMetaById] = useState<Record<string, GroupMeta>>({});
   const [exportingKardexRowId, setExportingKardexRowId] = useState<string | null>(null);
   const pdfBackgroundDataUrlRef = useRef<string | null>(null);
@@ -316,6 +351,7 @@ export function StudentGradesModal({
           return;
         }
 
+        const equivalencies = await getStudentEquivalencies(studentId);
         let enrollmentPermissionDenied = false;
         let enrollmentDocs:
           | Array<Awaited<ReturnType<typeof getDoc>>>
@@ -362,6 +398,8 @@ export function StudentGradesModal({
         const closureRows = new Map<string, GradeRow>();
         const enrollmentGroupNames = new Map<string, string>();
         const enrollmentCourseFallbackByGroup = new Map<string, string>();
+        const semestersByGroupId = new Map<string, string>();
+        const certificationGroupIds = new Set<string>();
         const groupCourseNameByKey = new Map<string, string>();
         const courseTitleById = new Map<string, string>();
         const groupIds = new Set<string>();
@@ -408,6 +446,8 @@ export function StudentGradesModal({
         const registerGroupCourses = (
           groupId: string,
           groupData: {
+            groupName?: unknown;
+            semester?: unknown;
             courseId?: unknown;
             courseName?: unknown;
             courses?: unknown;
@@ -415,6 +455,9 @@ export function StudentGradesModal({
         ) => {
           const normalizedGroupId = groupId.trim();
           if (!normalizedGroupId) return;
+          if (isCertificationGroup(groupData.groupName)) certificationGroupIds.add(normalizedGroupId);
+          const semester = typeof groupData.semester === "number" ? String(groupData.semester) : typeof groupData.semester === "string" ? groupData.semester.trim() : "";
+          if (semester) semestersByGroupId.set(normalizedGroupId, semester);
           const courseNameById = getCourseNameFromGroupData(groupData);
           courseNameById.forEach((courseName, courseId) => {
             const key = buildGroupCourseKey(normalizedGroupId, courseId);
@@ -481,11 +524,15 @@ export function StudentGradesModal({
         const ingestEnrollmentData = (data: {
           groupId?: string;
           groupName?: string;
+          semester?: unknown;
           courseName?: string;
           courseClosures?: Record<string, unknown>;
         }) => {
           const groupId = (data.groupId ?? "").trim();
           const groupName = (data.groupName ?? "").trim() || "Sin grupo";
+          if (groupId && isCertificationGroup(groupName)) certificationGroupIds.add(groupId);
+          const semester = typeof data.semester === "number" ? String(data.semester) : typeof data.semester === "string" ? data.semester.trim() : "";
+          if (semester) semestersByGroupId.set(groupId, semester);
           const fallbackCourseName = (data.courseName ?? "").trim();
           if (groupId) {
             groupIds.add(groupId);
@@ -975,7 +1022,15 @@ export function StudentGradesModal({
           });
         });
 
-        const nextRows = Array.from(mergedRows.values()).sort(
+        equivalencies.forEach((equivalency) => {
+          const row = toClientGradeRow(equivalencyGradeRow(equivalency));
+          mergedRows.set(row.id, row);
+        });
+        const nextRows = Array.from(mergedRows.values()).map((row) => row.equivalencyId ? row : {
+          ...row,
+          semester: semestersByGroupId.get(row.groupId) || "",
+          isCertification: certificationGroupIds.has(row.groupId) || isCertificationGroup(row.groupName),
+        }).sort(
           (a, b) => getRowTs(b) - getRowTs(a),
         );
 
@@ -1029,7 +1084,7 @@ export function StudentGradesModal({
               groupId,
               {
                 groupName: typeof data.groupName === "string" ? data.groupName.trim() : "",
-                semester: typeof data.semester === "string" ? data.semester.trim() : "",
+                semester: typeof data.semester === "number" ? String(data.semester) : typeof data.semester === "string" ? data.semester.trim() : "",
                 plantelName: typeof data.plantelName === "string" ? data.plantelName.trim() : "",
                 program: typeof data.program === "string" ? data.program.trim() : "",
               },
@@ -1085,36 +1140,28 @@ export function StudentGradesModal({
     }
   };
 
-  const summary = useMemo(() => {
-    const closed = rows.filter((row) => row.status === "closed");
-    const graded = closed.filter((row) => typeof row.finalGrade === "number");
-    const approved = graded.filter((row) => (row.finalGrade ?? 0) >= PASSING_GRADE);
-    const avg =
-      graded.length > 0
-        ? graded.reduce((acc, row) => acc + (row.finalGrade ?? 0), 0) / graded.length
-        : null;
-    const approvedAvg =
-      approved.length > 0
-        ? approved.reduce((acc, row) => acc + (row.finalGrade ?? 0), 0) / approved.length
-        : null;
-    return {
-      total: rows.length,
-      closed: closed.length,
-      approved: approved.length,
-      avg,
-      approvedAvg,
-    };
-  }, [rows]);
+  const academicRows = useMemo(() => filterKardexRows(rows, "academic"), [rows]);
+  const certificationRows = useMemo(() => filterKardexRows(rows, "certifications"), [rows]);
+  const visibleRows = kardexSection === "academic" ? academicRows : certificationRows;
+  const isCertificationKardex = kardexSection === "certifications";
+  const kardexTitle = isCertificationKardex ? "Kardex de Certificaciones" : "Kardex de Licenciatura";
+  const summary = useMemo(() => buildGradeSummary(visibleRows), [visibleRows]);
 
   const downloadInstitutionalKardexPdf = async () => {
     if (!canDownloadInstitutionalKardex) {
       toast.error("No tienes permisos para descargar el Kardex institucional.");
       return;
     }
-    if (rows.length === 0) {
+    if (visibleRows.length === 0) {
       toast.error("No hay calificaciones para descargar.");
       return;
     }
+    const pdfRows = visibleRows.filter(hasKardexPdfGrade);
+    if (pdfRows.length === 0) {
+      toast.error("No hay materias con calificación para descargar.");
+      return;
+    }
+    const pdfSummary = buildGradeSummary(pdfRows);
 
     setExportingKardexRowId("__all__");
     try {
@@ -1128,21 +1175,21 @@ export function StudentGradesModal({
       const tableBottom = pageHeight - 126;
       const backgroundDataUrl = await loadPdfAssetDataUrl("/bg-pdf-01.png", pdfBackgroundDataUrlRef, "bg-pdf-01.png");
       const downloadedAt = new Date();
-      const sortedRows = [...rows].sort((left, right) => {
+      const sortedRows = [...pdfRows].sort((left, right) => {
         const leftTime = Math.max(left.closedAt?.getTime() ?? 0, left.updatedAt?.getTime() ?? 0);
         const rightTime = Math.max(right.closedAt?.getTime() ?? 0, right.updatedAt?.getTime() ?? 0);
         return rightTime - leftTime;
       });
       const primaryGroupMeta =
         sortedRows.map((row) => groupMetaById[row.groupId]).find(Boolean) ?? null;
-      const resolvedPlantelName = primaryGroupMeta?.plantelName || "UDEL";
-      const resolvedProgram = primaryGroupMeta?.program || "N/D";
+      const resolvedPlantelName = primaryGroupMeta?.plantelName || studentPlantelNames.join(", ") || "UDEL";
+      const resolvedProgram = isCertificationKardex ? "Certificaciones" : primaryGroupMeta?.program || studentProgram || "N/D";
       const columns = {
         index: { x: marginX, width: 24 },
         course: { x: marginX + 32, width: 286 },
-        global: { x: pageWidth - marginX - 168, width: 44 },
+        ordinary: { x: pageWidth - marginX - 168, width: 44 },
         extraordinary: { x: pageWidth - marginX - 114, width: 54 },
-        final: { x: pageWidth - marginX - 48, width: 48 },
+        global: { x: pageWidth - marginX - 48, width: 48 },
       };
       let y = tableTop + 26;
 
@@ -1156,10 +1203,10 @@ export function StudentGradesModal({
         pdf.setTextColor(20, 20, 20);
         pdf.setFont("helvetica", "bold");
         pdf.setFontSize(20);
-        pdf.text("Kardex Institucional", marginX, 116);
+        pdf.text(kardexTitle, marginX, 116);
         pdf.setFont("helvetica", "normal");
         pdf.setFontSize(10);
-        pdf.text("Historial de calificaciones del alumno", marginX, 134);
+        pdf.text(isCertificationKardex ? "Historial de certificaciones complementarias" : "Historial académico de licenciatura", marginX, 134);
         pdf.setTextColor(80, 80, 80);
         pdf.text(`Fecha de descarga: ${formatDateTime(downloadedAt)}`, pageWidth - marginX, 116, { align: "right" });
 
@@ -1184,11 +1231,11 @@ export function StudentGradesModal({
         pdf.setFont("helvetica", "bold");
         pdf.setFontSize(9);
         pdf.setTextColor(20, 20, 20);
-        pdf.text(`Materias: ${summary.total}`, marginX, 224);
-        pdf.text(`Cerradas: ${summary.closed}`, marginX + 92, 224);
-        pdf.text(`Aprobadas: ${summary.approved}`, marginX + 192, 224);
+        pdf.text(`Materias: ${pdfSummary.total}`, marginX, 224);
+        pdf.text(`Cerradas: ${pdfSummary.closed}`, marginX + 92, 224);
+        pdf.text(`Aprobadas: ${pdfSummary.approved}`, marginX + 192, 224);
         pdf.text(
-          `Promedio aprobadas: ${formatSummaryGradeValue(summary.approvedAvg)}`,
+          `Promedio aprobadas: ${formatSummaryGradeValue(pdfSummary.approvedAvg)}`,
           pageWidth - marginX,
           224,
           { align: "right" },
@@ -1203,9 +1250,9 @@ export function StudentGradesModal({
         pdf.setFontSize(8.5);
         pdf.text("#", columns.index.x + 2, tableTop - 5);
         pdf.text("Materia", columns.course.x, tableTop - 5);
-        pdf.text("Global", columns.global.x, tableTop - 5);
+        pdf.text("Ord.", columns.ordinary.x, tableTop - 5);
         pdf.text("Extraord.", columns.extraordinary.x, tableTop - 5);
-        pdf.text("Final", columns.final.x, tableTop - 5);
+        pdf.text("Global", columns.global.x, tableTop - 5);
       };
 
       const drawFooter = () => {
@@ -1220,13 +1267,15 @@ export function StudentGradesModal({
         pdf.setFontSize(9.5);
         pdf.setTextColor(20, 20, 20);
         pdf.text(
-          `El presente Kárdex de estudios ampara ${summary.approved} de las ${TOTAL_PROGRAM_SUBJECTS} asignaturas totales en el programa.`,
+          isCertificationKardex
+            ? `El presente Kárdex registra ${pdfSummary.total} asignaturas de certificaciones complementarias.`
+            : `El presente Kárdex de estudios ampara ${pdfSummary.programApproved} de las ${TOTAL_PROGRAM_SUBJECTS} asignaturas totales en el programa.`,
           marginX + 8,
           pageHeight - 136,
         );
         pdf.text(`La calificación mínima aprobatoria es de ${PASSING_GRADE}`, marginX + 8, pageHeight - 122);
         pdf.text(
-          `Promedio de materias aprobadas: ${formatSummaryGradeValue(summary.approvedAvg)}`,
+          `Promedio de materias aprobadas: ${formatSummaryGradeValue(pdfSummary.approvedAvg)}`,
           marginX + 8,
           pageHeight - 108,
         );
@@ -1251,11 +1300,10 @@ export function StudentGradesModal({
       sortedRows.forEach((row, index) => {
         const groupMeta = groupMetaById[row.groupId] ?? null;
         const groupLabel = groupMeta?.groupName || row.groupName || "N/D";
-        const semesterLabel = groupMeta?.semester || "N/D";
-        const updatedLabel = formatDate(row.closedAt ?? row.updatedAt);
         const courseLines = (pdf.splitTextToSize(row.courseName || "N/D", columns.course.width) as string[]).slice(0, 2);
-        const metadataLine = `Grupo: ${groupLabel}   |   Cuatr.: ${semesterLabel}   |   Actualizado: ${updatedLabel}`;
-        const currentRowHeight = Math.max(rowHeight, 24 + courseLines.length * 10);
+        const metadataLine = formatKardexIdentification({ ...row, groupName: groupLabel, semester: groupMeta?.semester || row.semester });
+        const metadataLines = pdf.splitTextToSize(metadataLine, columns.course.width) as string[];
+        const currentRowHeight = Math.max(rowHeight, 24 + courseLines.length * 10 + Math.max(0, metadataLines.length - 1) * 8);
         if (y + currentRowHeight > tableBottom) addPage();
         const rowTop = y - 14;
         pdf.setFont("helvetica", "normal");
@@ -1266,17 +1314,17 @@ export function StudentGradesModal({
         pdf.setFontSize(7);
         pdf.setTextColor(100, 100, 100);
         pdf.text(
-          (pdf.splitTextToSize(metadataLine, columns.course.width) as string[]).slice(0, 1),
+          metadataLines,
           columns.course.x,
           y + 10 * courseLines.length + 3,
         );
         pdf.setFontSize(8.5);
         pdf.setTextColor(20, 20, 20);
-        pdf.text(formatGradeValue(row.globalExamGrade), columns.global.x, y + 4);
-        pdf.text(formatGradeValue(row.extraordinaryExamGrade), columns.extraordinary.x, y + 4);
         pdf.setFont("helvetica", "bold");
-        pdf.text(formatGradeValue(row.finalGrade), columns.final.x, y + 4);
+        pdf.text(formatGradeValue(row.finalGrade), columns.ordinary.x, y + 4);
         pdf.setFont("helvetica", "normal");
+        pdf.text(formatGradeValue(row.extraordinaryExamGrade), columns.extraordinary.x, y + 4);
+        pdf.text(formatGradeValue(row.globalExamGrade), columns.global.x, y + 4);
         y += currentRowHeight;
         pdf.setDrawColor(220, 220, 220);
         pdf.setLineWidth(0.7);
@@ -1284,11 +1332,11 @@ export function StudentGradesModal({
       });
 
       pdf.save(
-        `kardex-institucional-${toSafeFileToken(studentName) || "alumno"}-${downloadedAt
+        `kardex-${isCertificationKardex ? "certificaciones" : "licenciatura"}-${toSafeFileToken(studentName) || "alumno"}-${downloadedAt
           .toISOString()
           .slice(0, 10)}.pdf`,
       );
-      toast.success("Kardex institucional descargado.");
+      toast.success(`${kardexTitle} descargado.`);
     } catch (error) {
       console.error("No se pudo generar el Kardex institucional:", error);
       toast.error("No se pudo descargar el Kardex institucional.");
@@ -1308,7 +1356,7 @@ export function StudentGradesModal({
         <div className="flex flex-col gap-3 border-b border-slate-200 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <DialogHeader className="mb-1">
-              <DialogTitle>Kardex de calificaciones</DialogTitle>
+              <DialogTitle>{kardexTitle}</DialogTitle>
             </DialogHeader>
             <p className="text-sm text-slate-600">
               {studentName} · {studentEmail}
@@ -1318,16 +1366,34 @@ export function StudentGradesModal({
             <button
               type="button"
               onClick={() => void downloadInstitutionalKardexPdf()}
-              disabled={loading || rows.length === 0 || exportingKardexRowId === "__all__"}
+              disabled={loading || visibleRows.length === 0 || exportingKardexRowId === "__all__"}
               className="inline-flex items-center justify-center gap-2 rounded-lg border border-[#7c152d] bg-white px-3 py-2 text-xs font-semibold text-[#7c152d] hover:bg-[#fff7f7] disabled:opacity-60"
             >
               <Download size={14} />
-              <span>{exportingKardexRowId === "__all__" ? "Generando..." : "Descargar Kardex institucional"}</span>
+              <span>{exportingKardexRowId === "__all__" ? "Generando..." : `Descargar ${kardexTitle}`}</span>
             </button>
           ) : null}
         </div>
 
         <div className="space-y-4 p-6">
+          <div role="tablist" aria-label="Tipo de kardex" className="flex flex-wrap gap-2">
+            {([
+              { id: "academic", label: "Licenciatura", count: academicRows.length },
+              { id: "certifications", label: "Certificaciones", count: certificationRows.length },
+            ] as const).map((section) => (
+              <button
+                key={section.id}
+                type="button"
+                role="tab"
+                aria-selected={kardexSection === section.id}
+                disabled={exportingKardexRowId !== null}
+                onClick={() => setKardexSection(section.id)}
+                className={`rounded-lg border px-4 py-2 text-sm font-semibold disabled:opacity-60 ${kardexSection === section.id ? "border-[#7c152d] bg-[#fff7f7] text-[#7c152d]" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}
+              >
+                {section.label} ({section.count})
+              </button>
+            ))}
+          </div>
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
               <p className="text-xs uppercase tracking-wide text-slate-500">Materias</p>
@@ -1349,30 +1415,31 @@ export function StudentGradesModal({
             <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
               Cargando calificaciones...
             </div>
-          ) : rows.length === 0 ? (
+          ) : visibleRows.length === 0 ? (
             <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-600">
-              No hay calificaciones registradas para este alumno.
+              {isCertificationKardex ? "No hay certificaciones registradas para este alumno." : "No hay materias de licenciatura registradas para este alumno."}
             </div>
           ) : (
             <div className="max-h-[52vh] overflow-auto rounded-lg border border-slate-200">
               <table className="min-w-full text-sm text-slate-800">
                 <thead className="bg-slate-50 text-xs font-semibold text-slate-600">
                   <tr className="border-b border-slate-200">
-                    <th className="px-4 py-2 text-left">Grupo</th>
                     <th className="px-4 py-2 text-left">Materia</th>
                     <th className="px-4 py-2 text-left">Estado</th>
                     <th className="px-4 py-2 text-left">Examen global</th>
                     <th className="px-4 py-2 text-left">Examen extraordinario</th>
                     <th className="px-4 py-2 text-left">Calificación final</th>
                     <th className="px-4 py-2 text-left">Pendientes</th>
-                    <th className="px-4 py-2 text-left">Actualizado</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {rows.map((row) => (
+                  {visibleRows.map((row) => (
                     <tr key={row.id}>
-                      <td className="px-4 py-3">{row.groupName}</td>
-                      <td className="px-4 py-3">{row.courseName}</td>
+                      <td className="px-4 py-3">
+                        {row.courseName}
+                        {row.equivalencyId && <span className="ml-2 rounded-full bg-sky-100 px-2 py-0.5 text-xs font-semibold text-sky-700">Equivalencia</span>}
+                        <p className="mt-1 text-xs text-slate-500">{formatKardexIdentification(row)}</p>
+                      </td>
                       <td className="px-4 py-3">
                         <span
                           className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${
@@ -1381,7 +1448,7 @@ export function StudentGradesModal({
                               : "bg-amber-100 text-amber-700"
                           }`}
                         >
-                          {row.status === "closed" ? "Cerrada" : "Abierta"}
+                          {row.equivalencyId ? "Acreditada" : row.status === "closed" ? "Cerrada" : "Abierta"}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-slate-700">
@@ -1415,9 +1482,6 @@ export function StudentGradesModal({
                       </td>
                       <td className="px-4 py-3 text-slate-700">
                         {row.pendingUngradedCount === null ? "—" : row.pendingUngradedCount}
-                      </td>
-                      <td className="px-4 py-3 text-slate-600">
-                        {formatDate(row.closedAt ?? row.updatedAt)}
                       </td>
                     </tr>
                   ))}

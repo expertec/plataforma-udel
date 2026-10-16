@@ -38,6 +38,7 @@ import {
 } from "../_lib/profile";
 import { kardexAverage, loadKardex, type KardexRow } from "../_lib/kardex";
 import { KardexTable } from "../_components/KardexTable";
+import { filterKardexRows, type KardexSection } from "@/lib/students/kardex";
 
 type TabId = "materias" | "kardex" | "tareas" | "cuenta";
 
@@ -82,6 +83,7 @@ export default function ProfilePage() {
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [loadingSubmissions, setLoadingSubmissions] = useState(true);
   const [kardex, setKardex] = useState<KardexRow[]>([]);
+  const [kardexSection, setKardexSection] = useState<KardexSection>("academic");
   const [loadingKardex, setLoadingKardex] = useState(true);
   const [activeTab, setActiveTab] = useState<TabId>("materias");
 
@@ -137,6 +139,10 @@ export default function ProfilePage() {
       .then((rows) => {
         if (!cancelled) setKardex(rows);
       })
+      .catch((error) => {
+        console.error("No se pudo cargar el kardex completo:", error);
+        if (!cancelled) toast.error("No se pudo cargar el kardex completo. Recarga para reintentar.");
+      })
       .finally(() => {
         if (!cancelled) setLoadingKardex(false);
       });
@@ -150,8 +156,12 @@ export default function ProfilePage() {
     [classes, isComplete],
   );
 
-  const generalAverage = useMemo(() => kardexAverage(kardex), [kardex]);
-  const closedCount = kardex.filter((row) => row.status === "closed").length;
+  const academicKardex = useMemo(() => filterKardexRows(kardex, "academic"), [kardex]);
+  const certificationKardex = useMemo(() => filterKardexRows(kardex, "certifications"), [kardex]);
+  const visibleKardex = kardexSection === "academic" ? academicKardex : certificationKardex;
+  const generalAverage = useMemo(() => kardexAverage(academicKardex), [academicKardex]);
+  const sectionAverage = useMemo(() => kardexAverage(visibleKardex), [visibleKardex]);
+  const closedCount = academicKardex.filter((row) => row.status === "closed").length;
 
   const overallPct = classes.length === 0 ? 0 : Math.round((completedCount / classes.length) * 100);
 
@@ -336,7 +346,7 @@ export default function ProfilePage() {
         />
         <StatCard
           icon={Star}
-          label="Promedio general"
+          label="Promedio de licenciatura"
           value={loadingKardex ? "…" : generalAverage === null ? "—" : generalAverage.toFixed(1)}
           hint={
             loadingKardex
@@ -419,20 +429,37 @@ export default function ProfilePage() {
 
         {activeTab === "kardex" && (
           <div className="space-y-4">
+            <div role="tablist" aria-label="Tipo de kardex" className="flex flex-wrap gap-2">
+              {([
+                { id: "academic", label: "Licenciatura", count: academicKardex.length },
+                { id: "certifications", label: "Certificaciones", count: certificationKardex.length },
+              ] as const).map((section) => (
+                <button
+                  key={section.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={kardexSection === section.id}
+                  onClick={() => setKardexSection(section.id)}
+                  className={`rounded-xl border px-4 py-2 text-sm font-medium ${kardexSection === section.id ? "border-[var(--aula-accent)] bg-[var(--aula-accent)]/15 text-[var(--aula-text)]" : "border-[var(--aula-border)] text-[var(--aula-text-muted)]"}`}
+                >
+                  {section.label} ({section.count})
+                </button>
+              ))}
+            </div>
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <p className="text-sm text-[var(--aula-text-muted)]">
-                Calificaciones finales de tus materias, incluidas las de grupos anteriores.
+                {kardexSection === "academic" ? "Historial académico de licenciatura, incluidas materias de grupos anteriores y equivalencias." : "Historial independiente de certificaciones complementarias."}
               </p>
-              {generalAverage !== null && (
+              {sectionAverage !== null && (
                 <p className="text-sm text-[var(--aula-text-muted)]">
-                  Promedio general:{" "}
+                  {kardexSection === "academic" ? "Promedio de licenciatura:" : "Promedio de certificaciones:"}{" "}
                   <span className="font-semibold text-[var(--aula-text)]">
-                    {generalAverage.toFixed(1)}
+                    {sectionAverage.toFixed(1)}
                   </span>
                 </p>
               )}
             </div>
-            <KardexTable rows={kardex} loading={loadingKardex} />
+            <KardexTable rows={visibleKardex} loading={loadingKardex} />
           </div>
         )}
 

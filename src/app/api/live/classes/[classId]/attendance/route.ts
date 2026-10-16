@@ -22,6 +22,8 @@ type AttendanceReportRow = {
   attendanceSeconds: number;
   attendancePercentage: number;
   joinCount: number;
+  cameraOnCount: number | null;
+  cameraOnSeconds: number | null;
   firstJoinedAt: string | null;
   lastLeftAt: string | null;
 };
@@ -148,6 +150,8 @@ async function loadLinkedGroupStudents(groupId: string): Promise<AttendanceRepor
         attendanceSeconds: 0,
         attendancePercentage: 0,
         joinCount: 0,
+        cameraOnCount: 0,
+        cameraOnSeconds: 0,
         firstJoinedAt: null,
         lastLeftAt: null,
       };
@@ -320,6 +324,8 @@ export async function GET(
           attendanceSeconds: 0,
           attendancePercentage: 0,
           joinCount: 0,
+          cameraOnCount: 0,
+          cameraOnSeconds: 0,
           firstJoinedAt: null,
           lastLeftAt: null,
         };
@@ -335,12 +341,23 @@ export async function GET(
         attendanceSeconds,
         attendancePercentage: Math.min(100, (attendanceSeconds / classDurationSeconds) * 100),
         joinCount: current.joinCount + record.joinCount,
+        cameraOnCount: current.cameraOnCount === null || record.cameraOnCount === null
+          ? null
+          : current.cameraOnCount + record.cameraOnCount,
+        cameraOnSeconds: current.cameraOnSeconds === null || record.cameraOnSeconds === null
+          ? null
+          : current.cameraOnSeconds + record.cameraOnSeconds,
         firstJoinedAt: minIso(current.firstJoinedAt, record.firstJoinedAt),
         lastLeftAt: maxIso(current.lastLeftAt, record.lastLeftAt),
       });
     });
 
-    const rows = Array.from(rowsByStudentId.values()).sort((left, right) => {
+    const rows = Array.from(rowsByStudentId.values()).map((row) => ({
+      ...row,
+      cameraOnSeconds: row.cameraOnSeconds === null
+        ? null
+        : Math.min(row.attendanceSeconds, classDurationSeconds, Math.round(row.cameraOnSeconds)),
+    })).sort((left, right) => {
       if (left.attended !== right.attended) return Number(right.attended) - Number(left.attended);
       return left.studentName.localeCompare(right.studentName, "es-MX", { sensitivity: "base" });
     });

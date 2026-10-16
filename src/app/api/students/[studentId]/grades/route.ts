@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
+import { EquivalencyError, readStudentEquivalencies } from "@/lib/server/student-equivalencies";
+import { equivalencyGradeRow } from "@/lib/students/equivalencies";
+import { isCertificationGroup } from "@/lib/students/kardex";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,10 +32,14 @@ type CourseClosure = {
 };
 
 type GradeRow = {
+  equivalencyId?: string;
+  countsTowardProgram?: boolean;
   id: string;
   groupId: string;
   courseId: string;
   groupName: string;
+  semester?: string;
+  isCertification?: boolean;
   courseName: string;
   status: "open" | "closed";
   finalGrade: number | null;
@@ -280,7 +287,7 @@ async function assertCanReadStudentGrades(context: RouteContext, studentId: stri
 }
 
 function toErrorResponse(error: unknown): NextResponse {
-  if (error instanceof RouteAccessError) {
+  if (error instanceof RouteAccessError || error instanceof EquivalencyError) {
     return NextResponse.json({ success: false, error: error.message }, { status: error.status });
   }
   console.error("Error cargando kardex por API:", error);
@@ -309,6 +316,8 @@ export async function GET(
     const groupIds = new Set<string>();
     const enrollmentGroupNames = new Map<string, string>();
     const enrollmentCourseFallbackByGroup = new Map<string, string>();
+    const semestersByGroupId = new Map<string, string>();
+    const certificationGroupIds = new Set<string>();
     const enrollmentSources: Array<{
       groupId: string;
       groupName: string;
@@ -321,6 +330,9 @@ export async function GET(
       const groupId = asTrimmedString(data.groupId);
       if (allowedGroupIds && (!groupId || !allowedGroupIds.has(groupId))) return;
       const groupName = asTrimmedString(data.groupName) || "Sin grupo";
+      if (groupId && isCertificationGroup(groupName)) certificationGroupIds.add(groupId);
+      const semester = typeof data.semester === "number" ? String(data.semester) : asTrimmedString(data.semester);
+      if (semester) semestersByGroupId.set(groupId, semester);
       const fallbackCourseName = asTrimmedString(data.courseName);
       if (groupId) {
         groupIds.add(groupId);
@@ -345,8 +357,11 @@ export async function GET(
     groupDocs.forEach((result, index) => {
       if (result.status !== "fulfilled" || !result.value.exists) return;
       const groupId = Array.from(groupIds)[index];
-      const data = result.value.data() as { groupName?: unknown; courseName?: unknown; courseId?: unknown; courses?: unknown };
+      const data = result.value.data() as { groupName?: unknown; semester?: unknown; courseName?: unknown; courseId?: unknown; courses?: unknown };
       const groupName = asTrimmedString(data.groupName);
+      if (isCertificationGroup(groupName)) certificationGroupIds.add(groupId);
+      const semester = typeof data.semester === "number" ? String(data.semester) : asTrimmedString(data.semester);
+      if (semester) semestersByGroupId.set(groupId, semester);
       const fallbackCourseName = asTrimmedString(data.courseName);
       if (groupName) enrollmentGroupNames.set(groupId, groupName);
       if (fallbackCourseName) enrollmentCourseFallbackByGroup.set(groupId, fallbackCourseName);
@@ -552,10 +567,26 @@ export async function GET(
       rows.set(key, previous ? { ...submissionRow, ...previous } : submissionRow);
     });
 
+    if (context.role !== "teacher" && context.role) {
+      const equivalencies = await readStudentEquivalencies(normalizedStudentId, {
+        uid: context.uid,
+        role: context.role,
+        plantelIds: context.plantelIds,
+      });
+      equivalencies.forEach((equivalency) => {
+        const row = equivalencyGradeRow(equivalency);
+        rows.set(row.id, row);
+      });
+    }
+
     return NextResponse.json({
       success: true,
       data: {
-        rows: Array.from(rows.values()).sort((a, b) => getRowTs(b) - getRowTs(a)),
+        rows: Array.from(rows.values()).map((row) => row.equivalencyId ? row : {
+          ...row,
+          semester: semestersByGroupId.get(row.groupId) || "",
+          isCertification: certificationGroupIds.has(row.groupId) || isCertificationGroup(row.groupName),
+        }).sort((a, b) => getRowTs(b) - getRowTs(a)),
       },
     });
   } catch (error) {

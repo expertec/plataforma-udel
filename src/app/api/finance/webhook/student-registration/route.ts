@@ -7,6 +7,7 @@ import {
   verifyIntegrationApiKey,
 } from "@/lib/security/integration-api-keys";
 import { buildPhoneLookupValues } from "@/lib/utils/phone";
+import { DEFAULT_NEW_STUDENT_PLATFORM_VIEW } from "@/lib/students/platform-view-defaults";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -643,6 +644,9 @@ export async function POST(request: NextRequest) {
     if (created) {
       dataToPersist.createdAt = now;
       dataToPersist.createdBy = "finance-webhook";
+    }
+    if (created || !existingUserDoc.exists) {
+      dataToPersist.preferredStudentView = DEFAULT_NEW_STUDENT_PLATFORM_VIEW;
     }
 
     await userDocRef.set(dataToPersist, { merge: true });

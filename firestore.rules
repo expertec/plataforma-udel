@@ -300,7 +300,7 @@ service cloud.firestore {
     }
     function canUpdateLikesCountOnly() {
       return isSignedIn() &&
-        request.resource.data.diff(resource.data).changedKeys().hasOnly(['likesCount']) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likesCount']) &&
         request.resource.data.likesCount is int &&
         request.resource.data.likesCount >= 0;
     }
@@ -455,26 +455,32 @@ service cloud.firestore {
       // Permitir lectura a cualquier usuario autenticado (necesario para alumnos)
       allow read: if isAdmin() || isSignedIn();
       // Permitir creación/edición al propietario aunque falte el rol en users/{uid}
-      allow create: if isSignedIn() && request.resource.data.teacherId == request.auth.uid;
-      allow update: if isAdmin() ||
+      allow create: if isSignedIn() && request.resource.data.teacherId == request.auth.uid && !("finalExam" in request.resource.data);
+      allow update: if !request.resource.data.diff(resource.data).affectedKeys().hasAny(["finalExam"]) && (isAdmin() ||
         isAdminTeacher() ||
-        (isSignedIn() && resource.data.teacherId == request.auth.uid);
+        (isSignedIn() && resource.data.teacherId == request.auth.uid));
       allow delete: if isAdmin() || isAdminTeacher() || (isSignedIn() && resource.data.teacherId == request.auth.uid);
 
       match /lessons/{lessonId} {
         allow read: if isAdmin() || isSignedIn();
-        allow create, update, delete: if canManageCourse(courseId);
+        allow create, update: if canManageCourse(courseId);
+        allow delete: if canManageCourse(courseId) && get(/databases/$(database)/documents/courses/$(courseId)).data.get("finalExam", {}).get("lessonId", "") != lessonId;
 
         match /classes/{classId} {
           allow read: if isAdmin() || isSignedIn();
           // Para likesCount permitimos a cualquier usuario autenticado actualizar solo ese campo.
           allow update: if canUpdateLikesCountOnly();
-          allow create, delete: if canManageCourse(courseId);
-          allow update: if canManageCourse(courseId) || canUpdateLikesCountOnly();
+          allow create: if canManageCourse(courseId) && request.resource.data.get("assessmentKind", "regular") != "final";
+          allow delete: if canManageCourse(courseId) && resource.data.get("assessmentKind", "regular") != "final";
+          allow update: if (canManageCourse(courseId) && resource.data.get("assessmentKind", "regular") != "final" && request.resource.data.get("assessmentKind", "regular") != "final") || canUpdateLikesCountOnly();
 
           match /questions/{questionId} {
-            allow read: if isAdmin() || isSignedIn();
-            allow create, update, delete: if canManageCourse(courseId);
+            allow read: if canManageCourse(courseId) || (isSignedIn() && get(/databases/$(database)/documents/courses/$(courseId)/lessons/$(lessonId)/classes/$(classId)).data.get("assessmentKind", "regular") != "final");
+            allow create, update, delete: if canManageCourse(courseId) && get(/databases/$(database)/documents/courses/$(courseId)/lessons/$(lessonId)/classes/$(classId)).data.get("assessmentKind", "regular") != "final";
+          }
+
+          match /finalExamAttempts/{attemptId} {
+            allow read, write: if false;
           }
 
           // Likes por usuario
@@ -599,6 +605,16 @@ service cloud.firestore {
       }
 
       match /submissions/{submissionId} {
+        function isNotFinalSubmission(data) {
+          let courseId = data.get("courseId", "");
+          let lessonId = data.get("lessonId", "");
+          let classId = data.get("classDocId", data.get("classId", ""));
+          return data.get("assessmentKind", "regular") != "final" &&
+            !submissionId.matches("final-.*") &&
+            (!(courseId is string) || !(lessonId is string) || !(classId is string) || courseId == "" || lessonId == "" || classId == "" ||
+              !exists(/databases/$(database)/documents/courses/$(courseId)/lessons/$(lessonId)/classes/$(classId)) ||
+              get(/databases/$(database)/documents/courses/$(courseId)/lessons/$(lessonId)/classes/$(classId)).data.get("assessmentKind", "regular") != "final");
+        }
         allow read: if isAdmin() || isAdminTeacher() ||
           isGroupInCoordinatorReadScope(/databases/$(database)/documents/groups/$(groupId)) || (
           isSignedIn() &&
@@ -613,7 +629,7 @@ service cloud.firestore {
         );
         // Permitir crear submission si el usuario está autenticado y es el estudiante del submission
         // Ya no verificamos isGroupStudent o isEnrolledInGroup porque con múltiples grupos esto falla
-        allow create: if isAdmin() || isAdminTeacher() || (
+        allow create: if isNotFinalSubmission(request.resource.data) && (isAdmin() || isAdminTeacher() || (
           // El alumno crea su propia entrega: se evalúa primero para no tocar
           // request.resource.data.courseId (que puede no venir en quizzes/tareas)
           // y evitar que un acceso a campo inexistente invalide toda la regla.
@@ -637,10 +653,12 @@ service cloud.firestore {
             canManageCourse(request.resource.data.courseId) ||
             isCourseTeacherOrMentorTolerant(request.resource.data.courseId)
           )
-        );
+        ));
         // Estudiante puede eliminar/actualizar su propia entrega si NO está calificada
         // Se evalúa primero para evitar llamadas innecesarias a get()
-        allow update, delete: if (
+        allow update, delete: if isNotFinalSubmission(resource.data) && (
+          request.method == "delete" || isNotFinalSubmission(request.resource.data)
+        ) && ((
           request.auth != null &&
           "studentId" in resource.data &&
           resource.data.studentId == request.auth.uid &&
@@ -661,7 +679,7 @@ service cloud.firestore {
             canManageCourse(resource.data.courseId) ||
             isCourseTeacherOrMentorTolerant(resource.data.courseId)
           )
-        );
+        ));
       }
 
       match /grades/{studentId} {
@@ -723,9 +741,24 @@ service cloud.firestore {
             canReadEnrollmentData(get(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)).data) ||
             canCoordinatorReadEnrollmentDocById(enrollmentId)
           );
-        allow write: if exists(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)) &&
+        allow create: if request.resource.data.get("assessmentKind", "regular") != "final" && exists(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)) &&
+          canReadEnrollmentData(get(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)).data);
+        allow update: if resource.data.get("assessmentKind", "regular") != "final" && request.resource.data.get("assessmentKind", "regular") != "final" && exists(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)) &&
+          canReadEnrollmentData(get(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)).data);
+        allow delete: if resource.data.get("assessmentKind", "regular") != "final" && exists(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)) &&
           canReadEnrollmentData(get(/databases/$(database)/documents/studentEnrollments/$(enrollmentId)).data);
       }
+    }
+
+    match /studentEquivalencies/{equivalencyId} {
+      allow read, write: if false;
+      match /history/{historyId} {
+        allow read, write: if false;
+      }
+    }
+
+    match /studentEquivalencyLocks/{studentId} {
+      allow read, write: if false;
     }
 
     /* studentEnrollmentsArchive: historial de inscripciones conservado al remover a un

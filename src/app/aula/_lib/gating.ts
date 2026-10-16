@@ -61,6 +61,7 @@ export const filterVisibleClasses = (classes: FeedClass[]) =>
   sortLiveClassesFirstWithinLesson(
     classes.filter((cls) => {
       if (cls.showInStudentPlatform === false) return false;
+      if (cls.assessmentKind === "final") return true;
       if (cls.groupIsInPerson === true) {
         if (cls.type === "quiz") return false;
         if (cls.studyOnly === true) return true;
@@ -87,6 +88,7 @@ export const isClassComplete = (
   progress: ProgressSnapshot,
   forumDone: Record<string, boolean>,
 ) => {
+  if (cls.assessmentKind === "final") return getClassPct(cls, progress) >= 100;
   if (cls.groupIsInPerson === true) return true;
   return getClassPct(cls, progress) >= getRequiredPct(cls.type) && isForumSatisfied(cls, forumDone);
 };

@@ -285,13 +285,14 @@ const loadCourseContent = async (task: CourseTask): Promise<CourseResult | null>
         classesSnap.forEach((cls) => {
           const c = cls.data();
           const normType = normalizeClassType(c.type);
-          if (task.isGroupInPerson && normType === "quiz") return;
+          if (task.isGroupInPerson && normType === "quiz" && c.assessmentKind !== "final") return;
           if (task.isStudyOnlyCourse && normType === "quiz") return;
           const imageArray = c.images ?? c.imageUrls ?? (c.imageUrl ? [c.imageUrl] : []);
 
           lessonClasses.push({
             id: `${task.groupId}_${task.courseId}_${cls.id}`,
             classDocId: cls.id,
+            assessmentKind: c.assessmentKind === "final" ? "final" : "regular",
             title: c.title ?? "Clase sin título",
             type: normType,
             courseId: task.courseId,
