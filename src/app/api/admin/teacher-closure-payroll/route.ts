@@ -35,6 +35,14 @@ type TeacherSnapshot = {
 
 type PayrollStatus = "payable" | "pending" | "review" | "paid";
 
+type PaymentHistoryEntry = {
+  action: "paid" | "unpaid";
+  at: string;
+  byId: string;
+  byName: string;
+  byEmail: string;
+};
+
 type PayrollItem = {
   sourceKey: string;
   status: PayrollStatus;
@@ -65,6 +73,7 @@ type PayrollItem = {
   closureDocumentFileName: string;
   closedByNames: string[];
   closureTriggers: string[];
+  paymentHistory: PaymentHistoryEntry[];
 };
 
 type EnrollmentCourseClosure = {
@@ -454,15 +463,52 @@ async function loadCourseMeta(params: {
   }
 }
 
-async function alreadyPaidForSourceKey(db: admin.firestore.Firestore, sourceKey: string): Promise<boolean> {
+function paymentHistoryFromRecord(data: FirestoreRecord): PaymentHistoryEntry[] {
+  const entries = Array.isArray(data.paymentHistory) ? data.paymentHistory : [];
+  const history = entries.flatMap((value): PaymentHistoryEntry[] => {
+    const entry = asObject(value);
+    const at = asTimestampOrNull(entry.at);
+    if ((entry.action !== "paid" && entry.action !== "unpaid") || !at) return [];
+    return [{
+      action: entry.action,
+      at: at.toDate().toISOString(),
+      byId: asTrimmedString(entry.byId),
+      byName: asTrimmedString(entry.byName),
+      byEmail: asTrimmedString(entry.byEmail),
+    }];
+  });
+  // Preserve the original payment metadata for records created before the history existed.
+  const paidAt = asTimestampOrNull(data.paidAt);
+  if (history.length === 0 && paidAt) {
+    history.push({
+      action: "paid",
+      at: paidAt.toDate().toISOString(),
+      byId: asTrimmedString(data.paidById),
+      byName: asTrimmedString(data.paidByName),
+      byEmail: asTrimmedString(data.paidByEmail),
+    });
+  }
+  return history;
+}
+
+function storedPaymentHistory(data: FirestoreRecord): FirestoreRecord[] {
+  return paymentHistoryFromRecord(data).map((entry) => ({
+    ...entry,
+    at: admin.firestore.Timestamp.fromDate(new Date(entry.at)),
+  }));
+}
+
+async function loadPaymentState(db: admin.firestore.Firestore, sourceKey: string) {
   const snap = await db
     .collection("teacherPayrollItems")
     .where("sourceKey", "==", sourceKey)
-    .where("status", "in", ["approved", "paid"])
-    .limit(1)
-    .get()
-    .catch(() => null);
-  return Boolean(snap && !snap.empty);
+    .get();
+  const records = snap.docs.map((doc) => doc.data() as FirestoreRecord);
+  return {
+    paid: records.some((data) => data.status === "approved" || data.status === "paid"),
+    paymentHistory: records.flatMap(paymentHistoryFromRecord)
+      .sort((left, right) => left.at.localeCompare(right.at)),
+  };
 }
 
 function parseSourceKey(sourceKey: string): { groupId: string; courseId: string } | null {
@@ -553,7 +599,7 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
 
       const openCount = Math.max(totalStudents - totalClosedCount, 0);
       const sourceKey = `${groupDoc.id}:${course.courseId}`;
-      const paid = await alreadyPaidForSourceKey(db, sourceKey);
+      const { paid, paymentHistory } = await loadPaymentState(db, sourceKey);
       const payees = resolveCoursePayees(groupData, course.courseId);
       const primaryTeacherId = asTrimmedString(groupData.teacherId);
       let payeeId = payees.payeeIds[0] ?? "";
@@ -680,6 +726,7 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
         closureDocumentFileName: closureDocument?.closureDocumentFileName ?? "",
         closedByNames: Array.from(new Set(closedClosures.map((closure) => closure.closedByName).filter(Boolean))),
         closureTriggers: Array.from(new Set(closedClosures.map((closure) => closure.closureTrigger).filter(Boolean))),
+        paymentHistory,
       });
     }
   }
@@ -709,6 +756,7 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
       from: new Date(fromMs).toISOString(),
       to: new Date(toMs).toISOString(),
       scopeRole: access.role,
+      canUnmarkPaid: access.role === "adminTeacher",
       items,
       summary,
       rule:
@@ -721,7 +769,7 @@ async function markClosurePayrollItemPaid(request: NextRequest): Promise<NextRes
   const access = await requirePayrollAccess(request);
   let body: FirestoreRecord;
   try {
-    body = (await request.json()) as FirestoreRecord;
+    body = asObject(await request.json());
   } catch {
     throw new RouteAccessError(400, "Solicitud invalida");
   }
@@ -752,37 +800,53 @@ async function markClosurePayrollItemPaid(request: NextRequest): Promise<NextRes
   const payrollItemRef = db
     .collection("teacherPayrollItems")
     .doc(Buffer.from(sourceKey).toString("base64url"));
-  const existingSnap = await payrollItemRef.get();
-  const existingData = (existingSnap.data() ?? {}) as FirestoreRecord;
   const serverTimestamp = admin.firestore.FieldValue.serverTimestamp();
   const amount = asFiniteAmountOrNull(body.amount);
 
-  await payrollItemRef.set(
-    {
-      sourceKey,
-      status: "paid",
-      groupId: parsedSourceKey.groupId,
-      groupName: asTrimmedString(groupData.groupName) || "Grupo",
-      courseId: parsedSourceKey.courseId,
-      courseName: course.courseName || asTrimmedString(body.courseName) || "Materia",
-      plantelId: asTrimmedString(groupData.plantelId),
-      plantelName: asTrimmedString(groupData.plantelName),
-      payeeId: asTrimmedString(body.payeeId),
-      payeeName: asTrimmedString(body.payeeName),
-      payeeEmail: asTrimmedString(body.payeeEmail),
-      amount,
-      amountSource: asTrimmedString(body.amountSource),
-      firstClosedAt: asTrimmedString(body.firstClosedAt),
-      lastClosedAt: asTrimmedString(body.lastClosedAt),
-      paidAt: serverTimestamp,
-      paidById: access.uid,
-      paidByName: access.displayName,
-      paidByEmail: access.email,
-      updatedAt: serverTimestamp,
-      createdAt: existingData.createdAt ?? serverTimestamp,
-    },
-    { merge: true },
-  );
+  await db.runTransaction(async (transaction) => {
+    const records = await transaction.get(
+      db.collection("teacherPayrollItems").where("sourceKey", "==", sourceKey),
+    );
+    if (records.docs.some((doc) => ["approved", "paid"].includes(doc.get("status")))) {
+      throw new RouteAccessError(409, "La materia ya está marcada como pagada. Actualiza la nómina.");
+    }
+    const existingSnap = await transaction.get(payrollItemRef);
+    const existingData = (existingSnap.data() ?? {}) as FirestoreRecord;
+    transaction.set(
+      payrollItemRef,
+      {
+        sourceKey,
+        status: "paid",
+        groupId: parsedSourceKey.groupId,
+        groupName: asTrimmedString(groupData.groupName) || "Grupo",
+        courseId: parsedSourceKey.courseId,
+        courseName: course.courseName || asTrimmedString(body.courseName) || "Materia",
+        plantelId: asTrimmedString(groupData.plantelId),
+        plantelName: asTrimmedString(groupData.plantelName),
+        payeeId: asTrimmedString(body.payeeId),
+        payeeName: asTrimmedString(body.payeeName),
+        payeeEmail: asTrimmedString(body.payeeEmail),
+        amount,
+        amountSource: asTrimmedString(body.amountSource),
+        firstClosedAt: asTrimmedString(body.firstClosedAt),
+        lastClosedAt: asTrimmedString(body.lastClosedAt),
+        paidAt: serverTimestamp,
+        paidById: access.uid,
+        paidByName: access.displayName,
+        paidByEmail: access.email,
+        paymentHistory: [...storedPaymentHistory(existingData), {
+          action: "paid",
+          at: admin.firestore.Timestamp.now(),
+          byId: access.uid,
+          byName: access.displayName,
+          byEmail: access.email,
+        }],
+        updatedAt: serverTimestamp,
+        createdAt: existingData.createdAt ?? serverTimestamp,
+      },
+      { merge: true },
+    );
+  });
 
   return NextResponse.json({
     success: true,
@@ -791,6 +855,60 @@ async function markClosurePayrollItemPaid(request: NextRequest): Promise<NextRes
       status: "paid",
     },
   });
+}
+
+async function unmarkClosurePayrollItemPaid(request: NextRequest): Promise<NextResponse> {
+  const access = await requirePayrollAccess(request);
+  if (access.role !== "adminTeacher") {
+    throw new RouteAccessError(403, "Solo adminTeacher puede desmarcar un pago como pagado");
+  }
+
+  let body: FirestoreRecord;
+  try {
+    body = asObject(await request.json());
+  } catch {
+    throw new RouteAccessError(400, "Solicitud inválida");
+  }
+  if (body.confirmed !== true) {
+    throw new RouteAccessError(400, "Debes confirmar que deseas desmarcar el pago");
+  }
+  const sourceKey = asTrimmedString(body.sourceKey);
+  if (!parseSourceKey(sourceKey)) {
+    throw new RouteAccessError(400, "Materia de nómina inválida");
+  }
+
+  const db = getAdminFirestore();
+  await db.runTransaction(async (transaction) => {
+    const records = await transaction.get(
+      db.collection("teacherPayrollItems").where("sourceKey", "==", sourceKey),
+    );
+    const paidRecords = records.docs.filter((doc) => ["approved", "paid"].includes(doc.get("status")));
+    if (paidRecords.length === 0) {
+      throw new RouteAccessError(409, "La materia ya no está marcada como pagada. Actualiza la nómina.");
+    }
+
+    const timestamp = admin.firestore.FieldValue.serverTimestamp();
+    const historyEntry = {
+      action: "unpaid",
+      at: admin.firestore.Timestamp.now(),
+      byId: access.uid,
+      byName: access.displayName,
+      byEmail: access.email,
+    };
+    for (const record of paidRecords) {
+      transaction.update(record.ref, {
+        status: "unpaid",
+        unpaidAt: timestamp,
+        unpaidById: access.uid,
+        unpaidByName: access.displayName,
+        unpaidByEmail: access.email,
+        updatedAt: timestamp,
+        paymentHistory: [...storedPaymentHistory(record.data()), historyEntry],
+      });
+    }
+  });
+
+  return NextResponse.json({ success: true, data: { sourceKey, status: "unpaid" } });
 }
 
 function toErrorResponse(error: unknown): NextResponse {
@@ -818,6 +936,14 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     return await markClosurePayrollItemPaid(request);
+  } catch (error) {
+    return toErrorResponse(error);
+  }
+}
+
+export async function PATCH(request: NextRequest) {
+  try {
+    return await unmarkClosurePayrollItemPaid(request);
   } catch (error) {
     return toErrorResponse(error);
   }

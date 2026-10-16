@@ -1,7 +1,7 @@
 "use client";
 
 import { onAuthStateChanged, type User } from "firebase/auth";
-import { CalendarDays, CheckCircle2, DollarSign, FileDown, RefreshCw, Search, ShieldCheck } from "lucide-react";
+import { CalendarDays, CheckCircle2, DollarSign, FileDown, RefreshCw, Search, ShieldCheck, Undo2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import { RoleGate } from "@/components/auth/RoleGate";
@@ -103,6 +103,13 @@ type ClosurePayrollItem = {
   closureDocumentFileName: string;
   closedByNames: string[];
   closureTriggers: string[];
+  paymentHistory: {
+    action: "paid" | "unpaid";
+    at: string;
+    byId: string;
+    byName: string;
+    byEmail: string;
+  }[];
 };
 
 type PayrollDepositDraft = {
@@ -142,6 +149,16 @@ function formatGrade(value: number | null): string {
     minimumFractionDigits: value % 1 === 0 ? 0 : 1,
     maximumFractionDigits: 1,
   });
+}
+
+function formatPaymentDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Sin fecha";
+  return new Intl.DateTimeFormat("es-MX", {
+    dateStyle: "medium",
+    timeStyle: "medium",
+    timeZone: "America/Monterrey",
+  }).format(date);
 }
 
 const moneyFormatter = new Intl.NumberFormat("es-MX", {
@@ -335,6 +352,8 @@ export default function CourseClosureReviewPage() {
   const [payrollDepositDraft, setPayrollDepositDraft] = useState<PayrollDepositDraft | null>(null);
   const [savingPayrollDeposit, setSavingPayrollDeposit] = useState(false);
   const [markingPayrollPaidKey, setMarkingPayrollPaidKey] = useState<string | null>(null);
+  const [canUnmarkPayrollPaid, setCanUnmarkPayrollPaid] = useState(false);
+  const [unmarkingPayrollPaidKey, setUnmarkingPayrollPaidKey] = useState<string | null>(null);
   const payrollRangeKey = `${payrollFrom}:${payrollTo}`;
 
   const loadItems = useCallback(async (user: User) => {
@@ -392,15 +411,18 @@ export default function CourseClosureReviewPage() {
       const payload = (await response.json()) as {
         data?: {
           items?: ClosurePayrollItem[];
+          canUnmarkPaid?: boolean;
         };
       };
       setClosurePayrollItems(payload.data?.items ?? []);
+      setCanUnmarkPayrollPaid(payload.data?.canUnmarkPaid === true);
       setClosurePayrollLoadedRange(payrollRangeKey);
     } catch (loadError) {
       const message =
         loadError instanceof Error ? loadError.message : "No se pudo cargar la nomina por cierres";
       setPayrollError(message);
       setClosurePayrollItems([]);
+      setCanUnmarkPayrollPaid(false);
       setClosurePayrollLoadedRange(payrollRangeKey);
     } finally {
       setPayrollLoading(false);
@@ -409,6 +431,9 @@ export default function CourseClosureReviewPage() {
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
+      setCanUnmarkPayrollPaid(false);
+      setClosurePayrollItems([]);
+      setClosurePayrollLoadedRange("");
       setCurrentUser(user);
       setAuthReady(true);
       if (user) {
@@ -641,7 +666,7 @@ export default function CourseClosureReviewPage() {
       rate: number;
     },
   ) => {
-    if (!currentUser) return;
+    if (!currentUser || markingPayrollPaidKey || unmarkingPayrollPaidKey) return;
     const confirmed = window.confirm(
       `Marcar como pagada la materia "${item.courseName}" para ${item.payeeName}?`,
     );
@@ -688,6 +713,34 @@ export default function CourseClosureReviewPage() {
       toast.error(message);
     } finally {
       setMarkingPayrollPaidKey(null);
+    }
+  };
+
+  const unmarkClosurePayrollItemPaid = async (item: ClosurePayrollItem) => {
+    if (!currentUser || !canUnmarkPayrollPaid || markingPayrollPaidKey || unmarkingPayrollPaidKey) return;
+    const confirmed = window.confirm(
+      `¿Desmarcar como pagado el pago de "${item.courseName}" del grupo "${item.groupName}" para ${item.payeeName}?\n\nLa materia volverá a evaluarse para pago. Se registrarán tu usuario, la fecha y la hora de este cambio.`,
+    );
+    if (!confirmed) return;
+
+    setUnmarkingPayrollPaidKey(item.sourceKey);
+    try {
+      const token = await currentUser.getIdToken();
+      const response = await fetch("/api/admin/teacher-closure-payroll", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ sourceKey: item.sourceKey, confirmed: true }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      toast.success("Pago desmarcado. El cambio quedó registrado en el historial.");
+      await loadClosurePayrollItems(currentUser);
+    } catch (unmarkError) {
+      toast.error(unmarkError instanceof Error ? unmarkError.message : "No se pudo desmarcar el pago");
+    } finally {
+      setUnmarkingPayrollPaidKey(null);
     }
   };
 
@@ -1508,12 +1561,40 @@ export default function CourseClosureReviewPage() {
                           <button
                             type="button"
                             onClick={() => markClosurePayrollItemPaid(item)}
-                            disabled={markingPayrollPaidKey === item.sourceKey}
+                            disabled={Boolean(markingPayrollPaidKey || unmarkingPayrollPaidKey)}
                             className="mt-2 inline-flex items-center gap-1 rounded-md border border-emerald-700/30 bg-white px-2 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             <CheckCircle2 size={13} />
                             {markingPayrollPaidKey === item.sourceKey ? "Guardando..." : "Marcar pagado"}
                           </button>
+                        ) : null}
+                        {item.status === "paid" && canUnmarkPayrollPaid ? (
+                          <button
+                            type="button"
+                            onClick={() => unmarkClosurePayrollItemPaid(item)}
+                            disabled={Boolean(markingPayrollPaidKey || unmarkingPayrollPaidKey)}
+                            className="mt-2 inline-flex items-center gap-1 rounded-md border border-amber-700/30 bg-white px-2 py-1 text-xs font-semibold text-amber-800 transition hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <Undo2 size={13} />
+                            {unmarkingPayrollPaidKey === item.sourceKey ? "Guardando..." : "Desmarcar como pagado"}
+                          </button>
+                        ) : null}
+                        {item.paymentHistory?.length > 0 ? (
+                          <details className="mt-3 min-w-56 text-xs text-[#754848]">
+                            <summary className="cursor-pointer font-semibold">Historial de pago ({item.paymentHistory.length})</summary>
+                            <ol className="mt-2 space-y-2">
+                              {[...item.paymentHistory].reverse().map((entry, index) => (
+                                <li key={`${entry.at}:${entry.byId}:${index}`}>
+                                  <p className="font-medium">
+                                    {entry.action === "paid" ? "Marcado como pagado" : "Desmarcado como pagado"}
+                                  </p>
+                                  <p>{entry.byName || entry.byEmail || entry.byId || "Sin usuario registrado"}</p>
+                                  {entry.byEmail && entry.byEmail !== entry.byName ? <p>{entry.byEmail}</p> : null}
+                                  <p>{formatPaymentDateTime(entry.at)} (Monterrey)</p>
+                                </li>
+                              ))}
+                            </ol>
+                          </details>
                         ) : null}
                       </td>
                       <td className="min-w-64 px-5 py-4">
