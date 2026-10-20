@@ -750,6 +750,14 @@ service cloud.firestore {
       }
     }
 
+    // Manual academic records are only accessed through authenticated server routes.
+    match /studentAcademicHistory/{recordId} {
+      allow read, write: if false;
+      match /history/{historyId} {
+        allow read, write: if false;
+      }
+    }
+
     match /studentEquivalencies/{equivalencyId} {
       allow read, write: if false;
       match /history/{historyId} {

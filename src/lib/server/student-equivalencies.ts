@@ -8,6 +8,8 @@ import {
   type StudentEquivalency,
 } from "@/lib/students/equivalencies";
 
+import { sameAcademicSubject, type StudentAcademicHistory } from "@/lib/students/academic-history";
+
 type RecordData = Record<string, unknown>;
 export type EquivalencyAccess = { uid: string; role: string; plantelIds: string[] };
 
@@ -118,6 +120,13 @@ export async function mutateStudentEquivalencies(studentId: string, access: Equi
       identities.push({ courseId: entry.courseId, name });
     });
     if (normalizedEntries.length > 0) {
+      const manualHistory = await transaction.get(db.collection("studentAcademicHistory").where("studentId", "==", studentId));
+      normalizedEntries.forEach((entry) => {
+        if (manualHistory.docs.some((doc) => {
+          const record = doc.data() as StudentAcademicHistory;
+          return record.status === "active" && record.section === "academic" && sameAcademicSubject(entry, record);
+        })) throw new EquivalencyError(409, `${entry.courseName} ya tiene historial académico manual. Revisa el expediente antes de registrar la equivalencia.`);
+      });
       const live = await transaction.get(db.collection("studentEnrollments").where("studentId", "==", studentId));
       const archived = await transaction.get(db.collection("studentEnrollmentsArchive").where("studentId", "==", studentId));
       const groupIds = Array.from(new Set(live.docs.map((entry) => text(entry.data().groupId)).filter(Boolean)));

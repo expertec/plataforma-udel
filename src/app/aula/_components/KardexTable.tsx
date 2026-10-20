@@ -1,6 +1,7 @@
 "use client";
 
 import { Archive, Clock } from "lucide-react";
+import { formatManualRegistrationDate } from "@/lib/students/academic-history";
 import { formatKardexDate, formatKardexIdentification } from "@/lib/students/kardex";
 import type { KardexRow } from "../_lib/kardex";
 
@@ -84,6 +85,9 @@ export function KardexTable({ rows, loading }: { rows: KardexRow[]; loading: boo
               <td className="px-4 py-3">
                 <div className="flex items-center gap-2">
                   <span className="text-[var(--aula-text)]">{row.courseName}</span>
+                  {row.academicHistoryId && (
+                    <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-300">Captura manual</span>
+                  )}
                   {row.equivalencyId && (
                     <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-xs text-sky-300">Equivalencia</span>
                   )}
@@ -114,7 +118,7 @@ export function KardexTable({ rows, loading }: { rows: KardexRow[]; loading: boo
               <td className="px-4 py-3 text-[var(--aula-text-muted)]">
                 {row.status === "closed" ? (
                   <div className="flex flex-col gap-1">
-                    <span>{formatKardexDate(row.closedAt)}</span>
+                    <span>{row.academicHistoryId ? formatManualRegistrationDate(row.registeredAt) : formatKardexDate(row.closedAt)}</span>
                     <ClosureOriginBadge row={row} />
                   </div>
                 ) : (

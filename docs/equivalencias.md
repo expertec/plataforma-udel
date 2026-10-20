@@ -8,6 +8,8 @@ Las equivalencias vigentes aparecen identificadas en el kardex administrativo, e
 
 La captura rechaza duplicados por identificador de materia o nombre normalizado, incluso dentro de una misma lista. También rechaza materias ya inscritas o con historial de calificaciones. Un conflicto requiere revisar la carga e historial del alumno; no se sustituyen calificaciones existentes. La lista se guarda completa o no se guarda ninguna materia.
 
+También se rechazan materias con [historial académico manual](historial-academico.md) vigente en Licenciatura. Ambas capturas comparten el bloqueo transaccional por alumno para evitar conflictos concurrentes. Los registros manuales de Certificaciones no impiden registrar equivalencias de Licenciatura.
+
 Las correcciones y anulaciones requieren motivo. Anular conserva el registro pero lo excluye del kardex y el promedio. Cada cambio conserva una versión anterior y posterior, responsable, fecha y motivo en `studentEquivalencies/{id}/history`. La lista administrativa incluye los registros anulados.
 
 ## Almacenamiento y acceso

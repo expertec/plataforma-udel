@@ -13,3 +13,5 @@ La identificación de cada materia se presenta en pantalla y PDF como:
 `C.` muestra únicamente el número registrado en el campo de cuatrimestre del grupo o la inscripción. `A.` muestra la fecha de actualización, o la de cierre si no hay actualización, en formato DD/MM/AA y zona horaria America/Monterrey. Si falta un dato se muestra `—`; no se deduce el cuatrimestre del nombre del grupo. Las equivalencias muestran su procedencia y fecha de actualización.
 
 No se borran calificaciones ni se modifican grupos o inscripciones para aplicar esta separación. No requiere migración de datos ni índices nuevos de Firestore.
+
+Las materias de [captura manual de historial académico](historial-academico.md) se integran al apartado elegido por el administrador, con grupo, ciclo escolar, cuatrimestre, tipo de acreditación y fecha `M-DD/MM/AAAA`. Esa fecha es independiente de la actualización del registro. El PDF coloca la nota en la columna de ordinario, extraordinario o global seleccionada. Los recursamientos permanecen en el historial y promedio; el avance del programa cuenta una sola vez cada identificador de materia aprobada del catálogo.

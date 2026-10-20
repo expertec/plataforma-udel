@@ -47,6 +47,7 @@ import { suggestPlantelByPhone, type SuggestedPlantelByPhone } from "@/lib/plant
 import { normalizeSearchText } from "@/lib/search";
 import { StudentAllSubmissionsModal } from "./_components/StudentAllSubmissionsModal";
 import { StudentGradesModal } from "./_components/StudentGradesModal";
+import { StudentAcademicHistoryModal } from "./_components/StudentAcademicHistoryModal";
 import { StudentEquivalenciesModal } from "./_components/StudentEquivalenciesModal";
 import { StudentDropoutRiskTab } from "./_components/StudentDropoutRiskTab";
 import { StudentProgressHistoryModal } from "./_components/StudentProgressHistoryModal";
@@ -254,6 +255,7 @@ export default function AlumnosPage() {
   const [selectedStudentForSubmissions, setSelectedStudentForSubmissions] = useState<StudentUser | null>(null);
   const [gradesModalOpen, setGradesModalOpen] = useState(false);
   const [selectedStudentForGrades, setSelectedStudentForGrades] = useState<StudentUser | null>(null);
+  const [academicHistoryStudent, setAcademicHistoryStudent] = useState<StudentUser | null>(null);
   const [equivalenciesStudent, setEquivalenciesStudent] = useState<StudentUser | null>(null);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [selectedStudentForHistory, setSelectedStudentForHistory] = useState<StudentUser | null>(null);
@@ -2234,6 +2236,18 @@ export default function AlumnosPage() {
                     Equivalencias
                   </button>
                 ) : null}
+                {isAdmin ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpenActionMenu(null);
+                      setAcademicHistoryStudent(actionMenuStudent);
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-[#7c152d] hover:bg-red-50"
+                  >
+                    Historial académico (captura manual)
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => {
@@ -2557,6 +2571,14 @@ export default function AlumnosPage() {
             setHistoryModalOpen(false);
             setSelectedStudentForHistory(null);
           }}
+        />
+      )}
+
+      {academicHistoryStudent && isAdmin && (
+        <StudentAcademicHistoryModal
+          studentId={academicHistoryStudent.id}
+          studentName={academicHistoryStudent.name}
+          onClose={() => setAcademicHistoryStudent(null)}
         />
       )}
 

@@ -1,11 +1,13 @@
 import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { trimSafeString } from "./gating";
+import { getStudentAcademicHistory } from "@/lib/firebase/academic-history-service";
+import { academicHistoryGradeRow, type ManualKardexFields } from "@/lib/students/academic-history";
 import { getStudentEquivalencies } from "@/lib/firebase/equivalencies-service";
 import { equivalencyGradeRow } from "@/lib/students/equivalencies";
 import { isCertificationGroup } from "@/lib/students/kardex";
 
-export type KardexRow = {
+export type KardexRow = ManualKardexFields & {
   id: string;
   groupId: string;
   groupName: string;
@@ -125,7 +127,7 @@ export const loadKardex = async (
   uid: string,
   courseTitles: Record<string, string>,
 ): Promise<KardexRow[]> => {
-  const [liveDocs, archivedDocs, equivalencies] = await Promise.all([
+  const [liveDocs, archivedDocs, equivalencies, academicHistory] = await Promise.all([
     getDocs(query(collection(db, "studentEnrollments"), where("studentId", "==", uid)))
       .then((snap) => snap.docs)
       .catch((err) => {
@@ -139,6 +141,7 @@ export const loadKardex = async (
         return [];
       }),
     getStudentEquivalencies(uid),
+    getStudentAcademicHistory(uid),
   ]);
 
   const groupIds = Array.from(new Set([...liveDocs, ...archivedDocs]
@@ -287,6 +290,13 @@ export const loadKardex = async (
 
   archivedDocs.forEach((docSnap) => ingest(docSnap.data(), true));
   liveDocs.forEach((docSnap) => ingest(docSnap.data(), false));
+  academicHistory.forEach((entry) => {
+    const row = academicHistoryGradeRow(entry);
+    rows.set(row.id, {
+      ...row, closedAt: new Date(row.closedAt), updatedAt: new Date(row.updatedAt),
+      closedByType: null, closureTrigger: null, archived: false,
+    });
+  });
   equivalencies.forEach((equivalency) => {
     const row = equivalencyGradeRow(equivalency);
     rows.set(row.id, {
@@ -317,7 +327,7 @@ export const loadKardex = async (
   }
 
   rows.forEach((row, key) => {
-    if (row.equivalencyId) return;
+    if (row.equivalencyId || row.academicHistoryId) return;
     const resolvedName = resolveCourseName(row.courseId, row.courseName);
     if (resolvedName !== row.courseName) {
       rows.set(key, { ...row, courseName: resolvedName });

@@ -18,9 +18,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { auth } from "@/lib/firebase/client";
 import { db } from "@/lib/firebase/firestore";
 import { isAdminTeacherRole, type UserRole } from "@/lib/firebase/roles";
+import { getStudentAcademicHistory } from "@/lib/firebase/academic-history-service";
+import { academicHistoryGradeRow, type ManualKardexFields } from "@/lib/students/academic-history";
 import { getStudentEquivalencies } from "@/lib/firebase/equivalencies-service";
 import { equivalencyGradeRow } from "@/lib/students/equivalencies";
-import { filterKardexRows, formatKardexIdentification, isCertificationGroup, type KardexSection } from "@/lib/students/kardex";
+import { countProgramApproved, filterKardexRows, kardexOrdinaryGrade, formatKardexIdentification, isCertificationGroup, type KardexSection } from "@/lib/students/kardex";
 
 type Props = {
   studentId: string;
@@ -50,7 +52,7 @@ type CourseClosure = {
   updatedAt?: unknown;
 };
 
-type GradeRow = {
+type GradeRow = ManualKardexFields & {
   equivalencyId?: string;
   countsTowardProgram?: boolean;
   id: string;
@@ -211,7 +213,7 @@ const buildGradeSummary = (sourceRows: GradeRow[]) => {
     total: sourceRows.length,
     closed: closed.length,
     approved: approved.length,
-    programApproved: approved.filter((row) => row.countsTowardProgram !== false).length,
+    programApproved: countProgramApproved(sourceRows),
     avg,
     approvedAvg,
   };
@@ -351,7 +353,7 @@ export function StudentGradesModal({
           return;
         }
 
-        const equivalencies = await getStudentEquivalencies(studentId);
+        const [equivalencies, academicHistory] = await Promise.all([getStudentEquivalencies(studentId), getStudentAcademicHistory(studentId)]);
         let enrollmentPermissionDenied = false;
         let enrollmentDocs:
           | Array<Awaited<ReturnType<typeof getDoc>>>
@@ -1022,11 +1024,15 @@ export function StudentGradesModal({
           });
         });
 
+        academicHistory.forEach((entry) => {
+          const row = toClientGradeRow(academicHistoryGradeRow(entry));
+          mergedRows.set(row.id, row);
+        });
         equivalencies.forEach((equivalency) => {
           const row = toClientGradeRow(equivalencyGradeRow(equivalency));
           mergedRows.set(row.id, row);
         });
-        const nextRows = Array.from(mergedRows.values()).map((row) => row.equivalencyId ? row : {
+        const nextRows = Array.from(mergedRows.values()).map((row) => row.equivalencyId || row.academicHistoryId ? row : {
           ...row,
           semester: semestersByGroupId.get(row.groupId) || "",
           isCertification: certificationGroupIds.has(row.groupId) || isCertificationGroup(row.groupName),
@@ -1172,7 +1178,7 @@ export function StudentGradesModal({
       const contentWidth = pageWidth - marginX * 2;
       const tableTop = 250;
       const rowHeight = 34;
-      const tableBottom = pageHeight - 126;
+      const tableBottom = pageHeight - 170;
       const backgroundDataUrl = await loadPdfAssetDataUrl("/bg-pdf-01.png", pdfBackgroundDataUrlRef, "bg-pdf-01.png");
       const downloadedAt = new Date();
       const sortedRows = [...pdfRows].sort((left, right) => {
@@ -1298,7 +1304,7 @@ export function StudentGradesModal({
       drawFooter();
 
       sortedRows.forEach((row, index) => {
-        const groupMeta = groupMetaById[row.groupId] ?? null;
+        const groupMeta = row.academicHistoryId ? null : groupMetaById[row.groupId] ?? null;
         const groupLabel = groupMeta?.groupName || row.groupName || "N/D";
         const courseLines = (pdf.splitTextToSize(row.courseName || "N/D", columns.course.width) as string[]).slice(0, 2);
         const metadataLine = formatKardexIdentification({ ...row, groupName: groupLabel, semester: groupMeta?.semester || row.semester });
@@ -1321,7 +1327,7 @@ export function StudentGradesModal({
         pdf.setFontSize(8.5);
         pdf.setTextColor(20, 20, 20);
         pdf.setFont("helvetica", "bold");
-        pdf.text(formatGradeValue(row.finalGrade), columns.ordinary.x, y + 4);
+        pdf.text(formatGradeValue(kardexOrdinaryGrade(row)), columns.ordinary.x, y + 4);
         pdf.setFont("helvetica", "normal");
         pdf.text(formatGradeValue(row.extraordinaryExamGrade), columns.extraordinary.x, y + 4);
         pdf.text(formatGradeValue(row.globalExamGrade), columns.global.x, y + 4);
@@ -1437,6 +1443,7 @@ export function StudentGradesModal({
                     <tr key={row.id}>
                       <td className="px-4 py-3">
                         {row.courseName}
+                        {row.academicHistoryId && <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">Captura manual</span>}
                         {row.equivalencyId && <span className="ml-2 rounded-full bg-sky-100 px-2 py-0.5 text-xs font-semibold text-sky-700">Equivalencia</span>}
                         <p className="mt-1 text-xs text-slate-500">{formatKardexIdentification(row)}</p>
                       </td>

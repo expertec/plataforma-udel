@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 import { EquivalencyError, readStudentEquivalencies } from "@/lib/server/student-equivalencies";
+import { readStudentAcademicHistory } from "@/lib/server/student-academic-history";
+import { academicHistoryGradeRow, type ManualKardexFields } from "@/lib/students/academic-history";
 import { equivalencyGradeRow } from "@/lib/students/equivalencies";
 import { isCertificationGroup } from "@/lib/students/kardex";
 
@@ -31,7 +33,7 @@ type CourseClosure = {
   updatedAt?: unknown;
 };
 
-type GradeRow = {
+type GradeRow = ManualKardexFields & {
   equivalencyId?: string;
   countsTowardProgram?: boolean;
   id: string;
@@ -568,10 +570,14 @@ export async function GET(
     });
 
     if (context.role !== "teacher" && context.role) {
-      const equivalencies = await readStudentEquivalencies(normalizedStudentId, {
-        uid: context.uid,
-        role: context.role,
-        plantelIds: context.plantelIds,
+      const access = { uid: context.uid, role: context.role, plantelIds: context.plantelIds };
+      const [equivalencies, academicHistory] = await Promise.all([
+        readStudentEquivalencies(normalizedStudentId, access),
+        readStudentAcademicHistory(normalizedStudentId, access),
+      ]);
+      academicHistory.forEach((entry) => {
+        const row = academicHistoryGradeRow(entry);
+        rows.set(row.id, row);
       });
       equivalencies.forEach((equivalency) => {
         const row = equivalencyGradeRow(equivalency);
@@ -582,7 +588,7 @@ export async function GET(
     return NextResponse.json({
       success: true,
       data: {
-        rows: Array.from(rows.values()).map((row) => row.equivalencyId ? row : {
+        rows: Array.from(rows.values()).map((row) => row.equivalencyId || row.academicHistoryId ? row : {
           ...row,
           semester: semestersByGroupId.get(row.groupId) || "",
           isCertification: certificationGroupIds.has(row.groupId) || isCertificationGroup(row.groupName),
