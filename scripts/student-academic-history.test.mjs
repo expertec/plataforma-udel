@@ -5,6 +5,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import XLSX from "xlsx";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const compiled = new Map();
@@ -64,6 +65,7 @@ function fixture(role = "adminTeacher", uid = "admin") {
   };
   const modules = new Map();
   const dependencies = {
+    xlsx: XLSX,
     "firebase-admin/firestore": { FieldValue: { serverTimestamp: () => "server-timestamp" } },
     "@/lib/firebase/admin": {
       getAdminFirestore: () => db,
@@ -123,6 +125,7 @@ function fixture(role = "adminTeacher", uid = "admin") {
     list: async (history = false) => (await (await request("GET", null, "valid", history ? "?history=1" : "")).json()).data.records,
     grades: () => gradesRoute.GET({ headers: new Headers({ Authorization: "Bearer valid" }) }, { params: Promise.resolve({ studentId: "student" }) }),
     studentKardex: () => load("@/app/aula/_lib/kardex"),
+    excel: () => load("@/lib/students/academic-history-excel"),
   };
 }
 
@@ -367,4 +370,157 @@ test("read scope includes self and matching current/historical campuses and excl
   assert.equal((await read({ uid: "director", role: "director", plantelIds: ["old-campus"] })).length, 1);
   await assert.rejects(read({ uid: "outsider", role: "director", plantelIds: ["other-campus"] }), (error) => error.status === 403);
   await assert.rejects(read({ uid: "teacher", role: "teacher", plantelIds: ["campus"] }), (error) => error.status === 403);
+});
+
+function clientFixture(response) {
+  const filename = path.join(root, "src/lib/firebase/academic-history-service.ts");
+  if (!compiled.has(filename)) compiled.set(filename, ts.transpileModule(fs.readFileSync(filename, "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+  }).outputText);
+  const loadedModule = { exports: {} };
+  const requests = [];
+  vm.runInNewContext(compiled.get(filename), {
+    module: loadedModule, exports: loadedModule.exports,
+    require: (name) => {
+      assert.equal(name, "./client");
+      return { auth: { currentUser: { getIdToken: async () => "valid" } } };
+    },
+    fetch: async (url, options) => { requests.push({ url, options }); return response; },
+  }, { filename });
+  return { ...loadedModule.exports, requests };
+}
+
+test("client handles framework plain-text, HTML and empty failures without JSON parsing exceptions", async () => {
+  for (const [body, status] of [["Internal Server Error", 500], ["<html>Bad Gateway</html>", 502], [null, 503]]) {
+    const client = clientFixture(new Response(body, { status }));
+    await assert.rejects(client.getStudentAcademicHistory("student", true), (error) => {
+      assert.match(error.message, new RegExp(`historial académico.*HTTP ${status}`));
+      assert.doesNotMatch(error.message, /Unexpected token|JSON|<html>/);
+      return true;
+    });
+    assert.equal(client.requests.length, 1);
+  }
+});
+
+test("client preserves API validation messages and rejects invalid successes instead of clearing the history", async () => {
+  const denied = clientFixture(Response.json({ success: false, error: "Alumno fuera del alcance de tu plantel." }, { status: 403 }));
+  await assert.rejects(denied.getStudentAcademicHistory("student"), /Alumno fuera del alcance de tu plantel/);
+  for (const payload of [{ success: true }, { success: true, data: {} }, { success: true, data: { records: null } }]) {
+    const invalid = clientFixture(Response.json(payload));
+    await assert.rejects(invalid.getStudentAcademicHistory("student"), /respuesta del historial académico no es válida/);
+  }
+  const malformed = clientFixture(new Response("Internal Server Error", { status: 200 }));
+  await assert.rejects(malformed.getStudentAcademicHistory("student"), /No se pudo consultar el historial académico/);
+});
+
+test("client returns valid history, sends authentication and never retries failed writes automatically", async () => {
+  const records = [{ id: "record", ...input() }];
+  const client = clientFixture(Response.json({ success: true, data: { records } }));
+  assert.deepEqual(await client.getStudentAcademicHistory("student/id", true), records);
+  assert.equal(client.requests[0].url, "/api/students/student%2Fid/academic-history?history=1");
+  assert.equal(client.requests[0].options.headers.Authorization, "Bearer valid");
+  const failedWrite = clientFixture(new Response("Internal Server Error", { status: 500 }));
+  await assert.rejects(failedWrite.createStudentAcademicHistory("student", [input()]), /HTTP 500/);
+  assert.equal(failedWrite.requests.length, 1);
+  assert.equal(failedWrite.requests[0].options.method, "POST");
+});
+
+const excelCatalog = {
+  courses: [{ id: "course", title: "Derecho", program: "Licenciatura" }],
+  groups: [{ id: "group", groupName: "LPI2023", semester: "4" }],
+};
+const excelRow = (changes = {}) => {
+  const row = {
+    Materia: "Derecho", Grupo: "LPI2023", "Ciclo escolar": "2024-2", Cuatrimestre: 4,
+    Apartado: "Licenciatura", "Tipo de acreditación": "Extraordinario", Calificación: 8.5,
+    Escala: 10, "Fecha de registro": "17/10/2026", Observaciones: "Expediente", "ID materia": "", "ID grupo": "", ...changes,
+  };
+  return Object.values(row);
+};
+function workbookWithRows(excel, rows) {
+  const workbook = excel.buildAcademicHistoryWorkbook(excelCatalog);
+  XLSX.utils.sheet_add_aoa(workbook.Sheets.Materias, rows, { origin: "A2" });
+  return workbook;
+}
+
+test("downloaded Excel template is empty, includes references and examples, and never imports example rows", () => {
+  const excel = fixture().excel();
+  const workbook = excel.buildAcademicHistoryWorkbook(excelCatalog);
+  assert.deepEqual(Array.from(workbook.SheetNames), ["Materias", "Instrucciones", "Ejemplo", "Catálogo", "Grupos"]);
+  assert.equal(workbook.Sheets["Catálogo"].A2.v, "course");
+  assert.equal(workbook.Sheets.Grupos.B2.v, "LPI2023");
+  const result = excel.parseAcademicHistoryWorkbook(workbook, excelCatalog);
+  assert.equal(result.entries.length, 0);
+  assert.match(result.errors[0], /está vacía/);
+});
+
+test("Excel import roundtrips real XLSX bytes, links unique catalog names and accepts historical names", () => {
+  const excel = fixture().excel();
+  const workbook = workbookWithRows(excel, [excelRow(), excelRow({ Materia: "Historia antigua", Grupo: "Grupo histórico", Calificación: 0, Apartado: "Certificaciones", "Tipo de acreditación": "Global" })]);
+  const bytes = XLSX.write(workbook, { type: "array", bookType: "xlsx" });
+  const result = excel.readAcademicHistoryExcel(bytes, excelCatalog);
+  assert.equal(result.errors.length, 0, result.errors.join("\n"));
+  assert.equal(result.entries.length, 2);
+  assert.equal(result.entries[0].courseId, "course");
+  assert.equal(result.entries[0].groupId, "group");
+  assert.equal(result.entries[0].registeredAt, "2026-10-17");
+  assert.equal(result.entries[0].accreditationType, "extraordinary");
+  assert.equal(result.entries[0].grade, 8.5);
+  assert.equal(result.entries[1].courseId, null);
+  assert.equal(result.entries[1].groupId, null);
+  assert.equal(result.entries[1].grade, 0);
+  assert.equal(result.entries[1].section, "certifications");
+});
+
+test("Excel dates support text, manual prefix, date serials and the 1904 date system", () => {
+  const excel = fixture().excel();
+  const serial = Date.UTC(2026, 9, 17) / 86400000 + 25569;
+  for (const date of ["2026-10-17", "17/10/2026", "M-17/10/2026", serial]) {
+    const result = excel.parseAcademicHistoryWorkbook(workbookWithRows(excel, [excelRow({ "Fecha de registro": date })]), excelCatalog);
+    assert.equal(result.errors.length, 0, result.errors.join("\n"));
+    assert.equal(result.entries[0].registeredAt, "2026-10-17");
+  }
+  const macWorkbook = workbookWithRows(excel, [excelRow({ "Fecha de registro": 0 })]);
+  macWorkbook.Workbook = { WBProps: { date1904: true } };
+  assert.equal(excel.parseAcademicHistoryWorkbook(macWorkbook, excelCatalog).entries[0].registeredAt, "1904-01-01");
+});
+
+test("Excel validation reports row numbers and rejects the entire import on bad grades, dates, formulas or duplicates", () => {
+  const excel = fixture().excel();
+  for (const row of [excelRow({ Calificación: "" }), excelRow({ Calificación: 11 }), excelRow({ "Fecha de registro": "31/02/2026" }), excelRow({ Apartado: "Otro" }), excelRow({ Escala: 20 })]) {
+    const result = excel.parseAcademicHistoryWorkbook(workbookWithRows(excel, [excelRow(), row]), excelCatalog);
+    assert.equal(result.entries.length, 0);
+    assert.match(result.errors[0], /^Fila 3:/);
+  }
+  const duplicate = excel.parseAcademicHistoryWorkbook(workbookWithRows(excel, [excelRow(), excelRow({ Materia: "DÉRECHO" })]), excelCatalog);
+  assert.match(duplicate.errors[0], /duplicada/);
+  const formula = workbookWithRows(excel, [excelRow()]);
+  formula.Sheets.Materias.G2 = { t: "n", v: 8, f: "4+4" };
+  assert.match(excel.parseAcademicHistoryWorkbook(formula, excelCatalog).errors[0], /fórmulas/);
+  const existing = [input({ groupId: "group" })];
+  assert.match(excel.parseAcademicHistoryWorkbook(workbookWithRows(excel, [excelRow()]), excelCatalog, existing).errors[0], /duplicada/);
+});
+
+test("Excel reference IDs resolve repeated names and reject missing or mismatched references", () => {
+  const excel = fixture().excel();
+  const catalog = { ...excelCatalog, courses: [...excelCatalog.courses, { id: "duplicate", title: "Derecho" }] };
+  assert.match(excel.parseAcademicHistoryWorkbook(workbookWithRows(excel, [excelRow()]), catalog).errors[0], /varias opciones/);
+  const identified = excel.parseAcademicHistoryWorkbook(workbookWithRows(excel, [excelRow({ "ID materia": "duplicate" })]), catalog);
+  assert.equal(identified.entries[0].courseId, "duplicate");
+  for (const changes of [{ "ID materia": "missing" }, { "ID grupo": "missing" }, { "ID materia": "course", Materia: "Otra materia" }]) {
+    assert.ok(excel.parseAcademicHistoryWorkbook(workbookWithRows(excel, [excelRow(changes)]), excelCatalog).errors.length);
+  }
+});
+
+test("Excel import requires template headers, ignores empty rows, and enforces forty subjects", () => {
+  const excel = fixture().excel();
+  const missing = workbookWithRows(excel, [excelRow()]);
+  delete missing.Sheets.Materias.G1;
+  assert.match(excel.parseAcademicHistoryWorkbook(missing, excelCatalog).errors[0], /Falta la columna Calificación/);
+  const duplicate = workbookWithRows(excel, [excelRow()]);
+  duplicate.Sheets.Materias.L1 = { t: "s", v: "Materia" };
+  assert.match(excel.parseAcademicHistoryWorkbook(duplicate, excelCatalog).errors[0], /repetido/);
+  const rows = Array.from({ length: 40 }, (_, index) => excelRow({ "Ciclo escolar": `Ciclo ${index}` }));
+  assert.equal(excel.parseAcademicHistoryWorkbook(workbookWithRows(excel, [[], ...rows, []]), excelCatalog).entries.length, 40);
+  assert.match(excel.parseAcademicHistoryWorkbook(workbookWithRows(excel, [...rows, excelRow()]), excelCatalog).errors[0], /más de 40/);
 });

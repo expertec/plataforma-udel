@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import { createCourse } from "@/lib/firebase/courses-service";
 import { auth } from "@/lib/firebase/client";
+import { CourseAcademicFields } from "./CourseAcademicFields";
 import { getPrograms } from "@/lib/firebase/programs-service";
 import { fetchGlobalExamTemplates, updateGlobalExamTemplate } from "@/lib/global-exams/client";
 import {
@@ -26,6 +27,8 @@ export function CreateCourseModal({
   const router = useRouter();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [credits, setCredits] = useState("");
+  const [cycle, setCycle] = useState("");
   const [introVideoUrl, setIntroVideoUrl] = useState("");
   const [program, setProgram] = useState("");
   const [isInduction, setIsInduction] = useState(false);
@@ -101,6 +104,8 @@ export function CreateCourseModal({
   const resetForm = () => {
     setTitle("");
     setDescription("");
+    setCredits("");
+    setCycle("");
     setIntroVideoUrl("");
     setProgram("");
     setIsInduction(false);
@@ -123,6 +128,8 @@ export function CreateCourseModal({
       const courseId = await createCourse({
         title: title.trim(),
         description: description.trim(),
+        credits: credits.trim() ? Number(credits) : null,
+        cycle: cycle.trim(),
         introVideoUrl: introVideoUrl.trim(),
         program,
         isInduction,
@@ -208,6 +215,14 @@ export function CreateCourseModal({
               placeholder="https://..."
             />
           </div>
+
+          <CourseAcademicFields
+            credits={credits}
+            cycle={cycle}
+            onCreditsChange={setCredits}
+            onCycleChange={setCycle}
+            disabled={loading}
+          />
 
           <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
             <input

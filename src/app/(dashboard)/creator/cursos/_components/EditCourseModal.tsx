@@ -8,6 +8,7 @@ import {
   deleteCourse,
 } from "@/lib/firebase/courses-service";
 import toast from "react-hot-toast";
+import { CourseAcademicFields } from "./CourseAcademicFields";
 import { getPrograms } from "@/lib/firebase/programs-service";
 
 type EditCourseModalProps = {
@@ -27,6 +28,8 @@ export function EditCourseModal({
 }: EditCourseModalProps) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [credits, setCredits] = useState("");
+  const [cycle, setCycle] = useState("");
   const [introVideoUrl, setIntroVideoUrl] = useState("");
   const [program, setProgram] = useState("");
   const [programOptions, setProgramOptions] = useState<string[]>([]);
@@ -42,6 +45,8 @@ export function EditCourseModal({
     if (course) {
       setTitle(course.title || "");
       setDescription(course.description || "");
+      setCredits(course.credits == null ? "" : String(course.credits));
+      setCycle(course.cycle || "");
       setIntroVideoUrl(course.introVideoUrl || "");
       setProgram(course.program || course.category || "");
       setThumbnail(course.thumbnail || "");
@@ -82,6 +87,8 @@ export function EditCourseModal({
       await updateCourse(course.id, {
         title: title.trim(),
         description: description.trim(),
+        credits: credits.trim() ? Number(credits) : null,
+        cycle: cycle.trim(),
         introVideoUrl: introVideoUrl.trim(),
         program,
         thumbnail: thumbnail.trim(),
@@ -90,6 +97,8 @@ export function EditCourseModal({
       onUpdated(course.id, {
         title: title.trim(),
         description: description.trim(),
+        credits: credits.trim() ? Number(credits) : null,
+        cycle: cycle.trim(),
         introVideoUrl: introVideoUrl.trim(),
         program,
         thumbnail: thumbnail.trim(),
@@ -99,7 +108,7 @@ export function EditCourseModal({
       onClose();
     } catch (err) {
       console.error(err);
-      toast.error("No se pudo actualizar el curso");
+      toast.error(err instanceof Error ? err.message : "No se pudo actualizar el curso");
     } finally {
       setLoading(false);
     }
@@ -242,6 +251,14 @@ export function EditCourseModal({
               className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
+
+          <CourseAcademicFields
+            credits={credits}
+            cycle={cycle}
+            onCreditsChange={setCredits}
+            onCycleChange={setCycle}
+            disabled={loading}
+          />
 
           <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
             <input

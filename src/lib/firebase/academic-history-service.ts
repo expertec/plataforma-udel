@@ -10,8 +10,22 @@ async function requestAcademicHistory(studentId: string, method: string, body?: 
     body: body === undefined ? undefined : JSON.stringify(body),
     cache: "no-store",
   });
-  const payload = await response.json();
-  if (!response.ok || payload.success !== true) throw new Error(payload.error || "No se pudo consultar el historial académico.");
+  // Next.js/proxy failures can return plain text or HTML before the route runs.
+  // Preserve the HTTP failure instead of exposing a JSON parsing exception.
+  const payload = await response.json().catch(() => null) as {
+    success?: boolean;
+    error?: unknown;
+    data?: { records?: StudentAcademicHistory[] };
+  } | null;
+  if (!response.ok || payload?.success !== true) {
+    const message = typeof payload?.error === "string" && payload.error.trim()
+      ? payload.error
+      : `No se pudo consultar el historial académico${response.ok ? "" : ` (HTTP ${response.status})`}. Reintenta en unos momentos.`;
+    throw new Error(message);
+  }
+  if (!Array.isArray(payload.data?.records)) {
+    throw new Error("La respuesta del historial académico no es válida. Recarga la página e intenta nuevamente.");
+  }
   return payload.data.records;
 }
 

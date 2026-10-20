@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import toast from "react-hot-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { getCourses, type Course } from "@/lib/firebase/courses-service";
@@ -39,6 +39,10 @@ export function StudentAcademicHistoryModal({ studentId, studentName, onClose }:
   const [cancelling, setCancelling] = useState<StudentAcademicHistory | null>(null);
   const [reason, setReason] = useState("");
   const [reload, setReload] = useState(0);
+  const [excelAction, setExcelAction] = useState<"download" | "import" | null>(null);
+  const [importErrors, setImportErrors] = useState<string[]>([]);
+  const excelInput = useRef<HTMLInputElement>(null);
+  const busy = saving || excelAction !== null;
 
   useEffect(() => {
     let active = true;
@@ -74,6 +78,38 @@ export function StudentAcademicHistoryModal({ studentId, studentName, onClose }:
     setSearch("");
   };
   const errorMessage = (error: unknown) => error instanceof Error ? error.message : "No se pudo guardar el registro académico.";
+
+  async function downloadTemplate() {
+    if (busy) return;
+    setExcelAction("download");
+    try {
+      const { downloadAcademicHistoryTemplate } = await import("@/lib/students/academic-history-excel");
+      downloadAcademicHistoryTemplate({ courses, groups });
+    } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo descargar la plantilla."); }
+    finally { setExcelAction(null); }
+  }
+
+  async function importFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || busy || editing || cancelling) return;
+    setImportErrors([]);
+    setExcelAction("import");
+    try {
+      const { ACADEMIC_HISTORY_EXCEL_MAX_BYTES, readAcademicHistoryExcel } = await import("@/lib/students/academic-history-excel");
+      if (!/\.xlsx?$/i.test(file.name)) throw new Error("Selecciona un archivo de Excel .xlsx o .xls.");
+      if (file.size > ACADEMIC_HISTORY_EXCEL_MAX_BYTES) throw new Error("El archivo debe pesar como máximo 5 MB.");
+      const result = readAcademicHistoryExcel(await file.arrayBuffer(), { courses, groups }, [
+        ...records.filter((record) => record.status === "active"), ...queue,
+      ]);
+      if (result.errors.length) { setImportErrors(result.errors); return; }
+      if (queue.length + result.entries.length > 40) throw new Error(`Solo quedan ${40 - queue.length} lugares en la lista. Guarda las materias pendientes o divide el archivo.`);
+      setQueue((current) => [...current, ...result.entries]);
+      toast.success(`${result.entries.length} materias agregadas a la lista. Revísalas antes de guardar.`);
+    } catch (error) {
+      setImportErrors([error instanceof Error ? error.message : "No se pudo leer el archivo. Usa la plantilla de Excel."]);
+    } finally { setExcelAction(null); }
+  }
 
   async function submitEntry(event: FormEvent) {
     event.preventDefault();
@@ -129,7 +165,7 @@ export function StudentAcademicHistoryModal({ studentId, studentName, onClose }:
   }
 
   const close = () => {
-    if (saving) return;
+    if (busy) return;
     if ((queue.length > 0 || editing || dirty || (cancelling && reason)) && !window.confirm("Hay cambios sin guardar. ¿Deseas cerrar y descartarlos?")) return;
     onClose();
   };
@@ -143,14 +179,29 @@ export function StudentAcademicHistoryModal({ studentId, studentName, onClose }:
             <p className="text-sm text-slate-600">{studentName}</p>
             <p className="mt-2 text-sm text-slate-600">Captura materias cursadas en UDEL que faltan en la plataforma. Aparecerán en el kárdex y su PDF con fecha manual (M). Las calificaciones se guardan en escala de 100 y participan en el promedio.</p>
           </DialogHeader>
-          <button type="button" onClick={close} disabled={saving} className={buttonClass}>Cerrar</button>
+          <button type="button" onClick={close} disabled={busy} className={buttonClass}>Cerrar</button>
         </div>
         {loading ? <p className="py-6 text-sm text-slate-600">Cargando registros académicos y catálogo…</p> : loadError ? (
           <div role="alert" className="rounded-lg bg-red-50 p-4 text-sm text-red-700">{loadError} <button type="button" className="underline" onClick={() => setReload((current) => current + 1)}>Reintentar</button></div>
         ) : (
           <div className="space-y-6">
+            <section className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <h3 className="font-semibold text-slate-900">Cargar materias desde Excel</h3>
+              <p className="text-sm text-slate-600">Descarga la plantilla, completa la hoja Materias e impórtala para este alumno. Puedes revisar hasta 40 materias en la lista antes de guardarlas.</p>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={() => void downloadTemplate()} disabled={busy} className={buttonClass}>{excelAction === "download" ? "Preparando plantilla…" : "Descargar plantilla Excel"}</button>
+                <button type="button" onClick={() => excelInput.current?.click()} disabled={busy || Boolean(editing) || Boolean(cancelling) || Boolean(catalogError) || Boolean(groupError) || queue.length >= 40} className={buttonClass}>{excelAction === "import" ? "Leyendo Excel…" : "Importar Excel"}</button>
+                <input ref={excelInput} type="file" accept=".xlsx,.xls" aria-label="Archivo Excel de historial académico" className="hidden" onChange={(event) => void importFile(event)} />
+              </div>
+              <p className="text-xs text-slate-500">Formatos .xlsx y .xls · Máximo 5 MB. Los nombres que coincidan con el catálogo se vinculan automáticamente; los demás se conservan como materias históricas.</p>
+              {(catalogError || groupError) && <p className="text-sm text-amber-700">Para importar, reintenta la carga del catálogo y de los grupos desde los avisos del formulario.</p>}
+              {importErrors.length > 0 && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                <p className="font-semibold">No se agregó ninguna materia del archivo. Corrige estos datos y vuelve a importarlo:</p>
+                <ul className="mt-2 max-h-48 list-disc space-y-1 overflow-y-auto pl-5">{importErrors.map((error, index) => <li key={index}>{error}</li>)}</ul>
+              </div>}
+            </section>
             <form onSubmit={submitEntry} onChange={() => setDirty(true)} className="rounded-xl border border-slate-200 p-4">
-              <fieldset disabled={saving || Boolean(cancelling)} className="space-y-4">
+              <fieldset disabled={busy || Boolean(cancelling)} className="space-y-4">
                 <legend className="mb-3 font-semibold text-slate-900">{editing ? "Corregir registro académico" : "Agregar materia"}</legend>
                 <div className="flex gap-4 text-sm text-slate-700">
                   <label><input type="radio" name="academic-history-mode" checked={mode === "catalog"} onChange={() => { setMode("catalog"); setDraft((current) => ({ ...current, courseId: null, courseName: "" })); }} /> Buscar en catálogo</label>
@@ -207,15 +258,15 @@ export function StudentAcademicHistoryModal({ studentId, studentName, onClose }:
 
             {queue.length > 0 && <section className="space-y-3 rounded-xl border border-blue-200 bg-blue-50 p-4">
               <h3 className="font-semibold text-slate-900">Materias por guardar ({queue.length})</h3>
-              {queue.map((entry, index) => <div key={`${entry.courseId || entry.courseName}-${index}`} className="flex items-center justify-between gap-3 text-sm text-slate-800"><span>{entry.courseName} · {academicHistoryFinalGrade(entry).toFixed(1)} / 100 · {entry.groupName} · {entry.cycle} · C. {entry.semester} · {entry.section === "academic" ? "Licenciatura" : "Certificaciones"} · {accreditationLabels[entry.accreditationType]} · {formatManualRegistrationDate(entry.registeredAt)}</span><button type="button" disabled={saving} onClick={() => setQueue((current) => current.filter((_, entryIndex) => entryIndex !== index))} className="text-red-700">Quitar</button></div>)}
-              <button type="button" onClick={() => void saveQueue()} disabled={saving || Boolean(editing) || Boolean(cancelling)} className="rounded-lg bg-[#7c152d] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{saving ? "Guardando…" : "Guardar registros académicos en el kardex"}</button>
+              {queue.map((entry, index) => <div key={`${entry.courseId || entry.courseName}-${index}`} className="flex items-center justify-between gap-3 text-sm text-slate-800"><span>{entry.courseName} ({entry.courseId ? "Vinculada al catálogo" : "Nombre histórico, sin vínculo al catálogo"}) · {academicHistoryFinalGrade(entry).toFixed(1)} / 100 · {entry.groupName} · {entry.cycle} · C. {entry.semester} · {entry.section === "academic" ? "Licenciatura" : "Certificaciones"} · {accreditationLabels[entry.accreditationType]} · {formatManualRegistrationDate(entry.registeredAt)}</span><button type="button" disabled={busy} onClick={() => setQueue((current) => current.filter((_, entryIndex) => entryIndex !== index))} className="text-red-700">Quitar</button></div>)}
+              <button type="button" onClick={() => void saveQueue()} disabled={busy || Boolean(editing) || Boolean(cancelling)} className="rounded-lg bg-[#7c152d] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{saving ? "Guardando…" : "Guardar registros académicos en el kardex"}</button>
             </section>}
 
             {cancelling && <section className="space-y-3 rounded-xl border border-red-200 bg-red-50 p-4">
               <h3 className="font-semibold text-red-800">Anular: {cancelling.courseName}</h3>
               <p className="text-sm text-slate-700">Dejará de aparecer en el kardex y en el promedio. Su registro e historial se conservan.</p>
-              <label className="block text-sm text-slate-700">Motivo de la anulación<input maxLength={1000} value={reason} disabled={saving} onChange={(event) => setReason(event.target.value)} className={inputClass} /></label>
-              <div className="flex gap-2"><button type="button" disabled={saving || !reason.trim()} onClick={() => void cancelRecord()} className="rounded-lg bg-red-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">Confirmar anulación</button><button type="button" disabled={saving} onClick={() => { setCancelling(null); setReason(""); }} className={buttonClass}>Cancelar</button></div>
+              <label className="block text-sm text-slate-700">Motivo de la anulación<input maxLength={1000} value={reason} disabled={busy} onChange={(event) => setReason(event.target.value)} className={inputClass} /></label>
+              <div className="flex gap-2"><button type="button" disabled={busy || !reason.trim()} onClick={() => void cancelRecord()} className="rounded-lg bg-red-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">Confirmar anulación</button><button type="button" disabled={busy} onClick={() => { setCancelling(null); setReason(""); }} className={buttonClass}>Cancelar</button></div>
             </section>}
 
             <section className="space-y-3">
@@ -227,7 +278,7 @@ export function StudentAcademicHistoryModal({ studentId, studentName, onClose }:
                 <p className="text-xs text-slate-500">{record.courseId ? "Vinculada al catálogo" : "Materia de captura manual"} · Nota de origen: {record.grade} / {record.gradeScale} · Versión {record.version} · Actualización: {new Date(record.updatedAt).toLocaleString("es-MX", { timeZone: "America/Monterrey" })}</p>
                 {record.notes && <p className="whitespace-pre-wrap">{record.notes}</p>}
                 <p className="text-xs text-slate-500">Último motivo: {record.changeReason}</p>
-                {record.status === "active" && <div className="flex gap-2"><button type="button" disabled={saving || Boolean(editing) || Boolean(cancelling)} onClick={() => editRecord(record)} className={buttonClass}>Corregir</button><button type="button" disabled={saving || Boolean(editing) || Boolean(cancelling)} onClick={() => { setCancelling(record); setReason(""); }} className="rounded-lg px-3 py-2 text-sm font-semibold text-red-700 disabled:opacity-50">Anular</button></div>}
+                {record.status === "active" && <div className="flex gap-2"><button type="button" disabled={busy || Boolean(editing) || Boolean(cancelling)} onClick={() => editRecord(record)} className={buttonClass}>Corregir</button><button type="button" disabled={busy || Boolean(editing) || Boolean(cancelling)} onClick={() => { setCancelling(record); setReason(""); }} className="rounded-lg px-3 py-2 text-sm font-semibold text-red-700 disabled:opacity-50">Anular</button></div>}
               </article>)}
             </section>
           </div>

@@ -33,6 +33,8 @@ export type Course = {
   id: string;
   title: string;
   description?: string;
+  credits?: number | null;
+  cycle?: string;
   thumbnail?: string;
   isArchived?: boolean;
   isPublished: boolean;
@@ -164,6 +166,8 @@ const mapCourseDoc = (
     id: courseDoc.id,
     title: data.title ?? "Curso sin título",
     description: data.description ?? "",
+    credits: typeof data.credits === "number" && Number.isFinite(data.credits) && data.credits >= 0 ? data.credits : null,
+    cycle: typeof data.cycle === "string" ? data.cycle : "",
     thumbnail: data.thumbnail ?? "",
     isArchived: data.isArchived ?? false,
     isPublished: Boolean(data.isPublished),
@@ -314,7 +318,29 @@ export async function getCourse(courseId: string): Promise<Course | null> {
   return mapCourseDoc(snap);
 }
 
-type CreateCourseInput = {
+type CourseAcademicInfo = {
+  credits?: number | null;
+  cycle?: string;
+};
+
+function courseAcademicInfoPayload(input: CourseAcademicInfo): CourseAcademicInfo {
+  const result: CourseAcademicInfo = {};
+  if (input.credits !== undefined) {
+    if (input.credits !== null && (typeof input.credits !== "number" || !Number.isFinite(input.credits) || input.credits < 0)) {
+      throw new Error("Los créditos deben ser un número mayor o igual a cero.");
+    }
+    result.credits = input.credits;
+  }
+  if (input.cycle !== undefined) {
+    if (typeof input.cycle !== "string" || input.cycle.trim().length > 100) {
+      throw new Error("El ciclo debe tener como máximo 100 caracteres.");
+    }
+    result.cycle = input.cycle.trim();
+  }
+  return result;
+}
+
+type CreateCourseInput = CourseAcademicInfo & {
   title: string;
   description?: string;
   introVideoUrl?: string;
@@ -328,9 +354,11 @@ type CreateCourseInput = {
 export async function createCourse(input: CreateCourseInput): Promise<string> {
   const coursesRef = collection(db, "courses");
   const program = input.program ?? input.category ?? "";
+  const academicInfo = courseAcademicInfoPayload({ credits: input.credits ?? null, cycle: input.cycle ?? "" });
   const docRef = await addDoc(coursesRef, {
     title: input.title,
     description: input.description ?? "",
+    ...academicInfo,
     introVideoUrl: input.introVideoUrl ?? "",
     program,
     category: program, // mantener espejo para clientes antiguos
@@ -375,12 +403,15 @@ export async function duplicateCourse(input: DuplicateCourseInput): Promise<stri
   }
 
   const sourceCourse = sourceCourseSnap.data() as Record<string, unknown>;
+  const sourceInfo = mapCourseDoc(sourceCourseSnap);
   const baseTitle = asString(sourceCourse.title, "Curso sin título").trim() || "Curso sin título";
   const titleSuffix = input.titleSuffix ?? " (Copia)";
   const program = asString(sourceCourse.program) || asString(sourceCourse.category);
   const duplicatedCourseRef = await addDoc(collection(db, "courses"), {
     title: `${baseTitle}${titleSuffix}`,
     description: asString(sourceCourse.description),
+    credits: sourceInfo.credits ?? null,
+    cycle: sourceInfo.cycle ?? "",
     introVideoUrl: asString(sourceCourse.introVideoUrl),
     program,
     category: program,
@@ -560,7 +591,7 @@ export async function duplicateCourse(input: DuplicateCourseInput): Promise<stri
   return duplicatedCourseRef.id;
 }
 
-type UpdateCourseInput = {
+type UpdateCourseInput = CourseAcademicInfo & {
   title?: string;
   description?: string;
     introVideoUrl?: string;
@@ -575,7 +606,8 @@ type UpdateCourseInput = {
 export async function updateCourse(courseId: string, data: UpdateCourseInput): Promise<void> {
   const courseRef = doc(db, "courses", courseId);
   const program = data.program ?? data.category;
-  const payload = program !== undefined ? { ...data, program, category: program } : data;
+  const academicInfo = courseAcademicInfoPayload(data);
+  const payload = program !== undefined ? { ...data, ...academicInfo, program, category: program } : { ...data, ...academicInfo };
   await updateDoc(courseRef, payload);
   if (program !== undefined) {
     await syncCourseProgram(courseId, program);

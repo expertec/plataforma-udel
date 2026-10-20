@@ -14,6 +14,7 @@ import {
 import { collection, doc, getDocs, onSnapshot, orderBy, query, Unsubscribe } from "firebase/firestore";
 import { db } from "@/lib/firebase/firestore";
 import { deleteClass, deleteLesson } from "@/lib/firebase/courses-service";
+import { CourseAcademicFields } from "../_components/CourseAcademicFields";
 import { LessonItem } from "./_components/LessonItem";
 import { AddLessonModal } from "./_components/AddLessonModal";
 import { AddClassModal } from "./_components/AddClassModal";
@@ -142,6 +143,7 @@ export default function CourseBuilderPage() {
   const [confirmActionLoading, setConfirmActionLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"info" | "lessons" | "groups">("info");
   const [courseInfo, setCourseInfo] = useState<Partial<Course> | null>(null);
+  const [courseCredits, setCourseCredits] = useState("");
   const [savingInfo, setSavingInfo] = useState(false);
   const [uploadingThumb, setUploadingThumb] = useState(false);
   const [thumbDragOver, setThumbDragOver] = useState(false);
@@ -285,6 +287,8 @@ export default function CourseBuilderPage() {
             id: snap.id,
             title: d.title ?? "",
             description: d.description ?? "",
+            credits: typeof d.credits === "number" && Number.isFinite(d.credits) && d.credits >= 0 ? d.credits : null,
+            cycle: typeof d.cycle === "string" ? d.cycle : "",
             introVideoUrl: d.introVideoUrl ?? "",
             category: d.category ?? d.program ?? "",
             program: d.program ?? d.category ?? "",
@@ -297,6 +301,7 @@ export default function CourseBuilderPage() {
               ? d.mentorIds.filter((mentorId): mentorId is string => typeof mentorId === "string")
               : [],
           });
+          setCourseCredits(typeof d.credits === "number" && Number.isFinite(d.credits) && d.credits >= 0 ? String(d.credits) : "");
           setLoadError(null);
         }
       },
@@ -1257,6 +1262,8 @@ export default function CourseBuilderPage() {
                 setSavingInfo(true);
                 try {
                   await updateCourse(courseId, {
+                    credits: courseCredits.trim() ? Number(courseCredits) : null,
+                    cycle: courseInfo.cycle ?? "",
                     title: courseInfo.title,
                     description: courseInfo.description,
                     introVideoUrl: courseInfo.introVideoUrl,
@@ -1267,7 +1274,7 @@ export default function CourseBuilderPage() {
                   toast.success("Información actualizada");
                 } catch (err) {
                   console.error(err);
-                  toast.error("No se pudo guardar");
+                  toast.error(err instanceof Error ? err.message : "No se pudo guardar");
                 } finally {
                   setSavingInfo(false);
                 }
@@ -1334,6 +1341,15 @@ export default function CourseBuilderPage() {
                 <p className="mt-1 text-xs text-slate-500">
                   Administra los programas en la pestaña &quot;Programas&quot;.
                 </p>
+              </div>
+              <div className="sm:col-span-2">
+                <CourseAcademicFields
+                  credits={courseCredits}
+                  cycle={courseInfo.cycle ?? ""}
+                  onCreditsChange={setCourseCredits}
+                  onCycleChange={(cycle) => setCourseInfo((prev) => ({ ...prev, cycle }))}
+                  disabled={!canEditCourseMetadata || savingInfo}
+                />
               </div>
               <label className="sm:col-span-2 flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
                 <input
