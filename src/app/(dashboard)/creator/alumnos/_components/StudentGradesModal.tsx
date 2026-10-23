@@ -1150,7 +1150,7 @@ export function StudentGradesModal({
   const certificationRows = useMemo(() => filterKardexRows(rows, "certifications"), [rows]);
   const visibleRows = kardexSection === "academic" ? academicRows : certificationRows;
   const isCertificationKardex = kardexSection === "certifications";
-  const kardexTitle = isCertificationKardex ? "Kardex de Certificaciones" : "Kardex de Licenciatura";
+  const kardexTitle = isCertificationKardex ? "Kardex de Certificaciones" : "Kardex de Calificaciones";
   const summary = useMemo(() => buildGradeSummary(visibleRows), [visibleRows]);
 
   const downloadInstitutionalKardexPdf = async () => {
@@ -1212,7 +1212,7 @@ export function StudentGradesModal({
         pdf.text(kardexTitle, marginX, 116);
         pdf.setFont("helvetica", "normal");
         pdf.setFontSize(10);
-        pdf.text(isCertificationKardex ? "Historial de certificaciones complementarias" : "Historial académico de licenciatura", marginX, 134);
+        pdf.text(isCertificationKardex ? "Historial de certificaciones complementarias" : "Historial Académico", marginX, 134);
         pdf.setTextColor(80, 80, 80);
         pdf.text(`Fecha de descarga: ${formatDateTime(downloadedAt)}`, pageWidth - marginX, 116, { align: "right" });
 

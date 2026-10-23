@@ -14,6 +14,8 @@ type GroupStudentPayload = {
   studentEmail: string;
   status: string;
   enrolledAtMs?: number;
+  lastLoginAtMs?: number;
+  accountStatus?: string;
 };
 
 class RouteAccessError extends Error {
@@ -264,6 +266,24 @@ export async function GET(request: NextRequest, context: RouteContext) {
       })
       .filter((student) => isStudentStatusActive(student.status))
       .sort(compareStudentsByName);
+
+    if (request.nextUrl.searchParams.get("includeActivity") === "true") {
+      const firestore = getAdminFirestore();
+      for (let offset = 0; offset < students.length; offset += 100) {
+        const batch = students.slice(offset, offset + 100);
+        const users = await firestore.getAll(
+          ...batch.map((student) => firestore.collection("users").doc(student.id)),
+          { fieldMask: ["lastLoginAt", "estado", "status"] },
+        );
+        users.forEach((user, index) => {
+          const data = user.data();
+          batch[index].lastLoginAtMs = toMillis(data?.lastLoginAt);
+          batch[index].accountStatus = user.exists
+            ? asTrimmedString(data?.estado) || asTrimmedString(data?.status) || "active"
+            : "unknown";
+        });
+      }
+    }
 
     return NextResponse.json(
       {

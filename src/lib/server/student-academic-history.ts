@@ -6,7 +6,7 @@ import {
 } from "@/lib/students/academic-history";
 import { equivalencyNameKey, type StudentEquivalency } from "@/lib/students/equivalencies";
 import { isCertificationGroup } from "@/lib/students/kardex";
-import { assertEquivalencyId, canManageEquivalencies, EquivalencyError, type EquivalencyAccess } from "./student-equivalencies";
+import { academicRecordCapturePlantelIds, assertEquivalencyId, canCreateAcademicRecords, canManageEquivalencies, EquivalencyError, type EquivalencyAccess } from "./student-equivalencies";
 
 type Data = Record<string, unknown>;
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
@@ -57,7 +57,8 @@ export function parseAcademicHistoryMutation(body: unknown, create: boolean): Mu
 
 export async function mutateStudentAcademicHistory(studentId: string, access: EquivalencyAccess, mutation: Mutation): Promise<void> {
   assertEquivalencyId(studentId);
-  if (!canManageEquivalencies(access)) throw new EquivalencyError(403, "Solo los administradores pueden modificar el historial académico.");
+  const admin = canManageEquivalencies(access);
+  if (!(mutation.action === "create" ? canCreateAcademicRecords(access) : admin)) throw new EquivalencyError(403, "No tienes permisos para realizar esta acción en el historial académico.");
   const db = getAdminFirestore();
   const entries = mutation.action === "create" ? mutation.entries : mutation.action === "update" ? [mutation.entry] : [];
   const references = entries.map(() => db.collection("studentAcademicHistory").doc());
@@ -67,6 +68,7 @@ export async function mutateStudentAcademicHistory(studentId: string, access: Eq
     await transaction.get(lock);
     const student = await transaction.get(db.collection("users").doc(studentId));
     if (!student.exists || student.data()?.role !== "student") throw new EquivalencyError(404, "No se encontró al alumno.");
+    const capturePlantelIds = academicRecordCapturePlantelIds(access, student.data() ?? {});
     const snapshot = await transaction.get(db.collection("studentAcademicHistory").where("studentId", "==", studentId));
     const existing = snapshot.docs.map((entry) => ({ ...entry.data(), id: entry.id }) as StudentAcademicHistory);
     const previous = mutation.action === "create" ? undefined : existing.find((entry) => entry.id === mutation.id);
@@ -90,6 +92,7 @@ export async function mutateStudentAcademicHistory(studentId: string, access: Eq
     groupDocs.forEach((group) => {
       const preserved = previous?.groupId === group.id;
       if ((!preserved && (!group.exists || !text(group.data()?.groupName))) || group.data()?.isProbe === true) throw new EquivalencyError(400, "Un grupo seleccionado ya no está disponible. Actualiza la lista.");
+      if (!admin && !plantels(group.data() ?? {}).some((id) => capturePlantelIds.includes(id))) throw new EquivalencyError(403, "Un grupo seleccionado está fuera del alcance de tu plantel.");
     });
     const normalized = entries.map((entry) => ({
       ...entry, courseName: entry.courseId ? courseTitles.get(entry.courseId)! : entry.courseName,
@@ -142,7 +145,7 @@ export async function mutateStudentAcademicHistory(studentId: string, access: Eq
         const group = entry.groupId ? groups.get(entry.groupId) : undefined;
         const updated: StudentAcademicHistory = {
           ...entry, id: reference.id, studentId, finalGrade: academicHistoryFinalGrade(entry), status: "active",
-          plantelIds: group && plantels(group).length ? plantels(group) : previous?.plantelIds ?? plantels(student.data() ?? {}),
+          plantelIds: group && plantels(group).length ? plantels(group).filter((id) => admin || capturePlantelIds.includes(id)) : previous?.plantelIds ?? capturePlantelIds,
           createdAt: previous?.createdAt ?? now, createdBy: previous?.createdBy ?? access.uid,
           updatedAt: now, updatedBy: access.uid, version: (previous?.version ?? 0) + 1,
           changeReason: mutation.action === "update" ? mutation.reason : "Registro manual de historial académico",

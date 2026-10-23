@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   EquivalencyError,
+  canCreateAcademicRecords,
   canManageEquivalencies,
   resolveEquivalencyAccess,
 } from "@/lib/server/student-equivalencies";
@@ -16,7 +17,7 @@ async function handle(request: NextRequest, context: RouteContext) {
     const { studentId } = await context.params;
     const access = await resolveEquivalencyAccess(request.headers.get("authorization"));
     if (request.method !== "GET") {
-      if (!canManageEquivalencies(access)) throw new EquivalencyError(403, "Solo los administradores pueden modificar el historial académico.");
+      if (!(request.method === "POST" ? canCreateAcademicRecords(access) : canManageEquivalencies(access))) throw new EquivalencyError(403, "No tienes permisos para realizar esta acción en el historial académico.");
       const body = await request.json().catch(() => { throw new EquivalencyError(400, "Solicitud inválida."); });
       await mutateStudentAcademicHistory(studentId, access, parseAcademicHistoryMutation(body, request.method === "POST"));
     }

@@ -985,6 +985,8 @@ export type GroupStudent = {
   studentEmail: string;
   status: string;
   enrolledAt?: Date;
+  lastLoginAt?: Date;
+  accountStatus?: string;
 };
 
 function compareGroupStudentsByName(left: GroupStudent, right: GroupStudent): number {
@@ -1014,6 +1016,8 @@ type GroupStudentsApiResponse = {
       studentEmail: string;
       status: string;
       enrolledAtMs?: number;
+      lastLoginAtMs?: number;
+      accountStatus?: string;
     }>;
   };
 };
@@ -1024,22 +1028,29 @@ const toGroupStudentFromApi = (item: {
   studentEmail: string;
   status: string;
   enrolledAtMs?: number;
+  lastLoginAtMs?: number;
+  accountStatus?: string;
 }): GroupStudent => ({
   id: item.id,
   studentName: item.studentName ?? "",
   studentEmail: item.studentEmail ?? "",
   status: item.status ?? "active",
+  accountStatus: item.accountStatus,
+  lastLoginAt:
+    typeof item.lastLoginAtMs === "number" && Number.isFinite(item.lastLoginAtMs)
+      ? new Date(item.lastLoginAtMs)
+      : undefined,
   enrolledAt:
     typeof item.enrolledAtMs === "number" && Number.isFinite(item.enrolledAtMs)
       ? new Date(item.enrolledAtMs)
       : undefined,
 });
 
-export async function getGroupStudents(groupId: string): Promise<GroupStudent[]> {
+export async function getGroupStudents(groupId: string, includeActivity = false): Promise<GroupStudent[]> {
   const currentUser = auth.currentUser;
   if (currentUser) {
     const token = await currentUser.getIdToken();
-    const response = await fetch(`/api/groups/${encodeURIComponent(groupId)}/students`, {
+    const response = await fetch(`/api/groups/${encodeURIComponent(groupId)}/students${includeActivity ? "?includeActivity=true" : ""}`, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,

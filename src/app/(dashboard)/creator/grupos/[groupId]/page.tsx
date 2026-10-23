@@ -1082,6 +1082,7 @@ export default function GroupDetailPage() {
               <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                 <AlumnosTab
                   groupId={group.id}
+                  groupName={group.groupName}
                   students={groupStudents}
                   loadingStudents={loadingStudents}
                   removingId={removingId}
@@ -1898,6 +1899,7 @@ export default function GroupDetailPage() {
 
 type AlumnosTabProps = {
   groupId: string;
+  groupName: string;
   students: GroupStudent[];
   loadingStudents: boolean;
   removingId: string | null;
@@ -1910,6 +1912,8 @@ type AlumnosTabProps = {
 };
 
 function AlumnosTab({
+  groupId,
+  groupName,
   onOpenModal,
   onOpenExtraCourseModal,
   canAssignExtraCourse,
@@ -1919,6 +1923,27 @@ function AlumnosTab({
   onRemoveStudent,
   onOpenStudentSubmissions,
 }: AlumnosTabProps) {
+  const [exporting, setExporting] = useState<"pdf" | "xlsx" | null>(null);
+
+  const handleExport = async (format: "pdf" | "xlsx") => {
+    if (exporting) return;
+    setExporting(format);
+    try {
+      const latestStudents = await getGroupStudents(groupId, true);
+      if (latestStudents.length === 0) {
+        toast.error("No hay alumnos vinculados para descargar");
+        return;
+      }
+      const { exportGroupStudents } = await import("@/lib/students/group-students-export");
+      await exportGroupStudents(format, groupName, latestStudents);
+    } catch (error) {
+      console.error(error);
+      toast.error("No se pudo descargar la lista de alumnos");
+    } finally {
+      setExporting(null);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -1941,9 +1966,17 @@ function AlumnosTab({
         <button className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
           Importar CSV
         </button>
-        <button className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
-          Exportar
-        </button>
+        {(["pdf", "xlsx"] as const).map((format) => (
+          <button
+            key={format}
+            type="button"
+            onClick={() => void handleExport(format)}
+            disabled={loadingStudents || students.length === 0 || exporting !== null}
+            className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {exporting === format ? "Descargando..." : `Descargar ${format === "pdf" ? "PDF" : "Excel"}`}
+          </button>
+        ))}
       </div>
       {loadingStudents ? (
         <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-6 text-sm text-slate-600">

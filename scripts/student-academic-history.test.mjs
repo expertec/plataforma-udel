@@ -112,11 +112,12 @@ function fixture(role = "adminTeacher", uid = "admin") {
     "@/lib/firebase/equivalencies-service": { getStudentEquivalencies: (id) => equivalents.readStudentEquivalencies(id, studentAccess) },
   });
   const route = load("@/app/api/students/[studentId]/academic-history/route");
+  const equivalenciesRoute = load("@/app/api/students/[studentId]/equivalencies/route");
   const gradesRoute = load("@/app/api/students/[studentId]/grades/route");
   const access = { uid, role, plantelIds: ["campus"] };
-  const request = (method, body, token = "valid", query = "") => route[method]({
+  const request = (method, body, token = "valid", query = "", resource = "academic-history") => (resource === "equivalencies" ? equivalenciesRoute : route)[method]({
     method, headers: new Headers(token ? { Authorization: `Bearer ${token}` } : {}),
-    nextUrl: new URL(`https://example.test/api/students/student/academic-history${query}`),
+    nextUrl: new URL(`https://example.test/api/students/student/${resource}${query}`),
     json: async () => body,
   }, { params: Promise.resolve({ studentId: "student" }) });
   return {
@@ -179,13 +180,101 @@ test("unauthenticated and unauthorized mutations cannot write", async () => {
   assert.equal((await app.request("POST", { entries: [input()] }, null)).status, 401);
   assert.equal((await app.request("POST", { entries: [input()] }, "expired")).status, 401);
   assert.equal(app.writes(), 0);
-  for (const role of ["student", "teacher", "director", "coordinadorPlantel"]) {
+  for (const role of ["student", "teacher"]) {
     const other = fixture(role, role === "student" ? "student" : "admin");
     assert.equal((await other.create()).status, 403, role);
+    assert.equal((await other.request("POST", { entries: [input()] }, "valid", "", "equivalencies")).status, 403, role);
     assert.equal(other.writes(), 0);
   }
   assert.equal((await fixture("superAdminTeacher").create()).status, 200);
 });
+
+const equivalencyInput = () => ({
+  courseId: "course", courseName: "Derecho", grade: 90, gradeScale: 100,
+  institution: "Otra escuela", period: "2024", recognizedAt: "2026-10-17", notes: "",
+});
+
+for (const role of ["director", "coordinadorPlantel"]) {
+  for (const resource of ["academic-history", "equivalencies"]) {
+    const collection = resource === "academic-history" ? "studentAcademicHistory" : "studentEquivalencies";
+    const entry = resource === "academic-history" ? input : equivalencyInput;
+    const call = (app, method, body, query = "") => app.request(method, body, "valid", query, resource);
+    const responseRecords = async (response) => {
+      const body = await response.json();
+      return body.data.records ?? body.data.equivalencies;
+    };
+
+    test(`${role} can capture and read ${resource} within their campus, including historical assignments`, async () => {
+      for (const student of [
+        { role: "student", plantelIds: ["campus", "elsewhere"] },
+        { role: "student", plantelId: "campus" },
+        { role: "student", plantelIds: ["elsewhere"], archivedPlantelIds: ["campus"] },
+      ]) {
+        const app = fixture(role);
+        app.records.set("users/student", student);
+        const response = await call(app, "POST", { entries: [{ ...entry(), plantelIds: ["forged-campus"], createdBy: "forged" }] });
+        assert.equal(response.status, 200);
+        const [record] = await responseRecords(response);
+        assert.deepEqual(record.plantelIds, ["campus"]);
+        assert.equal(record.createdBy, "admin");
+        assert.equal(record.status, "active");
+        assert.ok(app.records.has("studentEquivalencyLocks/student"));
+        const audit = [...app.records].find(([key]) => key.startsWith(`${collection}/${record.id}/history/`))[1];
+        assert.equal(audit.actorId, "admin");
+        app.records.set(`${collection}/outside`, { ...record, id: "outside", plantelIds: ["elsewhere"] });
+        app.records.set(`${collection}/cancelled`, { ...record, id: "cancelled", status: "cancelled" });
+        assert.equal((await responseRecords(await call(app, "GET", null, "?history=1"))).length, 1);
+      }
+    });
+
+    test(`${role} cannot capture ${resource} outside campus or without a campus assignment`, async () => {
+      for (const plantelIds of [["unrelated"], []]) {
+        const app = fixture(role);
+        app.records.set("users/admin", { role, plantelIds });
+        assert.equal((await call(app, "POST", { entries: [entry()] })).status, 403);
+        assert.equal(app.writes(), 0);
+        const access = { ...app.access, plantelIds };
+        const mutation = resource === "academic-history"
+          ? app.server.parseAcademicHistoryMutation({ entries: [entry()] }, true)
+          : app.equivalents.parseEquivalencyMutation({ entries: [entry()] }, true);
+        const mutate = resource === "academic-history" ? app.server.mutateStudentAcademicHistory : app.equivalents.mutateStudentEquivalencies;
+        await assert.rejects(mutate("student", access, mutation), (error) => error.status === 403);
+        assert.equal(app.writes(), 0);
+      }
+    });
+
+    test(`${role} capture permission for ${resource} does not grant corrections or cancellations`, async () => {
+      const app = fixture(role);
+      const [record] = await responseRecords(await call(app, "POST", { entries: [entry()] }));
+      const writes = app.writes();
+      for (const action of ["update", "cancel"]) {
+        const body = { action, id: record.id, version: record.version, entry: entry(), reason: "Corrección" };
+        assert.equal((await call(app, "PATCH", body)).status, 403);
+        const mutation = resource === "academic-history" ? app.server.parseAcademicHistoryMutation(body, false) : app.equivalents.parseEquivalencyMutation(body, false);
+        const mutate = resource === "academic-history" ? app.server.mutateStudentAcademicHistory : app.equivalents.mutateStudentEquivalencies;
+        await assert.rejects(mutate("student", app.access, mutation), (error) => error.status === 403);
+      }
+      assert.equal(app.writes(), writes);
+    });
+  }
+
+  test(`${role} manual capture validates the campus of every linked group before writing`, async () => {
+    for (const group of [
+      { groupName: "Otro grupo", plantelId: "elsewhere" },
+      { groupName: "Sin plantel" },
+    ]) {
+      const app = fixture(role);
+      app.records.set("groups/outside", group);
+      assert.equal((await app.create([input({ groupId: "group" }), input({ courseId: "other", courseName: "Historia", groupId: "outside" })])).status, 403);
+      assert.equal(app.writes(), 0);
+    }
+    const app = fixture(role);
+    app.records.set("groups/group", { groupName: "LPI2023", plantelIds: ["campus", "elsewhere"] });
+    const response = await app.create([input({ groupId: "group" })]);
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).data.records[0].plantelIds, ["campus"]);
+  });
+}
 
 test("invalid requests and invalid catalog references fail without partial writes", async () => {
   const app = fixture();

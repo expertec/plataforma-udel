@@ -6,10 +6,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { getCourses, type Course } from "@/lib/firebase/courses-service";
 import { cancelStudentAcademicHistory, createStudentAcademicHistory, getStudentAcademicHistory, updateStudentAcademicHistory } from "@/lib/firebase/academic-history-service";
 import { equivalencyNameKey } from "@/lib/students/equivalencies";
-import { getAllGroups, type Group } from "@/lib/firebase/groups-service";
+import { getAllGroups, getGroupsByPlantel, type Group } from "@/lib/firebase/groups-service";
 import { accreditationLabels, academicHistoryFinalGrade, formatManualRegistrationDate, sameAcademicAttempt, validateAcademicHistoryInput, type AcademicHistoryInput, type StudentAcademicHistory } from "@/lib/students/academic-history";
 
-type Props = { studentId: string; studentName: string; onClose: () => void };
+type Props = { studentId: string; studentName: string; canManageRecords: boolean; scopePlantelId?: string; onClose: () => void };
 type Draft = Omit<AcademicHistoryInput, "grade"> & { grade: string };
 const inputClass = "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 disabled:bg-slate-100";
 const buttonClass = "rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50";
@@ -21,7 +21,7 @@ function emptyDraft(): Draft {
   return { courseId: null, courseName: "", groupId: null, groupName: "", cycle: "", semester: "", section: "academic", accreditationType: "ordinary", grade: "", gradeScale: 100, registeredAt, notes: "" };
 }
 
-export function StudentAcademicHistoryModal({ studentId, studentName, onClose }: Props) {
+export function StudentAcademicHistoryModal({ studentId, studentName, canManageRecords, scopePlantelId, onClose }: Props) {
   const [records, setRecords] = useState<StudentAcademicHistory[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -50,7 +50,10 @@ export function StudentAcademicHistoryModal({ studentId, studentName, onClose }:
       setLoading(true);
       setLoadError("");
       setCatalogError("");
-      const [history, catalog, groupList] = await Promise.allSettled([getStudentAcademicHistory(studentId, true), getCourses(), getAllGroups()]);
+      const [history, catalog, groupList] = await Promise.allSettled([
+        getStudentAcademicHistory(studentId, canManageRecords), getCourses(),
+        canManageRecords ? getAllGroups() : getGroupsByPlantel(scopePlantelId ?? ""),
+      ]);
       if (!active) return;
       if (history.status === "fulfilled") setRecords(history.value);
       else setLoadError(history.reason instanceof Error ? history.reason.message : "No se pudieron cargar los registros académicos.");
@@ -62,7 +65,7 @@ export function StudentAcademicHistoryModal({ studentId, studentName, onClose }:
     }
     void load();
     return () => { active = false; };
-  }, [studentId, reload]);
+  }, [studentId, reload, canManageRecords, scopePlantelId]);
 
   const matchingCourses = useMemo(() => {
     const query = equivalencyNameKey(search);
@@ -278,7 +281,7 @@ export function StudentAcademicHistoryModal({ studentId, studentName, onClose }:
                 <p className="text-xs text-slate-500">{record.courseId ? "Vinculada al catálogo" : "Materia de captura manual"} · Nota de origen: {record.grade} / {record.gradeScale} · Versión {record.version} · Actualización: {new Date(record.updatedAt).toLocaleString("es-MX", { timeZone: "America/Monterrey" })}</p>
                 {record.notes && <p className="whitespace-pre-wrap">{record.notes}</p>}
                 <p className="text-xs text-slate-500">Último motivo: {record.changeReason}</p>
-                {record.status === "active" && <div className="flex gap-2"><button type="button" disabled={busy || Boolean(editing) || Boolean(cancelling)} onClick={() => editRecord(record)} className={buttonClass}>Corregir</button><button type="button" disabled={busy || Boolean(editing) || Boolean(cancelling)} onClick={() => { setCancelling(record); setReason(""); }} className="rounded-lg px-3 py-2 text-sm font-semibold text-red-700 disabled:opacity-50">Anular</button></div>}
+                {canManageRecords && record.status === "active" && <div className="flex gap-2"><button type="button" disabled={busy || Boolean(editing) || Boolean(cancelling)} onClick={() => editRecord(record)} className={buttonClass}>Corregir</button><button type="button" disabled={busy || Boolean(editing) || Boolean(cancelling)} onClick={() => { setCancelling(record); setReason(""); }} className="rounded-lg px-3 py-2 text-sm font-semibold text-red-700 disabled:opacity-50">Anular</button></div>}
               </article>)}
             </section>
           </div>

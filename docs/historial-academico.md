@@ -1,6 +1,6 @@
 # Historial académico de captura manual
 
-Los administradores (`adminTeacher` y `superAdminTeacher`) pueden registrar materias cursadas en UDEL que no están en la plataforma desde **Alumnos → menú del alumno → Historial académico (captura manual)**. Aplica tanto a expedientes anteriores a 2026 como a materias omitidas después de la implementación de la plataforma.
+Los administradores (`adminTeacher` y `superAdminTeacher`), directores (`director`) y coordinadores (`coordinadorPlantel`) pueden registrar materias cursadas en UDEL que no están en la plataforma desde **Alumnos → menú del alumno → Historial académico (captura manual)**. Dirección y coordinación pueden consultar los registros vigentes y agregar materias, también mediante Excel, dentro del alcance de sus planteles. Las correcciones y anulaciones corresponden a administradores. Aplica tanto a expedientes anteriores a 2026 como a materias omitidas después de la implementación de la plataforma.
 
 ## Captura
 
@@ -53,10 +53,12 @@ La captura no crea inscripciones ni acceso a contenidos, tareas o asistencia.
 - `studentAcademicHistory/{id}/history`: versión anterior, posterior, acción, responsable, motivo y fecha real de cada cambio.
 - `studentEquivalencyLocks/{studentId}`: bloqueo transaccional compartido con equivalencias para serializar capturas concurrentes.
 - `GET /api/students/{studentId}/academic-history`: registros vigentes para el propio alumno, administradores y coordinación/dirección dentro del alcance de plantel. Solo administradores pueden incluir anulaciones con `?history=1`.
-- `POST /api/students/{studentId}/academic-history`: `{ entries: AcademicHistoryInput[] }`, solo administradores.
+- `POST /api/students/{studentId}/academic-history`: `{ entries: AcademicHistoryInput[] }`, administradores y coordinación/dirección con alcance de plantel.
 - `PATCH /api/students/{studentId}/academic-history`: `{ action: "update", id, version, entry, reason }` o `{ action: "cancel", id, version, reason }`, solo administradores.
 
 Firebase Admin verifica la sesión y permisos en el servidor. Coordinación/dirección necesita compartir un plantel actual o histórico con el alumno y solo recibe registros de sus planteles. La captura de grupo existente toma el plantel del grupo; un grupo escrito manualmente toma los planteles actuales del alumno. El docente conserva su consulta habitual de calificaciones de grupo.
+
+Para capturas de coordinación/dirección, los registros nuevos se asignan únicamente a los planteles actuales o históricos compartidos con el alumno. El selector y la plantilla Excel incluyen grupos del plantel asignado. El servidor verifica que cada grupo vinculado pertenezca a un plantel compartido y rechaza el lote completo si alguno está fuera del alcance. Sin plantel asignado no se permite capturar. Los permisos administrativos conservan su alcance general.
 
 Firestore deniega el acceso directo del cliente a los registros y su auditoría. No se requiere migrar expedientes ni crear índices compuestos. La publicación debe incluir el código y las reglas de Firestore. Los registros aparecen al volver a abrir el kárdex o recargar el perfil.
 

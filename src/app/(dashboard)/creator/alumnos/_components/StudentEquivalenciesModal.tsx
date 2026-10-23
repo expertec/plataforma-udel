@@ -7,7 +7,7 @@ import { getCourses, type Course } from "@/lib/firebase/courses-service";
 import { cancelStudentEquivalency, createStudentEquivalencies, getStudentEquivalencies, updateStudentEquivalency } from "@/lib/firebase/equivalencies-service";
 import { equivalencyFinalGrade, equivalencyNameKey, validateEquivalencyInput, type EquivalencyInput, type StudentEquivalency } from "@/lib/students/equivalencies";
 
-type Props = { studentId: string; studentName: string; onClose: () => void };
+type Props = { studentId: string; studentName: string; canManageRecords: boolean; onClose: () => void };
 type Draft = Omit<EquivalencyInput, "grade"> & { grade: string };
 const inputClass = "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 disabled:bg-slate-100";
 const buttonClass = "rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50";
@@ -18,7 +18,7 @@ function emptyDraft(): Draft {
   return { courseId: null, courseName: "", grade: "", gradeScale: 100, institution: "", period: "", recognizedAt, notes: "" };
 }
 
-export function StudentEquivalenciesModal({ studentId, studentName, onClose }: Props) {
+export function StudentEquivalenciesModal({ studentId, studentName, canManageRecords, onClose }: Props) {
   const [records, setRecords] = useState<StudentEquivalency[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
@@ -40,7 +40,7 @@ export function StudentEquivalenciesModal({ studentId, studentName, onClose }: P
       setLoading(true);
       setLoadError("");
       setCatalogError("");
-      const [equivalencies, catalog] = await Promise.allSettled([getStudentEquivalencies(studentId, true), getCourses()]);
+      const [equivalencies, catalog] = await Promise.allSettled([getStudentEquivalencies(studentId, canManageRecords), getCourses()]);
       if (!active) return;
       if (equivalencies.status === "fulfilled") setRecords(equivalencies.value);
       else setLoadError(equivalencies.reason instanceof Error ? equivalencies.reason.message : "No se pudieron cargar las equivalencias.");
@@ -50,7 +50,7 @@ export function StudentEquivalenciesModal({ studentId, studentName, onClose }: P
     }
     void load();
     return () => { active = false; };
-  }, [studentId, reload]);
+  }, [studentId, reload, canManageRecords]);
 
   const matchingCourses = useMemo(() => {
     const query = equivalencyNameKey(search);
@@ -199,7 +199,7 @@ export function StudentEquivalenciesModal({ studentId, studentName, onClose }: P
                 <p className="text-xs text-slate-500">{record.courseId ? "Vinculada al catálogo" : "Materia de captura manual"} · Nota de origen: {record.grade} / {record.gradeScale} · Versión {record.version} · Actualización: {new Date(record.updatedAt).toLocaleString("es-MX")}</p>
                 {record.notes && <p className="whitespace-pre-wrap">{record.notes}</p>}
                 <p className="text-xs text-slate-500">Último motivo: {record.changeReason}</p>
-                {record.status === "active" && <div className="flex gap-2"><button type="button" disabled={saving || Boolean(editing) || Boolean(cancelling)} onClick={() => editRecord(record)} className={buttonClass}>Corregir</button><button type="button" disabled={saving || Boolean(editing) || Boolean(cancelling)} onClick={() => { setCancelling(record); setReason(""); }} className="rounded-lg px-3 py-2 text-sm font-semibold text-red-700 disabled:opacity-50">Anular</button></div>}
+                {canManageRecords && record.status === "active" && <div className="flex gap-2"><button type="button" disabled={saving || Boolean(editing) || Boolean(cancelling)} onClick={() => editRecord(record)} className={buttonClass}>Corregir</button><button type="button" disabled={saving || Boolean(editing) || Boolean(cancelling)} onClick={() => { setCancelling(record); setReason(""); }} className="rounded-lg px-3 py-2 text-sm font-semibold text-red-700 disabled:opacity-50">Anular</button></div>}
               </article>)}
             </section>
           </div>

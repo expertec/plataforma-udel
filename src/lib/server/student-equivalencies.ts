@@ -21,6 +21,16 @@ const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).map((item) => item.trim()) : [];
 const plantels = (data: RecordData) => Array.from(new Set([...strings(data.plantelIds), text(data.plantelId)].filter(Boolean)));
 export const canManageEquivalencies = (access: EquivalencyAccess) => access.role === "adminTeacher" || access.role === "superAdminTeacher";
+export const canCreateAcademicRecords = (access: EquivalencyAccess) => canManageEquivalencies(access) || access.role === "coordinadorPlantel" || access.role === "director";
+
+// Keep campus capture permissions separate from unrestricted administration.
+export function academicRecordCapturePlantelIds(access: EquivalencyAccess, student: RecordData): string[] {
+  if (canManageEquivalencies(access)) return plantels(student);
+  const studentPlantels = Array.from(new Set([...plantels(student), ...strings(student.archivedPlantelIds)]));
+  const scope = studentPlantels.filter((id) => access.plantelIds.includes(id));
+  if (!scope.length) throw new EquivalencyError(403, "Alumno fuera del alcance de tu plantel.");
+  return scope;
+}
 
 export function assertEquivalencyId(id: string): void {
   if (!id || id.length > 200 || id.includes("/") || id === "." || id === "..") throw new EquivalencyError(400, "Identificador inválido.");
@@ -86,7 +96,7 @@ export function parseEquivalencyMutation(body: unknown, create: boolean): Mutati
 
 export async function mutateStudentEquivalencies(studentId: string, access: EquivalencyAccess, mutation: Mutation): Promise<void> {
   assertEquivalencyId(studentId);
-  if (!canManageEquivalencies(access)) throw new EquivalencyError(403, "Solo los administradores pueden registrar o modificar equivalencias.");
+  if (!(mutation.action === "create" ? canCreateAcademicRecords(access) : canManageEquivalencies(access))) throw new EquivalencyError(403, "No tienes permisos para realizar esta acción en equivalencias.");
   const db = getAdminFirestore();
   const entries = mutation.action === "create" ? mutation.entries : mutation.action === "update" ? [mutation.entry] : [];
   const references = entries.map(() => db.collection("studentEquivalencies").doc());
@@ -95,6 +105,7 @@ export async function mutateStudentEquivalencies(studentId: string, access: Equi
     await transaction.get(lock);
     const student = await transaction.get(db.collection("users").doc(studentId));
     if (!student.exists || student.data()?.role !== "student") throw new EquivalencyError(404, "No se encontró al alumno.");
+    const capturePlantelIds = academicRecordCapturePlantelIds(access, student.data() ?? {});
     const snapshot = await transaction.get(db.collection("studentEquivalencies").where("studentId", "==", studentId));
     const existing = snapshot.docs.map((entry) => ({ ...entry.data(), id: entry.id }) as StudentEquivalency);
     const previous = mutation.action === "create" ? undefined : existing.find((entry) => entry.id === mutation.id);
@@ -169,7 +180,7 @@ export async function mutateStudentEquivalencies(studentId: string, access: Equi
         const reference = previous ? db.collection("studentEquivalencies").doc(previous.id) : references[index];
         const updated: StudentEquivalency = {
           ...entry, id: reference.id, studentId, finalGrade: equivalencyFinalGrade(entry), status: "active",
-          plantelIds: previous?.plantelIds ?? plantels(student.data() ?? {}),
+          plantelIds: previous?.plantelIds ?? capturePlantelIds,
           createdAt: previous?.createdAt ?? now, createdBy: previous?.createdBy ?? access.uid,
           updatedAt: now, updatedBy: access.uid, version: (previous?.version ?? 0) + 1,
           changeReason: mutation.action === "update" ? mutation.reason : "Registro de equivalencia",

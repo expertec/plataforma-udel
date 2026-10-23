@@ -916,7 +916,7 @@ export default function AlumnosPage() {
 
     const rect = target.getBoundingClientRect();
     const menuWidth = 176; // w-44
-    const shouldOpenUp = window.innerHeight - rect.bottom < (isAdminTeacherRole(userRole) ? 340 : 220);
+    const shouldOpenUp = window.innerHeight - rect.bottom < (isAdminTeacherRole(userRole) || isCampusCoordinatorRole(userRole) ? 340 : 220);
     const nextTop = shouldOpenUp ? rect.top - 8 : rect.bottom + 8;
     const nextLeft = Math.min(
       window.innerWidth - menuWidth - 12,
@@ -936,6 +936,7 @@ export default function AlumnosPage() {
   const canOpenStudentActionMenu = userRole === "teacher" || isAdmin || isCoordinator;
   const canArchiveStudentFromMenu = isAdmin || isCoordinator;
   const hasCoordinatorPlantel = !isCoordinator || coordinatorPlantelId.length > 0;
+  const canCaptureAcademicRecords = isAdmin || (isCoordinator && hasCoordinatorPlantel);
   const canViewRiskReport = isAdmin || (isCoordinator && hasCoordinatorPlantel);
   const canViewAllStudents = isAdmin || isCoordinator;
   const adminTabs: { key: StudentsTab; label: string; helper?: string }[] = isAdmin
@@ -2224,7 +2225,7 @@ export default function AlumnosPage() {
                 >
                   Calificaciones
                 </button>
-                {isAdmin ? (
+                {canCaptureAcademicRecords ? (
                   <button
                     type="button"
                     onClick={() => {
@@ -2236,7 +2237,7 @@ export default function AlumnosPage() {
                     Equivalencias
                   </button>
                 ) : null}
-                {isAdmin ? (
+                {canCaptureAcademicRecords ? (
                   <button
                     type="button"
                     onClick={() => {
@@ -2574,18 +2575,21 @@ export default function AlumnosPage() {
         />
       )}
 
-      {academicHistoryStudent && isAdmin && (
+      {academicHistoryStudent && canCaptureAcademicRecords && (
         <StudentAcademicHistoryModal
           studentId={academicHistoryStudent.id}
           studentName={academicHistoryStudent.name}
+          canManageRecords={isAdmin}
+          scopePlantelId={isCoordinator ? coordinatorPlantelId : undefined}
           onClose={() => setAcademicHistoryStudent(null)}
         />
       )}
 
-      {equivalenciesStudent && isAdmin && (
+      {equivalenciesStudent && canCaptureAcademicRecords && (
         <StudentEquivalenciesModal
           studentId={equivalenciesStudent.id}
           studentName={equivalenciesStudent.name}
+          canManageRecords={isAdmin}
           onClose={() => setEquivalenciesStudent(null)}
         />
       )}

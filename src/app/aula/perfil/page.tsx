@@ -448,7 +448,7 @@ export default function ProfilePage() {
             </div>
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <p className="text-sm text-[var(--aula-text-muted)]">
-                {kardexSection === "academic" ? "Historial académico de licenciatura, incluidas materias de grupos anteriores y equivalencias." : "Historial independiente de certificaciones complementarias."}
+                {kardexSection === "academic" ? "Historial Académico" : "Historial independiente de certificaciones complementarias."}
               </p>
               {sectionAverage !== null && (
                 <p className="text-sm text-[var(--aula-text-muted)]">

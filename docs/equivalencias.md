@@ -1,6 +1,6 @@
 # Equivalencias
 
-Los administradores (`adminTeacher` y `superAdminTeacher`) pueden registrar equivalencias desde **Alumnos → menú del alumno → Equivalencias**. Se pueden buscar materias del catálogo o escribir sus nombres, capturar hasta 40 materias y guardarlas juntas. La institución de procedencia, periodo y observaciones son opcionales; la calificación y fecha de reconocimiento son obligatorias.
+Los administradores (`adminTeacher` y `superAdminTeacher`), directores (`director`) y coordinadores (`coordinadorPlantel`) pueden registrar equivalencias desde **Alumnos → menú del alumno → Equivalencias**. Dirección y coordinación solo consultan registros vigentes y agregan materias dentro del alcance de sus planteles; las correcciones y anulaciones corresponden a administradores. Se pueden buscar materias del catálogo o escribir sus nombres, capturar hasta 40 materias y guardarlas juntas. La institución de procedencia, periodo y observaciones son opcionales; la calificación y fecha de reconocimiento son obligatorias.
 
 Se aceptan notas aprobatorias de 7 a 10 o de 70 a 100, según la escala elegida. Todas se almacenan en escala de 100 con un decimal: 8.5/10 equivale a 85/100. La captura conserva la nota y escala originales. Esta escala coincide con la captura actual de calificaciones; el kardex institucional usa 70 como mínimo aprobatorio.
 
@@ -17,9 +17,9 @@ Las correcciones y anulaciones requieren motivo. Anular conserva el registro per
 - `studentEquivalencies`: registros independientes de grupos e inscripciones.
 - `studentEquivalencyLocks`: serialización de cambios por alumno mediante transacciones.
 - `GET /api/students/{studentId}/equivalencies`: equivalencias vigentes para el propio alumno, administradores y coordinación/dirección con alcance de plantel. Los administradores pueden usar `?history=1` para incluir anulaciones.
-- `POST /api/students/{studentId}/equivalencies`: `{ entries: EquivalencyInput[] }`, solo administradores.
+- `POST /api/students/{studentId}/equivalencies`: `{ entries: EquivalencyInput[] }`, administradores y coordinación/dirección con alcance de plantel.
 - `PATCH /api/students/{studentId}/equivalencies`: `{ action: "update", id, version, entry, reason }` o `{ action: "cancel", id, version, reason }`, solo administradores.
 
-Los permisos y datos se validan en el servidor con Firebase Admin. Coordinación y dirección solo leen equivalencias registradas en sus planteles y de alumnos dentro de su alcance actual o histórico, como en la consulta existente de calificaciones. El docente conserva su consulta habitual de calificaciones de grupo. Las colecciones de equivalencias y auditoría no se exponen directamente al cliente en las reglas de Firestore.
+Los permisos y datos se validan en el servidor con Firebase Admin. Coordinación y dirección solo leen equivalencias registradas en sus planteles y de alumnos dentro de su alcance actual o histórico, como en la consulta existente de calificaciones. Para agregar materias se exige compartir al menos un plantel actual o histórico con el alumno. La equivalencia nueva se asigna únicamente a los planteles compartidos, sin conceder visibilidad a otros planteles del alumno. Sin plantel asignado no se permite capturar. El docente conserva su consulta habitual de calificaciones de grupo. Las colecciones de equivalencias y auditoría no se exponen directamente al cliente en las reglas de Firestore.
 
 No se necesita migrar inscripciones existentes ni crear índices compuestos. Al publicar se deben incluir las nuevas rutas, componentes y reglas de Firestore del repositorio. Los registros nuevos empiezan a aparecer al volver a abrir el kardex o recargar el perfil del alumno.

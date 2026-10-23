@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MoreVertical } from "lucide-react";
 import Link from "next/link";
 import { auth } from "@/lib/firebase/client";
 import { onAuthStateChanged, User } from "firebase/auth";
@@ -14,6 +15,7 @@ import {
   getCoordinatorScopeGroups,
   getGroups,
   getGroupsWhereAssistant,
+  getGroupStudents,
 } from "@/lib/firebase/groups-service";
 import { getPlanteles, getUserPlantelAssignments, Plantel, PlantelAssignment } from "@/lib/firebase/planteles-service";
 import { getTeacherUsers, TeacherUser } from "@/lib/firebase/teachers-service";
@@ -113,6 +115,7 @@ export default function GroupsPage() {
   const [closureSummaries, setClosureSummaries] = useState<Record<string, GroupClosureSummary>>({});
   const [teacherOptions, setTeacherOptions] = useState<TeacherUser[]>([]);
   const [loadingTeacherOptions, setLoadingTeacherOptions] = useState(false);
+  const [exportProgress, setExportProgress] = useState<{ completed: number; total: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -466,10 +469,35 @@ export default function GroupsPage() {
     };
   }, [isAdminTeacher]);
 
+  const downloadAllGroups = async () => {
+    if (exportProgress) return;
+    const allGroups = Array.from(new Map([...groups, ...assistantGroups].map((group) => [group.id, group])).values());
+    if (allGroups.length === 0) return;
+    setExportProgress({ completed: 0, total: allGroups.length });
+    try {
+      const entries = [];
+      for (let offset = 0; offset < allGroups.length; offset += 5) {
+        const batch = await Promise.all(allGroups.slice(offset, offset + 5).map(async (group) => ({
+          groupName: group.groupName,
+          students: await getGroupStudents(group.id, true),
+        })));
+        entries.push(...batch);
+        setExportProgress({ completed: entries.length, total: allGroups.length });
+      }
+      const { exportAllGroupStudents } = await import("@/lib/students/group-students-export");
+      await exportAllGroupStudents(entries);
+    } catch (error) {
+      console.error(error);
+      toast.error("No se pudo descargar el Excel completo. Intenta nuevamente.");
+    } finally {
+      setExportProgress(null);
+    }
+  };
+
   return (
     <RoleGate allowedRole={["teacher", "adminTeacher", "superAdminTeacher", "coordinadorPlantel", "director"]}>
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
               Grupos
@@ -484,8 +512,20 @@ export default function GroupsPage() {
                   : "Mis grupos asignados"}
             </h1>
           </div>
-          {canCreateGroups ? (
-            <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void downloadAllGroups()}
+              disabled={loading || totalGroups === 0 || exportProgress !== null}
+              title="Descarga todos tus grupos, sin aplicar los filtros de búsqueda"
+              className="rounded-lg border border-[#d9b1a1] bg-white px-4 py-2 text-sm font-semibold text-[#6e2d2d] shadow-sm hover:bg-[#fff7f7] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {exportProgress
+                ? `Preparando Excel (${exportProgress.completed}/${exportProgress.total})...`
+                : "Descargar todos los grupos (Excel)"}
+            </button>
+            {canCreateGroups ? (
+              <>
               <button
                 type="button"
                 onClick={() => setModalOpen(true)}
@@ -500,8 +540,9 @@ export default function GroupsPage() {
               >
                 Importar desde Excel
               </button>
-            </div>
-          ) : null}
+              </>
+            ) : null}
+          </div>
         </div>
 
         {loading ? (
@@ -940,7 +981,10 @@ function GroupCard({
             </p>
           ) : null}
         </div>
-        <span className={`text-xs font-semibold ${statusColor}`}>{statusLabel}</span>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className={`text-xs font-semibold ${statusColor}`}>{statusLabel}</span>
+          <GroupDownloadMenu group={group} />
+        </div>
       </div>
       <div className="mt-3 space-y-1 text-sm text-slate-600">
         <p>
@@ -966,6 +1010,86 @@ function GroupCard({
           </button>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function GroupDownloadMenu({ group }: { group: Group }) {
+  const [open, setOpen] = useState(false);
+  const [exporting, setExporting] = useState<"pdf" | "xlsx" | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    return () => document.removeEventListener("pointerdown", closeOutside);
+  }, [open]);
+
+  const download = async (format: "pdf" | "xlsx") => {
+    if (exporting) return;
+    setExporting(format);
+    try {
+      const students = await getGroupStudents(group.id, true);
+      if (students.length === 0) {
+        toast.error("No hay alumnos vinculados para descargar");
+        return;
+      }
+      const { exportGroupStudents } = await import("@/lib/students/group-students-export");
+      await exportGroupStudents(format, group.groupName, students);
+      setOpen(false);
+      buttonRef.current?.focus();
+    } catch (error) {
+      console.error(error);
+      toast.error("No se pudo descargar la lista de alumnos");
+    } finally {
+      setExporting(null);
+    }
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          setOpen(false);
+          buttonRef.current?.focus();
+        }
+      }}
+    >
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-label={`Opciones de ${group.groupName}`}
+        aria-expanded={open}
+        onClick={() => setOpen((previous) => !previous)}
+        className="flex h-8 w-8 items-center justify-center rounded-lg text-[#6e2d2d] hover:bg-[#f3e3db] focus-visible:outline-2 focus-visible:outline-[#6e2d2d]"
+      >
+        <MoreVertical size={20} aria-hidden="true" />
+      </button>
+      {open ? (
+        <div className="absolute right-0 top-full z-20 mt-1 w-56 rounded-xl border border-[#d9b1a1]/60 bg-white p-1 shadow-lg">
+          <p className="px-3 py-2 text-xs font-semibold text-slate-500">Lista de alumnos</p>
+          {(["pdf", "xlsx"] as const).map((format) => (
+            <button
+              key={format}
+              type="button"
+              disabled={exporting !== null}
+              onClick={() => void download(format)}
+              className="block w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-[#6e2d2d] hover:bg-[#fff7f7] disabled:cursor-wait disabled:opacity-50"
+            >
+              {exporting === format ? "Descargando..." : `Descargar ${format === "pdf" ? "PDF" : "Excel"}`}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
