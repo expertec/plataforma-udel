@@ -22,7 +22,7 @@ import { getStudentAcademicHistory } from "@/lib/firebase/academic-history-servi
 import { academicHistoryGradeRow, type ManualKardexFields } from "@/lib/students/academic-history";
 import { getStudentEquivalencies } from "@/lib/firebase/equivalencies-service";
 import { equivalencyGradeRow } from "@/lib/students/equivalencies";
-import { countProgramApproved, filterKardexRows, kardexOrdinaryGrade, formatKardexIdentification, isCertificationGroup, type KardexSection } from "@/lib/students/kardex";
+import { academicKardexLabel, countProgramApproved, filterKardexRows, kardexOrdinaryGrade, formatKardexIdentification, isCertificationGroup, type KardexSection } from "@/lib/students/kardex";
 
 type Props = {
   studentId: string;
@@ -1147,6 +1147,9 @@ export function StudentGradesModal({
   };
 
   const academicRows = useMemo(() => filterKardexRows(rows, "academic"), [rows]);
+  const academicLabel = academicKardexLabel(
+    studentProgram.trim() || academicRows.map((row) => groupMetaById[row.groupId]?.program).find((program) => program?.trim()),
+  );
   const certificationRows = useMemo(() => filterKardexRows(rows, "certifications"), [rows]);
   const visibleRows = kardexSection === "academic" ? academicRows : certificationRows;
   const isCertificationKardex = kardexSection === "certifications";
@@ -1384,7 +1387,7 @@ export function StudentGradesModal({
         <div className="space-y-4 p-6">
           <div role="tablist" aria-label="Tipo de kardex" className="flex flex-wrap gap-2">
             {([
-              { id: "academic", label: "Licenciatura", count: academicRows.length },
+              { id: "academic", label: academicLabel, count: academicRows.length },
               { id: "certifications", label: "Certificaciones", count: certificationRows.length },
             ] as const).map((section) => (
               <button

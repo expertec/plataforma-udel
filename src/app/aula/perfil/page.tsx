@@ -38,7 +38,7 @@ import {
 } from "../_lib/profile";
 import { kardexAverage, loadKardex, type KardexRow } from "../_lib/kardex";
 import { KardexTable } from "../_components/KardexTable";
-import { filterKardexRows, type KardexSection } from "@/lib/students/kardex";
+import { academicKardexLabel, filterKardexRows, type KardexSection } from "@/lib/students/kardex";
 
 type TabId = "materias" | "kardex" | "tareas" | "cuenta";
 
@@ -431,7 +431,7 @@ export default function ProfilePage() {
           <div className="space-y-4">
             <div role="tablist" aria-label="Tipo de kardex" className="flex flex-wrap gap-2">
               {([
-                { id: "academic", label: "Licenciatura", count: academicKardex.length },
+                { id: "academic", label: academicKardexLabel(profile?.program), count: academicKardex.length },
                 { id: "certifications", label: "Certificaciones", count: certificationKardex.length },
               ] as const).map((section) => (
                 <button

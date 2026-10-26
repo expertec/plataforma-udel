@@ -2,6 +2,14 @@ import { accreditationLabels, formatManualRegistrationDate, type ManualKardexFie
 
 export type KardexSection = "academic" | "certifications";
 
+export function academicKardexLabel(program?: string): string {
+  const name = program?.trim() || "";
+  const normalized = name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  if (/prepa|bachillerato|media superior/.test(normalized)) return "Preparatoria";
+  if (/licenciatura|\blic\b|ingenier|universitari|\btsu\b/.test(normalized)) return "Licenciatura";
+  return name || "Académico";
+}
+
 export type KardexClassification = {
   groupName: string;
   isCertification?: boolean;
