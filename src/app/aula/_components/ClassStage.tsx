@@ -121,7 +121,6 @@ function LiveStage({ cls }: { cls: FeedClass }) {
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [muted, setMuted] = useState(false);
   const session = cls.liveSession;
   const status = session?.status;
   const isLive = status === "live";
@@ -166,17 +165,46 @@ function LiveStage({ cls }: { cls: FeedClass }) {
 
   if (recordingUrl) {
     return (
-      <StageFrame>
-        <VideoPlayer
-          id={`${cls.id}__live_recording`}
-          src={recordingUrl}
-          isActive
-          muted={muted}
-          onToggleMute={() => setMuted((prev) => !prev)}
-          registerRef={() => {}}
-          initialProgress={0}
-        />
-      </StageFrame>
+      <div className="space-y-3">
+        <StageFrame>
+          <video
+            key={recordingUrl}
+            src={recordingUrl}
+            controls
+            playsInline
+            preload="metadata"
+            aria-label={`Grabación de ${cls.title}`}
+            className="absolute inset-0 h-full w-full object-contain"
+            onError={(event) => {
+              const code = event.currentTarget.error?.code;
+              const message = code === 2
+                ? "No se pudo descargar la grabación. Reintenta para renovar el acceso al archivo."
+                : code === 3
+                  ? "El navegador no pudo decodificar la grabación."
+                  : code === 4
+                    ? "No se pudo cargar la grabación: el archivo no está accesible o su formato no es compatible."
+                    : "No se pudo reproducir la grabación.";
+              setError(message);
+            }}
+          />
+        </StageFrame>
+        {error && (
+          <div role="alert" className="text-sm text-[var(--aula-text-muted)]">
+            <p>{error}</p>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => {
+                setRecordingUrl(null);
+                void openRecording();
+              }}
+              className="mt-2 rounded-xl bg-[var(--aula-accent)] px-4 py-2 font-semibold text-white disabled:opacity-50"
+            >
+              {loading ? "Verificando..." : "Reintentar grabación"}
+            </button>
+          </div>
+        )}
+      </div>
     );
   }
 
