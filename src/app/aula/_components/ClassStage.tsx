@@ -117,8 +117,68 @@ function ImageStage({ cls }: { cls: FeedClass }) {
 }
 
 function LiveStage({ cls }: { cls: FeedClass }) {
-  const status = cls.liveSession?.status;
+  const { currentUser } = useAulaData();
+  const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [muted, setMuted] = useState(false);
+  const session = cls.liveSession;
+  const status = session?.status;
   const isLive = status === "live";
+  const finalized = Boolean(session?.lastEndedAt) || status === "ended" || status === "recording_ready";
+  const recordingStatus = session?.recording.status ?? "idle";
+  const recordingReady = status === "recording_ready" || recordingStatus === "ready";
+  const canOpenRecording = finalized && recordingStatus !== "failed" && (
+    recordingReady || Boolean(session?.recording.storagePath) ||
+    recordingStatus === "recording" || recordingStatus === "processing"
+  );
+
+  const openRecording = async () => {
+    if (loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      if (!currentUser) throw new Error("Inicia sesión para ver la grabación.");
+      const classId = (cls.classDocId ?? cls.id).trim();
+      if (!classId) throw new Error("No se pudo identificar la clase.");
+      const token = await currentUser.getIdToken();
+      const params = new URLSearchParams();
+      if (cls.courseId?.trim()) params.set("courseId", cls.courseId.trim());
+      if (cls.lessonId?.trim()) params.set("lessonId", cls.lessonId.trim());
+      const query = params.toString();
+      const response = await fetch(
+        `/api/live/classes/${encodeURIComponent(classId)}/recording${query ? `?${query}` : ""}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      const payload = (await response.json().catch(() => null)) as
+        | { success?: boolean; data?: { url?: string }; error?: string }
+        | null;
+      if (!response.ok || !payload?.success || !payload.data?.url) {
+        throw new Error(payload?.error || "La grabación no está disponible");
+      }
+      setRecordingUrl(payload.data.url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo abrir la grabación");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (recordingUrl) {
+    return (
+      <StageFrame>
+        <VideoPlayer
+          id={`${cls.id}__live_recording`}
+          src={recordingUrl}
+          isActive
+          muted={muted}
+          onToggleMute={() => setMuted((prev) => !prev)}
+          registerRef={() => {}}
+          initialProgress={0}
+        />
+      </StageFrame>
+    );
+  }
 
   return (
     <div className="rounded-2xl border border-[var(--aula-border)] bg-[var(--aula-surface)] p-8 text-center">
@@ -133,6 +193,27 @@ function LiveStage({ cls }: { cls: FeedClass }) {
             ? "Esta clase en vivo ya terminó."
             : "Esta clase se imparte en vivo."}
       </p>
+      {canOpenRecording && (
+        <button
+          type="button"
+          onClick={openRecording}
+          disabled={loading}
+          className="mt-6 inline-flex rounded-xl bg-[var(--aula-accent)] px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+        >
+          {loading ? "Verificando..." : recordingReady ? "Ver grabación" : "Verificar grabación"}
+        </button>
+      )}
+      {finalized && (
+        <p role={error ? "alert" : undefined} className="mt-3 text-sm text-[var(--aula-text-muted)]">
+          {error || (recordingStatus === "failed"
+            ? "La grabación falló y no pudo guardarse."
+            : canOpenRecording
+              ? recordingReady
+                ? "La grabación está lista para cargarse."
+                : "La grabación sigue procesándose. Puedes verificar si ya está disponible."
+              : "Esta clase terminó sin grabación disponible.")}
+        </p>
+      )}
       <Link
         href={buildLiveClassHref({
           classId: cls.classDocId ?? cls.id,
@@ -222,7 +303,7 @@ export function ClassStage({ cls, contentHtml }: { cls: FeedClass; contentHtml: 
 
   if (cls.groupIsInPerson === true && cls.assessmentKind !== "final") stage = <InPersonStage cls={cls} />;
   else if (cls.type === "quiz") stage = <QuizStage cls={cls} />;
-  else if (cls.type === "live") stage = <LiveStage cls={cls} />;
+  else if (cls.type === "live") stage = <LiveStage key={cls.id} cls={cls} />;
   else if (cls.type === "audio" && cls.audioUrl) stage = <AudioStage cls={cls} />;
   else if (cls.type === "image") stage = <ImageStage cls={cls} />;
   else if (cls.type === "text") stage = <TextStage cls={cls} html={contentHtml} />;
