@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { TriangleAlert } from "lucide-react";
-import { getExtraordinaryExamValidityLabel, isExtraordinaryExamExpired } from "@/lib/global-exams/types";
+import { getAcademicAlert } from "@/lib/students/academic-alert";
 import { useAulaData } from "../_lib/AulaDataContext";
 
 export function AcademicAlert() {
@@ -15,34 +15,7 @@ export function AcademicAlert() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const recoveryCourses = new Map<string, string>();
-  Object.entries(courseClosures).forEach(([key, closure]) => {
-    if (closure.status !== "closed" || typeof closure.finalGrade !== "number" || closure.finalGrade > 49) return;
-    const courseId = key.split("::")[1];
-    recoveryCourses.set(courseId, closure.courseName || courseTitles[courseId] || "sin nombre");
-  });
-  const recoveryNames = Array.from(recoveryCourses.values());
-  const recoveryNotice = recoveryNames.length > 0
-    ? `Tienes ${recoveryNames.length} ${recoveryNames.length === 1 ? "materia no acreditada" : "materias no acreditadas"}. Acércate a tu coordinador.`
-    : "";
-  const passedKeys = new Set(examAssignments
-    .filter((assignment) => assignment.passed || assignment.status === "passed")
-    .map((assignment) => `${assignment.groupId}::${assignment.courseId}`));
-  const failedKeys = new Set(examAssignments
-    .filter((assignment) => assignment.reason === "failed_course" && assignment.status !== "disabled" &&
-      assignment.courseId && !passedKeys.has(`${assignment.groupId}::${assignment.courseId}`))
-    .map((assignment) => `${assignment.groupId}::${assignment.courseId}`));
-  const extraordinaryNotice = examAssignments
-    .filter((assignment) => assignment.examKind === "extraordinary" && assignment.enabled &&
-      assignment.status === "enabled" && assignment.expiresAt &&
-      !passedKeys.has(`${assignment.groupId}::${assignment.courseId}`))
-    .map((assignment) => `${assignment.courseName || "Extraordinario"}: ${getExtraordinaryExamValidityLabel(assignment.expiresAt!, nowMs)}`)
-    .join(" · ");
-  const notice = [recoveryNotice, extraordinaryNotice].filter(Boolean).join(" · ") ||
-    (failedKeys.size === 1 ? "Tienes 1 materia no acreditada" : failedKeys.size > 1 ? `Tienes ${failedKeys.size} materias no acreditadas` : "");
-  const hasActiveExam = examAssignments.some((assignment) => assignment.enabled &&
-    assignment.status === "enabled" && !assignment.passed &&
-    assignment.attemptsUsed < assignment.attemptsAllowed && !isExtraordinaryExamExpired(assignment, nowMs));
+  const { notice, hasActiveExam } = getAcademicAlert(courseClosures, courseTitles, examAssignments, nowMs);
 
   if (!notice) return null;
 

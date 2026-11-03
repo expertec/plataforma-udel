@@ -9,7 +9,7 @@ import type { FirebaseError } from "firebase/app";
 import { auth } from "@/lib/firebase/client";
 import { onAuthStateChanged, signOut, updatePassword, User } from "firebase/auth";
 import toast from "react-hot-toast";
-import { getExtraordinaryExamValidityLabel, isExtraordinaryExamExpired } from "@/lib/global-exams/types";
+import { getAcademicAlert } from "@/lib/students/academic-alert";
 import { finalExamRequest } from "@/lib/firebase/final-exams-service";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import {
@@ -152,7 +152,7 @@ const getForumTextPreview = (text: string, maxLength = FORUM_TEXT_PREVIEW_LIMIT)
   return `${preview.slice(0, truncateAt).trimEnd()}...`;
 };
 
-const fetchGlobalExamStudyCourseKeys = async (user: User): Promise<{ keys: Set<string>; failedCourseCount: number; extraordinaryExams: GlobalExamStudyAssignment[]; availableExams: GlobalExamStudyAssignment[] }> => {
+const fetchGlobalExamStudyCourseKeys = async (user: User): Promise<{ keys: Set<string>; assignments: GlobalExamStudyAssignment[] }> => {
   try {
     const token = await user.getIdToken();
     const response = await fetch("/api/global-exams/assignments", {
@@ -161,10 +161,10 @@ const fetchGlobalExamStudyCourseKeys = async (user: User): Promise<{ keys: Set<s
       },
       cache: "no-store",
     });
-    if (!response.ok) return { keys: new Set<string>(), failedCourseCount: 0, extraordinaryExams: [], availableExams: [] };
+    if (!response.ok) return { keys: new Set<string>(), assignments: [] };
     const payload = (await response.json().catch(() => ({}))) as GlobalExamAssignmentsApiResponse;
     if (payload.success !== true || !Array.isArray(payload.data)) {
-      return { keys: new Set<string>(), failedCourseCount: 0, extraordinaryExams: [], availableExams: [] };
+      return { keys: new Set<string>(), assignments: [] };
     }
 
     const keys = new Set<string>();
@@ -176,34 +176,10 @@ const fetchGlobalExamStudyCourseKeys = async (user: User): Promise<{ keys: Set<s
       if (assignment.enabled !== true && assignment.status === "draft") return;
       keys.add(`${groupId}::${courseId}`);
     });
-    const passedCourseKeys = new Set(
-      payload.data.filter((assignment) => assignment.passed || assignment.status === "passed")
-        .map((assignment) => `${assignment.groupId}::${assignment.courseId}`),
-    );
-    const failedCourseKeys = new Set(
-      payload.data.filter((assignment) =>
-        assignment.reason === "failed_course" &&
-        assignment.status !== "disabled" &&
-        assignment.courseId &&
-        !passedCourseKeys.has(`${assignment.groupId}::${assignment.courseId}`),
-      ).map((assignment) => `${assignment.groupId}::${assignment.courseId}`),
-    );
-    return {
-      keys,
-      failedCourseCount: failedCourseKeys.size,
-      availableExams: payload.data.filter((assignment) =>
-        assignment.enabled && assignment.status === "enabled" && !assignment.passed &&
-        assignment.attemptsUsed < assignment.attemptsAllowed,
-      ),
-      extraordinaryExams: payload.data.filter((assignment) =>
-        assignment.examKind === "extraordinary" && assignment.enabled &&
-        assignment.status === "enabled" && assignment.expiresAt &&
-        !passedCourseKeys.has(`${assignment.groupId}::${assignment.courseId}`),
-      ),
-    };
+    return { keys, assignments: payload.data };
   } catch (error) {
     console.warn("No se pudieron cargar cursos de estudio para examen global:", error);
-    return { keys: new Set<string>(), failedCourseCount: 0, extraordinaryExams: [], availableExams: [] };
+    return { keys: new Set<string>(), assignments: [] };
   }
 };
 
@@ -885,9 +861,7 @@ export default function StudentFeedPageClient() {
   const [surveyAnswers, setSurveyAnswers] = useState<Record<string, string | number>>({});
   const [surveyStepIndex, setSurveyStepIndex] = useState(0);
   const [surveySubmitting, setSurveySubmitting] = useState(false);
-  const [availableExams, setAvailableExams] = useState<GlobalExamStudyAssignment[]>([]);
-  const [extraordinaryExams, setExtraordinaryExams] = useState<GlobalExamStudyAssignment[]>([]);
-  const [failedCourseCount, setFailedCourseCount] = useState(0);
+  const [examAssignments, setExamAssignments] = useState<GlobalExamStudyAssignment[]>([]);
   const [courseClosureMap, setCourseClosureMap] = useState<Record<string, CourseClosureState>>({});
   const [forumDoneMap, setForumDoneMap] = useState<Record<string, boolean>>({});
   const [forumsReady, setForumsReady] = useState(false);
@@ -1484,24 +1458,11 @@ export default function StudentFeedPageClient() {
   }, [liveNowTickMs, previewMode, visibleClasses]);
   const liveJoinBannerTarget = liveJoinTargets[0] ?? null;
   const hasLiveJoinBanner = Boolean(liveJoinBannerTarget);
-  const recoveryCourseNames = useMemo(() => {
-    const courses = new Map<string, string>();
-    Object.entries(courseClosureMap).forEach(([key, closure]) => {
-      if (closure.status !== "closed" || typeof closure.finalGrade !== "number" || closure.finalGrade > 49) return;
-      const courseId = key.split("::")[1];
-      courses.set(courseId, closure.courseName || courseTitleMap[courseId] || "sin nombre");
-    });
-    return Array.from(courses.values());
-  }, [courseClosureMap, courseTitleMap]);
-  const recoveryNotice = recoveryCourseNames.length > 0
-    ? `Tienes ${recoveryCourseNames.length} ${recoveryCourseNames.length === 1 ? "materia no acreditada" : "materias no acreditadas"}. Acércate a tu coordinador.`
-    : "";
-  const extraordinaryNotice = extraordinaryExams.map((assignment) =>
-    `${assignment.courseName || "Extraordinario"}: ${getExtraordinaryExamValidityLabel(assignment.expiresAt!, liveNowTickMs)}`,
-  ).join(" · ");
-  const failedCourseNotice = [recoveryNotice, extraordinaryNotice].filter(Boolean).join(" · ");
-  const hasActiveExam = availableExams.some((assignment) => !isExtraordinaryExamExpired(assignment, liveNowTickMs));
-  const hasFailedCourseBanner = !previewMode && (failedCourseCount > 0 || recoveryCourseNames.length > 0 || extraordinaryExams.length > 0);
+  const { notice: failedCourseNotice, hasActiveExam } = useMemo(
+    () => getAcademicAlert(courseClosureMap, courseTitleMap, examAssignments, liveNowTickMs),
+    [courseClosureMap, courseTitleMap, examAssignments, liveNowTickMs],
+  );
+  const hasFailedCourseBanner = !previewMode && Boolean(failedCourseNotice);
   const bannerCount = Number(hasLiveJoinBanner) + Number(hasFailedCourseBanner);
   const bannerPaddingClass = bannerCount === 2 ? "pt-24" : bannerCount === 1 ? "pt-12" : "";
   const sidebarTopClass = bannerCount === 2 ? "top-24 h-[calc(100vh-6rem)]" : bannerCount === 1 ? "top-12 h-[calc(100vh-3rem)]" : "top-0 h-full";
@@ -2365,9 +2326,7 @@ export default function StudentFeedPageClient() {
   useEffect(() => {
     const load = async () => {
       setClasses([]);
-      setFailedCourseCount(0);
-      setExtraordinaryExams([]);
-      setAvailableExams([]);
+      setExamAssignments([]);
       setLiveRecordingUrlMap({});
       setRecordingNoticeMap({});
       setActiveId(null);
@@ -2748,11 +2707,9 @@ export default function StudentFeedPageClient() {
         const allEnrollmentIds = activeEnrollmentDocs.map((doc) => doc.id);
         setEnrollmentIds(allEnrollmentIds);
         setLoadingProgress(25);
-        const { keys: globalExamStudyCourseKeys, failedCourseCount: pendingFailedCourses, extraordinaryExams: pendingExtraordinaryExams, availableExams: pendingAvailableExams } =
+        const { keys: globalExamStudyCourseKeys, assignments } =
           await fetchGlobalExamStudyCourseKeys(currentUser);
-        setFailedCourseCount(pendingFailedCourses);
-        setExtraordinaryExams(pendingExtraordinaryExams);
-        setAvailableExams(pendingAvailableExams);
+        setExamAssignments(assignments);
 
         // Preferir un enrollment regular para progreso y compatibilidad.
         const primaryEnrollmentId = regularEnrollmentDocs[0]?.id ?? allEnrollmentIds[0];
@@ -4775,7 +4732,7 @@ export default function StudentFeedPageClient() {
               <path d="M12 17h.01" />
             </svg>
             <p title={failedCourseNotice || undefined} className="m-0 min-w-0 overflow-x-auto whitespace-nowrap text-sm font-semibold">
-              {failedCourseNotice || (failedCourseCount === 1 ? "Tienes 1 materia no acreditada" : `Tienes ${failedCourseCount} materias no acreditadas`)}
+              {failedCourseNotice}
             </p>
             {hasActiveExam ? <Link href="/student/examenes-globales" className="shrink-0 rounded-md bg-black px-3 py-1.5 text-sm font-bold text-yellow-300 transition hover:bg-neutral-800">
               Ver exámenes
