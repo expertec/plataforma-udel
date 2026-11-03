@@ -2,6 +2,7 @@ export const GLOBAL_EXAM_MIN_QUESTIONS = 1;
 export const GLOBAL_EXAM_MAX_QUESTIONS = 25;
 export const GLOBAL_EXAM_PASS_SCORE = 70;
 export const GLOBAL_EXAM_DURATION_MINUTES = 40;
+export const EXTRAORDINARY_EXAM_VALIDITY_DAYS = 7;
 // Cada habilitación otorga un único intento. Si el alumno lo usa (apruebe o repruebe)
 // queda bloqueado hasta que un adminTeacher vuelva a habilitar el examen, lo que
 // concede exactamente un intento adicional.
@@ -97,6 +98,7 @@ export type GlobalExamAssignmentRecord = {
   currentAttemptDeadlineAt?: string | null;
   paymentVerifiedAt?: string | null;
   enabledAt?: string | null;
+  expiresAt?: string | null;
   enabledById?: string | null;
   enabledByName?: string | null;
   createdById: string;
@@ -366,4 +368,33 @@ export function calculateGlobalExamResult(
     score,
     passed: score >= passScore,
   };
+}
+
+export function getExtraordinaryExamExpiresAt(assignment: {
+  examKind?: ExamKind;
+  enabledAt?: string | null;
+  createdAt?: string | null;
+}): string | null {
+  if (assignment.examKind !== "extraordinary") return null;
+  const start = assignment.enabledAt || assignment.createdAt;
+  if (!start) return null;
+  const startMs = Date.parse(start);
+  return Number.isFinite(startMs)
+    ? new Date(startMs + EXTRAORDINARY_EXAM_VALIDITY_DAYS * 86_400_000).toISOString()
+    : null;
+}
+
+export function isExtraordinaryExamExpired(assignment: {
+  examKind?: ExamKind;
+  expiresAt?: string | null;
+}, nowMs = Date.now()): boolean {
+  return assignment.examKind === "extraordinary" && !!assignment.expiresAt &&
+    Date.parse(assignment.expiresAt) <= nowMs;
+}
+
+export function getExtraordinaryExamValidityLabel(expiresAt: string, nowMs: number): string {
+  const remainingMs = Date.parse(expiresAt) - nowMs;
+  if (remainingMs <= 0) return "Vencido";
+  const days = Math.ceil(remainingMs / 86_400_000);
+  return days === 1 ? "Falta 1 día" : `Faltan ${days} días`;
 }

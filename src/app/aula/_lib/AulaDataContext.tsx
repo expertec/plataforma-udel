@@ -12,6 +12,7 @@ import React, {
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut, type User } from "firebase/auth";
 import { doc, onSnapshot } from "firebase/firestore";
+import type { GlobalExamAssignmentRecord } from "@/lib/global-exams/types";
 import { auth } from "@/lib/firebase/client";
 import { db } from "@/lib/firebase/firestore";
 import { isStudentStatusBlocked } from "@/lib/students/status";
@@ -39,6 +40,7 @@ import {
 } from "./progress";
 import type {
   BillingBlockedState,
+  CourseClosureState,
   CurriculumCourse,
   FeedClass,
   ProgressSnapshot,
@@ -66,6 +68,8 @@ type AulaDataValue = {
   curriculum: CurriculumCourse[];
   courseCovers: Record<string, string>;
   courseTitles: Record<string, string>;
+  courseClosures: Record<string, CourseClosureState>;
+  examAssignments: GlobalExamAssignmentRecord[];
   progress: ProgressSnapshot;
   forumDone: Record<string, boolean>;
   isComplete: (cls: FeedClass) => boolean;
@@ -347,6 +351,8 @@ export function AulaDataProvider({ children }: { children: React.ReactNode }) {
       curriculum,
       courseCovers,
       courseTitles,
+      courseClosures: feed?.courseClosures ?? {},
+      examAssignments: feed?.examAssignments ?? [],
       progress,
       forumDone,
       isComplete,

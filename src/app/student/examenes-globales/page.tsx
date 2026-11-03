@@ -15,6 +15,8 @@ import {
 } from "@/lib/global-exams/client";
 import {
   getExamKindLabel,
+  isExtraordinaryExamExpired,
+  getExtraordinaryExamValidityLabel,
   getGlobalExamCourseLabel,
   getGlobalExamReasonLabel,
   getGlobalExamStatusLabel,
@@ -87,6 +89,11 @@ export default function StudentGlobalExamsPage({
   const [assignments, setAssignments] = useState<GlobalExamAssignmentRecord[]>([]);
   const [activeExam, setActiveExam] = useState<GlobalExamAttemptPayload | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [validityNowMs, setValidityNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setValidityNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const [openingAssignmentId, setOpeningAssignmentId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [timeLeftMs, setTimeLeftMs] = useState(0);
@@ -104,16 +111,17 @@ export default function StudentGlobalExamsPage({
     () =>
       assignments.filter(
         (assignment) =>
+          !isExtraordinaryExamExpired(assignment, validityNowMs) &&
           assignment.enabled &&
           assignment.status === "enabled" &&
           assignment.attemptsUsed < assignment.attemptsAllowed,
       ),
-    [assignments],
+    [assignments, validityNowMs],
   );
 
   const completedAssignments = useMemo(
-    () => assignments.filter((assignment) => assignment.status !== "enabled" || !assignment.enabled),
-    [assignments],
+    () => assignments.filter((assignment) => assignment.status !== "enabled" || !assignment.enabled || isExtraordinaryExamExpired(assignment, validityNowMs)),
+    [assignments, validityNowMs],
   );
 
   useEffect(() => {
@@ -567,10 +575,11 @@ export default function StudentGlobalExamsPage({
 	                                {getExamKindLabel(assignment.examKind)}
 	                              </span>
 	                              <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">
-	                                {getGlobalExamStatusLabel(assignment.status)}
+	                                {isExtraordinaryExamExpired(assignment, validityNowMs) ? "Vencido" : getGlobalExamStatusLabel(assignment.status)}
                               </span>
                             </div>
                             <p className="text-sm text-slate-600">Grupo {assignment.groupName}</p>
+                            {assignment.expiresAt ? <p className="text-sm font-semibold text-amber-700">{getExtraordinaryExamValidityLabel(assignment.expiresAt, validityNowMs)}</p> : null}
                             <p className="text-xs text-slate-500">
                               {getGlobalExamReasonLabel(assignment.reason)} | Intentos usados:{" "}
                               {assignment.attemptsUsed}/{assignment.attemptsAllowed}
@@ -617,10 +626,11 @@ export default function StudentGlobalExamsPage({
 	                                {getExamKindLabel(assignment.examKind)}
 	                              </span>
 	                              <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">
-                                {getGlobalExamStatusLabel(assignment.status)}
+                                {isExtraordinaryExamExpired(assignment, validityNowMs) ? "Vencido" : getGlobalExamStatusLabel(assignment.status)}
                               </span>
                             </div>
                             <p className="text-sm text-slate-600">Grupo {assignment.groupName}</p>
+                            {assignment.expiresAt ? <p className="text-sm font-semibold text-amber-700">{getExtraordinaryExamValidityLabel(assignment.expiresAt, validityNowMs)}</p> : null}
                             <p className="text-xs text-slate-500">
                               {getGlobalExamReasonLabel(assignment.reason)} | Intentos usados:{" "}
                               {assignment.attemptsUsed}/{assignment.attemptsAllowed}

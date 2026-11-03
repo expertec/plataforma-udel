@@ -3,6 +3,7 @@ import type { DocumentData, DocumentReference } from "firebase-admin/firestore";
 import { getAdminFirestore } from "@/lib/firebase/admin";
 import {
   GLOBAL_EXAM_DURATION_MINUTES,
+  isExtraordinaryExamExpired,
   buildGlobalExamQuestionReview,
   calculateGlobalExamResult,
   sanitizeGlobalExamQuestionsForStudent,
@@ -137,14 +138,18 @@ function getAttemptSessionFromAssignment(assignment: {
   currentAttemptStartedAt?: string | null;
   currentAttemptDeadlineAt?: string | null;
   currentAttemptSessionId?: string | null;
+  expiresAt?: string | null;
 }): AttemptSession | null {
   const startedAt = toDateOrNull(assignment.currentAttemptStartedAt);
   if (!startedAt) return null;
 
-  const deadlineAt =
+  let deadlineAt =
     toDateOrNull(assignment.currentAttemptDeadlineAt) ??
     new Date(startedAt.getTime() + GLOBAL_EXAM_DURATION_MINUTES * 60_000);
 
+  if (assignment.expiresAt) {
+    deadlineAt = new Date(Math.min(deadlineAt.getTime(), Date.parse(assignment.expiresAt)));
+  }
   return {
     startedAt,
     deadlineAt,
@@ -174,6 +179,9 @@ async function ensureStudentAttemptSession(params: {
 
     const rawAssignmentData = (snap.data() ?? {}) as Record<string, unknown>;
     const assignment = toGlobalExamAssignmentRecord(params.assignmentId, rawAssignmentData);
+    if (isExtraordinaryExamExpired(assignment)) {
+      throw new AttemptRouteError(400, "El examen extraordinario venció. Su vigencia es de 7 días desde la habilitación.");
+    }
     if (
       !assignment.enabled ||
       assignment.status !== "enabled" ||
@@ -202,7 +210,7 @@ async function ensureStudentAttemptSession(params: {
 
         if (!currentSession.sessionId) {
           const restartedAt = now;
-          const restartedDeadlineAt = new Date(now.getTime() + GLOBAL_EXAM_DURATION_MINUTES * 60_000);
+          const restartedDeadlineAt = new Date(Math.min(now.getTime() + GLOBAL_EXAM_DURATION_MINUTES * 60_000, assignment.expiresAt ? Date.parse(assignment.expiresAt) : Infinity));
           transaction.set(
             params.assignmentRef,
             {
@@ -238,7 +246,7 @@ async function ensureStudentAttemptSession(params: {
     }
 
     const startedAt = now;
-    const deadlineAt = new Date(now.getTime() + GLOBAL_EXAM_DURATION_MINUTES * 60_000);
+    const deadlineAt = new Date(Math.min(now.getTime() + GLOBAL_EXAM_DURATION_MINUTES * 60_000, assignment.expiresAt ? Date.parse(assignment.expiresAt) : Infinity));
     transaction.set(
       params.assignmentRef,
       {
@@ -309,6 +317,9 @@ async function finalizeGlobalExamAttempt(params: {
       freshRawAssignmentData,
     );
 
+    if (isExtraordinaryExamExpired(freshAssignment)) {
+      throw new AttemptRouteError(400, "El examen extraordinario venció. Su vigencia es de 7 días desde la habilitación.");
+    }
     if (!freshAssignment.enabled || freshAssignment.status !== "enabled") {
       throw new AttemptRouteError(400, "El examen ya no esta habilitado");
     }
@@ -326,7 +337,7 @@ async function finalizeGlobalExamAttempt(params: {
         const startedAt = now;
         return {
           startedAt,
-          deadlineAt: new Date(startedAt.getTime() + GLOBAL_EXAM_DURATION_MINUTES * 60_000),
+          deadlineAt: new Date(Math.min(startedAt.getTime() + GLOBAL_EXAM_DURATION_MINUTES * 60_000, freshAssignment.expiresAt ? Date.parse(freshAssignment.expiresAt) : Infinity)),
           sessionId: params.sessionId ?? "",
         };
       })();

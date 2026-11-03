@@ -7,6 +7,7 @@ import { FileText, Home, User } from "lucide-react";
 import { ProductTour, type ProductTourStep } from "@/components/product-tour/ProductTour";
 import { StudentViewSwitch } from "@/components/student/StudentViewSwitch";
 import { LOADING_STAGES, useAulaData } from "../_lib/AulaDataContext";
+import { AcademicAlert } from "./AcademicAlert";
 import { BillingBlockedScreen } from "./BillingBlockedScreen";
 
 const railItems = [
@@ -216,7 +217,10 @@ export function AulaShell({ children }: { children: React.ReactNode }) {
         className="fixed bottom-24 right-4 z-50 border-[var(--aula-border)] bg-[var(--aula-surface)] text-[var(--aula-text)] hover:bg-[var(--aula-bg)] lg:bottom-5"
       />
       {/* El padding inferior evita que la barra fija tape el final del contenido. */}
-      <div className="pb-20 lg:pb-0 lg:pl-14">{children}</div>
+      <div className="pb-20 lg:pb-0 lg:pl-14">
+        <AcademicAlert />
+        {children}
+      </div>
       <BottomBar />
     </>
   );

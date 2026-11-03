@@ -1,6 +1,7 @@
 import * as admin from "firebase-admin";
 import {
   GLOBAL_EXAM_DURATION_MINUTES,
+  getExtraordinaryExamExpiresAt,
   GLOBAL_EXAM_MAX_ATTEMPTS,
   GLOBAL_EXAM_PASS_SCORE,
   type ExamKind,
@@ -283,6 +284,11 @@ export function toGlobalExamAssignmentRecord(
       })(),
     paymentVerifiedAt: toIsoString(rawData.paymentVerifiedAt),
     enabledAt: toIsoString(rawData.enabledAt),
+    expiresAt: getExtraordinaryExamExpiresAt({
+      examKind: asExamKind(rawData.examKind),
+      enabledAt: toIsoString(rawData.enabledAt),
+      createdAt: toIsoString(rawData.createdAt),
+    }),
     enabledById: asTrimmedString(rawData.enabledById) || null,
     enabledByName: asTrimmedString(rawData.enabledByName) || null,
     createdById: asTrimmedString(rawData.createdById),

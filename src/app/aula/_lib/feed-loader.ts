@@ -20,27 +20,22 @@ import { normalizeForumPointValue } from "@/lib/forum-grading";
 import { normalizeClassType, trimSafeString } from "./gating";
 import type { CourseClosureState, FeedClass } from "./types";
 
-type GlobalExamAssignment = {
-  groupId: string;
-  courseId: string;
-  enabled: boolean;
-  status: string;
-};
+import type { GlobalExamAssignmentRecord } from "@/lib/global-exams/types";
 
 /** Cursos habilitados solo como material de estudio para el examen global. */
-const fetchGlobalExamStudyCourseKeys = async (user: User): Promise<Set<string>> => {
+const fetchGlobalExamStudyCourseKeys = async (user: User): Promise<{ keys: Set<string>; assignments: GlobalExamAssignmentRecord[] }> => {
   try {
     const token = await user.getIdToken();
     const response = await fetch("/api/global-exams/assignments", {
       headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
     });
-    if (!response.ok) return new Set<string>();
+    if (!response.ok) return { keys: new Set<string>(), assignments: [] };
     const payload = (await response.json().catch(() => ({}))) as {
       success?: boolean;
-      data?: GlobalExamAssignment[];
+      data?: GlobalExamAssignmentRecord[];
     };
-    if (payload.success !== true || !Array.isArray(payload.data)) return new Set<string>();
+    if (payload.success !== true || !Array.isArray(payload.data)) return { keys: new Set<string>(), assignments: [] };
 
     const keys = new Set<string>();
     payload.data.forEach((assignment) => {
@@ -51,10 +46,10 @@ const fetchGlobalExamStudyCourseKeys = async (user: User): Promise<Set<string>> 
       if (assignment.enabled !== true && assignment.status === "draft") return;
       keys.add(`${groupId}::${courseId}`);
     });
-    return keys;
+    return { keys, assignments: payload.data };
   } catch (error) {
     console.warn("No se pudieron cargar cursos de estudio para examen global:", error);
-    return new Set<string>();
+    return { keys: new Set<string>(), assignments: [] };
   }
 };
 
@@ -68,6 +63,7 @@ export type StudentFeed = {
   courseCovers: Record<string, string>;
   courseTitles: Record<string, string>;
   courseClosures: Record<string, CourseClosureState>;
+  examAssignments?: GlobalExamAssignmentRecord[];
   studentName: string;
 };
 
@@ -208,6 +204,8 @@ const captureClosures = (
     if (!status) return;
     target[courseClosureKey(enrollmentId, normalizedCourseId)] = {
       status,
+      courseName: trimSafeString(closure.courseName) ||
+        (trimSafeString(enrollment.courseId) === normalizedCourseId ? trimSafeString(enrollment.courseName) : ""),
       finalGrade:
         typeof closure.finalGrade === "number" && Number.isFinite(closure.finalGrade)
           ? closure.finalGrade
@@ -358,7 +356,7 @@ export const loadStudentCourses = async (
   enrollments.studyOnly.forEach((docSnap) => captureClosures(docSnap.data(), docSnap.id, courseClosures));
 
   // La API de exámenes globales y todos los grupos, de una sola vez.
-  const [globalExamStudyCourseKeys, groupDocs] = await Promise.all([
+  const [{ keys: globalExamStudyCourseKeys, assignments: examAssignments }, groupDocs] = await Promise.all([
     fetchGlobalExamStudyCourseKeys(currentUser),
     Promise.all(
       enrollments.regular.map((enrollmentDoc) =>
@@ -464,6 +462,7 @@ export const loadStudentCourses = async (
       courseCovers,
       courseTitles,
       courseClosures,
+      examAssignments,
       studentName: enrollments.studentName,
     },
   };

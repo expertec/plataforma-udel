@@ -40,6 +40,7 @@ export type FeedClass = {
 };
 
 export type CourseClosureState = {
+  courseName?: string;
   status?: "open" | "closed";
   finalGrade?: number;
   autoGrade?: number | null;
