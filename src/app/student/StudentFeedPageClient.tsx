@@ -1379,7 +1379,7 @@ export default function StudentFeedPageClient() {
   const visibleClasses = useMemo(() => {
     const platformVisible = classes.filter((cls) => {
       if (cls.showInStudentPlatform === false) return false;
-      if (cls.assessmentKind === "final") return true;
+      if (cls.assessmentKind === "final") return cls.groupIsInPerson !== true;
       if (cls.groupIsInPerson === true) {
         if (cls.type === "quiz") return false;
         if (cls.studyOnly === true) return true;
@@ -2824,7 +2824,7 @@ export default function StudentFeedPageClient() {
               classesSnap.forEach((cls) => {
                 const c = cls.data();
                 const normType = normalizeClassType(c.type);
-                if (isGroupInPerson && normType === "quiz" && c.assessmentKind !== "final") return;
+                if (isGroupInPerson && normType === "quiz") return;
                 if (isStudyOnlyCourse && normType === "quiz") return;
                 const imageArray =
                   c.images ??
@@ -4058,7 +4058,7 @@ export default function StudentFeedPageClient() {
   }, [classes, currentUser?.uid, loadForumStatusesForAll, previewMode]);
 
   const renderContent = (cls: FeedClass, idx: number) => {
-    if (!previewMode && cls.groupIsInPerson === true && cls.assessmentKind !== "final") {
+    if (!previewMode && cls.groupIsInPerson === true) {
       return (
         <div className="flex h-full w-full items-center justify-center bg-neutral-950 px-6 text-center">
           <div className="max-w-md rounded-2xl border border-white/10 bg-neutral-900/70 p-6">

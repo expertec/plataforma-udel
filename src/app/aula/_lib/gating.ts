@@ -61,7 +61,7 @@ export const filterVisibleClasses = (classes: FeedClass[]) =>
   sortLiveClassesFirstWithinLesson(
     classes.filter((cls) => {
       if (cls.showInStudentPlatform === false) return false;
-      if (cls.assessmentKind === "final") return true;
+      if (cls.assessmentKind === "final") return cls.groupIsInPerson !== true;
       if (cls.groupIsInPerson === true) {
         if (cls.type === "quiz") return false;
         if (cls.studyOnly === true) return true;

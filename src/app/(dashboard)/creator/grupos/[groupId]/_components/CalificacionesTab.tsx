@@ -1146,7 +1146,7 @@ export function CalificacionesTab({
         try {
           submissions = await getAllSubmissions(groupId);
           if (isInPerson) {
-            submissions = submissions.filter((submission) => submission.assessmentKind === "final" || !isQuizOrForumType(submission.classType));
+            submissions = submissions.filter((submission) => !isQuizOrForumType(submission.classType));
           }
         } catch (error) {
           if (isPermissionDeniedError(error)) {
@@ -1364,7 +1364,7 @@ export function CalificacionesTab({
                   assessmentKind?: "regular" | "final";
                 };
                 const isQuizClass = normalizeEvaluableType(data.type) === "quiz";
-                const includeQuiz = (!isInPerson || data.assessmentKind === "final") && isQuizClass;
+                const includeQuiz = !isInPerson && isQuizClass;
                 const includeForum = !isInPerson && data.forumEnabled === true;
                 const includeAssignment = data.hasAssignment === true && !(isInPerson && isQuizClass);
                 const evaluable = includeQuiz || includeAssignment || includeForum;

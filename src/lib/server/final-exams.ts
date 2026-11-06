@@ -141,6 +141,7 @@ export async function saveFinalExam(courseId: string, body: Data, user: Awaited<
 }
 
 function studentExamState(courseId: string, studentId: string, classData: Data, enrollment: Data, group: Data) {
+  if (group.isInPerson === true) throw new FinalExamError(403, "El examen final en línea no aplica a grupos presenciales.");
   if (isStudentStatusBlocked(group.status)) throw new FinalExamError(403, "El grupo está inactivo.");
   if (enrollment.studentId !== studentId || enrollment.groupId === undefined || isStudentStatusBlocked(enrollment.status)) throw new FinalExamError(403, "Inscripción fuera de tu alcance o inactiva.");
   if (enrollment.studyOnly === true || enrollment.source === "globalExamStudy" || strings(enrollment.excludedCourseIds).includes(courseId)) throw new FinalExamError(403, "Esta materia no está disponible para evaluación.");
