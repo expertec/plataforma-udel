@@ -1031,6 +1031,7 @@ async function createClassViaApiFallback(input: CreateClassInput): Promise<strin
 }
 
 export async function createClass(input: CreateClassInput): Promise<string> {
+  if (input.type === "live") return createClassViaApiFallback(input);
   const classesRef = collection(
     db,
     "courses",
@@ -1040,15 +1041,7 @@ export async function createClass(input: CreateClassInput): Promise<string> {
     "classes",
   );
   const classRef = doc(classesRef);
-  const liveSession =
-    input.type === "live"
-      ? createLiveSessionForClass({
-          courseId: input.courseId,
-          lessonId: input.lessonId,
-          classId: classRef.id,
-          input: input.liveSession,
-        })
-      : null;
+  const liveSession = null;
   try {
     await setDoc(classRef, {
       id: classRef.id,
@@ -1223,6 +1216,10 @@ export async function updateClass(input: UpdateClassInput): Promise<void> {
 
   if (Object.keys(payload).length === 0) return;
   payload.id = input.classId;
+  if (currentType === "live" || input.type === "live" || input.liveSession !== undefined) {
+    await updateClassViaApiFallback(input, payload);
+    return;
+  }
   try {
     await updateDoc(classRef, payload);
   } catch (error) {

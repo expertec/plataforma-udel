@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
+import { LiveScheduleError, writeWithLiveScheduleCheck } from "@/lib/server/live-schedule";
+import { FieldValue, type DocumentReference } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 import { createLiveSessionForClass } from "@/lib/live-classes/types";
 import { DEFAULT_FORUM_POINT_VALUE, normalizeForumPointValue } from "@/lib/forum-grading";
@@ -183,7 +184,7 @@ async function canUserManageCourse(params: {
 }
 
 function toErrorResponse(error: unknown): NextResponse {
-  if (error instanceof RouteAccessError) {
+  if (error instanceof RouteAccessError || error instanceof LiveScheduleError) {
     return NextResponse.json(
       { success: false, error: error.message },
       { status: error.status },
@@ -278,39 +279,49 @@ export async function POST(
       ? Array.from(new Set([...access.mentorIds, teacherContext.uid]))
       : access.mentorIds;
 
-    const batch = db.batch();
-    batch.set(classRef, {
-      id: classRef.id,
-      title,
-      type: classType,
-      order,
-      duration,
-      videoUrl,
-      content,
-      audioUrl,
-      imageUrls,
-      hasAssignment,
-      assignmentTemplateUrl,
-      assignmentSubmissionType,
-      isClassroomActivity,
-      showInStudentPlatform,
-      forumEnabled,
-      forumRequiredFormat,
-      forumPointValue,
-      liveSession,
-      createdAt: FieldValue.serverTimestamp(),
-    });
-    if (access.shouldBackfillMentor) {
-      batch.set(
-        courseRef,
-        {
-          mentorIds: nextMentorIds,
-        },
-        { merge: true },
-      );
-    }
+    const write = (batch: {
+      set: (ref: DocumentReference, data: Record<string, unknown>, options?: { merge: true }) => unknown;
+      update: (ref: DocumentReference, data: Record<string, unknown>) => unknown;
+    }) => {
+      batch.set(classRef, {
+        id: classRef.id,
+        title,
+        type: classType,
+        order,
+        duration,
+        videoUrl,
+        content,
+        audioUrl,
+        imageUrls,
+        hasAssignment,
+        assignmentTemplateUrl,
+        assignmentSubmissionType,
+        isClassroomActivity,
+        showInStudentPlatform,
+        forumEnabled,
+        forumRequiredFormat,
+        forumPointValue,
+        liveSession,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      if (access.shouldBackfillMentor) {
+        batch.set(
+          courseRef,
+          {
+            mentorIds: nextMentorIds,
+          },
+          { merge: true },
+        );
+      }
 
-    await batch.commit();
+    };
+    if (classType === "live") {
+      await writeWithLiveScheduleCheck({ db, courseId: normalizedCourseId, classPath: classRef.path, liveSession, write });
+    } else {
+      const batch = db.batch();
+      write(batch);
+      await batch.commit();
+    }
 
     return NextResponse.json(
       {

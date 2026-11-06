@@ -41,6 +41,7 @@ import {
 import { getForumPosts } from "@/lib/firebase/forum-service";
 import { UserRole, isAdminTeacherRole } from "@/lib/firebase/roles";
 import { isExamOptionalForCourse } from "@/lib/program-level";
+import { isUndergraduateProgram } from "@/lib/program-level";
 import { finalExamBudgetError } from "@/lib/final-exams";
 import { finalExamRequest } from "@/lib/firebase/final-exams-service";
 
@@ -1362,7 +1363,9 @@ export function CalificacionesTab({
                   forumEnabled?: boolean;
                   title?: string;
                   assessmentKind?: "regular" | "final";
+                  isClassroomActivity?: boolean;
                 };
+                if (data.isClassroomActivity && !(isInPerson && isUndergraduateProgram(groupProgram))) return;
                 const isQuizClass = normalizeEvaluableType(data.type) === "quiz";
                 const includeQuiz = !isInPerson && isQuizClass;
                 const includeForum = !isInPerson && data.forumEnabled === true;
@@ -1464,7 +1467,7 @@ export function CalificacionesTab({
     return () => {
       cancelled = true;
     };
-  }, [courses, groupId, isInPerson, userRole]);
+  }, [courses, groupId, groupProgram, isInPerson, userRole]);
 
   const selectedCourseTasks = useMemo(() => {
     if (!selectedCourseId) return [];

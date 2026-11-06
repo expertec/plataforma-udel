@@ -38,3 +38,9 @@ export function isExamOptionalForCourse(params: {
 }): boolean {
   return isExamOptionalProgram(params.program) || isExamOptionalCourseName(params.courseName);
 }
+
+export function isUndergraduateProgram(value: string | null | undefined): boolean {
+  const normalized = normalizeProgramLevelText(value ?? "");
+  if (/prepa|bachillerato|media superior/.test(normalized)) return false;
+  return /licenciatura|\blic\b|ingenier|universitari|\btsu\b/.test(normalized);
+}

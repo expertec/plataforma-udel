@@ -1118,6 +1118,7 @@ export default function GroupDetailPage() {
                   groupId={group.id}
                   courseIds={visibleCourseIdsForCurrentUser}
                   studentsCount={group.studentsCount}
+                  groupProgram={group.program}
                   isInPerson={group.isInPerson === true}
                   readOnly={isCoordinatorForGroup}
                 />

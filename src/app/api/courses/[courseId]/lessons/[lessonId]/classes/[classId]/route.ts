@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { LiveScheduleError, writeWithLiveScheduleCheck } from "@/lib/server/live-schedule";
 import { type DocumentReference } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 import { mergeTeacherEditableLiveSession } from "@/lib/live-classes/types";
@@ -210,7 +211,7 @@ async function canUserManageCourse(params: {
 }
 
 function toErrorResponse(error: unknown): NextResponse {
-  if (error instanceof RouteAccessError) {
+  if (error instanceof RouteAccessError || error instanceof LiveScheduleError) {
     return NextResponse.json(
       { success: false, error: error.message },
       { status: error.status },
@@ -397,18 +398,28 @@ export async function PATCH(
       ? Array.from(new Set([...access.mentorIds, teacherContext.uid]))
       : access.mentorIds;
 
-    const batch = db.batch();
-    batch.update(classRef, payload);
-    if (access.shouldBackfillMentor) {
-      batch.set(
-        courseRef,
-        {
-          mentorIds: nextMentorIds,
-        },
-        { merge: true },
-      );
+    const write = (batch: {
+      set: (ref: DocumentReference, data: Record<string, unknown>, options?: { merge: true }) => unknown;
+      update: (ref: DocumentReference, data: Record<string, unknown>) => unknown;
+    }) => {
+      batch.update(classRef, payload);
+      if (access.shouldBackfillMentor) {
+        batch.set(
+          courseRef,
+          {
+            mentorIds: nextMentorIds,
+          },
+          { merge: true },
+        );
+      }
+    };
+    if (nextType === "live" && payload.liveSession !== undefined) {
+      await writeWithLiveScheduleCheck({ db, courseId: normalizedCourseId, classPath: classRef.path, liveSession: payload.liveSession, write });
+    } else {
+      const batch = db.batch();
+      write(batch);
+      await batch.commit();
     }
-    await batch.commit();
 
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (error: unknown) {

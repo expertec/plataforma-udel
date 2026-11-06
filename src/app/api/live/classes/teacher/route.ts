@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { LiveScheduleError, writeWithLiveScheduleCheck } from "@/lib/server/live-schedule";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 import { createLiveSessionForClass, normalizeLiveSession } from "@/lib/live-classes/types";
@@ -342,7 +343,7 @@ async function resolveCoordinatorGroups(params: {
 }
 
 function toErrorResponse(error: unknown) {
-  if (error instanceof RouteAccessError) {
+  if (error instanceof RouteAccessError || error instanceof LiveScheduleError) {
     return NextResponse.json({ success: false, error: error.message }, { status: error.status });
   }
 
@@ -630,6 +631,7 @@ export async function POST(request: NextRequest) {
       lessonId = liveLesson?.id ?? "";
     }
 
+    let pendingLesson: Record<string, unknown> | null = null;
     if (!lessonRef) {
       const maxLessonNumber = lessonDocs.reduce((acc, lessonDoc) => {
         const value = lessonDoc.data()?.lessonNumber;
@@ -642,22 +644,13 @@ export async function POST(request: NextRequest) {
       lessonRef = courseRef.collection("lessons").doc();
       lessonId = lessonRef.id;
 
-      const lessonBatch = db.batch();
-      lessonBatch.set(lessonRef, {
+      pendingLesson = {
         lessonNumber: maxLessonNumber + 1,
         title: "Clases en vivo",
         description: "Lección generada automáticamente para la programación de sesiones live.",
         order: maxOrder + 1,
         createdAt: FieldValue.serverTimestamp(),
-      });
-      lessonBatch.set(
-        courseRef,
-        {
-          lessonsCount: FieldValue.increment(1),
-        },
-        { merge: true },
-      );
-      await lessonBatch.commit();
+      };
     } else {
       lessonId = lessonRef.id;
     }
@@ -680,7 +673,7 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    await classRef.set({
+    const classData = {
       id: classRef.id,
       title,
       type: "live",
@@ -704,6 +697,16 @@ export async function POST(request: NextRequest) {
       linkedGroupName: selectedGroup.groupName,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
+    };
+    await writeWithLiveScheduleCheck({
+      db, courseId, classPath: classRef.path, liveSession,
+      write: (transaction) => {
+        if (pendingLesson) {
+          transaction.set(lessonRef!, pendingLesson);
+          transaction.set(courseRef, { lessonsCount: FieldValue.increment(1) }, { merge: true });
+        }
+        transaction.set(classRef, classData);
+      },
     });
 
     return NextResponse.json(

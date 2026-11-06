@@ -14,6 +14,7 @@ import {
 import { getForumPosts } from "@/lib/firebase/forum-service";
 import { getGroupStudents } from "@/lib/firebase/groups-service";
 import { db } from "@/lib/firebase/firestore";
+import { isUndergraduateProgram } from "@/lib/program-level";
 import { auth } from "@/lib/firebase/client";
 import { SubmissionsModal } from "./SubmissionsModal";
 
@@ -21,6 +22,7 @@ type EntregasTabProps = {
   groupId: string;
   courseIds: string[];
   studentsCount: number;
+  groupProgram?: string;
   isInPerson?: boolean;
   readOnly?: boolean;
 };
@@ -35,6 +37,7 @@ type AssignmentRow = {
   courseTitle?: string;
   lessonOrder?: number;
   classOrder?: number;
+  isClassroomActivity?: boolean;
   submissions: Submission[];
   avgGrade: number | null;
 };
@@ -184,9 +187,12 @@ export function EntregasTab({
   groupId,
   courseIds,
   studentsCount,
+  groupProgram,
   isInPerson = false,
   readOnly = false,
 }: EntregasTabProps) {
+  const showClassroomActivities = isInPerson && isUndergraduateProgram(groupProgram);
+  const [weeklyLessons, setWeeklyLessons] = useState<LessonGroup[]>([]);
   const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
   const [students, setStudents] = useState<GroupStudent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -281,8 +287,10 @@ export function EntregasTab({
           lessonTitle: string;
           lessonOrder?: number;
           classOrder?: number;
+          isClassroomActivity?: boolean;
         }> = [];
         const courseTitles = new Map<string, string>();
+        const nextWeeklyLessons: LessonGroup[] = [];
 
         for (const cid of courseIds) {
           const courseDoc = await getDoc(doc(db, "courses", cid));
@@ -296,6 +304,9 @@ export function EntregasTab({
             const lessonData = lessonDoc.data() as { title?: string; order?: number };
             const lessonTitle = lessonData?.title ?? "Lección";
             const lessonOrder = lessonData?.order ?? undefined;
+            if (showClassroomActivities) {
+              nextWeeklyLessons.push({ key: `${cid}::${lessonDoc.id}`, lessonId: lessonDoc.id, courseId: cid, lessonTitle, courseTitle, lessonOrder, assignments: [] });
+            }
             const classesSnap = await getDocs(
               query(
                 collection(db, "courses", cid, "lessons", lessonDoc.id, "classes"),
@@ -308,6 +319,7 @@ export function EntregasTab({
                   type?: string;
                   title?: string;
                   hasAssignment?: boolean;
+                  isClassroomActivity?: boolean;
                   assignmentTemplateUrl?: string;
                   forumEnabled?: boolean;
                   order?: number;
@@ -317,11 +329,13 @@ export function EntregasTab({
                   type: data.type,
                   title: data.title,
                   hasAssignment: data.hasAssignment ?? false,
+                  isClassroomActivity: data.isClassroomActivity === true,
                   forumEnabled: data.forumEnabled ?? false,
                   classOrder: data.order ?? undefined,
                 };
               })
               .filter((c) => {
+                if (c.isClassroomActivity && !showClassroomActivities) return false;
                 const isQuizClass = normalizeEvaluableType(c.type) === "quiz";
                 if (isInPerson) return c.hasAssignment === true && !isQuizClass;
                 return isQuizClass || c.hasAssignment === true || c.forumEnabled === true;
@@ -342,6 +356,7 @@ export function EntregasTab({
                 lessonTitle,
                 lessonOrder,
                 classOrder: c.classOrder,
+                isClassroomActivity: c.isClassroomActivity,
               }));
           });
           const classes = (await Promise.all(classesPromises)).flat();
@@ -406,12 +421,14 @@ export function EntregasTab({
             lessonTitle: cls.lessonTitle,
             lessonOrder: cls.lessonOrder,
             classOrder: cls.classOrder,
+            isClassroomActivity: cls.isClassroomActivity,
             courseTitle: courseTitles.get(cls.courseId),
             submissions,
             avgGrade,
           });
         }
         setAssignments(rows);
+        setWeeklyLessons(nextWeeklyLessons);
       } catch (err) {
         console.error(err);
       } finally {
@@ -420,11 +437,17 @@ export function EntregasTab({
     };
 
     load();
-  }, [courseIds, groupId, isInPerson]);
+  }, [courseIds, groupId, isInPerson, showClassroomActivities]);
 
   const lessonGroups: LessonGroup[] = useMemo(() => {
     const map = new Map<string, LessonGroup>();
     const order: string[] = [];
+    if (showClassroomActivities) {
+      weeklyLessons.forEach((lesson) => {
+        map.set(lesson.key, { ...lesson, assignments: [] });
+        order.push(lesson.key);
+      });
+    }
 
     assignments.forEach((row) => {
       const key = `${row.courseId}::${row.lessonId}`;
@@ -460,7 +483,7 @@ export function EntregasTab({
           return a.className.localeCompare(b.className, "es-MX");
         }),
       }));
-  }, [assignments]);
+  }, [assignments, showClassroomActivities, weeklyLessons]);
 
   const [openLessonKey, setOpenLessonKey] = useState<string | null>(null);
 
@@ -786,6 +809,15 @@ export function EntregasTab({
 
                 {isOpen ? (
                   <div className="border-t border-slate-200">
+                    {(showClassroomActivities ? [
+                      { title: "Tareas", rows: lesson.assignments.filter((row) => !row.isClassroomActivity) },
+                      { title: "Actividad en clase", rows: lesson.assignments.filter((row) => row.isClassroomActivity) },
+                    ] : [{ title: "", rows: lesson.assignments }]).map((section) => (
+                    <div key={section.title}>
+                    {section.title ? <h4 className="border-b border-slate-200 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-800">{section.title}</h4> : null}
+                    {section.rows.length === 0 ? (
+                      <p className="px-4 py-3 text-sm text-slate-500">{section.title === "Actividad en clase" ? "No hay actividades en clase registradas para esta semana." : "No hay tareas registradas para esta semana."}</p>
+                    ) : null}
                     <div className="grid grid-cols-4 gap-3 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
                       <span>Nombre de la tarea</span>
                       <span>Entregas</span>
@@ -793,7 +825,7 @@ export function EntregasTab({
                       <span>Acciones</span>
                     </div>
                     <div className="divide-y divide-slate-200">
-                      {lesson.assignments.map((row) => (
+                      {section.rows.map((row) => (
                         <div key={row.classId} className="grid grid-cols-4 gap-3 px-4 py-3 text-sm text-slate-800">
                           <div className="space-y-1">
                             <span className="block font-medium">{row.className}</span>
@@ -806,7 +838,7 @@ export function EntregasTab({
                                   : "bg-blue-100 text-blue-700"
                               }`}
                             >
-                              {row.classType === "quiz" ? "Quiz" : row.classType === "forum" ? "Foro" : "Tarea"}
+                              {row.isClassroomActivity ? "Actividad en clase" : row.classType === "quiz" ? "Quiz" : row.classType === "forum" ? "Foro" : "Tarea"}
                             </span>
                           </div>
                           <span className="text-slate-600">
@@ -841,6 +873,8 @@ export function EntregasTab({
                         </div>
                       ))}
                     </div>
+                    </div>
+                    ))}
                   </div>
                 ) : null}
               </div>
