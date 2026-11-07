@@ -9,7 +9,7 @@ import type { FirebaseError } from "firebase/app";
 import { auth } from "@/lib/firebase/client";
 import { onAuthStateChanged, signOut, updatePassword, User } from "firebase/auth";
 import toast from "react-hot-toast";
-import { getAcademicAlert } from "@/lib/students/academic-alert";
+import { academicAlertEvidence, getAcademicAlert, isAcademicAlertCertification, type AcademicAlertEvidence } from "@/lib/students/academic-alert";
 import { finalExamRequest } from "@/lib/firebase/final-exams-service";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import {
@@ -696,7 +696,7 @@ type ClassFeedbackState = {
   updatedAt: Date | null;
 };
 
-type CourseClosureState = {
+type CourseClosureState = AcademicAlertEvidence & {
   courseName?: string;
   status?: "open" | "closed";
   finalGrade?: number;
@@ -2734,6 +2734,7 @@ export default function StudentFeedPageClient() {
         const captureEnrollmentClosures = (
           enrollment: Record<string, unknown>,
           currentEnrollmentId: string,
+          group: Record<string, unknown> = {},
         ) => {
           const rawCourseClosures = (enrollment.courseClosures ?? {}) as Record<string, unknown>;
           Object.entries(rawCourseClosures).forEach(([courseIdKey, closureValue]) => {
@@ -2745,6 +2746,7 @@ export default function StudentFeedPageClient() {
             if (!status) return;
             const mapKey = `${currentEnrollmentId}::${normalizedCourseId}`;
             nextCourseClosures[mapKey] = {
+              ...academicAlertEvidence(closure, enrollment, group),
               courseName: trimSafeString(closure.courseName) ||
                 (trimSafeString(enrollment.courseId) === normalizedCourseId ? trimSafeString(enrollment.courseName) : ""),
               status,
@@ -2794,6 +2796,13 @@ export default function StudentFeedPageClient() {
           } = params;
           const courseDoc = await getDoc(doc(db, "courses", courseId));
           const courseData = courseDoc.exists() ? courseDoc.data() : null;
+          const closure = nextCourseClosures[`${currentEnrollmentId}::${courseId}`];
+          if (closure && courseData) {
+            closure.isCertification = closure.isCertification || isAcademicAlertCertification({
+              program: trimSafeString(courseData.program) || trimSafeString(courseData.category),
+              isCertification: courseData.isCertification === true,
+            }, trimSafeString(courseData.title));
+          }
           if (!courseData || courseData?.isArchived) {
             return false;
           }
@@ -2906,6 +2915,7 @@ export default function StudentFeedPageClient() {
             }
 
             const groupData = groupDoc.data();
+            captureEnrollmentClosures(enrollment, currentEnrollmentId, groupData);
             const currentGroupName = groupData.groupName ?? "Grupo";
             const isGroupInPerson = groupData.isInPerson === true;
 

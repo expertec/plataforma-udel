@@ -1,8 +1,12 @@
 import { getExtraordinaryExamValidityLabel, isExtraordinaryExamExpired } from "@/lib/global-exams/types";
+import { normalizeProgramLevelText } from "@/lib/program-level";
+import { isCertificationGroup } from "./kardex";
 
 type AlertAssignment = {
   courseId: string;
   courseName?: string;
+  groupId?: string;
+  groupName?: string;
   reason: string;
   passed: boolean;
   enabled: boolean;
@@ -13,7 +17,55 @@ type AlertAssignment = {
   attemptsAllowed: number;
 };
 
-type AlertClosure = { status?: string; finalGrade?: number; courseName?: string };
+export type AcademicAlertEvidence = {
+  groupId?: string;
+  groupName?: string;
+  program?: string;
+  isCertification?: boolean;
+  pendingUngradedCount?: number;
+  totalEvaluable?: number;
+  manualOverride?: boolean;
+  campusFinalExamGrade?: number | null;
+  gradeSource?: string;
+};
+
+type AlertClosure = AcademicAlertEvidence & { status?: string; finalGrade?: number; courseName?: string };
+
+// Keep the evidence when adapting Firestore closures for either student interface.
+export function academicAlertEvidence(
+  closure: Record<string, unknown>,
+  enrollment: Record<string, unknown>,
+  group: Record<string, unknown> = {},
+): AcademicAlertEvidence {
+  const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
+  return {
+    groupId: text(enrollment.groupId),
+    groupName: text(group.groupName) || text(enrollment.groupName),
+    program: text(group.program) || text(enrollment.program) || text(closure.program),
+    isCertification: closure.isCertification === true || enrollment.isCertification === true || group.isCertification === true,
+    pendingUngradedCount: typeof closure.pendingUngradedCount === "number" ? closure.pendingUngradedCount : undefined,
+    totalEvaluable: typeof closure.totalEvaluable === "number" ? closure.totalEvaluable : undefined,
+    manualOverride: closure.manualOverride === true,
+    campusFinalExamGrade: typeof closure.campusFinalExamGrade === "number" ? closure.campusFinalExamGrade : null,
+    gradeSource: text(closure.gradeSource),
+  };
+}
+
+export function isAcademicAlertCertification(closure: AcademicAlertEvidence & { courseName?: string }, title?: string): boolean {
+  return closure.isCertification === true || isCertificationGroup(closure.groupName) ||
+    /\bcertificacion(?:es)?\b/.test(normalizeProgramLevelText(closure.program || "")) ||
+    /^certificacion(?:es)?\b/.test(normalizeProgramLevelText(closure.courseName || "")) ||
+    /^certificacion(?:es)?\b/.test(normalizeProgramLevelText(title || ""));
+}
+
+function hasDefinitiveGrade(closure: AlertClosure): boolean {
+  // Missing/ungraded activities must not become a confirmed failure solely
+  // because a legacy closure contains a partial sum (often zero).
+  return closure.manualOverride === true ||
+    (typeof closure.campusFinalExamGrade === "number" && Number.isFinite(closure.campusFinalExamGrade)) ||
+    (closure.pendingUngradedCount === 0 && closure.totalEvaluable !== 0) ||
+    closure.gradeSource === "globalRegularizationExam" || closure.gradeSource === "extraordinaryRegularizationExam";
+}
 
 export function getAcademicAlert(
   closures: Record<string, AlertClosure>,
@@ -23,22 +75,30 @@ export function getAcademicAlert(
 ) {
   const approved = new Set(assignments.filter((exam) => exam.passed || exam.status === "passed").map((exam) => exam.courseId));
   Object.entries(closures).forEach(([key, closure]) => {
-    if (closure.status === "closed" && typeof closure.finalGrade === "number" && closure.finalGrade >= 70) {
+    if (closure.status === "closed" && typeof closure.finalGrade === "number" &&
+      Number.isFinite(closure.finalGrade) && closure.finalGrade >= 70 && closure.finalGrade <= 100) {
       approved.add(key.split("::")[1]);
     }
   });
   const pending = new Map<string, string>();
   const recovery = new Set<string>();
-  Object.entries(closures).forEach(([key, closure]) => {
+  const failedClosures = Object.entries(closures).filter(([key, closure]) => {
     const courseId = key.split("::")[1];
-    if (!courseId || approved.has(courseId) || closure.status !== "closed" ||
-      typeof closure.finalGrade !== "number" || !Number.isFinite(closure.finalGrade) || closure.finalGrade > 49) return;
+    return courseId && !approved.has(courseId) && !isAcademicAlertCertification(closure, titles[courseId]) &&
+      closure.status === "closed" && hasDefinitiveGrade(closure) &&
+      typeof closure.finalGrade === "number" && Number.isFinite(closure.finalGrade) &&
+      closure.finalGrade >= 0 && closure.finalGrade < 70;
+  });
+  failedClosures.forEach(([key, closure]) => {
+    const courseId = key.split("::")[1];
+    if (closure.finalGrade! > 49) return;
     pending.set(courseId, closure.courseName?.trim() || titles[courseId]?.trim() || `Materia (${courseId})`);
     recovery.add(courseId);
   });
-  const exams = assignments.filter((exam) => exam.courseId && !approved.has(exam.courseId));
+  const exams = assignments.filter((exam) => exam.reason === "failed_course" && exam.status !== "disabled" &&
+    !isCertificationGroup(exam.groupName) && failedClosures.some(([key, closure]) =>
+      key.split("::")[1] === exam.courseId && (!exam.groupId || closure.groupId === exam.groupId)));
   exams.forEach((exam) => {
-    if (exam.reason !== "failed_course" || exam.status === "disabled") return;
     pending.set(exam.courseId, exam.courseName?.trim() || titles[exam.courseId]?.trim() || pending.get(exam.courseId) || `Materia (${exam.courseId})`);
   });
   const count = pending.size;

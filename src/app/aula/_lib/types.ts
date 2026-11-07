@@ -1,4 +1,5 @@
 import type { LiveClassSession } from "@/lib/live-classes/types";
+import type { AcademicAlertEvidence } from "@/lib/students/academic-alert";
 
 /**
  * Espejo del tipo FeedClass de StudentFeedPageClient. Ambas interfaces describen
@@ -39,7 +40,7 @@ export type FeedClass = {
   studyOnly?: boolean;
 };
 
-export type CourseClosureState = {
+export type CourseClosureState = AcademicAlertEvidence & {
   courseName?: string;
   status?: "open" | "closed";
   finalGrade?: number;

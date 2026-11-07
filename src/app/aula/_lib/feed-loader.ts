@@ -17,6 +17,7 @@ import { isStudentStatusBlocked } from "@/lib/students/status";
 import { normalizeLiveSession } from "@/lib/live-classes/types";
 import { resolveTeacherAssignmentForCourse } from "@/lib/groups/teacher-assignment";
 import { normalizeForumPointValue } from "@/lib/forum-grading";
+import { academicAlertEvidence, isAcademicAlertCertification } from "@/lib/students/academic-alert";
 import { normalizeClassType, trimSafeString } from "./gating";
 import type { CourseClosureState, FeedClass } from "./types";
 
@@ -192,6 +193,7 @@ const captureClosures = (
   enrollment: DocumentData,
   enrollmentId: string,
   target: Record<string, CourseClosureState>,
+  group: DocumentData = {},
 ) => {
   const raw = (enrollment.courseClosures ?? {}) as Record<string, unknown>;
   Object.entries(raw).forEach(([courseIdKey, closureValue]) => {
@@ -203,6 +205,7 @@ const captureClosures = (
       closure.status === "closed" || closure.status === "open" ? closure.status : undefined;
     if (!status) return;
     target[courseClosureKey(enrollmentId, normalizedCourseId)] = {
+      ...academicAlertEvidence(closure, enrollment, group),
       status,
       courseName: trimSafeString(closure.courseName) ||
         (trimSafeString(enrollment.courseId) === normalizedCourseId ? trimSafeString(enrollment.courseName) : ""),
@@ -246,6 +249,8 @@ type CourseTask = {
 
 type CourseResult = {
   courseId: string;
+  enrollmentId: string;
+  isCertification: boolean;
   courseTitle: string;
   cover: string;
   classes: FeedClass[];
@@ -333,7 +338,15 @@ const loadCourseContent = async (task: CourseTask): Promise<CourseResult | null>
   );
 
   // Promise.all preserva el orden de las lecciones, del que depende el gating.
-  return { courseId: task.courseId, courseTitle, cover, classes: lessonResults.flat() };
+  return {
+    courseId: task.courseId,
+    enrollmentId: task.enrollmentId,
+    isCertification: isAcademicAlertCertification({
+      program: trimSafeString(courseData.program) || trimSafeString(courseData.category),
+      isCertification: courseData.isCertification === true,
+    }, courseTitle),
+    courseTitle, cover, classes: lessonResults.flat(),
+  };
 };
 
 export type LoadFeedResult =
@@ -374,6 +387,7 @@ export const loadStudentCourses = async (
     if (!groupDoc?.exists()) return;
 
     const groupData = groupDoc.data();
+    captureClosures(enrollmentDoc.data(), enrollmentDoc.id, courseClosures, groupData);
     const groupId = enrollmentDoc.data().groupId;
     const groupName = groupData.groupName ?? "Grupo";
     const isGroupInPerson = groupData.isInPerson === true;
@@ -442,6 +456,10 @@ export const loadStudentCourses = async (
   results.forEach((result) => {
     if (!result) return;
     courseTitles[result.courseId] = result.courseTitle;
+    const closure = courseClosures[courseClosureKey(result.enrollmentId, result.courseId)];
+    if (closure) {
+      closure.isCertification = closure.isCertification || result.isCertification;
+    }
     if (result.cover) courseCovers[result.courseId] = result.cover;
     classes.push(...result.classes);
   });
