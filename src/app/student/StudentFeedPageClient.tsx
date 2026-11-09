@@ -9,7 +9,7 @@ import type { FirebaseError } from "firebase/app";
 import { auth } from "@/lib/firebase/client";
 import { onAuthStateChanged, signOut, updatePassword, User } from "firebase/auth";
 import toast from "react-hot-toast";
-import { academicAlertEvidence, getAcademicAlert, isAcademicAlertCertification, type AcademicAlertEvidence } from "@/lib/students/academic-alert";
+import { academicAlertEvidence, getAcademicAlert, hydrateAcademicAlertCourses, isAcademicAlertCertification, type AcademicAlertEvidence } from "@/lib/students/academic-alert";
 import { finalExamRequest } from "@/lib/firebase/final-exams-service";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import {
@@ -2726,6 +2726,7 @@ export default function StudentFeedPageClient() {
 
         const feed: FeedClass[] = [];
         const nextCourseClosures: Record<string, CourseClosureState> = {};
+        const nextCourseTitles: Record<string, string> = {};
         let firstStudentName = "";
         const groupNames = new Set<string>();
         const renderedRegularCourseIds = new Set<string>();
@@ -2817,6 +2818,7 @@ export default function StudentFeedPageClient() {
           }
 
           const courseTitle = courseData?.title ?? courseName ?? "Curso";
+          nextCourseTitles[courseId] = courseTitle;
           const lessonsSnap = await getDocs(
             query(collection(db, "courses", courseId, "lessons"), orderBy("order", "asc")),
           );
@@ -2882,10 +2884,6 @@ export default function StudentFeedPageClient() {
             }
           }
 
-          setCourseTitleMap((prev) => ({
-            ...prev,
-            [courseId]: courseTitle,
-          }));
           return true;
         };
 
@@ -3025,6 +3023,10 @@ export default function StudentFeedPageClient() {
         }
 
         // Actualizar nombres mostrados
+        await hydrateAcademicAlertCourses(nextCourseClosures, nextCourseTitles, async (courseId) => {
+          const snapshot = await getDoc(doc(db, "courses", courseId));
+          return snapshot.exists() ? snapshot.data() : null;
+        });
         setStudentName(firstStudentName);
         const groupNameList = Array.from(groupNames);
         setGroupName(groupNameList.length > 1 ? `${groupNameList.length} grupos` : groupNameList[0] || "");
@@ -3038,6 +3040,7 @@ export default function StudentFeedPageClient() {
         setLoadingStage("done");
         setLoadingProgress(100);
         setClasses(feed);
+        setCourseTitleMap(nextCourseTitles);
         setCourseClosureMap(nextCourseClosures);
         setLikesMap(initialLikes);
         setLikedMap({});

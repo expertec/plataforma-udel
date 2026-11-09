@@ -21,7 +21,7 @@ function load(name, parent = root) {
     require: dependency => load(dependency, filename) }, { filename });
   return loadedModule.exports;
 }
-const { getAcademicAlert, academicAlertEvidence } = load("@/lib/students/academic-alert");
+const { getAcademicAlert, academicAlertEvidence, hydrateAcademicAlertCourses } = load("@/lib/students/academic-alert");
 const now = Date.parse("2026-11-07T12:00:00Z");
 const closure = (changes = {}) => ({ status: "closed", finalGrade: 30, courseName: "Derecho",
   groupId: "group", pendingUngradedCount: 0, totalEvaluable: 5, ...changes });
@@ -105,4 +105,71 @@ test("Firestore adapter retains the evidence and prefers the actual group", () =
   assert.equal(evidence.pendingUngradedCount, 7);
   assert.equal(evidence.campusFinalExamGrade, 0);
   silent(alert({ "enrollment::course": closure(evidence) }, [exam()]));
+});
+
+test("historical courses without a saved name resolve from the catalog", async () => {
+  const id = "KcDMS6OOt111dld1M4fo";
+  const closures = { [`old::${id}`]: closure({ courseName: "" }) };
+  const titles = { current: "Comunicación Social" };
+  const reads = [];
+  await hydrateAcademicAlertCourses(closures, titles, async courseId => {
+    reads.push(courseId);
+    return { title: "Fundamentos Jurídicos para el Trabajo Social", isArchived: true };
+  });
+  assert.deepEqual(reads, [id]);
+  const notice = alert(closures, [], titles).notice;
+  assert.match(notice, /Fundamentos Jurídicos para el Trabajo Social/);
+  assert.equal(notice.includes(id), false);
+  assert.equal(closures[`old::${id}`].finalGrade, 30);
+  assert.equal(closures[`old::${id}`].status, "closed");
+});
+
+test("a named course such as Macroeconomía still appears alongside a resolved historical course", async () => {
+  const closures = {
+    "old::course": closure({ courseName: "" }),
+    "other::macro": closure({ courseName: "Macroeconomía" }),
+  };
+  const titles = { macro: "Macroeconomía" };
+  const reads = [];
+  await hydrateAcademicAlertCourses(closures, titles, async id => {
+    reads.push(id);
+    return { title: "Derecho" };
+  });
+  assert.deepEqual(reads, ["course"]);
+  assert.match(alert(closures, [], titles).notice, /2 materias no acreditadas: Derecho, Macroeconomía/);
+});
+
+test("catalog hydration deduplicates historical courses and skips open and approved courses", async () => {
+  const closures = {
+    "one::course": closure({ courseName: "" }), "two::course": closure({ courseName: "Materia (course)" }),
+    "one::open": closure({ status: "open" }), "one::passed": closure({ finalGrade: 70 }),
+  };
+  const titles = {};
+  const reads = [];
+  await hydrateAcademicAlertCourses(closures, titles, async id => {
+    reads.push(id);
+    return { title: "Derecho" };
+  });
+  assert.deepEqual(reads, ["course"]);
+  assert.equal(closures["two::course"].courseName, "Derecho");
+});
+
+test("missing or unreadable catalog entries preserve the notice without exposing IDs", async () => {
+  for (const readCourse of [async () => null, async () => { throw new Error("offline"); }]) {
+    for (const courseName of ["", "Materia", "Materia (private-id)", "private-id"]) {
+      const closures = { "old::private-id": closure({ courseName }) };
+      await hydrateAcademicAlertCourses(closures, {}, readCourse);
+      const result = alert(closures, [exam({ courseId: "private-id", courseName: "private-id" })]);
+      assert.match(result.notice, /1 materia no acreditada: Materia pendiente de identificar/);
+      assert.equal(result.notice.includes("private-id"), false);
+      assert.equal(result.hasActiveExam, true);
+    }
+  }
+});
+
+test("resolving a historical certification also applies its catalog classification", async () => {
+  const closures = { "old::course": closure({ courseName: "" }) };
+  const titles = {};
+  await hydrateAcademicAlertCourses(closures, titles, async () => ({ title: "Gemini al Límite", program: "Certificaciones" }));
+  silent(alert(closures, [exam()], titles));
 });

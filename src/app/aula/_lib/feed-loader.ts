@@ -17,7 +17,7 @@ import { isStudentStatusBlocked } from "@/lib/students/status";
 import { normalizeLiveSession } from "@/lib/live-classes/types";
 import { resolveTeacherAssignmentForCourse } from "@/lib/groups/teacher-assignment";
 import { normalizeForumPointValue } from "@/lib/forum-grading";
-import { academicAlertEvidence, isAcademicAlertCertification } from "@/lib/students/academic-alert";
+import { academicAlertEvidence, hydrateAcademicAlertCourses, isAcademicAlertCertification } from "@/lib/students/academic-alert";
 import { normalizeClassType, trimSafeString } from "./gating";
 import type { CourseClosureState, FeedClass } from "./types";
 
@@ -470,6 +470,11 @@ export const loadStudentCourses = async (
       message: "Las materias asignadas a tus grupos están archivadas o sin contenido disponible.",
     };
   }
+
+  await hydrateAcademicAlertCourses(courseClosures, courseTitles, async (courseId) => {
+    const snapshot = await getDoc(doc(db, "courses", courseId));
+    return snapshot.exists() ? snapshot.data() : null;
+  });
 
   return {
     status: "ok",

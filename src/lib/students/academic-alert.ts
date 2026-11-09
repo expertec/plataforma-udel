@@ -31,6 +31,52 @@ export type AcademicAlertEvidence = {
 
 type AlertClosure = AcademicAlertEvidence & { status?: string; finalGrade?: number; courseName?: string };
 
+function courseNameFrom(courseId: string, ...values: unknown[]): string | undefined {
+  return values.filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .find((value) => value && value !== courseId &&
+      !/^(?:materia|curso)(?:\s*\([^)]*\))?$/.test(normalizeProgramLevelText(value)));
+}
+
+// Historical closures can refer to courses no longer present in "Mis clases".
+// Resolve their catalog metadata without loading lessons or changing grades.
+export async function hydrateAcademicAlertCourses(
+  closures: Record<string, AlertClosure>,
+  titles: Record<string, string>,
+  readCourse: (courseId: string) => Promise<Record<string, unknown> | null>,
+): Promise<void> {
+  const missing = new Map<string, AlertClosure[]>();
+  Object.entries(closures).forEach(([key, closure]) => {
+    const courseId = key.split("::")[1];
+    if (!courseId || closure.status !== "closed" || typeof closure.finalGrade !== "number" ||
+      !Number.isFinite(closure.finalGrade) || closure.finalGrade < 0 || closure.finalGrade >= 70 ||
+      courseNameFrom(courseId, titles[courseId])) return;
+    const entries = missing.get(courseId) ?? [];
+    entries.push(closure);
+    missing.set(courseId, entries);
+  });
+  await Promise.all(Array.from(missing, async ([courseId, entries]) => {
+    try {
+      const course = await readCourse(courseId);
+      if (!course) return;
+      const title = courseNameFrom(courseId, course.title);
+      if (title) titles[courseId] = title;
+      const certification = isAcademicAlertCertification({
+        program: typeof course.program === "string" ? course.program :
+          typeof course.category === "string" ? course.category : "",
+        isCertification: course.isCertification === true,
+      }, title);
+      entries.forEach((closure) => {
+        if (!courseNameFrom(courseId, closure.courseName) && title) closure.courseName = title;
+        closure.isCertification = closure.isCertification || certification;
+      });
+    } catch {
+      // A missing/unreadable catalog entry must not prevent loading the aula.
+      // The notice uses a human-readable fallback and keeps the original grade.
+    }
+  }));
+}
+
 // Keep the evidence when adapting Firestore closures for either student interface.
 export function academicAlertEvidence(
   closure: Record<string, unknown>,
@@ -92,14 +138,14 @@ export function getAcademicAlert(
   failedClosures.forEach(([key, closure]) => {
     const courseId = key.split("::")[1];
     if (closure.finalGrade! > 49) return;
-    pending.set(courseId, closure.courseName?.trim() || titles[courseId]?.trim() || `Materia (${courseId})`);
+    pending.set(courseId, courseNameFrom(courseId, closure.courseName, titles[courseId], pending.get(courseId)) || "Materia pendiente de identificar");
     recovery.add(courseId);
   });
   const exams = assignments.filter((exam) => exam.reason === "failed_course" && exam.status !== "disabled" &&
     !isCertificationGroup(exam.groupName) && failedClosures.some(([key, closure]) =>
       key.split("::")[1] === exam.courseId && (!exam.groupId || closure.groupId === exam.groupId)));
   exams.forEach((exam) => {
-    pending.set(exam.courseId, exam.courseName?.trim() || titles[exam.courseId]?.trim() || pending.get(exam.courseId) || `Materia (${exam.courseId})`);
+    pending.set(exam.courseId, courseNameFrom(exam.courseId, exam.courseName, titles[exam.courseId], pending.get(exam.courseId)) || "Materia pendiente de identificar");
   });
   const count = pending.size;
   const summary = count > 0

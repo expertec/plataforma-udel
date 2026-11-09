@@ -483,7 +483,9 @@ export function StudentGradesModal({
             ? courseTitleById.get(normalizedCourseId) ?? ""
             : "";
 
-          for (const candidate of [groupCourseName, courseTitle, ...candidates]) {
+          // A root enrollment name does not identify all its historical courses.
+          const names = normalizedCourseId ? [courseTitle, groupCourseName, candidates[0]] : candidates;
+          for (const candidate of names) {
             if (typeof candidate !== "string") continue;
             const normalizedCandidate = candidate.trim();
             if (normalizedCandidate) return normalizedCandidate;
@@ -498,29 +500,9 @@ export function StudentGradesModal({
           return "Sin materia";
         };
 
-        const needsCourseLookup = (
-          groupId: string,
-          courseId: string,
-          ...candidates: Array<string | null | undefined>
-        ) => {
-          const normalizedGroupId = groupId.trim();
+        const needsCourseLookup = (courseId: string) => {
           const normalizedCourseId = courseId.trim();
-          if (!normalizedCourseId) return false;
-
-          const groupCourseName = groupCourseNameByKey.get(
-            buildGroupCourseKey(normalizedGroupId, normalizedCourseId),
-          );
-          if (typeof groupCourseName === "string" && groupCourseName.trim().length > 0) {
-            return false;
-          }
-
-          for (const candidate of candidates) {
-            if (typeof candidate === "string" && candidate.trim().length > 0) {
-              return false;
-            }
-          }
-
-          return !courseTitleById.has(normalizedCourseId);
+          return Boolean(normalizedCourseId && !courseTitleById.has(normalizedCourseId));
         };
 
         const ingestEnrollmentData = (data: {
@@ -798,14 +780,12 @@ export function StudentGradesModal({
 
         const courseIdsToLookup = new Set<string>();
 
-        enrollmentSources.forEach(({ groupId, fallbackCourseName, closures }) => {
+        enrollmentSources.forEach(({ closures }) => {
           Object.entries(closures).forEach(([courseIdRaw, closureRaw]) => {
             const closure = closureRaw as CourseClosure & { courseName?: unknown };
             if (!closure || typeof closure !== "object") return;
             const courseId = courseIdRaw.trim();
-            const closureCourseName =
-              typeof closure.courseName === "string" ? closure.courseName.trim() : "";
-            if (needsCourseLookup(groupId, courseId, closureCourseName, fallbackCourseName)) {
+            if (needsCourseLookup(courseId)) {
               courseIdsToLookup.add(courseId);
             }
           });
@@ -823,15 +803,14 @@ export function StudentGradesModal({
           return [result.value];
         });
 
-        submissionsByGroupValues.forEach(({ groupId, fallbackCourseName, docs }) => {
+        submissionsByGroupValues.forEach(({ docs }) => {
           docs.forEach((submissionDoc) => {
             const data = submissionDoc.data() as {
               courseId?: string;
               courseTitle?: string;
             };
             const courseId = (data.courseId ?? "").trim();
-            const courseTitle = (data.courseTitle ?? "").trim();
-            if (needsCourseLookup(groupId, courseId, courseTitle, fallbackCourseName)) {
+            if (needsCourseLookup(courseId)) {
               courseIdsToLookup.add(courseId);
             }
           });

@@ -44,6 +44,7 @@ import { isExamOptionalForCourse } from "@/lib/program-level";
 import { isUndergraduateProgram } from "@/lib/program-level";
 import { finalExamBudgetError } from "@/lib/final-exams";
 import { finalExamRequest } from "@/lib/firebase/final-exams-service";
+import { confirmManualGradeScale, getManualGradeScaleWarning } from "@/lib/students/manual-grade-scale";
 
 type CalificacionesTabProps = {
   groupId: string;
@@ -3442,6 +3443,9 @@ ${renderExamTemplateSampleQuestionHtml()}
     }
     const { finalGrade, campusGrades, manualOverride, extraConcepts, extraPointsTotal } = finalResolution;
 
+    if (!await confirmManualGradeScale([{ studentName: row.studentName, autoGrade: row.autoGrade,
+      finalGrade, manualOverride }], requestConfirmation)) return;
+
     const templatesReady = await requestRequiredExamTemplates();
     if (!templatesReady) return;
 
@@ -3590,6 +3594,9 @@ ${renderExamTemplateSampleQuestionHtml()}
     const { finalGrade, campusGrades, manualOverride, extraConcepts, extraPointsTotal } = finalResolution;
     const selectedCourseName = selectedCourse?.courseName ?? "Materia";
 
+    if (!await confirmManualGradeScale([{ studentName: row.studentName, autoGrade: row.autoGrade,
+      finalGrade, manualOverride }], requestConfirmation)) return;
+
     setProcessingStudentId(row.studentId);
     try {
       const now = new Date();
@@ -3719,6 +3726,9 @@ ${renderExamTemplateSampleQuestionHtml()}
     }
     const { finalGrade, campusGrades, manualOverride, extraConcepts, extraPointsTotal } = finalResolution;
     const selectedCourseName = selectedCourse?.courseName ?? "Materia";
+
+    if (!await confirmManualGradeScale([{ studentName: row.studentName, autoGrade: row.autoGrade,
+      finalGrade, manualOverride }], requestConfirmation)) return;
 
     setProcessingNotifyStudentId(row.studentId);
     let gradeSaved = false;
@@ -4120,6 +4130,10 @@ ${renderExamTemplateSampleQuestionHtml()}
       );
       return;
     }
+
+    if (!await confirmManualGradeScale(parsedRows.map(({ row, finalGrade, manualOverride }) => ({
+      studentName: row.studentName, autoGrade: row.autoGrade, finalGrade, manualOverride,
+    })), requestConfirmation)) return;
 
     const templatesReady = await requestRequiredExamTemplates();
     if (!templatesReady) return;
@@ -4593,6 +4607,8 @@ ${renderExamTemplateSampleQuestionHtml()}
           finalKey,
           finalInput,
           computedFinalInput,
+          scaleWarning: getManualGradeScaleWarning({ studentName: row.studentName, autoGrade: row.autoGrade,
+            finalGrade: finalResolution.finalGrade, manualOverride: finalResolution.manualOverride }),
           invalidFinal,
           isRowProcessing,
           canSaveFromBreakdown,
@@ -4674,12 +4690,13 @@ ${renderExamTemplateSampleQuestionHtml()}
         </div>
       ) : (
         <div className="space-y-2">
+          <p className="text-xs text-slate-600">Escala final: 0 a 100. Para registrar 10/10, captura 100; para 9/10, captura 90.</p>
           <div className="overflow-auto rounded-lg border border-slate-200">
             <table className="min-w-full text-sm">
             <thead className="bg-slate-50 text-slate-600">
               <tr>
                 <th className="px-3 py-2 text-left">Alumno</th>
-                <th className="px-3 py-2 text-left">Auto</th>
+                <th className="px-3 py-2 text-left">Auto (0–100)</th>
                 {enableCampusTasksGrade ? (
                   <th className="px-3 py-2 text-left">Tareas plantel</th>
                 ) : null}
@@ -4697,7 +4714,7 @@ ${renderExamTemplateSampleQuestionHtml()}
                     {concept.concept}
                   </th>
                 ))}
-                <th className="px-3 py-2 text-left">Final</th>
+                <th className="px-3 py-2 text-left">Final (0–100)</th>
                 <th className="px-3 py-2 text-left">Pendientes</th>
                 <th className="px-3 py-2 text-left">Estado</th>
                 <th className="px-3 py-2 text-left">Acciones</th>
@@ -4723,6 +4740,8 @@ ${renderExamTemplateSampleQuestionHtml()}
                 const finalKey = getDraftKey(row.studentId);
                 const hasFinalDraft = Object.prototype.hasOwnProperty.call(draftFinalGrades, finalKey);
                 const finalInput = hasFinalDraft ? draftFinalGrades[finalKey] : computedFinalInput;
+                const scaleWarning = getManualGradeScaleWarning({ studentName: row.studentName, autoGrade: row.autoGrade,
+                  finalGrade: finalResolution.finalGrade, manualOverride: finalResolution.manualOverride });
                 const invalidFinal =
                   finalResolution.errorMessage !== null ||
                   typeof finalGradeValue !== "number" ||
@@ -4890,6 +4909,8 @@ ${renderExamTemplateSampleQuestionHtml()}
                         max={100}
                         step={0.1}
                         value={finalInput}
+                        aria-label={`Calificación final de ${row.studentName}, escala de 0 a 100`}
+                        aria-describedby={scaleWarning ? `${finalKey}-scale-warning` : undefined}
                         onChange={(e) =>
                           setDraftFinalGrades((prev) => ({ ...prev, [finalKey]: e.target.value }))
                         }
@@ -4898,6 +4919,9 @@ ${renderExamTemplateSampleQuestionHtml()}
                           invalidFinal ? "border-red-400" : "border-slate-300"
                         } ${!canManageClosures ? "bg-slate-100 text-slate-500" : "bg-white text-slate-900"}`}
                       />
+                      {scaleWarning ? (
+                        <p id={`${finalKey}-scale-warning`} className="mt-1 max-w-56 text-xs font-medium text-amber-700">{scaleWarning}</p>
+                      ) : null}
                     </td>
                     <td className="px-3 py-2 text-slate-700">
                       {row.pendingUngradedCount} / {row.totalEvaluable}
@@ -5206,7 +5230,7 @@ ${renderExamTemplateSampleQuestionHtml()}
                   <div className="flex flex-wrap items-end gap-3">
                     <div>
                       <label className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">
-                        Calificación final
+                        Calificación final (0–100)
                       </label>
                       <input
                         type="number"
@@ -5214,6 +5238,8 @@ ${renderExamTemplateSampleQuestionHtml()}
                         max={100}
                         step={0.1}
                         value={breakdownEditState.finalInput}
+                        aria-label="Calificación final, escala de 0 a 100"
+                        aria-describedby={breakdownEditState.scaleWarning ? "breakdown-scale-warning" : undefined}
                         onChange={(event) =>
                           setDraftFinalGrades((prev) => ({
                             ...prev,
@@ -5228,9 +5254,9 @@ ${renderExamTemplateSampleQuestionHtml()}
                     </div>
                     <div className="text-xs text-slate-600">
                       <p>
-                        Sugerida por suma:{" "}
+                        Cálculo automático:{" "}
                         <span className="font-semibold">
-                          {breakdownEditState.computedFinalInput || "—"}
+                          {typeof breakdownEditState.row.autoGrade === "number" ? `${breakdownEditState.row.autoGrade.toFixed(1)}/100` : "—"}
                         </span>
                       </p>
                       <p>
@@ -5252,6 +5278,9 @@ ${renderExamTemplateSampleQuestionHtml()}
                     <p className="mt-2 text-xs font-medium text-red-600">
                       Revisa los valores capturados. La calificación final debe estar entre 0 y 100.
                     </p>
+                  ) : null}
+                  {breakdownEditState.scaleWarning ? (
+                    <p id="breakdown-scale-warning" className="mt-2 text-xs font-medium text-amber-700">{breakdownEditState.scaleWarning}</p>
                   ) : null}
                 </div>
               ) : null}
@@ -5728,7 +5757,7 @@ ${renderExamTemplateSampleQuestionHtml()}
               <h3 className="text-lg font-semibold text-slate-900">{confirmationModalContext.title}</h3>
             </div>
             <div className="px-5 py-4">
-              <p className="text-sm text-slate-700">{confirmationModalContext.message}</p>
+              <p className="max-h-[60vh] overflow-y-auto text-sm text-slate-700">{confirmationModalContext.message}</p>
             </div>
             <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
               <button

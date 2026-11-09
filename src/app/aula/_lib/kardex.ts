@@ -218,8 +218,8 @@ export const loadKardex = async (
       const globalExamData = resolveGlobalExamData(closure);
       const extraordinaryExamData = resolveExtraordinaryExamData(closure);
       const closureCourseName = trimSafeString(closure.courseName);
-      rememberCourseName(courseId, closureCourseName, fallbackCourseName);
-      if (!courseTitles[courseId] && !rememberedCourseNames.has(courseId)) {
+      rememberCourseName(courseId, closureCourseName);
+      if (!courseTitles[courseId]) {
         unresolvedCourseIds.add(courseId);
       }
       const status = closure.status === "closed" ? "closed" : "open";
@@ -231,7 +231,7 @@ export const loadKardex = async (
         semester,
         isCertification,
         courseId,
-        courseName: resolveCourseName(courseId, closureCourseName, fallbackCourseName),
+        courseName: resolveCourseName(courseId, closureCourseName),
         status,
         finalGrade: toNumberOrNull(closure.finalGrade),
         globalExamGrade: globalExamData.globalExamGrade,
@@ -259,7 +259,7 @@ export const loadKardex = async (
       const courseId = trimSafeString(data.courseId);
       if (!courseId) return;
       rememberCourseName(courseId, fallbackCourseName);
-      if (!courseTitles[courseId] && !rememberedCourseNames.has(courseId)) {
+      if (!courseTitles[courseId]) {
         unresolvedCourseIds.add(courseId);
       }
       const finalGrade = toNumberOrNull(data.finalGrade);
@@ -322,7 +322,8 @@ export const loadKardex = async (
       }
       if (!result.value.exists()) return;
       const courseData = result.value.data() as { title?: unknown; courseName?: unknown };
-      rememberCourseName(courseId, courseData.title, courseData.courseName);
+      const catalogName = trimSafeString(courseData.title) || trimSafeString(courseData.courseName);
+      if (catalogName) rememberedCourseNames.set(courseId, catalogName);
     });
   }
 

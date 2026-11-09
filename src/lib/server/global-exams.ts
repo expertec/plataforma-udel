@@ -685,7 +685,6 @@ export async function syncGlobalExamGradeToEnrollments(
         studentEmail: params.studentEmail,
         groupId: params.groupId,
         groupName: params.groupName || asTrimmedString(data.groupName),
-        courseName: params.courseName || asTrimmedString(data.courseName),
         plantelId: params.plantelId || asTrimmedString(data.plantelId),
         plantelName: params.plantelName || asTrimmedString(data.plantelName),
         updatedAt: now,
@@ -697,6 +696,7 @@ export async function syncGlobalExamGradeToEnrollments(
       const primaryCourseId = asTrimmedString(data.courseId);
       if (!primaryCourseId || primaryCourseId === params.courseId) {
         updatePayload.courseId = params.courseId;
+        updatePayload.courseName = params.courseName || asTrimmedString(data.courseName);
         updatePayload.finalGrade = params.score;
       }
 

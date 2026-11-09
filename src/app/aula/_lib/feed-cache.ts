@@ -1,6 +1,6 @@
 import type { StudentFeed } from "./feed-loader";
 
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 const CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 
 const cacheKey = (uid: string) => `aulaFeed:${uid}`;

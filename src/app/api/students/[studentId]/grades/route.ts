@@ -396,20 +396,18 @@ export async function GET(
       });
     };
 
-    const needsCourseLookup = (groupId: string, courseId: string, ...candidates: string[]): boolean => {
+    const needsCourseLookup = (courseId: string): boolean => {
       const normalizedCourseId = courseId.trim();
-      if (!normalizedCourseId || courseTitleById.has(normalizedCourseId)) return false;
-      const groupCourseName = groupCourseNameByKey.get(buildGroupCourseKey(groupId, normalizedCourseId)) ?? "";
-      return ![groupCourseName, ...candidates].some((candidate) =>
-        isSpecificCourseNameCandidate(candidate, normalizedCourseId),
-      );
+      return Boolean(normalizedCourseId && !courseTitleById.has(normalizedCourseId));
     };
 
     const resolveCourseName = (groupId: string, courseId: string, ...candidates: string[]): string => {
       const normalizedCourseId = courseId.trim();
       const groupCourseName = groupCourseNameByKey.get(buildGroupCourseKey(groupId, normalizedCourseId)) ?? "";
       const courseTitle = courseTitleById.get(normalizedCourseId) ?? "";
-      for (const candidate of [groupCourseName, courseTitle, ...candidates]) {
+      // The enrollment's root name can belong to a different historical course.
+      const names = normalizedCourseId ? [courseTitle, groupCourseName, candidates[0] ?? ""] : candidates;
+      for (const candidate of names) {
         if (isSpecificCourseNameCandidate(candidate, normalizedCourseId)) return candidate.trim();
       }
       if (normalizedCourseId) {
@@ -421,12 +419,12 @@ export async function GET(
     const rows = new Map<string, GradeRow>();
 
     const closureCourseIdsToLookup = new Set<string>();
-    enrollmentSources.forEach(({ groupId, fallbackCourseName, closures }) => {
+    enrollmentSources.forEach(({ closures }) => {
       Object.entries(closures).forEach(([courseIdRaw, closureRaw]) => {
         const closure = closureRaw as CourseClosure;
         if (!closure || typeof closure !== "object") return;
         const courseId = courseIdRaw.trim();
-        if (needsCourseLookup(groupId, courseId, asTrimmedString(closure.courseName), fallbackCourseName)) {
+        if (needsCourseLookup(courseId)) {
           closureCourseIdsToLookup.add(courseId);
         }
       });
@@ -498,11 +496,10 @@ export async function GET(
     const submissionCourseIdsToLookup = new Set<string>();
     submissionResults.forEach((result) => {
       if (result.status !== "fulfilled") return;
-      const fallbackCourseName = enrollmentCourseFallbackByGroup.get(result.value.groupId) ?? "";
       result.value.docs.forEach((docSnap) => {
         const data = docSnap.data() as Record<string, unknown>;
         const courseId = asTrimmedString(data.courseId);
-        if (needsCourseLookup(result.value.groupId, courseId, asTrimmedString(data.courseTitle), fallbackCourseName)) {
+        if (needsCourseLookup(courseId)) {
           submissionCourseIdsToLookup.add(courseId);
         }
       });

@@ -33,7 +33,16 @@ function fixture(role = "adminTeacher", uid = "admin") {
     data: () => records.get(documentPath), ref: document(documentPath),
   });
   function document(documentPath) {
-    return { path: documentPath, get: async () => snapshot(documentPath), collection: (name) => collection(`${documentPath}/${name}`) };
+    return {
+      path: documentPath, get: async () => snapshot(documentPath), collection: (name) => collection(`${documentPath}/${name}`),
+      set: async (data, options) => {
+        const previous = options?.merge ? records.get(documentPath) ?? {} : {};
+        records.set(documentPath, { ...previous, ...data,
+          ...(data.courseClosures ? { courseClosures: { ...previous.courseClosures, ...data.courseClosures } } : {}),
+        });
+        writes++;
+      },
+    };
   }
   function collection(collectionPath, filters = []) {
     return {
@@ -66,6 +75,7 @@ function fixture(role = "adminTeacher", uid = "admin") {
   const modules = new Map();
   const dependencies = {
     xlsx: XLSX,
+    "firebase-admin": { firestore: { Timestamp: { now: () => ({ toDate: () => new Date("2026-11-09T12:00:00Z") }) } } },
     "firebase-admin/firestore": { FieldValue: { serverTimestamp: () => "server-timestamp" } },
     "@/lib/firebase/admin": {
       getAdminFirestore: () => db,
@@ -126,6 +136,7 @@ function fixture(role = "adminTeacher", uid = "admin") {
     list: async (history = false) => (await (await request("GET", null, "valid", history ? "?history=1" : "")).json()).data.records,
     grades: () => gradesRoute.GET({ headers: new Headers({ Authorization: "Bearer valid" }) }, { params: Promise.resolve({ studentId: "student" }) }),
     studentKardex: () => load("@/app/aula/_lib/kardex"),
+    globalExams: () => load("@/lib/server/global-exams"),
     excel: () => load("@/lib/students/academic-history-excel"),
   };
 }
@@ -401,6 +412,80 @@ test("administrative grades API preserves historical semester, cycle, exam and s
   assert.equal(row.globalExamGrade, 85);
   assert.equal(row.registeredAt, "2026-10-17");
   assert.equal(app.kardex.countProgramApproved(payload.data.rows), 1);
+});
+
+test("historical subjects keep their catalog identities despite a root name overwritten by a global exam", async () => {
+  const app = fixture();
+  const subjects = [
+    ["psychometry", "Psicometría I", 90], ["dynamics", "Dinámicas de Grupos II", 87.5],
+    ["orientation", "Orientación Educativa", 91], ["models", "Teorías y Modelos de diseño Instruccional", 100],
+    ["intervention", "Intervención Psicopedagógica en Centros Educativos", 76],
+  ];
+  for (const [id, title] of subjects) app.records.set(`courses/${id}`, { title });
+  app.records.set("studentEnrollments/enrollment", {
+    studentId: "student", groupId: "group", groupName: "LEIP2024", courseId: "psychometry", courseName: "Psicometría I",
+    courseClosures: Object.fromEntries(subjects.map(([id, , grade]) => [id, {
+      status: "closed", finalGrade: grade, closedAt: new Date("2026-07-25T22:58:50Z"),
+    }])),
+  });
+  app.records.set("studentEnrollments/study", {
+    studentId: "student", groupId: "group", courseId: "psychometry", courseName: "Psicometría I", source: "globalExamStudy",
+    courseClosures: { psychometry: { status: "closed", courseName: "Psicometría I", finalGrade: 90 } },
+  });
+  const response = await app.grades();
+  assert.equal(response.status, 200);
+  const adminRows = (await response.json()).data.rows;
+  const studentRows = await app.studentKardex().loadKardex("student", {});
+  for (const rows of [adminRows, studentRows]) {
+    assert.equal(rows.length, 5, "different subjects remain distinct; a repeated enrollment does not add another row");
+    for (const [id, title, grade] of subjects) {
+      const row = rows.find(row => row.courseId === id);
+      assert.equal(row.courseName, title);
+      assert.equal(row.finalGrade, grade);
+    }
+    assert.equal(rows.filter(row => row.courseName === "Psicometría I").length, 1);
+  }
+  assert.equal(app.writes(), 0);
+});
+
+test("a missing catalog course does not inherit the name of a different enrollment subject", async () => {
+  const app = fixture();
+  const missingId = "DeletedCourse0123456789";
+  app.records.set("studentEnrollments/enrollment", {
+    studentId: "student", groupId: "group", courseId: "course", courseName: "Derecho",
+    courseClosures: { [missingId]: { status: "closed", finalGrade: 87.5 } },
+  });
+  const adminRows = (await (await app.grades()).json()).data.rows;
+  const studentRows = await app.studentKardex().loadKardex("student", {});
+  for (const rows of [adminRows, studentRows]) {
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].courseName, "Materia archivada");
+    assert.equal(rows[0].finalGrade, 87.5);
+  }
+});
+
+test("syncing a global exam preserves the root identity of another course in the same group", async () => {
+  const app = fixture();
+  app.records.set("studentEnrollments/group_student", {
+    studentId: "student", groupId: "group", courseId: "other", courseName: "Historia", finalGrade: 95,
+    courseClosures: { other: { status: "closed", finalGrade: 95 } },
+  });
+  app.records.set("studentEnrollments/study", {
+    studentId: "student", groupId: "group", courseId: "course", courseName: "Derecho", source: "globalExamStudy",
+  });
+  await app.globalExams().syncGlobalExamGradeToEnrollments({
+    studentId: "student", studentName: "Alumno", studentEmail: "student@example.test",
+    groupId: "group", groupName: "LEIP2024", courseId: "course", courseName: "Derecho", score: 90,
+    passed: true, attemptNumber: 1, assignmentId: "assignment", attemptId: "attempt", plantelId: "campus", plantelName: "Campus",
+  });
+  const root = app.records.get("studentEnrollments/group_student");
+  assert.equal(root.courseId, "other");
+  assert.equal(root.courseName, "Historia");
+  assert.equal(root.finalGrade, 95);
+  assert.equal(root.courseClosures.other.finalGrade, 95);
+  assert.equal(root.courseClosures.course.courseName, "Derecho");
+  assert.equal(root.courseClosures.course.finalGrade, 90);
+  assert.equal(app.records.get("studentEnrollments/study").courseName, "Derecho");
 });
 
 test("student profile loads both manual sections and computes their averages without mixing them", async () => {
