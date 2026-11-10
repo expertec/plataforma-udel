@@ -2,6 +2,10 @@ import { getExtraordinaryExamValidityLabel, isExtraordinaryExamExpired } from "@
 import { normalizeProgramLevelText } from "@/lib/program-level";
 import { isCertificationGroup } from "./kardex";
 
+// Temporarily hide student notices while historical final grades are reviewed.
+// Re-enable both student interfaces here once that review is complete.
+export const STUDENT_ACADEMIC_ALERTS_ENABLED = false;
+
 type AlertAssignment = {
   courseId: string;
   courseName?: string;

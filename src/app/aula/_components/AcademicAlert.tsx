@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { TriangleAlert } from "lucide-react";
-import { getAcademicAlert } from "@/lib/students/academic-alert";
+import { getAcademicAlert, STUDENT_ACADEMIC_ALERTS_ENABLED } from "@/lib/students/academic-alert";
 import { useAulaData } from "../_lib/AulaDataContext";
 
 export function AcademicAlert() {
@@ -17,7 +17,7 @@ export function AcademicAlert() {
 
   const { notice, hasActiveExam } = getAcademicAlert(courseClosures, courseTitles, examAssignments, nowMs);
 
-  if (!notice) return null;
+  if (!STUDENT_ACADEMIC_ALERTS_ENABLED || !notice) return null;
 
   return (
     <div role="status" className="border-b border-yellow-600 bg-yellow-400 text-black shadow-lg">

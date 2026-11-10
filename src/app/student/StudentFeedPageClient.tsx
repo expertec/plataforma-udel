@@ -9,7 +9,7 @@ import type { FirebaseError } from "firebase/app";
 import { auth } from "@/lib/firebase/client";
 import { onAuthStateChanged, signOut, updatePassword, User } from "firebase/auth";
 import toast from "react-hot-toast";
-import { academicAlertEvidence, getAcademicAlert, hydrateAcademicAlertCourses, isAcademicAlertCertification, type AcademicAlertEvidence } from "@/lib/students/academic-alert";
+import { academicAlertEvidence, getAcademicAlert, hydrateAcademicAlertCourses, isAcademicAlertCertification, STUDENT_ACADEMIC_ALERTS_ENABLED, type AcademicAlertEvidence } from "@/lib/students/academic-alert";
 import { finalExamRequest } from "@/lib/firebase/final-exams-service";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import {
@@ -1462,7 +1462,7 @@ export default function StudentFeedPageClient() {
     () => getAcademicAlert(courseClosureMap, courseTitleMap, examAssignments, liveNowTickMs),
     [courseClosureMap, courseTitleMap, examAssignments, liveNowTickMs],
   );
-  const hasFailedCourseBanner = !previewMode && Boolean(failedCourseNotice);
+  const hasFailedCourseBanner = STUDENT_ACADEMIC_ALERTS_ENABLED && !previewMode && Boolean(failedCourseNotice);
   const bannerCount = Number(hasLiveJoinBanner) + Number(hasFailedCourseBanner);
   const bannerPaddingClass = bannerCount === 2 ? "pt-24" : bannerCount === 1 ? "pt-12" : "";
   const sidebarTopClass = bannerCount === 2 ? "top-24 h-[calc(100vh-6rem)]" : bannerCount === 1 ? "top-12 h-[calc(100vh-3rem)]" : "top-0 h-full";
