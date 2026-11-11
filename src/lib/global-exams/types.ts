@@ -231,20 +231,22 @@ export function roundGlobalExamScore(score: number): number {
   return Math.round(score * 10) / 10;
 }
 
+export class GlobalExamValidationError extends Error {}
+
 export function normalizeGlobalExamQuestions(value: unknown): GlobalExamQuestion[] {
   if (!Array.isArray(value)) {
-    throw new Error("Debes enviar un arreglo de preguntas");
+    throw new GlobalExamValidationError("Debes enviar un arreglo de preguntas");
   }
 
   if (value.length < GLOBAL_EXAM_MIN_QUESTIONS || value.length > GLOBAL_EXAM_MAX_QUESTIONS) {
-    throw new Error(
+    throw new GlobalExamValidationError(
       `El examen debe tener entre ${GLOBAL_EXAM_MIN_QUESTIONS} y ${GLOBAL_EXAM_MAX_QUESTIONS} preguntas`,
     );
   }
 
   return value.map((rawQuestion, questionIndex) => {
     if (!rawQuestion || typeof rawQuestion !== "object" || Array.isArray(rawQuestion)) {
-      throw new Error(`La pregunta ${questionIndex + 1} es invalida`);
+      throw new GlobalExamValidationError(`La pregunta ${questionIndex + 1} es invalida`);
     }
 
     const question = rawQuestion as {
@@ -257,7 +259,7 @@ export function normalizeGlobalExamQuestions(value: unknown): GlobalExamQuestion
     };
     const prompt = asTrimmedString(question.prompt).replace(/\s+/g, " ");
     if (!prompt) {
-      throw new Error(`La pregunta ${questionIndex + 1} debe incluir un enunciado`);
+      throw new GlobalExamValidationError(`La pregunta ${questionIndex + 1} debe incluir un enunciado`);
     }
 
     if (
@@ -265,20 +267,20 @@ export function normalizeGlobalExamQuestions(value: unknown): GlobalExamQuestion
       question.options.length < GLOBAL_EXAM_MIN_OPTIONS ||
       question.options.length > GLOBAL_EXAM_MAX_OPTIONS
     ) {
-      throw new Error(
+      throw new GlobalExamValidationError(
         `La pregunta ${questionIndex + 1} debe incluir entre ${GLOBAL_EXAM_MIN_OPTIONS} y ${GLOBAL_EXAM_MAX_OPTIONS} opciones`,
       );
     }
 
     const options = question.options.map((rawOption, optionIndex) => {
       if (!rawOption || typeof rawOption !== "object" || Array.isArray(rawOption)) {
-        throw new Error(`La opcion ${optionIndex + 1} de la pregunta ${questionIndex + 1} es invalida`);
+        throw new GlobalExamValidationError(`La opcion ${optionIndex + 1} de la pregunta ${questionIndex + 1} es invalida`);
       }
 
       const option = rawOption as { id?: unknown; text?: unknown };
       const text = normalizeOptionText(option.text);
       if (!text) {
-        throw new Error(
+        throw new GlobalExamValidationError(
           `La opcion ${optionIndex + 1} de la pregunta ${questionIndex + 1} no puede estar vacia`,
         );
       }
@@ -291,12 +293,12 @@ export function normalizeGlobalExamQuestions(value: unknown): GlobalExamQuestion
 
     const optionIds = new Set(options.map((option) => option.id));
     if (optionIds.size !== options.length) {
-      throw new Error(`La pregunta ${questionIndex + 1} tiene IDs de opcion duplicados`);
+      throw new GlobalExamValidationError(`La pregunta ${questionIndex + 1} tiene IDs de opcion duplicados`);
     }
 
     const correctOptionId = asTrimmedString(question.correctOptionId);
     if (!correctOptionId || !optionIds.has(correctOptionId)) {
-      throw new Error(`La pregunta ${questionIndex + 1} debe marcar una respuesta correcta valida`);
+      throw new GlobalExamValidationError(`La pregunta ${questionIndex + 1} debe marcar una respuesta correcta valida`);
     }
 
     return {

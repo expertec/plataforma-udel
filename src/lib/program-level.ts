@@ -44,3 +44,13 @@ export function isUndergraduateProgram(value: string | null | undefined): boolea
   if (/prepa|bachillerato|media superior/.test(normalized)) return false;
   return /licenciatura|\blic\b|ingenier|universitari|\btsu\b/.test(normalized);
 }
+
+// Teacher grading availability is independent of student-platform visibility.
+export function supportsClassroomActivities(
+  program: string | null | undefined,
+  isInPerson: boolean,
+): boolean {
+  const normalized = normalizeProgramLevelText(program ?? "");
+  const isHighSchool = /prepa|bachillerato|media superior/.test(normalized);
+  return isInPerson ? isUndergraduateProgram(program) : isHighSchool;
+}

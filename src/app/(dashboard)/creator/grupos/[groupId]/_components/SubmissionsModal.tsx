@@ -1325,6 +1325,7 @@ type Props = {
   lessonId?: string;
   classType?: string;
   isInPerson?: boolean;
+  isClassroomActivity?: boolean;
   readOnly?: boolean;
   className: string;
   isOpen: boolean;
@@ -1382,6 +1383,7 @@ export function SubmissionsModal({
   lessonId,
   classType,
   isInPerson = false,
+  isClassroomActivity = false,
   readOnly = false,
   isOpen,
   onClose,
@@ -1811,7 +1813,7 @@ export function SubmissionsModal({
     }
     const submission = row.submission;
     const canCreateManualSubmission =
-      isInPerson && !isForumClass && !isQuizClass && !submission;
+      (isInPerson || isClassroomActivity) && !isForumClass && !isQuizClass && !submission;
     const manualInlineKey = canCreateManualSubmission ? `manual:${row.student.id}` : null;
     const inlineKey = submission?.id ?? manualInlineKey;
     if (!inlineKey) return;
@@ -1887,7 +1889,9 @@ export function SubmissionsModal({
           submittedAt: new Date(),
           status: "graded",
           grade: parsedGrade,
-          content: "Calificación capturada en grupo presencial sin archivo adjunto.",
+          content: isClassroomActivity
+            ? "Calificación de actividad en clase capturada sin archivo adjunto."
+            : "Calificación capturada en grupo presencial sin archivo adjunto.",
           gradedById,
           gradedByName,
         });
@@ -1898,7 +1902,7 @@ export function SubmissionsModal({
           delete next[inlineKey];
           return next;
         });
-        toast.success("Calificación presencial guardada correctamente");
+        toast.success("Calificación guardada correctamente");
       }
     } catch (err) {
       console.error("Error guardando calificación inline:", err);
@@ -2051,7 +2055,7 @@ export function SubmissionsModal({
                   const sub = row.submission;
                   const effectiveQuizGrade = isQuizClass ? getEffectiveQuizGrade(sub) : null;
                   const canCreateManualSubmission =
-                    !readOnly && isInPerson && !isForumClass && !isQuizClass && !sub;
+                    !readOnly && (isInPerson || isClassroomActivity) && !isForumClass && !isQuizClass && !sub;
                   const manualInlineKey = canCreateManualSubmission ? `manual:${row.student.id}` : null;
                   const inlineKey = sub?.id ?? manualInlineKey;
                   const gradeInput = inlineKey

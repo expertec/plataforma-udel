@@ -14,7 +14,7 @@ import {
 import { getForumPosts } from "@/lib/firebase/forum-service";
 import { getGroupStudents } from "@/lib/firebase/groups-service";
 import { db } from "@/lib/firebase/firestore";
-import { isUndergraduateProgram } from "@/lib/program-level";
+import { supportsClassroomActivities } from "@/lib/program-level";
 import { auth } from "@/lib/firebase/client";
 import { SubmissionsModal } from "./SubmissionsModal";
 
@@ -191,7 +191,7 @@ export function EntregasTab({
   isInPerson = false,
   readOnly = false,
 }: EntregasTabProps) {
-  const showClassroomActivities = isInPerson && isUndergraduateProgram(groupProgram);
+  const showClassroomActivities = supportsClassroomActivities(groupProgram, isInPerson);
   const [weeklyLessons, setWeeklyLessons] = useState<LessonGroup[]>([]);
   const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
   const [students, setStudents] = useState<GroupStudent[]>([]);
@@ -203,6 +203,7 @@ export function EntregasTab({
     courseId: string;
     lessonId: string;
     classType: string;
+    isClassroomActivity?: boolean;
   } | null>(null);
 
   const matchSubmissionsToClass = (
@@ -863,6 +864,7 @@ export function EntregasTab({
                                   courseId: row.courseId,
                                   lessonId: row.lessonId,
                                   classType: row.classType,
+                                  isClassroomActivity: row.isClassroomActivity,
                                 })
                               }
                               className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-blue-600 hover:border-blue-400"
@@ -892,6 +894,7 @@ export function EntregasTab({
           lessonId={selected.lessonId}
           courseId={selected.courseId}
           isInPerson={isInPerson}
+          isClassroomActivity={selected.isClassroomActivity}
           readOnly={readOnly}
           isOpen
           onClose={() => setSelected(null)}

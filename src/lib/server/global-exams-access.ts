@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { GlobalExamValidationError } from "@/lib/global-exams/types";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 
 export type GlobalExamAccessRole =
@@ -165,13 +166,13 @@ export async function getCoordinatorScopeGroupIds(
 }
 
 export function toGlobalExamRouteErrorResponse(error: unknown, context: string): NextResponse {
-  if (error instanceof GlobalExamAccessError) {
+  if (error instanceof GlobalExamAccessError || error instanceof GlobalExamValidationError) {
     return NextResponse.json(
       {
         success: false,
         error: error.message,
       },
-      { status: error.status },
+      { status: error instanceof GlobalExamAccessError ? error.status : 400 },
     );
   }
 
