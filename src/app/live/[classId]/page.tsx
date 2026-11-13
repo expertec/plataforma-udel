@@ -21,7 +21,6 @@ import {
   useMaybeLayoutContext,
   useMaybeTrackRefContext,
   useParticipants,
-  usePreviewTracks,
   type LocalUserChoices,
   type TrackReference,
   type TrackReferenceOrPlaceholder,
@@ -32,8 +31,6 @@ import { onAuthStateChanged, type User } from "firebase/auth";
 import {
   ConnectionState,
   isBrowserSupported,
-  type LocalAudioTrack,
-  type LocalVideoTrack,
   MediaDeviceFailure,
   type ScreenShareCaptureOptions,
   Track,
@@ -50,6 +47,7 @@ import {
   Circle,
   Clock3,
   Eye,
+  FolderOpen,
   Hand,
   Hourglass,
   LayoutGrid,
@@ -82,6 +80,11 @@ import {
 import { LoginCard } from "@/components/auth/LoginCard";
 import { auth } from "@/lib/firebase/client";
 import { LiveCameraAttendance } from "./_components/LiveCameraAttendance";
+import { LiveMaterialsPanel, useLiveMaterials, type LiveMaterialsModel } from "./_components/LiveMaterialsPanel";
+import { LiveMaterialStage } from "./_components/LiveMaterialStage";
+import { PreparationMaterials } from "./_components/PreparationMaterials";
+import { TeacherPreparationRoom } from "./_components/TeacherPreparationRoom";
+import { PreparationWorkspace } from "./_components/PreparationWorkspace";
 import { formatEsMxDateTime } from "@/lib/utils/date-format";
 import {
   useStudentsPip,
@@ -1047,11 +1050,29 @@ function LiveRoomConference({
   viewerRole,
   leftSlot,
   rightSlot,
+  materials,
 }: {
   viewerRole: "teacher" | "student" | null;
   leftSlot?: React.ReactNode;
   rightSlot?: React.ReactNode;
+  materials: LiveMaterialsModel;
 }) {
+  const [showMaterials, setShowMaterials] = useState(false);
+  const lastMaterialsRefreshRef = useRef(0);
+  const { send: sendMaterialUpdate } = useDataChannel("udel-materials-changed", () => {
+    // Packets are invalidation hints only; state is always read from the authorized API.
+    if (Date.now() - lastMaterialsRefreshRef.current < 250) return;
+    lastMaterialsRefreshRef.current = Date.now();
+    void materials.refresh().catch(() => {});
+  });
+  const notifyMaterialUpdate = () => {
+    void sendMaterialUpdate(new TextEncoder().encode("changed"), { reliable: true }).catch(() => {});
+  };
+  const materialAction = async (body: Record<string, unknown>) => {
+    const success = await materials.action(body);
+    if (success) notifyMaterialUpdate();
+    return success;
+  };
   const participants = useParticipants();
   const connectionState = useConnectionState();
   const localParticipantPermissions = useLocalParticipantPermissions();
@@ -1772,10 +1793,26 @@ function LiveRoomConference({
         </div>
       ) : null}
       <LayoutContextProvider onWidgetChange={setWidgetState}>
-        <div className="flex min-h-0 flex-1">
+        <div className="relative flex min-h-0 flex-1">
+          {viewerRole === "teacher" && showMaterials ? (
+            <div id="live-materials-panel" className="absolute inset-y-0 left-0 z-40 w-[min(22rem,100%)] shrink-0 p-2 lg:relative lg:w-80">
+              <LiveMaterialsPanel model={materials} live onClose={() => setShowMaterials(false)} onAction={materialAction} onChanged={notifyMaterialUpdate} />
+            </div>
+          ) : null}
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="lk-video-conference-inner min-h-0 flex-1">
-              {showOnlyActiveCameras && !hasVisibleTracks ? (
+              {materials.activeMaterial ? (
+                <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 p-2">
+                  <div className="min-h-0 flex-1">
+                    <LiveMaterialStage model={materials} teacher={viewerRole === "teacher"} onAction={materialAction} />
+                  </div>
+                  {hasVisibleTracks ? <div className="h-24 shrink-0 sm:h-28">
+                    <CarouselLayout tracks={visibleTracks} className="h-full">
+                      <LiveParticipantTile raisedHands={raisedHands} />
+                    </CarouselLayout>
+                  </div> : null}
+                </div>
+              ) : showOnlyActiveCameras && !hasVisibleTracks ? (
                 <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-2 text-center text-slate-400">
                   <VideoOff className="h-8 w-8 opacity-50" />
                   <p className="text-sm">No hay cámaras encendidas en este momento.</p>
@@ -1812,7 +1849,7 @@ function LiveRoomConference({
                 <div className="2xl:grid 2xl:grid-cols-[minmax(12rem,1fr)_auto_minmax(12rem,1fr)] 2xl:items-center 2xl:gap-3">
                   <div className="hidden min-w-0 items-center justify-start 2xl:flex">{leftSlot}</div>
                   <div className="relative min-w-0">
-                    <div className="flex min-w-0 items-start justify-center gap-1.5 sm:gap-2">
+                    <div className="flex min-w-0 flex-wrap items-start justify-center gap-1.5 sm:gap-2">
                       <LiveDeviceControl
                         label="Micrófono"
                         kind="audioinput"
@@ -1867,6 +1904,14 @@ function LiveRoomConference({
                           }
                         />
                       ) : null}
+                      {viewerRole === "teacher" ? <LiveBarButton
+                        label="Materiales"
+                        icon={<FolderOpen className="h-5 w-5" />}
+                        active={showMaterials || Boolean(materials.activeMaterial)}
+                        ariaControls="live-materials-panel"
+                        ariaExpanded={showMaterials}
+                        onClick={() => setShowMaterials((current) => !current)}
+                      /> : null}
                       <div className="relative 2xl:hidden" ref={moreControlsMenuRef}>
                         <LiveBarButton
                           label="Más"
@@ -2115,294 +2160,8 @@ function LiveRoomConference({
       </LayoutContextProvider>
       <StartAudio label="Habilitar audio" />
       <RoomAudioRenderer />
+      {materials.syncError && !materials.activeMaterial ? <p role="alert" className="absolute left-3 top-3 z-20 max-w-sm rounded-lg bg-red-950/90 p-2 text-xs text-red-100">No se pudo actualizar el material compartido: {materials.syncError}</p> : null}
       {studentsPip.portal}
-    </div>
-  );
-}
-
-function TeacherPreparationRoom({
-  classTitle,
-  scheduledStartAt,
-  timezone,
-  starting,
-  errorMessage,
-  onStart,
-  onLeave,
-}: {
-  classTitle: string;
-  scheduledStartAt: string | null;
-  timezone: string;
-  starting: boolean;
-  errorMessage: string | null;
-  onStart: (choices: LocalUserChoices) => void | Promise<void>;
-  onLeave: () => void;
-}) {
-  const [videoEnabled, setVideoEnabled] = useState(true);
-  const [audioEnabled, setAudioEnabled] = useState(true);
-  const [videoDeviceId, setVideoDeviceId] = useState("");
-  const [audioDeviceId, setAudioDeviceId] = useState("");
-  const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
-  const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]);
-  const [previewError, setPreviewError] = useState<string | null>(null);
-  const [micLevel, setMicLevel] = useState(0);
-  const videoElementRef = useRef<HTMLVideoElement>(null);
-
-  const handlePreviewError = useCallback((previewTrackError: Error) => {
-    console.error("No se pudo abrir la vista previa de dispositivos", previewTrackError);
-    setPreviewError(
-      "No pudimos acceder a tu cámara o micrófono. Revisa los permisos del navegador.",
-    );
-  }, []);
-
-  const previewTracks = usePreviewTracks(
-    {
-      audio: audioEnabled ? { deviceId: audioDeviceId || undefined } : false,
-      video: videoEnabled ? { deviceId: videoDeviceId || undefined } : false,
-    },
-    handlePreviewError,
-  );
-
-  const videoPreviewTrack = useMemo(
-    () =>
-      (previewTracks?.find((track) => track.kind === Track.Kind.Video) as
-        | LocalVideoTrack
-        | undefined) ?? undefined,
-    [previewTracks],
-  );
-  const audioPreviewTrack = useMemo(
-    () =>
-      (previewTracks?.find((track) => track.kind === Track.Kind.Audio) as
-        | LocalAudioTrack
-        | undefined) ?? undefined,
-    [previewTracks],
-  );
-
-  const hasPreviewTracks = Boolean(previewTracks && previewTracks.length > 0);
-  const showPreviewError = Boolean(previewError) && !hasPreviewTracks;
-
-  useEffect(() => {
-    const element = videoElementRef.current;
-    if (!element || !videoPreviewTrack) return;
-    videoPreviewTrack.attach(element);
-    return () => {
-      videoPreviewTrack.detach(element);
-    };
-  }, [videoPreviewTrack]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const loadDevices = async () => {
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        if (cancelled) return;
-        setCameras(devices.filter((device) => device.kind === "videoinput"));
-        setMicrophones(devices.filter((device) => device.kind === "audioinput"));
-      } catch {
-        // ignore enumeration errors
-      }
-    };
-    void loadDevices();
-    navigator.mediaDevices.addEventListener?.("devicechange", loadDevices);
-    return () => {
-      cancelled = true;
-      navigator.mediaDevices.removeEventListener?.("devicechange", loadDevices);
-    };
-  }, [previewTracks]);
-
-  useEffect(() => {
-    if (!audioEnabled || !audioPreviewTrack) {
-      return;
-    }
-    const mediaStreamTrack = audioPreviewTrack.mediaStreamTrack;
-    if (!mediaStreamTrack) return;
-    const AudioContextImpl =
-      window.AudioContext ||
-      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextImpl) return;
-
-    const audioContext = new AudioContextImpl();
-    const sourceStream = new MediaStream([mediaStreamTrack]);
-    const source = audioContext.createMediaStreamSource(sourceStream);
-    const analyser = audioContext.createAnalyser();
-    analyser.fftSize = 256;
-    source.connect(analyser);
-    const buffer = new Uint8Array(analyser.frequencyBinCount);
-    let frame = 0;
-    const measure = () => {
-      analyser.getByteTimeDomainData(buffer);
-      let peak = 0;
-      for (let index = 0; index < buffer.length; index += 1) {
-        const deviation = Math.abs(buffer[index] - 128) / 128;
-        if (deviation > peak) peak = deviation;
-      }
-      setMicLevel(peak);
-      frame = requestAnimationFrame(measure);
-    };
-    measure();
-    return () => {
-      cancelAnimationFrame(frame);
-      source.disconnect();
-      analyser.disconnect();
-      void audioContext.close().catch(() => {});
-    };
-  }, [audioEnabled, audioPreviewTrack]);
-
-  const handleStart = useCallback(() => {
-    void onStart({
-      videoEnabled,
-      audioEnabled,
-      videoDeviceId,
-      audioDeviceId,
-      username: "",
-    });
-  }, [audioDeviceId, audioEnabled, onStart, videoDeviceId, videoEnabled]);
-
-  const micLevelPercent =
-    audioEnabled && audioPreviewTrack ? Math.min(100, Math.round(micLevel * 140)) : 0;
-
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 py-8 text-white">
-      <div className="w-full max-w-3xl rounded-3xl border border-slate-800 bg-slate-900/70 p-6 shadow-2xl">
-        <div className="text-center">
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-300">
-            Sala de preparación
-          </p>
-          <h1 className="mt-1 text-2xl font-semibold">{classTitle}</h1>
-          <p className="mx-auto mt-2 max-w-lg text-sm text-slate-300">
-            Prueba tu cámara y micrófono antes de iniciar. Solo tú ves esta pantalla; los alumnos no
-            podrán entrar hasta que inicies la clase.
-          </p>
-          {scheduledStartAt ? (
-            <p className="mt-2 text-xs text-slate-400">
-              Inicio programado: {formatEsMxDateTime(scheduledStartAt, { timeZone: timezone })} (
-              {timezone})
-            </p>
-          ) : null}
-        </div>
-
-        <div className="mt-5 overflow-hidden rounded-2xl border border-slate-800 bg-black">
-          <div className="relative aspect-video w-full">
-            {videoEnabled ? (
-              <video
-                ref={videoElementRef}
-                className="h-full w-full -scale-x-100 object-cover"
-                muted
-                playsInline
-              />
-            ) : (
-              <div className="flex h-full w-full items-center justify-center text-sm text-slate-400">
-                Cámara desactivada
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="mt-3 flex items-center gap-3">
-          <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Nivel de micrófono
-          </span>
-          <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-800">
-            <div
-              className="h-full rounded-full bg-emerald-500 transition-[width] duration-75"
-              style={{ width: `${micLevelPercent}%` }}
-            />
-          </div>
-        </div>
-
-        {showPreviewError ? (
-          <p className="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">
-            {previewError}
-          </p>
-        ) : null}
-        {errorMessage ? (
-          <p className="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">
-            {errorMessage}
-          </p>
-        ) : null}
-
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          <div>
-            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">
-              Cámara
-            </label>
-            <div className="flex items-center gap-2">
-              <select
-                value={videoDeviceId}
-                onChange={(event) => setVideoDeviceId(event.target.value)}
-                disabled={!videoEnabled}
-                className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white disabled:opacity-50"
-              >
-                <option value="">Predeterminada</option>
-                {cameras.map((camera, index) => (
-                  <option key={camera.deviceId || index} value={camera.deviceId}>
-                    {camera.label || `Cámara ${index + 1}`}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={() => setVideoEnabled((current) => !current)}
-                className={`shrink-0 rounded-lg border px-3 py-2 text-xs font-semibold ${
-                  videoEnabled
-                    ? "border-emerald-500 bg-emerald-600/20 text-emerald-200 hover:bg-emerald-600/30"
-                    : "border-slate-600 bg-slate-800 text-slate-300 hover:bg-slate-700"
-                }`}
-              >
-                {videoEnabled ? "Activada" : "Activar"}
-              </button>
-            </div>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">
-              Micrófono
-            </label>
-            <div className="flex items-center gap-2">
-              <select
-                value={audioDeviceId}
-                onChange={(event) => setAudioDeviceId(event.target.value)}
-                disabled={!audioEnabled}
-                className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white disabled:opacity-50"
-              >
-                <option value="">Predeterminado</option>
-                {microphones.map((microphone, index) => (
-                  <option key={microphone.deviceId || index} value={microphone.deviceId}>
-                    {microphone.label || `Micrófono ${index + 1}`}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={() => setAudioEnabled((current) => !current)}
-                className={`shrink-0 rounded-lg border px-3 py-2 text-xs font-semibold ${
-                  audioEnabled
-                    ? "border-emerald-500 bg-emerald-600/20 text-emerald-200 hover:bg-emerald-600/30"
-                    : "border-slate-600 bg-slate-800 text-slate-300 hover:bg-slate-700"
-                }`}
-              >
-                {audioEnabled ? "Activado" : "Activar"}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-6 flex flex-col-reverse items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <button
-            type="button"
-            onClick={onLeave}
-            className="rounded-lg border border-slate-600 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800"
-          >
-            Salir
-          </button>
-          <button
-            type="button"
-            disabled={starting}
-            onClick={handleStart}
-            className="rounded-lg bg-emerald-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-60"
-          >
-            {starting ? "Iniciando..." : "Iniciar clase en vivo"}
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -2427,6 +2186,10 @@ export default function LiveClassRoomPage() {
   const recordingEndpoint = useMemo(
     () =>
       `/api/live/classes/${encodeURIComponent(classId)}/recording${liveClassQuery ? `?${liveClassQuery}` : ""}`,
+    [classId, liveClassQuery],
+  );
+  const materialsEndpoint = useMemo(
+    () => `/api/live/classes/${encodeURIComponent(classId)}/materials${liveClassQuery ? `?${liveClassQuery}` : ""}`,
     [classId, liveClassQuery],
   );
   const returnTo = useMemo(() => {
@@ -3260,6 +3023,11 @@ export default function LiveClassRoomPage() {
     ? "Detenido"
     : RECORDING_STATUS_LABEL[recordingStatus];
   const isSessionLive = liveSessionStatus === "live";
+  const materials = useLiveMaterials({
+    endpoint: materialsEndpoint, user,
+    enabled: Boolean(user && (asRole === "teacher" || (asRole === "student" && token && livekitUrl && isSessionLive))),
+    live: Boolean(token && livekitUrl && isSessionLive),
+  });
   const canManageClass = asRole === "teacher" && isSessionLive;
   const waitingParticipantsCount = waitingParticipants.length;
   const firstWaitingParticipantName =
@@ -3346,6 +3114,7 @@ export default function LiveClassRoomPage() {
 
   if (!token || !livekitUrl) {
     return (
+      <>
       <UdelLiveWaitingRoomScreen
         asRole={asRole}
         classTitle={classTitle}
@@ -3368,11 +3137,14 @@ export default function LiveClassRoomPage() {
           void requestToken({ admissionRetry: waitingReason === "admission_rejected" });
         }}
       />
+      {asRole === "teacher" ? <PreparationMaterials model={materials} /> : null}
+      </>
     );
   }
 
   if (asRole === "teacher" && !isSessionLive) {
     return (
+      <PreparationWorkspace model={materials}>
       <TeacherPreparationRoom
         classTitle={classTitle}
         scheduledStartAt={scheduledStartAt}
@@ -3382,6 +3154,7 @@ export default function LiveClassRoomPage() {
         onStart={handleTeacherStart}
         onLeave={leaveRoom}
       />
+      </PreparationWorkspace>
     );
   }
 
@@ -3610,6 +3383,7 @@ export default function LiveClassRoomPage() {
         {asRole === "student" && <LiveCameraAttendance user={user} endpoint={attendancePresenceEndpoint} />}
         <LiveRoomConference
           viewerRole={asRole}
+          materials={materials}
           leftSlot={bottomLeftSlot}
           rightSlot={bottomRightSlot}
         />
