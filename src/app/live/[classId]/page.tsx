@@ -13,6 +13,7 @@ import {
   ParticipantTile,
   RoomAudioRenderer,
   StartAudio,
+  TrackLoop,
   useTrackToggle,
   useChat,
   useConnectionState,
@@ -82,6 +83,7 @@ import { auth } from "@/lib/firebase/client";
 import { LiveCameraAttendance } from "./_components/LiveCameraAttendance";
 import { LiveMaterialsPanel, useLiveMaterials, type LiveMaterialsModel } from "./_components/LiveMaterialsPanel";
 import { LiveMaterialStage } from "./_components/LiveMaterialStage";
+import { LivePresentationLayout, presentationCameraStyle } from "./_components/LivePresentationLayout";
 import { PreparationMaterials } from "./_components/PreparationMaterials";
 import { TeacherPreparationRoom } from "./_components/TeacherPreparationRoom";
 import { PreparationWorkspace } from "./_components/PreparationWorkspace";
@@ -1017,9 +1019,11 @@ function LiveRoomChatPanel({ visible }: { visible: boolean }) {
 function LiveParticipantTile({
   raisedHands,
   trackRef,
+  compact = false,
 }: {
   raisedHands: Record<string, RaisedHandEntry>;
   trackRef?: TrackReferenceOrPlaceholder;
+  compact?: boolean;
 }) {
   const contextTrackRef = useMaybeTrackRefContext();
   const effectiveTrackRef = trackRef ?? contextTrackRef;
@@ -1030,9 +1034,11 @@ function LiveParticipantTile({
   return (
     <div
       className="relative h-full min-h-0 overflow-hidden rounded-[var(--lk-border-radius)]"
+      style={compact ? presentationCameraStyle : undefined}
+      data-live-camera-size={compact ? "160x90" : undefined}
       data-live-raised-hand={showHandBadge ? "true" : undefined}
     >
-      <ParticipantTile trackRef={trackRef} className="h-full w-full" />
+      <ParticipantTile trackRef={trackRef} className="h-full w-full" style={compact ? { width: "100%", height: "100%", maxHeight: 90, minHeight: 0, overflow: "hidden" } : undefined} />
       {showHandBadge && handEntry ? (
         <div
           className="pointer-events-none absolute left-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-amber-200/80 bg-amber-400 text-amber-950 shadow-lg shadow-black/25"
@@ -1070,7 +1076,10 @@ function LiveRoomConference({
   };
   const materialAction = async (body: Record<string, unknown>) => {
     const success = await materials.action(body);
-    if (success) notifyMaterialUpdate();
+    if (success) {
+      if (body.action === "present") setShowMaterials(false);
+      notifyMaterialUpdate();
+    }
     return success;
   };
   const participants = useParticipants();
@@ -1231,6 +1240,10 @@ function LiveRoomConference({
   }, [showOnlyActiveCameras, tracks]);
 
   const hasVisibleTracks = visibleTracks.length > 0;
+  const presentationCameraTracks = useMemo(
+    () => visibleTracks.filter((track) => track.source === Track.Source.Camera),
+    [visibleTracks],
+  );
 
   // While filtering, only keep a focused tile if it's a screen share or a camera
   // that's actually on — otherwise a muted teacher camera would still take over.
@@ -1719,7 +1732,7 @@ function LiveRoomConference({
   ]);
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col">
+    <div className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
       {activeReactions.length > 0 ? (
         <div className="pointer-events-none absolute right-3 top-20 z-20 flex max-w-[min(18rem,calc(100vw-1.5rem))] flex-col items-end gap-1.5">
           {activeReactions.slice(-5).map((reaction) => (
@@ -1793,25 +1806,26 @@ function LiveRoomConference({
         </div>
       ) : null}
       <LayoutContextProvider onWidgetChange={setWidgetState}>
-        <div className="relative flex min-h-0 flex-1">
+        <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
           {viewerRole === "teacher" && showMaterials ? (
             <div id="live-materials-panel" className="absolute inset-y-0 left-0 z-40 w-[min(22rem,100%)] shrink-0 p-2 lg:relative lg:w-80">
               <LiveMaterialsPanel model={materials} live onClose={() => setShowMaterials(false)} onAction={materialAction} onChanged={notifyMaterialUpdate} />
             </div>
           ) : null}
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="lk-video-conference-inner min-h-0 flex-1">
-              {materials.activeMaterial ? (
-                <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 p-2">
-                  <div className="min-h-0 flex-1">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <div className="lk-video-conference-inner min-h-0 min-w-0 flex-1 overflow-hidden">
+              {materials.activeMaterial || screenShareTrack ? (
+                <LivePresentationLayout cameras={presentationCameraTracks.length ? (
+                  <TrackLoop tracks={presentationCameraTracks}>
+                    <LiveParticipantTile raisedHands={raisedHands} compact />
+                  </TrackLoop>
+                ) : undefined}>
+                  {materials.activeMaterial ? (
                     <LiveMaterialStage model={materials} teacher={viewerRole === "teacher"} onAction={materialAction} />
-                  </div>
-                  {hasVisibleTracks ? <div className="h-24 shrink-0 sm:h-28">
-                    <CarouselLayout tracks={visibleTracks} className="h-full">
-                      <LiveParticipantTile raisedHands={raisedHands} />
-                    </CarouselLayout>
-                  </div> : null}
-                </div>
+                  ) : screenShareTrack ? (
+                    <LiveParticipantTile raisedHands={raisedHands} trackRef={screenShareTrack} />
+                  ) : null}
+                </LivePresentationLayout>
               ) : showOnlyActiveCameras && !hasVisibleTracks ? (
                 <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-2 text-center text-slate-400">
                   <VideoOff className="h-8 w-8 opacity-50" />
@@ -1844,7 +1858,7 @@ function LiveRoomConference({
                 </div>
               )}
             </div>
-            <div className="border-t border-white/5 bg-slate-950/90 px-2 py-2 backdrop-blur sm:px-3 sm:py-2.5">
+            <div className="shrink-0 border-t border-white/5 bg-slate-950/90 px-2 py-2 backdrop-blur sm:px-3 sm:py-2.5">
               <div>
                 <div className="2xl:grid 2xl:grid-cols-[minmax(12rem,1fr)_auto_minmax(12rem,1fr)] 2xl:items-center 2xl:gap-3">
                   <div className="hidden min-w-0 items-center justify-start 2xl:flex">{leftSlot}</div>
@@ -3312,7 +3326,7 @@ export default function LiveClassRoomPage() {
   );
 
   return (
-    <div className="h-screen w-full bg-slate-950">
+    <div className="h-dvh max-h-dvh w-full overflow-hidden bg-slate-950">
       {livekitError || shouldShowChromeRecommendation ? (
         <div className="pointer-events-none fixed left-0 right-0 top-14 z-20 flex justify-center px-3">
           <div className="flex w-full max-w-3xl flex-col items-center gap-2">

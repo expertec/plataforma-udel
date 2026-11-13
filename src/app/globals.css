@@ -446,6 +446,11 @@ button.live-chat-toggle[data-lk-active="true"] {
   font-size: 0.8125rem;
 }
 
+/* Camera card geometry is enforced inline by LivePresentationLayout/LiveParticipantTile. */
+.live-presentation-cameras .lk-participant-media-video[data-lk-source="camera"] {
+  object-fit: contain !important;
+}
+
 /* Interfaz alternativa de alumnos (/aula). Tema oscuro propio; no afecta al feed
    clásico porque todo cuelga de la clase .aula-shell. */
 .aula-shell {

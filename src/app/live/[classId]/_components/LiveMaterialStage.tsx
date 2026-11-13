@@ -26,13 +26,16 @@ function PdfMaterial({ material, state, teacher, busy, onControl }: {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
-  const [width, setWidth] = useState(800);
+  const [size, setSize] = useState({ width: 800, height: 600 });
   const [error, setError] = useState<string | null>(null);
   const [rendering, setRendering] = useState(true);
   useEffect(() => {
     const element = containerRef.current;
     if (!element) return;
-    const observer = new ResizeObserver(([entry]) => setWidth(Math.max(100, Math.floor(entry.contentRect.width - 24))));
+    const observer = new ResizeObserver(([entry]) => setSize({
+      width: Math.max(1, Math.floor(entry.contentRect.width - 24)),
+      height: Math.max(1, Math.floor(entry.contentRect.height - 24)),
+    }));
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
@@ -61,7 +64,7 @@ function PdfMaterial({ material, state, teacher, busy, onControl }: {
       const page = await pdf.getPage(Math.min(state.page, pdf.numPages));
       if (disposed) return;
       const natural = page.getViewport({ scale: 1 });
-      const viewport = page.getViewport({ scale: Math.min(width, 1600) / natural.width });
+      const viewport = page.getViewport({ scale: Math.max(0.01, Math.min(size.width / natural.width, size.height / natural.height, 2)) });
       const ratio = Math.min(window.devicePixelRatio || 1, 2);
       canvas.width = Math.floor(viewport.width * ratio);
       canvas.height = Math.floor(viewport.height * ratio);
@@ -74,7 +77,7 @@ function PdfMaterial({ material, state, teacher, busy, onControl }: {
     })().catch(() => { if (!disposed) setError("No se pudo mostrar esta página del PDF."); })
       .finally(() => { if (!disposed) setRendering(false); });
     return () => { disposed = true; renderTask?.cancel(); };
-  }, [pdf, state.page, width]);
+  }, [pdf, state.page, size]);
 
   return <>
     <div ref={containerRef} className="relative min-h-0 flex-1 overflow-auto bg-slate-800 p-3">

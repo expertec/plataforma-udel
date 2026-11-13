@@ -242,7 +242,7 @@ export function LiveMaterialsPanel({ model, live, onClose, onAction, onChanged }
       </div>
       <div className="space-y-2 px-3 pb-4">
         {model.loading && !model.materials.length ? <p role="status" className="flex items-center justify-center gap-2 py-8 text-sm text-slate-400"><Loader2 className="h-4 w-4 animate-spin" />Cargando materiales…</p> : null}
-        {!model.loading && !filtered.length ? <div className="space-y-4 px-4 py-8 text-center text-sm text-slate-400"><p>{query ? "No se encontraron materiales." : "Agrega tus documentos, imágenes y videos para preparar la clase."}</p>{!query ? <button type="button" disabled={model.busy} onClick={() => inputRef.current?.click()} className="inline-flex items-center justify-center gap-2 rounded-xl border border-sky-400/40 bg-sky-500/10 px-4 py-3 font-semibold text-sky-200 hover:bg-sky-500/20 disabled:opacity-50"><Upload className="h-4 w-4" />Subir mi primer archivo</button> : null}</div> : null}
+        {!model.loading && !filtered.length ? <p className="px-4 py-8 text-center text-sm text-slate-400">{query ? "No se encontraron materiales." : "Usa Subir archivo o YouTube en la parte superior para preparar tus materiales."}</p> : null}
         {filtered.map((material) => {
           const active = model.activeMaterial?.id === material.id;
           return <div key={material.id} className={`rounded-xl border p-3 ${active ? "border-sky-500/60 bg-sky-500/10" : "border-white/5 bg-white/[0.03]"}`}>
@@ -254,13 +254,6 @@ export function LiveMaterialsPanel({ model, live, onClose, onAction, onChanged }
           </div>;
         })}
       </div>
-      </div>
-      <div className="shrink-0 space-y-2 border-t border-white/10 bg-slate-900 p-3">
-        <div className="grid grid-cols-2 gap-2">
-          <button type="button" disabled={model.busy} onClick={() => inputRef.current?.click()} className="flex items-center justify-center gap-2 rounded-xl bg-sky-600 px-3 py-2.5 text-sm font-semibold hover:bg-sky-500 disabled:opacity-50"><Upload className="h-4 w-4" />Agregar archivos</button>
-          <button type="button" disabled={model.busy} onClick={() => setAdding(!adding)} aria-expanded={adding} className="flex items-center justify-center gap-2 rounded-xl bg-white/10 px-3 py-2.5 text-sm font-semibold hover:bg-white/20"><Link className="h-4 w-4" />Enlace YouTube</button>
-        </div>
-        {onClose ? <button type="button" onClick={onClose} className="flex w-full items-center justify-center gap-2 rounded-xl bg-white/10 px-3 py-2.5 text-sm font-semibold hover:bg-white/20"><X className="h-4 w-4" />Cerrar panel de materiales</button> : null}
       </div>
     </section>
   );

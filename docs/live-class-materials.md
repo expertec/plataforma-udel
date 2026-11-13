@@ -2,9 +2,11 @@
 
 El profesor abre **Materiales de la clase** en la sala de preparación, o **Materiales** en la barra de la videollamada. La biblioteca pertenece a la clase y conserva los archivos y enlaces entre sesiones. Se pueden buscar, presentar y eliminar hasta 50 materiales.
 
-**Subir archivo** y **Agregar archivos** abren un selector que permite elegir varios archivos a la vez. Se cargan en orden y se agregan a los materiales existentes; un archivo que falle no impide cargar los siguientes. La barra inferior conserva accesos para agregar archivos, pegar un enlace de YouTube y cerrar. El panel de preparación se ajusta al área visible de la pantalla, incluido el zoom. También se puede cerrar con Escape.
+**Subir archivo** abre un selector que permite elegir varios archivos a la vez. Se cargan en orden y se agregan a los materiales existentes; un archivo que falle no impide cargar los siguientes. Subir archivo, YouTube y Cerrar están únicamente en el encabezado del panel, que permanece visible mientras se desplaza la lista. El panel de preparación se ajusta al área visible de la pantalla, incluido el zoom. También se puede cerrar con Escape.
 
 La preparación de cámara y la biblioteca comparten un contenedor que ocupa el área visible. En escritorio aparecen una junto a la otra, con desplazamiento independiente. En móvil se alterna entre cámara y materiales mediante el botón de la barra superior. La cámara conserva su proporción y los controles inferiores siguen accesibles al desplazarse dentro de su área.
+
+Durante la presentación de materiales o pantalla compartida, las cámaras aparecen arriba en una fila horizontal de 96 px de altura, con miniaturas fijas de 160 × 90 px. Estas dimensiones y la distribución se aplican directamente al componente para que no dependan de las hojas de estilo globales ni del carrusel de LiveKit. Si hay muchos participantes, esa fila se desplaza horizontalmente. El contenido compartido ocupa el espacio restante debajo y los controles de llamada conservan su espacio al pie. Las pistas de pantalla compartida no se incluyen entre las cámaras de la fila.
 
 ## Formatos
 
