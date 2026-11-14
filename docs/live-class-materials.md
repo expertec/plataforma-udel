@@ -2,7 +2,7 @@
 
 El profesor abre **Materiales de la clase** en la sala de preparación, o **Materiales** en la barra de la videollamada. La biblioteca pertenece a la clase y conserva los archivos y enlaces entre sesiones. Se pueden buscar, presentar y eliminar hasta 50 materiales.
 
-**Subir archivo** abre un selector que permite elegir varios archivos a la vez. Se cargan en orden y se agregan a los materiales existentes; un archivo que falle no impide cargar los siguientes. Subir archivo, YouTube y Cerrar están únicamente en el encabezado del panel, que permanece visible mientras se desplaza la lista. El panel de preparación se ajusta al área visible de la pantalla, incluido el zoom. También se puede cerrar con Escape.
+**Subir archivo** abre un selector que permite elegir varios archivos a la vez. Se cargan en orden y se agregan a los materiales existentes; un archivo que falle no impide cargar los siguientes. Subir archivo, Pegar enlace y Cerrar están únicamente en el encabezado del panel, que permanece visible mientras se desplaza la lista. El panel de preparación se ajusta al área visible de la pantalla, incluido el zoom. También se puede cerrar con Escape.
 
 La preparación de cámara y la biblioteca comparten un contenedor que ocupa el área visible. En escritorio aparecen una junto a la otra, con desplazamiento independiente. En móvil se alterna entre cámara y materiales mediante el botón de la barra superior. La cámara conserva su proporción y los controles inferiores siguen accesibles al desplazarse dentro de su área.
 
@@ -18,10 +18,21 @@ Durante la presentación de materiales o pantalla compartida, las cámaras apare
 | JPEG, PNG, WebP, GIF | Imagen en el escenario | 20 MB |
 | MP4, WebM | Video con reproducción, pausa y búsqueda controladas por el profesor | 200 MB |
 | YouTube | Reproductor insertado a partir de un enlace válido | Sin carga de archivo |
+| Google Sheets, Slides, Docs y archivos de Drive | Visor de Google a partir de un enlace compartido o publicado | Sin copiar ni cargar el archivo |
 
 Word se presenta como texto: tablas, imágenes y formato no se conservan. Para presentar el diseño original se debe exportar a PDF. Los `.doc` antiguos deben convertirse a `.docx` o PDF. En videos se recomienda MP4 con H.264/AAC para compatibilidad entre navegadores. YouTube debe permitir la inserción; sus anuncios, restricciones regionales o disponibilidad pueden afectar la sincronización. Cada participante puede silenciar el material localmente. Si el navegador bloquea la reproducción automática, aparece un botón para activarla.
 
 PowerPoint se muestra mediante un visor local en el navegador, sin enviar el archivo a servicios de conversión externos. Conserva el orden de la presentación y sincroniza la diapositiva seleccionada. Las animaciones, transiciones, videos incrustados y algunos elementos complejos (gráficos, SmartArt o fuentes no instaladas) no se reproducen con la misma fidelidad que PowerPoint. Para conservar el diseño visual, exportar a PDF. Los `.ppt` antiguos deben convertirse a `.pptx` o PDF.
+
+## Enlaces de Google
+
+En **Pegar enlace**, introducir el enlace de Sheets, Slides, Docs o de un archivo de Drive, agregar un nombre opcional y guardar. El tipo se detecta automáticamente; también se siguen admitiendo enlaces de YouTube en el mismo formulario. Al pulsar Presentar, el visor aparece debajo de las cámaras.
+
+Se aceptan enlaces normales de compartir, enlaces publicados (`/d/e/...`) y enlaces de archivo de Drive (`/file/d/...` u `/open?id=...`). Se conserva la pestaña `gid` de Sheets, la diapositiva inicial de Slides y `resourcekey` cuando el archivo lo requiere. Los enlaces de carpetas y de sitios arbitrarios se rechazan. El servidor guarda únicamente un enlace canónico; no cambia permisos ni descarga una copia del documento.
+
+**Los alumnos deben tener acceso al archivo en Google.** Las restricciones del propietario o de Google Workspace, el inicio de sesión y las cookies del navegador pueden impedir mostrarlo dentro de un iframe. En ese caso se puede abrir con **Abrir en Google**, o usar el enlace publicado mediante Archivo → Compartir → Publicar en la Web cuando esté permitido. La opción y sus efectos se describen en la [ayuda oficial de Google](https://support.google.com/docs/answer/183965). La aplicación no publica archivos automáticamente.
+
+El inicio y fin de la presentación del archivo se comparten con la clase. **La navegación interna del iframe de Google es individual:** desplazamientos, celdas, pestañas y cambios de diapositiva realizados dentro del visor no se sincronizan con otros participantes. Para mostrar exactamente esa navegación, compartir la pestaña mediante la opción de pantalla de la videollamada; para Slides también se puede exportar a PDF o PPTX y usar el avance sincronizado de materiales.
 
 ## Persistencia y sincronización
 

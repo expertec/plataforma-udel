@@ -6,6 +6,7 @@ import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import { presentationPosition, type LiveMaterial, type MaterialPresentation } from "@/lib/live-classes/materials";
 import { MATERIAL_KIND_LABEL, type LiveMaterialsModel } from "./LiveMaterialsPanel";
 import { PowerPointMaterial } from "./PowerPointMaterial";
+import { GoogleMaterial } from "./GoogleMaterial";
 
 type Control = (changes: Record<string, unknown>) => Promise<boolean>;
 
@@ -259,6 +260,7 @@ export function LiveMaterialStage({ model, teacher, onAction }: {
     </div>
     {model.error || model.syncError ? <p role="alert" className="shrink-0 bg-red-500/20 p-2 text-xs text-red-100">{model.error || model.syncError}</p> : null}
     {material.kind === "pdf" ? <PdfMaterial key={material.id} material={material} state={state} teacher={teacher} busy={model.busy} onControl={onControl} /> : null}
+    {material.kind.startsWith("google_") ? <GoogleMaterial key={material.id} material={material} /> : null}
     {material.kind === "powerpoint" ? <>
       <PowerPointMaterial key={material.id} material={material} page={state.page} />
       <DocumentControls page={state.page} count={material.slideCount ?? 0} teacher={teacher} busy={model.busy} onControl={onControl} />

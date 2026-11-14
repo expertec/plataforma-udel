@@ -1,4 +1,7 @@
-export type LiveMaterialKind = "pdf" | "word" | "powerpoint" | "image" | "video" | "youtube";
+export type GoogleMaterialKind = "google_sheets" | "google_slides" | "google_docs" | "google_drive";
+export type LiveMaterialKind = "pdf" | "word" | "powerpoint" | "image" | "video" | "youtube" | GoogleMaterialKind;
+
+export type MaterialLink = { kind: LiveMaterialKind; url: string; label: string; embedUrl?: string; youtubeId?: string };
 
 export type LiveMaterial = {
   id: string;
@@ -69,6 +72,66 @@ export function parseYouTubeId(input: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Convert supported sharing links to canonical Google previews; never embed arbitrary URLs. */
+export function parseGoogleMaterialLink(input: string): MaterialLink | null {
+  try {
+    const source = new URL(input.trim());
+    if (!["https:", "http:"].includes(source.protocol) || source.username || source.password || source.port) return null;
+    const host = source.hostname.toLowerCase();
+    if (host !== "docs.google.com" && host !== "drive.google.com") return null;
+    const idPattern = /^[A-Za-z0-9_-]{5,256}$/;
+    const resourceKey = source.searchParams.get("resourcekey");
+    const withResourceKey = (target: URL) => {
+      if (resourceKey && idPattern.test(resourceKey)) target.searchParams.set("resourcekey", resourceKey);
+      return target;
+    };
+    if (host === "drive.google.com") {
+      const match = source.pathname.match(/^\/file\/(?:u\/\d+\/)?d\/([A-Za-z0-9_-]+)(?:\/|$)/);
+      const id = match?.[1] ?? (["/open", "/uc"].includes(source.pathname) ? source.searchParams.get("id") : null);
+      if (!id || !idPattern.test(id)) return null;
+      return {
+        kind: "google_drive", label: "Archivo de Google Drive",
+        url: withResourceKey(new URL(`https://drive.google.com/file/d/${id}/view`)).toString(),
+        embedUrl: withResourceKey(new URL(`https://drive.google.com/file/d/${id}/preview`)).toString(),
+      };
+    }
+    const match = source.pathname.match(/^\/(spreadsheets|presentation|document)\/(?:u\/\d+\/)?d\/(e\/)?([A-Za-z0-9_-]+)(?:\/|$)/);
+    if (!match || !idPattern.test(match[3])) return null;
+    const [, app, published, id] = match;
+    const base = `https://docs.google.com/${app}/d/${published ?? ""}${id}`;
+    const hash = new URLSearchParams(source.hash.slice(1));
+    if (app === "spreadsheets") {
+      const gid = source.searchParams.get("gid") ?? hash.get("gid");
+      const url = withResourceKey(new URL(`${base}/${published ? "pubhtml" : "edit"}`));
+      const embed = withResourceKey(new URL(`${base}/${published ? "pubhtml" : "preview"}`));
+      if (gid && /^\d{1,16}$/.test(gid)) { url.searchParams.set("gid", gid); embed.searchParams.set("gid", gid); }
+      embed.searchParams.set("widget", "true");
+      embed.searchParams.set("headers", "false");
+      return { kind: "google_sheets", label: "Google Sheets", url: url.toString(), embedUrl: embed.toString() };
+    }
+    if (app === "presentation") {
+      const slide = hash.get("slide");
+      const url = withResourceKey(new URL(`${base}/${published ? "pub" : "edit"}`));
+      const embed = withResourceKey(new URL(`${base}/embed`));
+      embed.searchParams.set("start", "false");
+      embed.searchParams.set("loop", "false");
+      if (slide && /^id\.[A-Za-z0-9_.:-]{1,200}$/.test(slide)) { url.hash = `slide=${slide}`; embed.hash = `slide=${slide}`; }
+      return { kind: "google_slides", label: "Google Slides", url: url.toString(), embedUrl: embed.toString() };
+    }
+    return {
+      kind: "google_docs", label: "Google Docs",
+      url: withResourceKey(new URL(`${base}/${published ? "pub" : "edit"}`)).toString(),
+      embedUrl: withResourceKey(new URL(`${base}/${published ? "pub?embedded=true" : "preview"}`)).toString(),
+    };
+  } catch { return null; }
+}
+
+export function parseMaterialLink(input: string): MaterialLink | null {
+  const youtubeId = parseYouTubeId(input.trim());
+  if (youtubeId) return { kind: "youtube", label: "Video de YouTube", url: `https://www.youtube.com/watch?v=${youtubeId}`, youtubeId };
+  return parseGoogleMaterialLink(input);
 }
 
 export function emptyPresentation(sessionKey = ""): MaterialPresentation {

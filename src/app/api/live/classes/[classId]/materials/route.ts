@@ -4,7 +4,7 @@ import { getAdminApp, getAdminFirestore } from "@/lib/firebase/admin";
 import { validatePowerPointArchive } from "@/lib/server/live-material-powerpoint";
 import { LiveAccessError, resolveAuthorizedLiveClassAccess, toLiveAccessErrorResponse } from "@/lib/live-classes/access";
 import {
-  emptyPresentation, getMaterialFileType, parseYouTubeId, presentationPosition,
+  emptyPresentation, getMaterialFileType, parseMaterialLink, presentationPosition,
   splitWordText, validatePresentationControl,
   type LiveMaterial, type MaterialPresentation,
 } from "@/lib/live-classes/materials";
@@ -97,25 +97,25 @@ export async function POST(request: NextRequest, context: Context) {
     const stateRef = classContext.classRef.collection("liveMaterialState").doc("current");
     const sessionKey = classContext.liveSession?.lastStartedAt ?? "";
 
-    if (body.action === "upload" || body.action === "youtube") {
+    if (body.action === "upload" || body.action === "youtube" || body.action === "link") {
       const name = typeof body.name === "string" ? body.name.trim().slice(0, 180) : "";
-      const isYouTube = body.action === "youtube";
-      const youtubeId = isYouTube && typeof body.url === "string" ? parseYouTubeId(body.url) : null;
-      if (isYouTube && !youtubeId) throw new LiveAccessError(400, "Introduce un enlace válido de YouTube.");
-      if (!isYouTube && !name) throw new LiveAccessError(400, "El archivo necesita un nombre.");
-      const type = !isYouTube ? validate(() => getMaterialFileType(name, Number(body.size))) : null;
+      const isLink = body.action !== "upload";
+      const link = isLink && typeof body.url === "string" ? parseMaterialLink(body.url) : null;
+      if (isLink && (!link || (body.action === "youtube" && link.kind !== "youtube"))) throw new LiveAccessError(400, "Introduce un enlace válido de YouTube, Google Sheets, Slides, Docs o un archivo de Drive.");
+      if (!isLink && !name) throw new LiveAccessError(400, "El archivo necesita un nombre.");
+      const type = !isLink ? validate(() => getMaterialFileType(name, Number(body.size))) : null;
       const ref = collection.doc();
       const bucketName = process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || getAdminApp().options.storageBucket;
-      if (!isYouTube && !bucketName) throw new LiveAccessError(500, "Falta configurar el almacenamiento de materiales.");
+      if (!isLink && !bucketName) throw new LiveAccessError(500, "Falta configurar el almacenamiento de materiales.");
       const path = `live-materials/${classContext.courseId}/${classContext.lessonId}/${classContext.classId}/${ref.id}/source`;
       const downloadToken = randomUUID();
       const material: StoredMaterial = {
-        id: ref.id, name: name || `Video de YouTube · ${youtubeId}`, kind: type?.kind ?? "youtube",
-        size: isYouTube ? 0 : Number(body.size), createdAt: Date.now(), uploadedBy: user.uid,
-        status: isYouTube ? "ready" : "pending",
-        url: isYouTube ? `https://www.youtube.com/watch?v=${youtubeId}` :
+        id: ref.id, name: name || link?.label || "Material", kind: type?.kind ?? link!.kind,
+        size: isLink ? 0 : Number(body.size), createdAt: Date.now(), uploadedBy: user.uid,
+        status: isLink ? "ready" : "pending",
+        url: isLink ? link!.url :
           `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucketName!)}/o/${encodeURIComponent(path)}?alt=media&token=${downloadToken}`,
-        ...(isYouTube ? { youtubeId: youtubeId! } : { storagePath: path, bucketName: bucketName!, contentType: type!.mime }),
+        ...(isLink ? (link!.youtubeId ? { youtubeId: link!.youtubeId } : {}) : { storagePath: path, bucketName: bucketName!, contentType: type!.mime }),
       };
       await db.runTransaction(async (tx) => {
         const [ready, recent] = await Promise.all([
@@ -127,7 +127,7 @@ export async function POST(request: NextRequest, context: Context) {
         if (ids.size >= 50) throw new LiveAccessError(400, "Puedes guardar hasta 50 materiales por clase. Elimina alguno para agregar otro.");
         tx.create(ref, material);
       });
-      if (isYouTube) return NextResponse.json({ success: true, data: { material: publicMaterial(material) } });
+      if (isLink) return NextResponse.json({ success: true, data: { material: publicMaterial(material) } });
       try {
         const [uploadUrl] = await getAdminApp().storage().bucket(bucketName!).file(path).createResumableUpload({
           origin: request.nextUrl.origin,

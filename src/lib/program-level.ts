@@ -52,5 +52,5 @@ export function supportsClassroomActivities(
 ): boolean {
   const normalized = normalizeProgramLevelText(program ?? "");
   const isHighSchool = /prepa|bachillerato|media superior/.test(normalized);
-  return isInPerson ? isUndergraduateProgram(program) : isHighSchool;
+  return isHighSchool || (isInPerson && isUndergraduateProgram(program));
 }

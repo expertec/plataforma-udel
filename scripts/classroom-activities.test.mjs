@@ -10,9 +10,11 @@ vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL("../src/lib/progra
 }).outputText, { exports: loadedModule.exports, module: loadedModule });
 const { supportsClassroomActivities } = loadedModule.exports;
 
-test("online high-school groups include classroom activities for teacher grading", () => {
+test("high-school groups include classroom activities for teacher grading in both modalities", () => {
   for (const program of ["Preparatoria", "Prepa online", "BACHILLERATO", "Educación Media Superior", " Preparatoria UDEL "]) {
-    assert.equal(supportsClassroomActivities(program, false), true, program);
+    for (const isInPerson of [true, false]) {
+      assert.equal(supportsClassroomActivities(program, isInPerson), true, `${program}, in-person: ${isInPerson}`);
+    }
   }
 });
 
@@ -24,7 +26,6 @@ test("in-person undergraduate grading remains available", () => {
 });
 
 test("other programs and modalities keep their existing availability", () => {
-  assert.equal(supportsClassroomActivities("Preparatoria", true), false);
   for (const program of ["Maestría", "Diplomado", "", undefined, null]) {
     for (const isInPerson of [true, false]) {
       assert.equal(supportsClassroomActivities(program, isInPerson), false);

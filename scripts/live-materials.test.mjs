@@ -15,7 +15,7 @@ function loadModule(path, imports = {}) {
   }).outputText;
   vm.runInNewContext(code, {
     exports: module.exports, module, require: (name) => imports[name] ?? require(name),
-    URL, Date, Buffer, process, console,
+    URL, URLSearchParams, Date, Buffer, process, console,
   });
   return module.exports;
 }
@@ -60,6 +60,41 @@ test("YouTube links accept supported formats and reject disguised hosts or arbit
   for (const url of ["https://youtube.com.evil.test/watch?v=dQw4w9WgXcQ", "javascript:alert(1)", "https://example.com/video", "https://youtu.be/invalid", "https://youtube.com/watch?v=<script>"]) {
     assert.equal(helpers.parseYouTubeId(url), null);
   }
+});
+
+test("Google sharing links normalize native files, published views, selected tabs and resource keys", () => {
+  const sheet = helpers.parseMaterialLink("https://docs.google.com/spreadsheets/d/Sheet_12345/edit?usp=sharing#gid=123");
+  assert.equal(sheet.kind, "google_sheets");
+  assert.equal(new URL(sheet.embedUrl).searchParams.get("gid"), "123");
+  assert.equal(new URL(sheet.embedUrl).pathname, "/spreadsheets/d/Sheet_12345/preview");
+  const slides = helpers.parseMaterialLink("https://docs.google.com/presentation/d/Slides_12345/edit#slide=id.g123_0_2");
+  assert.equal(slides.kind, "google_slides");
+  assert.equal(new URL(slides.embedUrl).hash, "#slide=id.g123_0_2");
+  assert.equal(new URL(slides.embedUrl).searchParams.get("start"), "false");
+  const published = helpers.parseMaterialLink("https://docs.google.com/spreadsheets/d/e/2PACX_example/pubhtml?gid=0&single=true");
+  assert.equal(new URL(published.embedUrl).pathname, "/spreadsheets/d/e/2PACX_example/pubhtml");
+  assert.equal(new URL(published.embedUrl).searchParams.get("gid"), "0");
+  assert.equal(helpers.parseMaterialLink("https://docs.google.com/presentation/d/e/2PACX_example/pub").kind, "google_slides");
+  assert.equal(helpers.parseMaterialLink("https://docs.google.com/document/u/1/d/Document_12345/edit").kind, "google_docs");
+  assert.equal(new URL(helpers.parseMaterialLink("https://docs.google.com/document/d/e/2PACX_example/pub").embedUrl).searchParams.get("embedded"), "true");
+  const drive = helpers.parseMaterialLink("https://drive.google.com/file/d/File_12345/view?resourcekey=0-secret_key&usp=sharing");
+  assert.equal(drive.kind, "google_drive");
+  assert.equal(new URL(drive.embedUrl).pathname, "/file/d/File_12345/preview");
+  assert.equal(new URL(drive.embedUrl).searchParams.get("resourcekey"), "0-secret_key");
+  assert.equal(helpers.parseMaterialLink("https://drive.google.com/open?id=File_12345").kind, "google_drive");
+  assert.equal(helpers.parseMaterialLink("https://youtu.be/dQw4w9WgXcQ").kind, "youtube");
+});
+
+test("Google embeds reject arbitrary hosts, credentials, folders, scripts and unsupported apps", () => {
+  for (const url of [
+    "https://docs.google.com.evil.test/spreadsheets/d/Sheet_12345/edit",
+    "https://drive.google.com.evil.test/file/d/File_12345/view",
+    "https://docs.google.com@evil.test/spreadsheets/d/Sheet_12345/edit",
+    "https://user:password@docs.google.com/spreadsheets/d/Sheet_12345/edit",
+    "https://docs.google.com:8443/spreadsheets/d/Sheet_12345/edit",
+    "javascript:alert(1)", "https://example.com/preview", "https://drive.google.com/drive/folders/Folder_12345",
+    "https://docs.google.com/forms/d/Form_12345/edit", "https://docs.google.com/spreadsheets/d/x/edit",
+  ]) assert.equal(helpers.parseGoogleMaterialLink(url), null, url);
 });
 
 test("files enforce format and size limits, including legacy Word and active SVG rejection", () => {
@@ -168,7 +203,7 @@ test("students receive the active material only, without storage internals or th
 
 test("every mutation requires teacher authorization", async () => {
   const app = setup({ role: "student" });
-  for (const action of ["upload", "complete", "youtube", "delete", "present", "control", "stop"]) {
+  for (const action of ["upload", "complete", "youtube", "link", "delete", "present", "control", "stop"]) {
     assert.equal((await app.request({ action })).status, 403, action);
     assert.equal(app.authCalls.at(-1).requireTeacher, true);
   }
@@ -273,4 +308,31 @@ test("a Word archive renamed to PPTX is not published and its upload is removed"
   assert.equal((await app.request({ action: "complete", materialId: "fake" })).status, 400);
   assert.equal((await app.request()).data.materials.length, 0);
   assert.equal(app.files.has("fake"), false);
+});
+
+test("Google Sheets and Slides can be added by URL and presented without uploading a copy", async () => {
+  for (const [url, kind] of [
+    ["https://docs.google.com/spreadsheets/d/Sheet_12345/edit#gid=42", "google_sheets"],
+    ["https://docs.google.com/presentation/d/Slides_12345/edit", "google_slides"],
+    ["https://docs.google.com/document/d/Document_12345/edit", "google_docs"],
+    ["https://drive.google.com/file/d/File_12345/view", "google_drive"],
+  ]) {
+    const app = setup();
+    const added = await app.request({ action: "link", url, name: "Material de Google" });
+    assert.equal(added.status, 200);
+    assert.equal(added.data.material.kind, kind);
+    assert.equal(added.data.material.name, "Material de Google");
+    assert.equal(added.data.material.size, 0);
+    assert.equal(app.files.size, 0);
+    assert.equal((await app.request({ action: "present", materialId: added.data.material.id })).status, 200);
+    assert.equal((await app.request()).data.activeMaterial.kind, kind);
+  }
+});
+
+test("link insertion enforces the library limit and rejects unsupported URLs", async () => {
+  const app = setup();
+  assert.equal((await app.request({ action: "link", url: "https://example.com/evil.html" })).status, 400);
+  assert.equal((await app.request()).data.materials.length, 0);
+  for (let i = 0; i < 50; i++) app.seed(`source-${i}`);
+  assert.equal((await app.request({ action: "link", url: "https://docs.google.com/spreadsheets/d/Sheet_12345/edit" })).status, 400);
 });

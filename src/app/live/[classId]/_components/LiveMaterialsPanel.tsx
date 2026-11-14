@@ -3,7 +3,7 @@
 import type { User } from "firebase/auth";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FileText, Film, ImageIcon, Link, Loader2, Presentation, Search, Trash2, Upload, X } from "lucide-react";
-import { MATERIAL_ACCEPT, emptyPresentation, getMaterialFileType, parseYouTubeId, type LiveMaterial, type LiveMaterialsSnapshot } from "@/lib/live-classes/materials";
+import { MATERIAL_ACCEPT, emptyPresentation, getMaterialFileType, parseMaterialLink, type LiveMaterial, type LiveMaterialsSnapshot } from "@/lib/live-classes/materials";
 
 export function useLiveMaterials({ endpoint, user, enabled, live }: {
   endpoint: string; user: User | null; enabled: boolean; live: boolean;
@@ -160,7 +160,7 @@ export function useLiveMaterials({ endpoint, user, enabled, live }: {
 
 export type LiveMaterialsModel = ReturnType<typeof useLiveMaterials>;
 
-export const MATERIAL_KIND_LABEL = { pdf: "PDF", word: "Word", powerpoint: "PowerPoint", image: "Imagen", video: "Video", youtube: "YouTube" };
+export const MATERIAL_KIND_LABEL = { pdf: "PDF", word: "Word", powerpoint: "PowerPoint", image: "Imagen", video: "Video", youtube: "YouTube", google_sheets: "Google Sheets", google_slides: "Google Slides", google_docs: "Google Docs", google_drive: "Google Drive" };
 
 function materialSize(size: number) {
   if (size < 1024) return `${size} B`;
@@ -169,7 +169,7 @@ function materialSize(size: number) {
 }
 
 function MaterialIcon({ kind }: { kind: LiveMaterial["kind"] }) {
-  const Icon = kind === "image" ? ImageIcon : kind === "youtube" ? Link : kind === "video" ? Film : kind === "powerpoint" ? Presentation : FileText;
+  const Icon = kind === "image" ? ImageIcon : kind === "youtube" || kind.startsWith("google_") ? Link : kind === "video" ? Film : kind === "powerpoint" ? Presentation : FileText;
   return <Icon className="h-5 w-5 shrink-0 text-sky-300" />;
 }
 
@@ -187,6 +187,7 @@ export function LiveMaterialsPanel({ model, live, onClose, onAction, onChanged }
   const contentRef = useRef<HTMLDivElement>(null);
   const run = onAction ?? model.action;
   const filtered = model.materials.filter((item) => item.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  const detectedLink = parseMaterialLink(url);
   useEffect(() => { if (adding) contentRef.current?.scrollTo({ top: 0 }); }, [adding]);
   useEffect(() => {
     if (!onClose) return;
@@ -214,7 +215,7 @@ export function LiveMaterialsPanel({ model, live, onClose, onAction, onChanged }
       </div>
       <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
         <button type="button" disabled={model.busy} onClick={() => inputRef.current?.click()} className="flex items-center justify-center gap-2 rounded-xl bg-sky-600 px-3 py-2.5 text-sm font-semibold hover:bg-sky-500 disabled:opacity-50"><Upload className="h-4 w-4" />Subir archivo</button>
-        <button type="button" onClick={() => setAdding(!adding)} disabled={model.busy} aria-expanded={adding} className="flex items-center justify-center gap-1.5 rounded-xl bg-white/10 px-3 py-2.5 text-sm font-semibold hover:bg-white/20 disabled:opacity-50"><Link className="h-4 w-4" />YouTube</button>
+        <button type="button" onClick={() => setAdding(!adding)} disabled={model.busy} aria-expanded={adding} className="flex items-center justify-center gap-1.5 rounded-xl bg-white/10 px-3 py-2.5 text-sm font-semibold hover:bg-white/20 disabled:opacity-50"><Link className="h-4 w-4" />Pegar enlace</button>
       </div>
       </div>
       <div ref={contentRef} className="min-h-0 flex-1 overflow-y-auto">
@@ -224,12 +225,14 @@ export function LiveMaterialsPanel({ model, live, onClose, onAction, onChanged }
         {adding ? <div className="space-y-3 rounded-xl bg-slate-950/70 p-3">
           <form className="space-y-2" onSubmit={(event) => {
             event.preventDefault();
-            void run({ action: "youtube", url, name }).then((ok) => { if (ok) { setUrl(""); setName(""); setAdding(false); } });
+            void run({ action: "link", url, name }).then((ok) => { if (ok) { setUrl(""); setName(""); setQuery(""); setAdding(false); } });
           }}>
-            <label className="block text-xs font-medium" htmlFor="material-youtube-url">Enlace de YouTube</label>
-            <input id="material-youtube-url" type="url" required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://www.youtube.com/watch?v=…" className="w-full rounded-lg border border-slate-700 bg-slate-800 p-2 text-sm" />
-            <input aria-label="Nombre del video (opcional)" value={name} maxLength={180} onChange={(event) => setName(event.target.value)} placeholder="Nombre del video (opcional)" className="w-full rounded-lg border border-slate-700 bg-slate-800 p-2 text-sm" />
-            <button type="submit" disabled={model.busy || !parseYouTubeId(url)} className="w-full rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/20 disabled:opacity-40">Agregar enlace</button>
+            <label className="block text-xs font-medium" htmlFor="material-link-url">Enlace de YouTube o Google Drive</label>
+            <input id="material-link-url" type="url" required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://docs.google.com/…" className="w-full rounded-lg border border-slate-700 bg-slate-800 p-2 text-sm" />
+            <input aria-label="Nombre del material (opcional)" value={name} maxLength={180} onChange={(event) => setName(event.target.value)} placeholder="Nombre del material (opcional)" className="w-full rounded-lg border border-slate-700 bg-slate-800 p-2 text-sm" />
+            {detectedLink ? <p className="text-xs font-medium text-sky-200">{detectedLink.label}</p> : url ? <p className="text-xs text-amber-200">Usa un enlace de YouTube, Google Sheets, Slides, Docs o un archivo de Drive.</p> : null}
+            {detectedLink?.kind.startsWith("google_") ? <p className="text-xs leading-relaxed text-slate-400">Los alumnos necesitan permiso para ver el archivo. Si Google bloquea el visor, usa un enlace publicado en la Web. El avance y desplazamiento dentro de Google son individuales.</p> : null}
+            <button type="submit" disabled={model.busy || !detectedLink} className="w-full rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/20 disabled:opacity-40">Agregar enlace</button>
           </form>
         </div> : null}
         {model.progress !== null ? <div role="status" className="space-y-2 text-xs text-sky-200">
@@ -242,7 +245,7 @@ export function LiveMaterialsPanel({ model, live, onClose, onAction, onChanged }
       </div>
       <div className="space-y-2 px-3 pb-4">
         {model.loading && !model.materials.length ? <p role="status" className="flex items-center justify-center gap-2 py-8 text-sm text-slate-400"><Loader2 className="h-4 w-4 animate-spin" />Cargando materiales…</p> : null}
-        {!model.loading && !filtered.length ? <p className="px-4 py-8 text-center text-sm text-slate-400">{query ? "No se encontraron materiales." : "Usa Subir archivo o YouTube en la parte superior para preparar tus materiales."}</p> : null}
+        {!model.loading && !filtered.length ? <p className="px-4 py-8 text-center text-sm text-slate-400">{query ? "No se encontraron materiales." : "Usa Subir archivo o Pegar enlace en la parte superior para preparar tus materiales."}</p> : null}
         {filtered.map((material) => {
           const active = model.activeMaterial?.id === material.id;
           return <div key={material.id} className={`rounded-xl border p-3 ${active ? "border-sky-500/60 bg-sky-500/10" : "border-white/5 bg-white/[0.03]"}`}>
