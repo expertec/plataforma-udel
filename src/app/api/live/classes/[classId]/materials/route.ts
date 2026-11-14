@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminApp, getAdminFirestore } from "@/lib/firebase/admin";
 import { validatePowerPointArchive } from "@/lib/server/live-material-powerpoint";
+import { resolveMaterialLinkTitle } from "@/lib/server/live-material-title";
 import { LiveAccessError, resolveAuthorizedLiveClassAccess, toLiveAccessErrorResponse } from "@/lib/live-classes/access";
 import {
-  emptyPresentation, getMaterialFileType, parseMaterialLink, presentationPosition,
-  splitWordText, validatePresentationControl,
+  emptyPresentation, fallbackMaterialLinkName, getMaterialFileType, hasGenericMaterialTitle, parseMaterialLink, presentationPosition,
+  splitWordText, validatePresentationControl, validatePresenterPosition,
   type LiveMaterial, type MaterialPresentation,
 } from "@/lib/live-classes/materials";
 
@@ -19,6 +20,8 @@ type StoredMaterial = LiveMaterial & {
   bucketName?: string;
   contentType?: string;
   uploadedBy: string;
+  nameSource?: "manual" | "auto" | "fallback" | "file";
+  titleCheckedAt?: number;
 };
 
 async function access(request: NextRequest, context: Context, requireTeacher = false) {
@@ -97,6 +100,27 @@ export async function POST(request: NextRequest, context: Context) {
     const stateRef = classContext.classRef.collection("liveMaterialState").doc("current");
     const sessionKey = classContext.liveSession?.lastStartedAt ?? "";
 
+    if (body.action === "link-title") {
+      const link = typeof body.url === "string" ? parseMaterialLink(body.url) : null;
+      if (!link) throw new LiveAccessError(400, "El enlace no es válido o no es compatible.");
+      return NextResponse.json({ success: true, data: { title: await resolveMaterialLinkTitle(link.url), kind: link.kind } });
+    }
+
+    if (body.action === "refresh-titles") {
+      if (!Array.isArray(body.materialIds) || body.materialIds.length > 6) throw new LiveAccessError(400, "Lista de materiales inválida.");
+      const ids = Array.from(new Set(body.materialIds.map(materialRefId)));
+      const results = await Promise.all(ids.map(async (id) => {
+        const ref = collection.doc(id);
+        const data = (await ref.get()).data() as StoredMaterial | undefined;
+        if (!data || data.status !== "ready" || data.nameSource === "manual" || !hasGenericMaterialTitle(data) || (data.titleCheckedAt ?? 0) > Date.now() - 5 * 60 * 1000) return null;
+        const title = await resolveMaterialLinkTitle(data.url);
+        await ref.update({ titleCheckedAt: Date.now(), nameSource: title ? "auto" : "fallback", ...(title ? { name: title } : {}) });
+        return title ? [id, title] as const : null;
+      }));
+      const titles = Object.fromEntries(results.filter((result): result is readonly [string, string] => result !== null));
+      return NextResponse.json({ success: true, data: { titles } });
+    }
+
     if (body.action === "upload" || body.action === "youtube" || body.action === "link") {
       const name = typeof body.name === "string" ? body.name.trim().slice(0, 180) : "";
       const isLink = body.action !== "upload";
@@ -104,15 +128,18 @@ export async function POST(request: NextRequest, context: Context) {
       if (isLink && (!link || (body.action === "youtube" && link.kind !== "youtube"))) throw new LiveAccessError(400, "Introduce un enlace válido de YouTube, Google Sheets, Slides, Docs o un archivo de Drive.");
       if (!isLink && !name) throw new LiveAccessError(400, "El archivo necesita un nombre.");
       const type = !isLink ? validate(() => getMaterialFileType(name, Number(body.size))) : null;
+      const detectedTitle = isLink && !name ? await resolveMaterialLinkTitle(link!.url) : null;
       const ref = collection.doc();
       const bucketName = process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || getAdminApp().options.storageBucket;
       if (!isLink && !bucketName) throw new LiveAccessError(500, "Falta configurar el almacenamiento de materiales.");
       const path = `live-materials/${classContext.courseId}/${classContext.lessonId}/${classContext.classId}/${ref.id}/source`;
       const downloadToken = randomUUID();
       const material: StoredMaterial = {
-        id: ref.id, name: name || link?.label || "Material", kind: type?.kind ?? link!.kind,
+        id: ref.id, name: name || detectedTitle || (link ? fallbackMaterialLinkName(link) : "Material"), kind: type?.kind ?? link!.kind,
         size: isLink ? 0 : Number(body.size), createdAt: Date.now(), uploadedBy: user.uid,
         status: isLink ? "ready" : "pending",
+        nameSource: !isLink ? "file" : name ? "manual" : detectedTitle ? "auto" : "fallback",
+        ...(isLink ? { titleCheckedAt: Date.now() } : {}),
         url: isLink ? link!.url :
           `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucketName!)}/o/${encodeURIComponent(path)}?alt=media&token=${downloadToken}`,
         ...(isLink ? (link!.youtubeId ? { youtubeId: link!.youtubeId } : {}) : { storagePath: path, bucketName: bucketName!, contentType: type!.mime }),
@@ -209,7 +236,7 @@ export async function POST(request: NextRequest, context: Context) {
         removed = snap.data() as StoredMaterial | undefined;
         if (!removed) throw new LiveAccessError(404, "Material no encontrado.");
         const state = stateSnap.data() as MaterialPresentation | undefined;
-        if (state?.materialId === ref.id) tx.set(stateRef, { ...emptyPresentation(sessionKey), revision: (state.revision ?? 0) + 1, updatedAt: Date.now() });
+        if (state?.materialId === ref.id) tx.set(stateRef, { ...emptyPresentation(sessionKey), presenterPosition: state.sessionKey === sessionKey ? state.presenterPosition ?? { x: 0, y: 1 } : { x: 0, y: 1 }, revision: (state.revision ?? 0) + 1, updatedAt: Date.now() });
         tx.delete(ref);
       });
       if (removed?.storagePath && removed.bucketName) {
@@ -220,13 +247,19 @@ export async function POST(request: NextRequest, context: Context) {
       return NextResponse.json({ success: true });
     }
 
-    if (["present", "control", "stop"].includes(String(body.action))) {
+    if (["present", "control", "stop", "presenter-position"].includes(String(body.action))) {
       if (classContext.liveSession?.status !== "live") throw new LiveAccessError(409, "Inicia la clase para presentar material.");
       const controls = validate(() => validatePresentationControl(body));
       await db.runTransaction(async (tx) => {
         const stateSnap = await tx.get(stateRef);
         const saved = stateSnap.data() as MaterialPresentation | undefined;
         const current = saved?.sessionKey === sessionKey ? saved : emptyPresentation(sessionKey);
+        if (body.action === "presenter-position") {
+          const presenterPosition = validate(() => validatePresenterPosition(body.presenterPosition));
+          // A camera move must not reset the media clock or change the shared material.
+          tx.set(stateRef, { ...current, presenterPosition, revision: current.revision + 1 });
+          return;
+        }
         if (body.action === "control" && (body.materialId !== current.materialId || body.revision !== current.revision)) {
           throw new LiveAccessError(409, "La presentación cambió. Intenta otra vez.");
         }
@@ -243,7 +276,7 @@ export async function POST(request: NextRequest, context: Context) {
           ...current, position: presentationPosition(current, now), ...controls, updatedAt: now,
           revision: current.revision + 1,
         } : {
-          ...emptyPresentation(sessionKey), materialId: id, updatedAt: now,
+          ...emptyPresentation(sessionKey), presenterPosition: current.presenterPosition ?? { x: 0, y: 1 }, materialId: id, updatedAt: now,
           revision: (saved?.revision ?? 0) + 1,
         };
         tx.set(stateRef, next);

@@ -9,15 +9,15 @@ const require = createRequire(import.meta.url);
 const { NextRequest, NextResponse } = require("next/server");
 
 function loadModule(path, imports = {}) {
-  const module = { exports: {} };
+  const loadedModule = { exports: {} };
   const code = ts.transpileModule(fs.readFileSync(new URL(path, import.meta.url), "utf8"), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
   }).outputText;
   vm.runInNewContext(code, {
-    exports: module.exports, module, require: (name) => imports[name] ?? require(name),
+    exports: loadedModule.exports, module: loadedModule, require: (name) => imports[name] ?? require(name),
     URL, URLSearchParams, Date, Buffer, process, console,
   });
-  return module.exports;
+  return loadedModule.exports;
 }
 
 const helpers = loadModule("../src/lib/live-classes/materials.ts");
@@ -132,7 +132,7 @@ class AccessError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 
-function setup({ role = "teacher", status = "live", sessionKey = "session-1", denied = false } = {}) {
+function setup({ role = "teacher", status = "live", sessionKey = "session-1", denied = false, resolveTitle = async () => null } = {}) {
   const records = new Map();
   const files = new Map();
   let id = 0;
@@ -157,6 +157,7 @@ function setup({ role = "teacher", status = "live", sessionKey = "session-1", de
     "next/server": { NextResponse },
     "@/lib/live-classes/materials": helpers,
     "@/lib/server/live-material-powerpoint": powerpoint,
+    "@/lib/server/live-material-title": { resolveMaterialLinkTitle: resolveTitle },
     "@/lib/live-classes/access": {
       LiveAccessError: AccessError,
       resolveAuthorizedLiveClassAccess: async (params) => {
@@ -203,7 +204,7 @@ test("students receive the active material only, without storage internals or th
 
 test("every mutation requires teacher authorization", async () => {
   const app = setup({ role: "student" });
-  for (const action of ["upload", "complete", "youtube", "link", "delete", "present", "control", "stop"]) {
+  for (const action of ["upload", "complete", "youtube", "link", "link-title", "refresh-titles", "delete", "present", "control", "stop", "presenter-position"]) {
     assert.equal((await app.request({ action })).status, 403, action);
     assert.equal(app.authCalls.at(-1).requireTeacher, true);
   }
@@ -335,4 +336,79 @@ test("link insertion enforces the library limit and rejects unsupported URLs", a
   assert.equal((await app.request()).data.materials.length, 0);
   for (let i = 0; i < 50; i++) app.seed(`source-${i}`);
   assert.equal((await app.request({ action: "link", url: "https://docs.google.com/spreadsheets/d/Sheet_12345/edit" })).status, 400);
+});
+
+test("link titles are detected before saving and custom names are preserved", async () => {
+  let calls = 0;
+  const app = setup({ resolveTitle: async () => { calls += 1; return "Cómo usar un Boss DS-1"; } });
+  const detected = await app.request({ action: "link-title", url: "https://youtu.be/yo7PplZjjUY" });
+  assert.equal(detected.data.title, "Cómo usar un Boss DS-1");
+  assert.equal((await app.request()).data.materials.length, 0);
+  const saved = await app.request({ action: "link", url: "https://youtu.be/yo7PplZjjUY" });
+  assert.equal(saved.data.material.name, "Cómo usar un Boss DS-1");
+  const beforeCustom = calls;
+  const custom = await app.request({ action: "link", url: "https://youtu.be/yo7PplZjjUY", name: "Mi video de clase" });
+  assert.equal(custom.data.material.name, "Mi video de clase");
+  assert.equal(calls, beforeCustom);
+  assert.equal((await app.request({ action: "link-title", url: "https://example.com/evil" })).status, 400);
+});
+
+test("inaccessible link titles still save with an identifier instead of requiring a name", async () => {
+  const app = setup();
+  const result = await app.request({ action: "link", url: "https://docs.google.com/presentation/d/Slides_12345/edit" });
+  assert.equal(result.status, 200);
+  assert.match(result.data.material.name, /^Google Slides · /);
+});
+
+test("generic saved link titles are repaired without changing custom or uploaded file names", async () => {
+  const app = setup({ resolveTitle: async () => "Presentación de matemáticas" });
+  app.seed("old", { kind: "google_slides", name: "Google Slides", url: "https://docs.google.com/presentation/d/Slides_12345/edit" });
+  app.seed("manual", { kind: "google_slides", name: "Google Slides", nameSource: "manual", url: "https://docs.google.com/presentation/d/Slides_12345/edit" });
+  app.seed("file", { kind: "video", name: "8523640-hd_1920_1080_25fps.mp4" });
+  const response = await app.request({ action: "refresh-titles", materialIds: ["old", "manual", "file"] });
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.data.titles, { old: "Presentación de matemáticas" });
+  const items = (await app.request()).data.materials;
+  assert.equal(items.find((item) => item.id === "old").name, "Presentación de matemáticas");
+  assert.equal(items.find((item) => item.id === "manual").name, "Google Slides");
+  assert.equal(items.find((item) => item.id === "file").name, "8523640-hd_1920_1080_25fps.mp4");
+});
+
+test("teacher camera moves persist without resetting playback, page or material", async () => {
+  const app = setup();
+  app.seed("video", { kind: "video" });
+  const original = { ...helpers.emptyPresentation("session-1"), materialId: "video", page: 3, playing: true, position: 45, updatedAt: Date.now() - 5000, revision: 4 };
+  app.records.set(app.statePath, original);
+  assert.equal((await app.request({ action: "presenter-position", presenterPosition: { x: 0.8, y: 0.3 } })).status, 200);
+  const current = (await app.request()).data.presentation;
+  assert.deepEqual(current.presenterPosition, { x: 0.8, y: 0.3 });
+  for (const field of ["materialId", "page", "playing", "position", "updatedAt"]) assert.equal(current[field], original[field]);
+  assert.equal(current.revision, 5);
+});
+
+test("students receive the teacher's saved camera position and cannot modify it", async () => {
+  const app = setup({ role: "student" });
+  app.records.set(app.statePath, { ...helpers.emptyPresentation("session-1"), presenterPosition: { x: 0.75, y: 0.2 } });
+  assert.deepEqual((await app.request()).data.presentation.presenterPosition, { x: 0.75, y: 0.2 });
+  assert.equal((await app.request({ action: "presenter-position", presenterPosition: { x: 0, y: 1 } })).status, 403);
+  assert.deepEqual((await app.request()).data.presentation.presenterPosition, { x: 0.75, y: 0.2 });
+});
+
+test("camera position supports screen sharing and survives material switches in the same session", async () => {
+  const app = setup();
+  assert.equal((await app.request({ action: "presenter-position", presenterPosition: { x: 0.9, y: 0.1 } })).status, 200);
+  assert.equal((await app.request()).data.presentation.materialId, null);
+  app.seed("pdf");
+  await app.request({ action: "present", materialId: "pdf" });
+  assert.deepEqual((await app.request()).data.presentation.presenterPosition, { x: 0.9, y: 0.1 });
+  await app.request({ action: "stop" });
+  assert.deepEqual((await app.request()).data.presentation.presenterPosition, { x: 0.9, y: 0.1 });
+});
+
+test("camera moves reject malformed or out-of-bounds positions and inactive sessions", async () => {
+  const app = setup();
+  for (const presenterPosition of [null, [], {}, { x: -0.1, y: 0 }, { x: 0, y: 1.1 }, { x: "0", y: 1 }]) {
+    assert.equal((await app.request({ action: "presenter-position", presenterPosition })).status, 400);
+  }
+  assert.equal((await setup({ status: "scheduled" }).request({ action: "presenter-position", presenterPosition: { x: 0.5, y: 0.5 } })).status, 409);
 });

@@ -23,6 +23,7 @@ export type MaterialPresentation = {
   updatedAt: number;
   revision: number;
   sessionKey: string;
+  presenterPosition?: { x: number; y: number };
 };
 
 export type LiveMaterialsSnapshot = {
@@ -134,8 +135,25 @@ export function parseMaterialLink(input: string): MaterialLink | null {
   return parseGoogleMaterialLink(input);
 }
 
+export function fallbackMaterialLinkName(link: MaterialLink): string {
+  const id = link.youtubeId ?? new URL(link.url).pathname.split("/").filter(Boolean).at(-2) ?? "";
+  return id ? `${link.label} · ${id.slice(-8)}` : link.label;
+}
+
+export function hasGenericMaterialTitle(material: Pick<LiveMaterial, "url" | "name">): boolean {
+  const link = parseMaterialLink(material.url);
+  return Boolean(link && (material.name === link.label || material.name.startsWith(`${link.label} · `)));
+}
+
 export function emptyPresentation(sessionKey = ""): MaterialPresentation {
-  return { materialId: null, page: 1, playing: false, position: 0, updatedAt: 0, revision: 0, sessionKey };
+  return { materialId: null, page: 1, playing: false, position: 0, updatedAt: 0, revision: 0, sessionKey, presenterPosition: { x: 0, y: 1 } };
+}
+
+export function validatePresenterPosition(value: unknown): { x: number; y: number } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Posición de cámara inválida.");
+  const { x, y } = value as Record<string, unknown>;
+  if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) throw new Error("Posición de cámara inválida.");
+  return { x, y };
 }
 
 export function presentationPosition(state: MaterialPresentation, now: number): number {

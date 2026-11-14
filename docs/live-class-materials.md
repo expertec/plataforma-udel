@@ -6,7 +6,9 @@ El profesor abre **Materiales de la clase** en la sala de preparación, o **Mate
 
 La preparación de cámara y la biblioteca comparten un contenedor que ocupa el área visible. En escritorio aparecen una junto a la otra, con desplazamiento independiente. En móvil se alterna entre cámara y materiales mediante el botón de la barra superior. La cámara conserva su proporción y los controles inferiores siguen accesibles al desplazarse dentro de su área.
 
-Durante la presentación de materiales o pantalla compartida, las cámaras aparecen arriba en una fila horizontal de 96 px de altura, con miniaturas fijas de 160 × 90 px. Estas dimensiones y la distribución se aplican directamente al componente para que no dependan de las hojas de estilo globales ni del carrusel de LiveKit. Si hay muchos participantes, esa fila se desplaza horizontalmente. El contenido compartido ocupa el espacio restante debajo y los controles de llamada conservan su espacio al pie. Las pistas de pantalla compartida no se incluyen entre las cámaras de la fila.
+Durante la presentación de materiales o pantalla compartida, las cámaras de los alumnos aparecen arriba en una fila horizontal de 96 px de altura, con miniaturas fijas de 160 × 90 px. Estas dimensiones y la distribución se aplican directamente al componente para que no dependan de las hojas de estilo globales ni del carrusel de LiveKit. Si hay muchos participantes, esa fila se desplaza horizontalmente. El contenido compartido ocupa el espacio restante debajo y los controles de llamada conservan su espacio al pie. Las pistas de pantalla compartida no se incluyen entre las cámaras de la fila.
+
+La cámara del profesor aparece sobre el contenido en un círculo de hasta 168 px, sin nombre y sin duplicarse en la fila superior. Solo el profesor puede arrastrarlo o moverlo con las flechas del teclado. Al soltarlo, la posición relativa se guarda en el estado autorizado de la sesión y se comunica a los alumnos; también la recuperan al entrar después. La posición se adapta al tamaño de cada pantalla y se conserva al cambiar de material, sin reiniciar su reproducción. Los alumnos no pueden mover el círculo y el servidor rechaza sus solicitudes de cambio.
 
 ## Formatos
 
@@ -26,7 +28,7 @@ PowerPoint se muestra mediante un visor local en el navegador, sin enviar el arc
 
 ## Enlaces de Google
 
-En **Pegar enlace**, introducir el enlace de Sheets, Slides, Docs o de un archivo de Drive, agregar un nombre opcional y guardar. El tipo se detecta automáticamente; también se siguen admitiendo enlaces de YouTube en el mismo formulario. Al pulsar Presentar, el visor aparece debajo de las cámaras.
+En **Pegar enlace**, introducir el enlace de YouTube, Sheets, Slides, Docs o de un archivo de Drive. El tipo se detecta automáticamente y los enlaces inválidos muestran un aviso. Se consulta el título público del video o documento y se completa el nombre, que se puede editar. Si el proveedor no permite leerlo, se guarda con un identificador. Los títulos genéricos de enlaces existentes se actualizan al abrir la biblioteca, sin reemplazar nombres personalizados ni nombres de archivos subidos. Las consultas tienen tiempo y tamaño limitados, se almacenan temporalmente y no envían las credenciales del usuario a los proveedores. Al pulsar Presentar, el visor aparece debajo de las cámaras.
 
 Se aceptan enlaces normales de compartir, enlaces publicados (`/d/e/...`) y enlaces de archivo de Drive (`/file/d/...` u `/open?id=...`). Se conserva la pestaña `gid` de Sheets, la diapositiva inicial de Slides y `resourcekey` cuando el archivo lo requiere. Los enlaces de carpetas y de sitios arbitrarios se rechazan. El servidor guarda únicamente un enlace canónico; no cambia permisos ni descarga una copia del documento.
 

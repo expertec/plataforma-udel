@@ -3,7 +3,7 @@
 import type { User } from "firebase/auth";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FileText, Film, ImageIcon, Link, Loader2, Presentation, Search, Trash2, Upload, X } from "lucide-react";
-import { MATERIAL_ACCEPT, emptyPresentation, getMaterialFileType, parseMaterialLink, type LiveMaterial, type LiveMaterialsSnapshot } from "@/lib/live-classes/materials";
+import { MATERIAL_ACCEPT, emptyPresentation, getMaterialFileType, hasGenericMaterialTitle, parseMaterialLink, type LiveMaterial, type LiveMaterialsSnapshot } from "@/lib/live-classes/materials";
 
 export function useLiveMaterials({ endpoint, user, enabled, live }: {
   endpoint: string; user: User | null; enabled: boolean; live: boolean;
@@ -22,12 +22,14 @@ export function useLiveMaterials({ endpoint, user, enabled, live }: {
   const uploadRef = useRef<XMLHttpRequest | null>(null);
   const uploadSessionRef = useRef({ cancelled: false });
   const busyRef = useRef(false);
+  const titleAttemptsRef = useRef(new Map<string, number>());
 
-  const api = useCallback(async (body?: Record<string, unknown>) => {
+  const api = useCallback(async (body?: Record<string, unknown>, signal?: AbortSignal) => {
     if (!user) throw new Error("Inicia sesión para usar los materiales.");
     const token = await user.getIdToken();
     const response = await fetch(endpoint, {
       method: body ? "POST" : "GET", cache: "no-store",
+      signal,
       headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
@@ -44,6 +46,19 @@ export function useLiveMaterials({ endpoint, user, enabled, live }: {
     setClockOffset(data.serverTime - (start + Date.now()) / 2);
     setSnapshot(data);
     setSyncError(null);
+    const missing = data.materials.filter((material) => hasGenericMaterialTitle(material) && (titleAttemptsRef.current.get(material.id) ?? 0) < Date.now() - 5 * 60 * 1000).slice(0, 6);
+    if (missing.length) {
+      missing.forEach((material) => titleAttemptsRef.current.set(material.id, Date.now()));
+      void api({ action: "refresh-titles", materialIds: missing.map((material) => material.id) }).then((result: { titles: Record<string, string> }) => {
+        if (sequence !== refreshSequence.current || !result?.titles) return;
+        const rename = (material: LiveMaterial) => result.titles[material.id] ? { ...material, name: result.titles[material.id] } : material;
+        setSnapshot((current) => ({ ...current, materials: current.materials.map(rename), activeMaterial: current.activeMaterial ? rename(current.activeMaterial) : null }));
+      }).catch(() => {});
+    }
+  }, [api]);
+
+  const lookupLinkTitle = useCallback(async (url: string, signal?: AbortSignal) => {
+    return await api({ action: "link-title", url }, signal) as { title: string | null };
   }, [api]);
 
   useEffect(() => {
@@ -74,6 +89,7 @@ export function useLiveMaterials({ endpoint, user, enabled, live }: {
 
   useEffect(() => {
     setSnapshot({ materials: [], activeMaterial: null, presentation: emptyPresentation(), serverTime: 0 });
+    titleAttemptsRef.current.clear();
     const session = { cancelled: false };
     uploadSessionRef.current = session;
     return () => {
@@ -155,7 +171,7 @@ export function useLiveMaterials({ endpoint, user, enabled, live }: {
     }
   }, [api, refresh]);
 
-  return { ...snapshot, loading, busy, progress, uploadLabel, error, syncError, clockOffset, refresh, action, upload };
+  return { ...snapshot, loading, busy, progress, uploadLabel, error, syncError, clockOffset, refresh, action, upload, lookupLinkTitle };
 }
 
 export type LiveMaterialsModel = ReturnType<typeof useLiveMaterials>;
@@ -182,12 +198,34 @@ export function LiveMaterialsPanel({ model, live, onClose, onAction, onChanged }
   const [query, setQuery] = useState("");
   const [url, setUrl] = useState("");
   const [name, setName] = useState("");
+  const [titleLoading, setTitleLoading] = useState(false);
+  const [titleUnavailable, setTitleUnavailable] = useState(false);
+  const [showInvalidLink, setShowInvalidLink] = useState(false);
+  const nameEditedRef = useRef(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const run = onAction ?? model.action;
   const filtered = model.materials.filter((item) => item.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
   const detectedLink = parseMaterialLink(url);
+  const canonicalLink = detectedLink?.url ?? "";
+  const lookupLinkTitle = model.lookupLinkTitle;
+  useEffect(() => {
+    if (!adding || !url.trim()) return;
+    let disposed = false;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      if (!canonicalLink) { setShowInvalidLink(true); return; }
+      setTitleLoading(true);
+      void lookupLinkTitle(canonicalLink, controller.signal).then((result) => {
+        if (disposed) return;
+        if (!nameEditedRef.current && result.title) setName(result.title);
+        setTitleUnavailable(!result.title);
+      }).catch(() => { if (!disposed) setTitleUnavailable(true); })
+        .finally(() => { if (!disposed) setTitleLoading(false); });
+    }, 450);
+    return () => { disposed = true; window.clearTimeout(timer); controller.abort(); };
+  }, [adding, canonicalLink, lookupLinkTitle, url]);
   useEffect(() => { if (adding) contentRef.current?.scrollTo({ top: 0 }); }, [adding]);
   useEffect(() => {
     if (!onClose) return;
@@ -220,19 +258,21 @@ export function LiveMaterialsPanel({ model, live, onClose, onAction, onChanged }
       </div>
       <div ref={contentRef} className="min-h-0 flex-1 overflow-y-auto">
       <div className="space-y-3 p-4">
-        <p className="text-xs leading-relaxed text-slate-400">Tus archivos y enlaces quedan guardados en esta clase. {live ? "Elige Presentar para mostrarlos a los alumnos." : "Podrás presentarlos al iniciar la clase."}</p>
-        <p className="text-[11px] leading-relaxed text-slate-400">PDF e imágenes hasta 20 MB · Word .docx hasta 10 MB · PowerPoint .pptx hasta 50 MB · MP4/WebM hasta 200 MB. Usa PDF para conservar el diseño exacto de tus documentos.</p>
         {adding ? <div className="space-y-3 rounded-xl bg-slate-950/70 p-3">
           <form className="space-y-2" onSubmit={(event) => {
             event.preventDefault();
-            void run({ action: "link", url, name }).then((ok) => { if (ok) { setUrl(""); setName(""); setQuery(""); setAdding(false); } });
+            void run({ action: "link", url, ...(nameEditedRef.current ? { name } : {}) }).then((ok) => { if (ok) { setUrl(""); setName(""); setTitleLoading(false); setTitleUnavailable(false); nameEditedRef.current = false; setQuery(""); setAdding(false); } });
           }}>
-            <label className="block text-xs font-medium" htmlFor="material-link-url">Enlace de YouTube o Google Drive</label>
-            <input id="material-link-url" type="url" required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://docs.google.com/…" className="w-full rounded-lg border border-slate-700 bg-slate-800 p-2 text-sm" />
-            <input aria-label="Nombre del material (opcional)" value={name} maxLength={180} onChange={(event) => setName(event.target.value)} placeholder="Nombre del material (opcional)" className="w-full rounded-lg border border-slate-700 bg-slate-800 p-2 text-sm" />
-            {detectedLink ? <p className="text-xs font-medium text-sky-200">{detectedLink.label}</p> : url ? <p className="text-xs text-amber-200">Usa un enlace de YouTube, Google Sheets, Slides, Docs o un archivo de Drive.</p> : null}
-            {detectedLink?.kind.startsWith("google_") ? <p className="text-xs leading-relaxed text-slate-400">Los alumnos necesitan permiso para ver el archivo. Si Google bloquea el visor, usa un enlace publicado en la Web. El avance y desplazamiento dentro de Google son individuales.</p> : null}
-            <button type="submit" disabled={model.busy || !detectedLink} className="w-full rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/20 disabled:opacity-40">Agregar enlace</button>
+            <input id="material-link-url" aria-label="Pegar enlace" type="url" required value={url} onChange={(event) => {
+              setUrl(event.target.value); setName(""); nameEditedRef.current = false;
+              setTitleLoading(false); setTitleUnavailable(false); setShowInvalidLink(false);
+            }} onBlur={() => { if (url.trim() && !detectedLink) setShowInvalidLink(true); }} placeholder="Pega un enlace" className="w-full rounded-lg border border-slate-700 bg-slate-800 p-2 text-sm" />
+            <input aria-label="Nombre del material" value={name} maxLength={180} onChange={(event) => { nameEditedRef.current = true; setName(event.target.value); }} placeholder={titleLoading ? "Detectando nombre…" : "Nombre detectado automáticamente"} className="w-full rounded-lg border border-slate-700 bg-slate-800 p-2 text-sm" />
+            {titleLoading ? <p role="status" className="flex items-center gap-1.5 text-xs text-slate-300"><Loader2 className="h-3.5 w-3.5 animate-spin" />Buscando título…</p> : null}
+            {detectedLink ? <p className="text-xs font-medium text-sky-200">{detectedLink.label}</p> : showInvalidLink ? <p role="alert" className="text-xs text-amber-200">El enlace no es válido o no es compatible. Usa YouTube, Google Sheets, Slides, Docs o un archivo de Drive.</p> : null}
+            {titleUnavailable ? <p role="status" className="text-xs text-slate-400">Título no disponible; puedes editar el nombre.</p> : null}
+            {detectedLink?.kind.startsWith("google_") ? <p className="text-xs leading-relaxed text-slate-400">Requiere acceso. Si no abre, usa un enlace publicado. La navegación es individual.</p> : null}
+            <button type="submit" disabled={model.busy || titleLoading || !detectedLink} className="w-full rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/20 disabled:opacity-40">Agregar enlace</button>
           </form>
         </div> : null}
         {model.progress !== null ? <div role="status" className="space-y-2 text-xs text-sky-200">

@@ -14,6 +14,7 @@ import {
   RoomAudioRenderer,
   StartAudio,
   TrackLoop,
+  VideoTrack,
   useTrackToggle,
   useChat,
   useConnectionState,
@@ -1020,25 +1021,31 @@ function LiveParticipantTile({
   raisedHands,
   trackRef,
   compact = false,
+  presenter = false,
 }: {
   raisedHands: Record<string, RaisedHandEntry>;
   trackRef?: TrackReferenceOrPlaceholder;
   compact?: boolean;
+  presenter?: boolean;
 }) {
   const contextTrackRef = useMaybeTrackRefContext();
   const effectiveTrackRef = trackRef ?? contextTrackRef;
   const participantId = effectiveTrackRef?.participant.identity.trim() ?? "";
   const handEntry = participantId ? raisedHands[participantId] : undefined;
-  const showHandBadge = effectiveTrackRef?.source === Track.Source.Camera && Boolean(handEntry);
+  const showHandBadge = !presenter && effectiveTrackRef?.source === Track.Source.Camera && Boolean(handEntry);
 
   return (
     <div
       className="relative h-full min-h-0 overflow-hidden rounded-[var(--lk-border-radius)]"
-      style={compact ? presentationCameraStyle : undefined}
+      style={compact ? presentationCameraStyle : presenter ? { position: "relative", width: "100%", height: "100%", minHeight: 0, overflow: "hidden", borderRadius: "50%" } : undefined}
       data-live-camera-size={compact ? "160x90" : undefined}
       data-live-raised-hand={showHandBadge ? "true" : undefined}
     >
-      <ParticipantTile trackRef={trackRef} className="h-full w-full" style={compact ? { width: "100%", height: "100%", maxHeight: 90, minHeight: 0, overflow: "hidden" } : undefined} />
+      {presenter ? (
+        effectiveTrackRef && isTrackReference(effectiveTrackRef) && !effectiveTrackRef.publication.isMuted ? (
+          <VideoTrack trackRef={effectiveTrackRef} style={{ display: "block", width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }} />
+        ) : <div aria-label="Cámara del profesor apagada" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100%", height: "100%", background: "#1e293b" }}><VideoOff className="h-8 w-8 text-slate-400" /></div>
+      ) : <ParticipantTile trackRef={trackRef} className="h-full w-full" style={compact ? { width: "100%", height: "100%", maxHeight: 90, minHeight: 0, overflow: "hidden" } : undefined} />}
       {showHandBadge && handEntry ? (
         <div
           className="pointer-events-none absolute left-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-amber-200/80 bg-amber-400 text-amber-950 shadow-lg shadow-black/25"
@@ -1240,9 +1247,14 @@ function LiveRoomConference({
   }, [showOnlyActiveCameras, tracks]);
 
   const hasVisibleTracks = visibleTracks.length > 0;
+  const presentationTeacherTrack = useMemo(() => {
+    const teacher = teacherCameraTrack ?? (viewerRole === "teacher" ? localCameraTrack : null);
+    if (showOnlyActiveCameras && (!teacher || !isTrackReference(teacher) || teacher.publication.isMuted)) return null;
+    return teacher;
+  }, [teacherCameraTrack, viewerRole, localCameraTrack, showOnlyActiveCameras]);
   const presentationCameraTracks = useMemo(
-    () => visibleTracks.filter((track) => track.source === Track.Source.Camera),
-    [visibleTracks],
+    () => visibleTracks.filter((track) => track.source === Track.Source.Camera && track.participant.identity !== presentationTeacherTrack?.participant.identity),
+    [visibleTracks, presentationTeacherTrack],
   );
 
   // While filtering, only keep a focused tile if it's a screen share or a camera
@@ -1815,7 +1827,11 @@ function LiveRoomConference({
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <div className="lk-video-conference-inner min-h-0 min-w-0 flex-1 overflow-hidden">
               {materials.activeMaterial || screenShareTrack ? (
-                <LivePresentationLayout cameras={presentationCameraTracks.length ? (
+                <LivePresentationLayout
+                  presenterPosition={materials.presentation.presenterPosition}
+                  canMovePresenter={viewerRole === "teacher" && !materials.busy}
+                  onPresenterPositionChange={(presenterPosition) => materialAction({ action: "presenter-position", presenterPosition })}
+                  presenter={presentationTeacherTrack ? <LiveParticipantTile raisedHands={raisedHands} trackRef={presentationTeacherTrack} presenter /> : undefined} cameras={presentationCameraTracks.length ? (
                   <TrackLoop tracks={presentationCameraTracks}>
                     <LiveParticipantTile raisedHands={raisedHands} compact />
                   </TrackLoop>
