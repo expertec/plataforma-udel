@@ -1,9 +1,11 @@
 import {
   DocumentData,
+  FieldPath,
   addDoc,
   arrayUnion,
   collection,
   doc,
+  deleteField,
   getDocs,
   increment,
   limit,
@@ -1547,29 +1549,17 @@ export async function setMentorCoursePayrollAmount(params: {
     throw new Error("El mentor no está asignado al grupo");
   }
 
-  const nextAmounts = normalizeMentorCoursePayrollAmounts({
-    value: data.mentorCoursePayrollAmounts,
-    mentorIds,
-    validCourseIds: courseIds,
-  });
   const parsedAmount = typeof params.amount === "number" ? params.amount : null;
-
-  if (parsedAmount === null || !Number.isFinite(parsedAmount)) {
-    if (nextAmounts[mentorId]) {
-      delete nextAmounts[mentorId][courseId];
-      if (Object.keys(nextAmounts[mentorId]).length === 0) delete nextAmounts[mentorId];
-    }
-  } else {
-    nextAmounts[mentorId] = {
-      ...(nextAmounts[mentorId] ?? {}),
-      [courseId]: Math.max(0, Math.round(parsedAmount * 100) / 100),
-    };
-  }
-
-  await updateDoc(ref, {
-    mentorCoursePayrollAmounts: nextAmounts,
-    updatedAt: serverTimestamp(),
-  });
+  // Update only this amount so simultaneous saves cannot overwrite other courses.
+  await updateDoc(
+    ref,
+    new FieldPath("mentorCoursePayrollAmounts", mentorId, courseId),
+    parsedAmount === null || !Number.isFinite(parsedAmount)
+      ? deleteField()
+      : Math.max(0, Math.round(parsedAmount * 100) / 100),
+    "updatedAt",
+    serverTimestamp(),
+  );
 }
 
 export async function setMentorEvaluationEnabled(

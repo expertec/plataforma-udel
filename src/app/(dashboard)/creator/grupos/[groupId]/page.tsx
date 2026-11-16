@@ -83,6 +83,8 @@ export default function GroupDetailPage() {
   const [savingMentorEvaluationIds, setSavingMentorEvaluationIds] = useState<Set<string>>(new Set());
   const [savingMentorPayrollKeys, setSavingMentorPayrollKeys] = useState<Set<string>>(new Set());
   const [mentorPayrollDrafts, setMentorPayrollDrafts] = useState<Record<string, string>>({});
+  const [mentorPayrollErrors, setMentorPayrollErrors] = useState<Record<string, string>>({});
+  const mentorPayrollRequests = useRef(new Set<string>());
   const [unlinkingCourseId, setUnlinkingCourseId] = useState<string | null>(null);
   const [assignCourseOpen, setAssignCourseOpen] = useState(false);
   const [courseOptions, setCourseOptions] = useState<Course[]>([]);
@@ -604,12 +606,14 @@ export default function GroupDetailPage() {
     }
 
     const key = getMentorPayrollKey(mentorId, courseId);
+    if (mentorPayrollRequests.current.has(key)) return;
     const rawDraft = mentorPayrollDrafts[key];
     if (rawDraft === undefined) return;
 
     const trimmed = rawDraft.trim();
     const nextAmount = trimmed ? Number(trimmed) : null;
     if (nextAmount !== null && (!Number.isFinite(nextAmount) || nextAmount < 0)) {
+      setMentorPayrollErrors((prev) => ({ ...prev, [key]: "Captura un monto válido." }));
       toast.error("Captura un monto válido.");
       return;
     }
@@ -627,6 +631,12 @@ export default function GroupDetailPage() {
       return;
     }
 
+    mentorPayrollRequests.current.add(key);
+    setMentorPayrollErrors((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
     setSavingMentorPayrollKeys((prev) => new Set(prev).add(key));
     try {
       await setMentorCoursePayrollAmount({
@@ -652,15 +662,20 @@ export default function GroupDetailPage() {
         };
       });
       setMentorPayrollDrafts((prev) => {
+        if (prev[key] !== rawDraft) return prev;
         const next = { ...prev };
         delete next[key];
         return next;
       });
-      toast.success("Monto de pago actualizado.");
     } catch (err) {
       console.error(err);
+      setMentorPayrollErrors((prev) => ({
+        ...prev,
+        [key]: "No se guardó el monto. Reintenta con Guardar.",
+      }));
       toast.error("No se pudo guardar el monto de pago.");
     } finally {
+      mentorPayrollRequests.current.delete(key);
       setSavingMentorPayrollKeys((prev) => {
         const next = new Set(prev);
         next.delete(key);
@@ -668,6 +683,26 @@ export default function GroupDetailPage() {
       });
     }
   };
+
+  useEffect(() => {
+    const timers = Object.keys(mentorPayrollDrafts)
+      .filter((key) => !savingMentorPayrollKeys.has(key) && !mentorPayrollErrors[key])
+      .map((key) => window.setTimeout(() => {
+        const [mentorId, courseId] = key.split("::");
+        void handleSaveMentorCoursePayrollAmount(mentorId, courseId);
+      }, 1000));
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  });
+
+  useEffect(() => {
+    if (Object.keys(mentorPayrollDrafts).length === 0 && savingMentorPayrollKeys.size === 0) return;
+    const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+    return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
+  }, [mentorPayrollDrafts, savingMentorPayrollKeys]);
 
   const handleToggleMentorEvaluation = async (mentorId: string) => {
     if (!group) return;
@@ -1545,6 +1580,7 @@ export default function GroupDetailPage() {
                                     const payrollKey = getMentorPayrollKey(t.id, course.courseId);
                                     const configuredAmount = getMentorCoursePayrollAmount(t.id, course.courseId);
                                     const payrollDraft = mentorPayrollDrafts[payrollKey];
+                                    const payrollError = mentorPayrollErrors[payrollKey];
                                     const isSavingPayroll = savingMentorPayrollKeys.has(payrollKey);
                                     return (
                                       <div
@@ -1579,12 +1615,18 @@ export default function GroupDetailPage() {
                                               }
                                               placeholder="Sin monto"
                                               disabled={!canManageMentors || !isEnabled || isSavingPayroll}
-                                              onChange={(event) =>
+                                              onChange={(event) => {
+                                                const value = event.target.value;
                                                 setMentorPayrollDrafts((prev) => ({
                                                   ...prev,
-                                                  [payrollKey]: event.target.value,
-                                                }))
-                                              }
+                                                  [payrollKey]: value,
+                                                }));
+                                                setMentorPayrollErrors((prev) => {
+                                                  const next = { ...prev };
+                                                  delete next[payrollKey];
+                                                  return next;
+                                                });
+                                              }}
                                               onBlur={() => void handleSaveMentorCoursePayrollAmount(t.id, course.courseId)}
                                               onKeyDown={(event) => {
                                                 if (event.key === "Enter") {
@@ -1604,8 +1646,18 @@ export default function GroupDetailPage() {
                                             </button>
                                           </div>
                                         </label>
-                                        {isSavingPayroll ? (
-                                          <p className="mt-1 text-[11px] text-blue-600">Guardando monto...</p>
+                                        {isEnabled ? (
+                                          <p role="status" aria-live="polite" className={`mt-1 text-[11px] ${
+                                            payrollError || (configuredAmount === null && payrollDraft === undefined)
+                                              ? "text-amber-700" : "text-blue-600"
+                                          }`}>
+                                            {isSavingPayroll ? "Guardando monto..."
+                                              : payrollError || (payrollDraft !== undefined
+                                                ? "Cambio pendiente. Se guarda automáticamente al dejar de escribir."
+                                                : configuredAmount === null
+                                                  ? "Falta capturar el monto a pagar de esta materia."
+                                                  : "Monto guardado. Los cambios se guardan automáticamente.")}
+                                          </p>
                                         ) : null}
                                       </div>
                                     );

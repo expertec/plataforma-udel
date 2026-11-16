@@ -18,6 +18,12 @@ const sourceKey = "group:course";
 const paymentId = Buffer.from(sourceKey).toString("base64url");
 const paymentPath = `teacherPayrollItems/${paymentId}`;
 const originalPaidAt = firestore.Timestamp.fromDate(new Date("2026-10-15T16:00:00Z"));
+const dateFormatModule = { exports: {} };
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(
+  new URL("../src/lib/utils/date-format.ts", import.meta.url), "utf8",
+), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+}).outputText, { exports: dateFormatModule.exports, module: dateFormatModule });
 
 // An isolated Firestore double lets the real route handlers run without touching live payroll.
 function fixture(role = "adminTeacher", payment = {}) {
@@ -89,6 +95,7 @@ function fixture(role = "adminTeacher", payment = {}) {
   };
   class TeacherAccessError extends Error {}
   const dependencies = {
+    "@/lib/utils/date-format": dateFormatModule.exports,
     "next/server": { NextResponse: { json: (body, options) => Response.json(body, options) } },
     "firebase-admin": { firestore },
     "@/lib/firebase/admin": { getAdminFirestore: () => db },
@@ -116,10 +123,112 @@ function fixture(role = "adminTeacher", payment = {}) {
     patch: (body = { sourceKey, confirmed: true }) => routeModule.exports.PATCH(request(body)),
     post: (body = { sourceKey, amount: 1900, payeeId: "teacher", payeeName: "Docente" }) =>
       routeModule.exports.POST(request(body)),
-    get: () => routeModule.exports.GET({ nextUrl: new URL("https://example.test?from=2026-10-01&to=2026-10-31") }),
+    get: (from = "2026-10-01", to = "2026-10-31") => routeModule.exports.GET({
+      nextUrl: new URL(`https://example.test?from=${from}&to=${to}`),
+    }),
     malformed: () => routeModule.exports.PATCH({ json: async () => { throw new SyntaxError(); } }),
   };
 }
+
+test("payroll includes the entire selected day in Monterrey and excludes adjacent days", async () => {
+  const app = fixture();
+  for (const [instant, expectedCount] of [
+    ["2026-11-14T05:59:59.999Z", 0], // Previous day, 23:59:59.999.
+    ["2026-11-14T06:00:00.000Z", 1], // Selected day, midnight.
+    ["2026-11-15T02:00:00.000Z", 1], // Selected day, 20:00.
+    ["2026-11-15T05:59:59.999Z", 1], // Selected day, final millisecond.
+    ["2026-11-15T06:00:00.000Z", 0], // Following day, midnight.
+  ]) {
+    app.records.get("studentEnrollments/group_student").courseClosures.course.closedAt =
+      firestore.Timestamp.fromDate(new Date(instant));
+    const response = await app.get("2026-11-14", "2026-11-14");
+    assert.equal(response.status, 200);
+    const { data } = await response.json();
+    assert.equal(data.items.length, expectedCount, instant);
+    assert.equal(data.from, "2026-11-14T06:00:00.000Z");
+    assert.equal(data.to, "2026-11-15T05:59:59.999Z");
+  }
+});
+
+test("invalid calendar dates and reversed ranges are rejected", async () => {
+  const app = fixture();
+  for (const [from, to] of [
+    ["2026-02-30", "2026-03-01"],
+    ["2026-11-01", "2026-11-31"],
+    ["2026-11-15", "2026-11-14"],
+  ]) {
+    assert.equal((await app.get(from, to)).status, 400);
+  }
+});
+
+function mentorFixture() {
+  const app = fixture();
+  const group = app.records.get("groups/group");
+  group.assistantTeachers = [{ id: "mentor", name: "Mentor" }];
+  group.mentorCourseAccess = { mentor: ["course"] };
+  app.records.set("users/mentor", { name: "Mentor", payrollDeposit: { bank: "Banco" } });
+  app.records.delete(paymentPath);
+  return app;
+}
+
+test("mentors without an amount require review even when all students are closed", async () => {
+  const app = mentorFixture();
+  const { data } = await (await app.get()).json();
+  assert.equal(data.items[0].status, "review");
+  assert.equal(data.items[0].configuredPayrollAmount, null);
+  assert.match(data.items[0].reasons.join(" "), /Falta configurar el monto/);
+  assert.equal(data.summary.payable, 0);
+  assert.equal(data.summary.review, 1);
+});
+
+test("missing mentor amounts require review even when students are still open", async () => {
+  const app = mentorFixture();
+  app.records.set("groups/group/students/open", { status: "active" });
+  app.records.set("studentEnrollments/group_open", {
+    groupId: "group", studentId: "open", status: "active",
+  });
+  const { data } = await (await app.get()).json();
+  assert.equal(data.items[0].openCount, 1);
+  assert.equal(data.items[0].status, "review");
+});
+
+test("only a configured valid amount restores mentor payable status, including explicit zero", async () => {
+  const app = mentorFixture();
+  for (const amount of [null, "", "  ", false, -1, "invalid"]) {
+    app.records.get("groups/group").mentorCoursePayrollAmounts = { mentor: { course: amount } };
+    const { data } = await (await app.get()).json();
+    assert.equal(data.items[0].status, "review", String(amount));
+  }
+  for (const amount of [1600, 0]) {
+    app.records.get("groups/group").mentorCoursePayrollAmounts = { mentor: { course: amount } };
+    const { data } = await (await app.get()).json();
+    assert.equal(data.items[0].status, "payable");
+    assert.equal(data.items[0].configuredPayrollAmount, amount);
+  }
+});
+
+test("missing amounts do not change already paid records", async () => {
+  const app = mentorFixture();
+  app.records.set(paymentPath, { sourceKey, status: "paid", paidAt: originalPaidAt });
+  const { data } = await (await app.get()).json();
+  assert.equal(data.items[0].status, "paid");
+  assert.equal(data.summary.payable, 0);
+});
+
+test("payment requests cannot bypass missing mentor amounts with a fallback or stale report", async () => {
+  const app = mentorFixture();
+  assert.equal((await app.post()).status, 409);
+  assert.equal(app.writes(), 0);
+  app.records.get("groups/group").mentorCoursePayrollAmounts = { mentor: { course: 1600 } };
+  const { data } = await (await app.get()).json();
+  assert.equal(data.items[0].status, "payable");
+  delete app.records.get("groups/group").mentorCoursePayrollAmounts;
+  assert.equal((await app.post({ sourceKey, payeeId: "mentor", amount: 1600 })).status, 409);
+  assert.equal(app.writes(), 0);
+  app.records.get("groups/group").mentorCoursePayrollAmounts = { mentor: { course: 1600 } };
+  assert.equal((await app.post({ sourceKey, payeeId: "mentor", amount: 1600 })).status, 200);
+  assert.equal(app.writes(), 1);
+});
 
 test("only the exact adminTeacher role can unmark a payment", async () => {
   for (const role of ["teacher", "coordinadorPlantel", "director", "superAdminTeacher"]) {

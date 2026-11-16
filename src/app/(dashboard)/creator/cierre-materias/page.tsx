@@ -565,12 +565,13 @@ export default function CourseClosureReviewPage() {
     () =>
       filteredClosurePayrollItems.map((item) => {
         const paymentNotes = Array.isArray(item.paymentNotes) ? item.paymentNotes : [];
+        const missingMentorAmount = item.payeeRole === "mentor" && item.configuredPayrollAmount === null;
         return {
           ...item,
           paymentNotes,
-          rate: item.configuredPayrollAmount ?? payrollRates[item.level] ?? 0,
-          amount: item.status === "payable" ? item.configuredPayrollAmount ?? payrollRates[item.level] ?? 0 : 0,
-          amountSource: item.configuredPayrollAmount === null ? "fallbackRate" : "configured",
+          rate: missingMentorAmount ? 0 : item.configuredPayrollAmount ?? payrollRates[item.level] ?? 0,
+          amount: item.status === "payable" && !missingMentorAmount ? item.configuredPayrollAmount ?? payrollRates[item.level] ?? 0 : 0,
+          amountSource: missingMentorAmount ? "missing" : item.configuredPayrollAmount === null ? "fallbackRate" : "configured",
         };
       }),
     [filteredClosurePayrollItems, payrollRates],
@@ -1078,7 +1079,7 @@ export default function CourseClosureReviewPage() {
           `${item.groupName}\n${item.courseName}\n${item.plantelName || "Sin plantel"} · ${item.program || "Sin programa"}`,
           `Ult: ${item.lastClosedAt ? formatDate(item.lastClosedAt) : "Sin fecha"}\nPri: ${item.firstClosedAt ? formatDate(item.firstClosedAt) : "Sin fecha"}`,
           `${item.totalClosedCount}/${item.totalStudents} cerrados\n${item.closedInPeriodCount} en semana · ${item.openCount} pend.`,
-          `${formatCurrency(item.amount)}\n${item.amountSource === "configured" ? "Monto configurado" : `${payrollLevelLabel(item.level)} · respaldo`} · ${formatCurrency(item.rate)}`,
+          `${formatCurrency(item.amount)}\n${item.amountSource === "missing" ? "Falta configurar monto" : item.amountSource === "configured" ? "Monto configurado" : `${payrollLevelLabel(item.level)} · respaldo`} · ${formatCurrency(item.rate)}`,
           `${item.payrollDeposit.bank || (item.payrollDeposit.debitCard ? "Tarjeta de débito" : item.payrollDeposit.depositDetails ? "Datos adicionales" : "Sin banco")}\n${payrollDepositAccountLine(item.payrollDeposit)}`,
           `${item.reasons.join(" · ") || item.paymentNotes.join(" · ") || "Materia completa y lista para pago"}${item.closedByNames.length > 0 ? `\nCerrado por: ${item.closedByNames.join(", ")}` : ""}`,
         ];
@@ -1174,7 +1175,7 @@ export default function CourseClosureReviewPage() {
         item.totalClosedCount,
         item.openCount,
         item.totalStudents,
-        item.amountSource === "configured" ? "Monto configurado" : "Tarifa de respaldo",
+        item.amountSource === "missing" ? "Falta configurar monto" : item.amountSource === "configured" ? "Monto configurado" : "Tarifa de respaldo",
         item.rate.toFixed(2),
         item.amount.toFixed(2),
         item.reasons.join(" | ") || item.paymentNotes.join(" | ") || "Listo para pago",
@@ -1635,7 +1636,8 @@ export default function CourseClosureReviewPage() {
                       <td className="px-5 py-4 text-[#754848]">
                         <p className="font-semibold text-[#551b22]">{formatCurrency(item.amount)}</p>
                         <p className="text-xs">
-                          {item.amountSource === "configured"
+                          {item.amountSource === "missing" ? "Falta configurar monto"
+                            : item.amountSource === "configured"
                             ? `Monto configurado · ${formatCurrency(item.rate)}`
                             : `${payrollLevelLabel(item.level)} · respaldo ${formatCurrency(item.rate)}`}
                         </p>

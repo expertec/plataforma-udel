@@ -8,6 +8,7 @@ import {
 } from "@/lib/server/require-teacher-access";
 import { isStudentStatusActive } from "@/lib/students/status";
 import { normalizeTeacherPayrollDeposit } from "@/lib/teachers/profile";
+import { parseDateTimeLocalToIso } from "@/lib/utils/date-format";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -173,15 +174,20 @@ function parseDateBoundary(value: string | null, endOfDay: boolean): number | nu
   const month = Number(match[2]);
   const day = Number(match[3]);
   if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null;
-  return new Date(
-    year,
-    month - 1,
-    day,
-    endOfDay ? 23 : 0,
-    endOfDay ? 59 : 0,
-    endOfDay ? 59 : 0,
-    endOfDay ? 999 : 0,
-  ).getTime();
+  const date = new Date(`${raw}T00:00:00Z`);
+  if (
+    !Number.isFinite(date.getTime()) ||
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) return null;
+
+  // Match the report's calendar days regardless of the server's time zone.
+  const iso = parseDateTimeLocalToIso(
+    `${raw}T${endOfDay ? "23:59:59" : "00:00:00"}`,
+    { timeZone: "America/Monterrey" },
+  );
+  return iso ? new Date(iso).getTime() + (endOfDay ? 999 : 0) : null;
 }
 
 function resolveClosureTimestamp(closure: FirestoreRecord): admin.firestore.Timestamp | null {
@@ -334,6 +340,7 @@ function resolveMentorCoursePayrollAmount(params: {
   const amountsByMentor = asObject(groupData.mentorCoursePayrollAmounts);
   const amountsByCourse = asObject(amountsByMentor[mentorId]);
   const rawAmount = amountsByCourse[courseId];
+  if (typeof rawAmount !== "number" && (typeof rawAmount !== "string" || !rawAmount.trim())) return null;
   const amount = typeof rawAmount === "number" ? rawAmount : Number(rawAmount);
   return Number.isFinite(amount) && amount >= 0 ? Math.round(amount * 100) / 100 : null;
 }
@@ -658,6 +665,8 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
         fallbackProgram: course.program || asTrimmedString(groupData.program),
       });
       const reasons: string[] = [];
+      const missingMentorAmount = payeeRole === "mentor" && configuredPayrollAmount === null;
+      if (missingMentorAmount) reasons.push("Falta configurar el monto a pagar del mentor para esta materia");
       const paymentNotes: string[] = [];
       const closureRatio = totalStudents > 0 ? totalClosedCount / totalStudents : 0;
       const hasMajorityClosureEvidence = openCount > 0 && closureRatio > 0.5;
@@ -685,11 +694,13 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
 
       const status: PayrollStatus = paid
         ? "paid"
-        : reasons.length > 0 && !(!hasMajorityClosureEvidence && openCount > 0)
+        : missingMentorAmount
           ? "review"
-          : openCount > 0 && !hasMajorityClosureEvidence
-            ? "pending"
-            : "payable";
+          : reasons.length > 0 && !(!hasMajorityClosureEvidence && openCount > 0)
+            ? "review"
+            : openCount > 0 && !hasMajorityClosureEvidence
+              ? "pending"
+              : "payable";
       const sortedClosedAt = closedClosures
         .map((closure) => closure.closedAt)
         .filter((value): value is admin.firestore.Timestamp => value !== null)
@@ -760,7 +771,7 @@ async function listClosurePayrollItems(request: NextRequest): Promise<NextRespon
       items,
       summary,
       rule:
-        "Si una materia tiene un mentor asignado, el candidato de pago es ese mentor; sin mentor, el titular del grupo. Varios mentores requieren revision.",
+        "Si una materia tiene un mentor asignado, el candidato de pago es ese mentor; sin mentor, el titular del grupo. Varios mentores o un mentor sin monto configurado requieren revision.",
     },
   });
 }
@@ -804,6 +815,20 @@ async function markClosurePayrollItemPaid(request: NextRequest): Promise<NextRes
   const amount = asFiniteAmountOrNull(body.amount);
 
   await db.runTransaction(async (transaction) => {
+    const currentGroupSnap = await transaction.get(groupRef);
+    const currentGroupData = (currentGroupSnap.data() ?? {}) as FirestoreRecord;
+    const payees = resolveCoursePayees(currentGroupData, parsedSourceKey.courseId);
+    const payeeId = payees.role === "mentor" ? payees.payeeIds[0] : asTrimmedString(body.payeeId);
+    const isMentor = payees.role === "mentor" || (
+      payees.role === "primaryTeacher" && payeeId && payeeId !== asTrimmedString(currentGroupData.teacherId)
+    );
+    if (isMentor && resolveMentorCoursePayrollAmount({
+      groupData: currentGroupData,
+      mentorId: payeeId,
+      courseId: parsedSourceKey.courseId,
+    }) === null) {
+      throw new RouteAccessError(409, "Falta configurar el monto a pagar del mentor para esta materia. Actualiza la nómina.");
+    }
     const records = await transaction.get(
       db.collection("teacherPayrollItems").where("sourceKey", "==", sourceKey),
     );
