@@ -7,6 +7,7 @@ import { collection, getDocs } from "firebase/firestore";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { db } from "@/lib/firebase/firestore";
+import { getLiveScheduleError } from "@/lib/live-classes/schedule";
 import {
   Dialog,
   DialogContent,
@@ -601,8 +602,9 @@ export function TeacherLiveClassesView({
       ? parseDateTimeLocalToIso(form.scheduledEndAtLocal, { timeZone: form.timezone })
       : null;
 
-    if (form.scheduledEndAtLocal.trim() && !scheduledEndAt) {
-      toast.error("La fecha final no es válida.");
+    const scheduleError = getLiveScheduleError({ scheduledStartAt, scheduledEndAt });
+    if (scheduleError) {
+      toast.error(scheduleError);
       return;
     }
 
@@ -1217,10 +1219,11 @@ export function TeacherLiveClassesView({
             <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <label className="mb-2 block text-sm font-medium text-[#6e2d2d]">
-                  Fecha y hora de inicio
+                  Fecha y hora de inicio *
                 </label>
                 <input
                   type="datetime-local"
+                  required
                   value={form.scheduledStartAtLocal}
                   onChange={(event) =>
                     setForm((current) => ({
@@ -1234,10 +1237,12 @@ export function TeacherLiveClassesView({
 
               <div>
                 <label className="mb-2 block text-sm font-medium text-[#6e2d2d]">
-                  Fecha y hora de cierre
+                  Fecha y hora de cierre *
                 </label>
                 <input
                   type="datetime-local"
+                  required
+                  min={form.scheduledStartAtLocal || undefined}
                   value={form.scheduledEndAtLocal}
                   onChange={(event) =>
                     setForm((current) => ({

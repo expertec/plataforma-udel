@@ -14,6 +14,7 @@ import {
   updateClass,
 } from "@/lib/firebase/courses-service";
 import { normalizeLiveSession, type LiveClassSession } from "@/lib/live-classes/types";
+import { getEffectiveLiveEndAt, getLiveScheduleError } from "@/lib/live-classes/schedule";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { auth } from "@/lib/firebase/client";
 import { v4 as uuidv4 } from "uuid";
@@ -160,6 +161,7 @@ export function AddClassModal({
   const [url, setUrl] = useState("");
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [imageUrls, setImageUrls] = useState<string[]>([]);
   const [dragOver, setDragOver] = useState(false);
@@ -235,6 +237,7 @@ export function AddClassModal({
   >([makeEmptyQuestion()]);
 
   useEffect(() => {
+    setSubmitError(null);
     if (mode === "edit" && initialData) {
       setType(initialData.type);
       setAssessmentKind(initialData.assessmentKind === "final" ? "final" : "regular");
@@ -277,9 +280,10 @@ export function AddClassModal({
             })
           : "",
       );
+      const effectiveEndAt = getEffectiveLiveEndAt(currentLiveSession);
       setLiveScheduledEndAt(
-        currentLiveSession?.scheduledEndAt
-          ? toDateTimeLocalInputValue(currentLiveSession.scheduledEndAt, {
+        effectiveEndAt
+          ? toDateTimeLocalInputValue(effectiveEndAt, {
               timeZone: currentLiveTimezone,
             })
           : "",
@@ -415,6 +419,8 @@ export function AddClassModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
+    setSubmitError(null);
     if (!title.trim()) {
       toast.error("El título es obligatorio");
       return;
@@ -506,6 +512,14 @@ export function AddClassModal({
             lastEndedAt: currentLiveSession?.lastEndedAt ?? null,
           }
         : null;
+    if (type === "live") {
+      const scheduleError = getLiveScheduleError(liveSessionPayload);
+      if (scheduleError) {
+        setSubmitError(scheduleError);
+        toast.error(scheduleError);
+        return;
+      }
+    }
     setLoading(true);
     try {
       if (assessmentKind === "final" || initialData?.assessmentKind === "final") {
@@ -738,7 +752,11 @@ export function AddClassModal({
       onClose();
     } catch (err) {
       console.error(err);
-      toast.error("No se pudo crear la clase");
+      const message = err instanceof Error && err.message.trim()
+        ? err.message
+        : mode === "edit" ? "No se pudo actualizar la clase" : "No se pudo crear la clase";
+      setSubmitError(message);
+      toast.error(message, { duration: 8000 });
     } finally {
       setLoading(false);
     }
@@ -926,18 +944,21 @@ export function AddClassModal({
               <p className="text-sm font-semibold text-slate-900">Configuración de clase en vivo</p>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <label className="text-sm font-medium text-slate-800">Inicio programado</label>
+                  <label className="text-sm font-medium text-slate-800">Inicio programado *</label>
                   <input
                     type="datetime-local"
+                    required
                     value={liveScheduledStartAt}
                     onChange={(e) => setLiveScheduledStartAt(e.target.value)}
                     className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-slate-800">Fin programado</label>
+                  <label className="text-sm font-medium text-slate-800">Fin programado *</label>
                   <input
                     type="datetime-local"
+                    required
+                    min={liveScheduledStartAt || undefined}
                     value={liveScheduledEndAt}
                     onChange={(e) => setLiveScheduledEndAt(e.target.value)}
                     className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
@@ -1978,6 +1999,11 @@ export function AddClassModal({
             </div>
           )}
 
+          {submitError ? (
+            <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+              {submitError}
+            </p>
+          ) : null}
           <div className="flex items-center justify-end gap-3 pt-2">
             <button
               type="button"
@@ -2168,7 +2194,7 @@ function RichTextEditor({ value, onChange, onUploadImage, placeholder }: RichTex
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
-      StarterKit.configure({}),
+      StarterKit.configure({ link: false }),
       TextAlign.configure({ types: ["heading", "paragraph", "image"] }),
       Placeholder.configure({
         placeholder: placeholder || "Escribe la descripción y agrega imágenes (arrastrar/pegar)",

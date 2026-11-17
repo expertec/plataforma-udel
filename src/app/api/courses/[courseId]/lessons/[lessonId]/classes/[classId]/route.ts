@@ -413,8 +413,8 @@ export async function PATCH(
         );
       }
     };
-    if (nextType === "live" && payload.liveSession !== undefined) {
-      await writeWithLiveScheduleCheck({ db, courseId: normalizedCourseId, classPath: classRef.path, liveSession: payload.liveSession, write });
+    if (nextType === "live") {
+      await writeWithLiveScheduleCheck({ db, courseId: normalizedCourseId, classPath: classRef.path, liveSession: payload.liveSession ?? classData.liveSession, write });
     } else {
       const batch = db.batch();
       write(batch);

@@ -1,5 +1,6 @@
 import { FieldValue, type Firestore, type Transaction } from "firebase-admin/firestore";
 import { normalizeLiveSession } from "@/lib/live-classes/types";
+import { getEffectiveLiveEndAt, getLiveScheduleError } from "@/lib/live-classes/schedule";
 import { isUndergraduateProgram } from "@/lib/program-level";
 
 export class LiveScheduleError extends Error {
@@ -36,6 +37,8 @@ export async function writeWithLiveScheduleCheck(params: {
   write: (transaction: Transaction) => void;
 }): Promise<void> {
   const session = normalizeLiveSession(params.liveSession);
+  const scheduleError = getLiveScheduleError(session);
+  if (scheduleError) throw new LiveScheduleError(400, scheduleError);
   await params.db.runTransaction(async (transaction) => {
     const groups = await transaction.get(params.db.collection("groups"));
     const affected = groups.docs.filter((group) => {
@@ -50,9 +53,6 @@ export async function writeWithLiveScheduleCheck(params: {
     }
     const start = session.scheduledStartAt ? Date.parse(session.scheduledStartAt) : NaN;
     const end = session.scheduledEndAt ? Date.parse(session.scheduledEndAt) : NaN;
-    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-      throw new LiveScheduleError(400, "Para programar clases de licenciatura, indica inicio y cierre válidos; el cierre debe ser posterior al inicio.");
-    }
     const affectedCourses = new Set(affected.flatMap((group) => courseIds(group.data())));
     const lessons = await Promise.all(Array.from(affectedCourses, async (courseId) => ({
       courseId,
@@ -69,13 +69,13 @@ export async function writeWithLiveScheduleCheck(params: {
         const other = normalizeLiveSession(data.liveSession);
         if (!other || (other.status !== "scheduled" && other.status !== "live") || !other.scheduledStartAt) continue;
         const otherStart = Date.parse(other.scheduledStartAt);
-        // Legacy sessions without a closing time reserve the interval until a closing time is supplied.
-        const otherEnd = other.scheduledEndAt ? Date.parse(other.scheduledEndAt) : Infinity;
-        if (!Number.isFinite(otherStart) || Number.isNaN(otherEnd) || !(start < otherEnd && otherStart < end)) continue;
+        const effectiveEndAt = getEffectiveLiveEndAt(other);
+        const otherEnd = effectiveEndAt ? Date.parse(effectiveEndAt) : NaN;
+        if (!Number.isFinite(otherStart) || !Number.isFinite(otherEnd) || !(start < otherEnd && otherStart < end)) continue;
         const group = affected.find((item) => courseIds(item.data()).includes(courseId))!;
         const groupName = String(group.data().groupName || group.id);
         const className = String(data.title || "Clase en vivo");
-        const interval = `${formatDate(other.scheduledStartAt, session.timezone)}${other.scheduledEndAt ? ` a ${formatDate(other.scheduledEndAt, session.timezone)}` : " (sin cierre programado; define su hora de cierre)"}`;
+        const interval = `${formatDate(other.scheduledStartAt, session.timezone)} a ${formatDate(effectiveEndAt!, session.timezone)}${other.scheduledEndAt ? "" : " (cierre estimado de 60 minutos)"}`;
         throw new LiveScheduleError(409, `El grupo ${groupName} ya tiene «${className}» de ${interval}. Elige otro horario para evitar el empalme.`);
       }
     }

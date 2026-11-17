@@ -40,14 +40,20 @@ function fixture({ program = "Licenciatura", existing = session(), shared = true
         .map(([key, data]) => ({ id: key.split("/").at(-1), ref: document(key), data: () => data })),
     };
   }
-  function document(path) { return { path, collection: (name) => collection(`${path}/${name}`) }; }
+  function document(path) { return {
+    path, collection: (name) => collection(`${path}/${name}`),
+    snapshot: () => ({ exists: records.has(path), data: () => records.get(path) }),
+  }; }
   const db = {
-    collection,
+    collection, doc: document,
     runTransaction: async (callback) => {
       const pending = [];
       let writing = false;
       await callback({
-        get: async (query) => { assert.equal(writing, false, "All reads must precede writes"); return { docs: query.docs() }; },
+        get: async (query) => {
+          assert.equal(writing, false, "All reads must precede writes");
+          return query.snapshot ? query.snapshot() : { docs: query.docs() };
+        },
         update: (ref, data) => { writing = true; pending.push({ path: ref.path, data }); },
         set: (ref, data) => { writing = true; pending.push({ path: ref.path, data }); },
       });
@@ -58,7 +64,7 @@ function fixture({ program = "Licenciatura", existing = session(), shared = true
   return {
     records, writes,
     save: (input = session(), path = newClass) => writeWithLiveScheduleCheck({
-      db, courseId: "shared", classPath: path, liveSession: input,
+      db, courseId: path.split("/")[1], classPath: path, liveSession: input,
       write: (transaction) => transaction.set(document(path), { type: "live", liveSession: input }),
     }),
   };
@@ -86,11 +92,16 @@ test("allows classes ending exactly when the existing class starts", async () =>
 });
 test("does not compare unrelated groups", async () => { await fixture({ shared: false }).save(); });
 test("only undergraduate programs are subject to conflict checks", async () => {
-  for (const program of ["Preparatoria", "Maestría", "Certificación"]) await fixture({ program }).save(session("10:00", null));
+  for (const program of ["Preparatoria", "Maestría", "Certificación"]) await fixture({ program }).save();
 });
-test("requires a valid closing time for undergraduate schedules", async () => {
-  for (const input of [session("10:00", null), session("10:00", "10:00"), session("11:00", "10:00")]) {
-    await assert.rejects(fixture().save(input), (error) => error.status === 400);
+test("requires explicit valid start and end times for every program", async () => {
+  for (const program of ["Licenciatura", "Preparatoria", "Maestría", "Certificación"]) {
+    for (const input of [null, session("10:00", null), session("10:00", "10:00"), session("11:00", "10:00"),
+      { ...session(), scheduledStartAt: null }, { ...session(), scheduledEndAt: "invalid" }]) {
+      const f = fixture({ program });
+      await assert.rejects(f.save(input), (error) => error.status === 400);
+      assert.equal(f.writes.length, 0);
+    }
   }
 });
 test("finished sessions do not block scheduling", async () => {
@@ -105,11 +116,58 @@ test("editing the same class excludes itself", async () => {
 test("rescheduling another class into a reserved interval is rejected", async () => {
   await assert.rejects(fixture().save(session(), "courses/shared/lessons/week/classes/edited"), (error) => error.status === 409);
 });
-test("legacy sessions without a closing time require correction instead of assuming availability", async () => {
-  await assert.rejects(fixture({ existing: session("09:00", null) }).save(), (error) => error.status === 409 && /sin cierre programado/.test(error.message));
+test("legacy sessions reserve exactly 60 minutes and allow the next class at the boundary", async () => {
+  await fixture({ existing: session("09:00", null) }).save();
+  await assert.rejects(fixture({ existing: session("09:00", null) }).save(session("09:30", "10:30")),
+    (error) => error.status === 409 && /cierre estimado de 60 minutos/.test(error.message));
 });
 test("archived groups do not reserve an interval", async () => {
   const f = fixture();
   f.records.get("groups/b").status = "archived";
   await f.save();
+});
+
+test("legacy classes can receive closing times without blocking each other's repair", async () => {
+  const f = fixture({ existing: session("09:00", null) });
+  f.records.set(newClass, { type: "live", liveSession: session("10:00", null) });
+  await f.save(session("10:00", "11:00"));
+  assert.equal(f.records.get(newClass).liveSession.scheduledEndAt, session().scheduledEndAt);
+  await f.save(session("09:00", "10:00"), oldClass);
+  assert.equal(f.records.get(oldClass).liveSession.scheduledEndAt, session("09:00", "10:00").scheduledEndAt);
+});
+
+test("closing a legacy class still rejects overlap with a class that has a valid end", async () => {
+  const f = fixture();
+  f.records.set(newClass, { type: "live", liveSession: session("10:00", null) });
+  await assert.rejects(f.save(), (error) => error.status === 409);
+  assert.equal(f.writes.length, 0);
+});
+
+test("moving a legacy class still rejects overlaps inside another legacy class's 60 minutes", async () => {
+  const f = fixture({ existing: session("09:00", null) });
+  f.records.set(newClass, { type: "live", liveSession: session("10:00", null) });
+  await assert.rejects(f.save(session("09:30", "10:30")), (error) => error.status === 409);
+});
+
+test("editing a complete class still rejects overlaps inside a legacy reservation", async () => {
+  const f = fixture({ existing: session("09:00", null) });
+  f.records.set(newClass, { type: "live", liveSession: session("10:00", "11:00") });
+  await assert.rejects(f.save(session("09:30", "10:30")), (error) => error.status === 409);
+});
+
+test("a legacy class at 4 pm in Monterrey does not block a class at 6 pm", async () => {
+  const f = fixture({ existing: {
+    ...session(), scheduledStartAt: "2026-11-17T22:00:00.000Z", scheduledEndAt: null, status: "live",
+  } });
+  await f.save({ ...session(), scheduledStartAt: "2026-11-18T00:00:00.000Z", scheduledEndAt: "2026-11-18T01:00:00.000Z" });
+  assert.equal(f.records.get(oldClass).liveSession.scheduledEndAt, null, "Legacy records are not rewritten");
+});
+
+test("legacy duration crosses midnight while explicit longer reservations keep their end", async () => {
+  const legacy = { ...session(), scheduledStartAt: "2026-11-17T23:30:00Z", scheduledEndAt: null };
+  const later = { ...session(), scheduledStartAt: "2026-11-18T00:15:00Z", scheduledEndAt: "2026-11-18T01:15:00Z" };
+  await assert.rejects(fixture({ existing: legacy }).save(later), (error) => error.status === 409);
+  await fixture({ existing: legacy }).save({ ...later, scheduledStartAt: "2026-11-18T00:30:00Z" });
+  await assert.rejects(fixture({ existing: { ...legacy, scheduledEndAt: "2026-11-18T02:00:00Z" } }).save(later),
+    (error) => error.status === 409);
 });

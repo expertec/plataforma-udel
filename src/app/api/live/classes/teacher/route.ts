@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { LiveScheduleError, writeWithLiveScheduleCheck } from "@/lib/server/live-schedule";
+import { getEffectiveLiveEndAt, getLiveScheduleError } from "@/lib/live-classes/schedule";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminFirestore } from "@/lib/firebase/admin";
 import { createLiveSessionForClass, normalizeLiveSession } from "@/lib/live-classes/types";
@@ -494,7 +495,7 @@ export async function GET(request: NextRequest) {
                 recordingStatus: liveSession?.recording.status ?? "idle",
                 roomName: liveSession?.roomName ?? null,
                 scheduledStartAt: liveSession?.scheduledStartAt ?? null,
-                scheduledEndAt: liveSession?.scheduledEndAt ?? null,
+                scheduledEndAt: getEffectiveLiveEndAt(liveSession),
                 timezone: liveSession?.timezone ?? "America/Monterrey",
                 lastStartedAt: liveSession?.lastStartedAt ?? null,
                 lastEndedAt: liveSession?.lastEndedAt ?? null,
@@ -570,20 +571,8 @@ export async function POST(request: NextRequest) {
       throw new RouteAccessError(400, "groupId, courseId, title y scheduledStartAt son requeridos");
     }
 
-    const startDate = new Date(scheduledStartAt);
-    if (Number.isNaN(startDate.getTime())) {
-      throw new RouteAccessError(400, "scheduledStartAt inválido");
-    }
-
-    if (scheduledEndAt) {
-      const endDate = new Date(scheduledEndAt);
-      if (Number.isNaN(endDate.getTime())) {
-        throw new RouteAccessError(400, "scheduledEndAt inválido");
-      }
-      if (endDate.getTime() <= startDate.getTime()) {
-        throw new RouteAccessError(400, "La fecha final debe ser posterior al inicio");
-      }
-    }
+    const scheduleError = getLiveScheduleError({ scheduledStartAt, scheduledEndAt });
+    if (scheduleError) throw new RouteAccessError(400, scheduleError);
 
     const teacherGroups = await resolveTeacherGroups(teacher.uid);
     const selectedGroup = teacherGroups.find((group) => group.groupId === groupId);

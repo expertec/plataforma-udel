@@ -74,6 +74,13 @@ function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function asUniqueStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(
+    value.filter((item): item is string => typeof item === "string" && item.trim().length > 0),
+  ));
+}
+
 function asString(value: unknown, fieldName: string, fallback = ""): string {
   if (value === undefined || value === null) return fallback;
   if (typeof value !== "string") {
@@ -147,7 +154,11 @@ function normalizeDuration(value: unknown): number | null {
   return value;
 }
 
-async function resolveTeacherContext(request: NextRequest): Promise<{ uid: string; role: TeacherRole }> {
+async function resolveTeacherContext(request: NextRequest): Promise<{
+  uid: string;
+  role: TeacherRole;
+  coordinatorPlantelIds: string[];
+}> {
   const token = extractBearerToken(request.headers.get("authorization"));
   if (!token) {
     throw new RouteAccessError(401, "Authorization Bearer token requerido");
@@ -162,20 +173,30 @@ async function resolveTeacherContext(request: NextRequest): Promise<{ uid: strin
 
   const uid = decodedToken.uid;
   const userSnap = await getAdminFirestore().collection("users").doc(uid).get();
-  const roleFromDoc = asTeacherRole(userSnap.data()?.role);
+  const userData = (userSnap.data() ?? {}) as Record<string, unknown>;
+  const roleFromDoc = asTeacherRole(userData.role);
   const roleFromClaims = asTeacherRole(decodedToken.role);
   const role = roleFromDoc ?? roleFromClaims;
   if (!role) {
     throw new RouteAccessError(403, "Acceso restringido a docentes");
   }
 
-  return { uid, role };
+  const coordinatorPlantelIds = asUniqueStringArray(userData.plantelIds);
+  const legacyPlantelId = asTrimmedString(userData.plantelId);
+  return {
+    uid,
+    role,
+    coordinatorPlantelIds: coordinatorPlantelIds.length > 0
+      ? coordinatorPlantelIds
+      : legacyPlantelId ? [legacyPlantelId] : [],
+  };
 }
 
 async function canUserManageCourse(params: {
   courseId: string;
   uid: string;
   role: TeacherRole;
+  coordinatorPlantelIds: string[];
 }): Promise<{ allowed: boolean; mentorIds: string[]; shouldBackfillMentor: boolean }> {
   return resolveCourseManagementAccess({
     ...params,
@@ -253,6 +274,7 @@ export async function POST(
       courseId: normalizedCourseId,
       uid: teacherContext.uid,
       role: teacherContext.role,
+      coordinatorPlantelIds: teacherContext.coordinatorPlantelIds,
     });
 
     if (!access.allowed) {
