@@ -145,6 +145,9 @@ export default function CreatorLayout({ children }: { children: ReactNode }) {
     if (isAdminTeacherRole(userRole)) {
       items.push({ href: "/creator/diagnostico-permisos", label: "Diagnóstico de permisos" });
     }
+    if (isAdminTeacherRole(userRole) || isDirectorRole(userRole) || (isCampusCoordinatorRole(userRole) && hasDirectorExtraRole)) {
+      items.push({ href: "/creator/analisis-calificaciones", label: "Análisis de calificaciones" });
+    }
     if (isAdminTeacherRole(userRole)) {
       items.push({ href: "/creator/programas", label: "Programas" });
     }

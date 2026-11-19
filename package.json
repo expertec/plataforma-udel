@@ -10,6 +10,7 @@
     "test:academic-history": "node --test scripts/student-academic-history.test.mjs",
     "test:academic-alert": "node --test scripts/academic-alert.test.mjs",
     "test:manual-grade-scale": "node --test scripts/manual-grade-scale.test.mjs",
+    "test:grade-scale-analysis": "node --test scripts/grade-scale-analysis.test.mjs scripts/grade-scale-corrections.test.mjs",
     "test:live-materials": "node --test scripts/live-materials.test.mjs scripts/live-material-titles.test.mjs"
   },
   "dependencies": {
